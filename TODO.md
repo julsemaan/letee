@@ -16,3 +16,4 @@
 - [x] Prevent sidebar from being resized live in tmux (interferes with mouse selection to copy/paste) while retaining keyboard resizing
 - [x] Creating a new session opens a text input at the bottom which is not obvious. Find alternatives
 - [] Highlighting the row to mark the new session on a host confuses with the active session. Find a better way to mark the new session
+- [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like favorite). See about supporting right-click to open a context menu for the session
