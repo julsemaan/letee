@@ -19,3 +19,4 @@
 - [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like favorite). See about supporting right-click to open a context menu for the session
 - [] Selecting a starred session highlights both the starred session and the one in all sessions. Need to review how to better organize sessions
 - [] When hitting enter on a starred session that doesn't exist anymore, create it with that name either lcoally or on the right host
+- [] The highlight of the active row is too strong and confuses with the cursor
