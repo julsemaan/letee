@@ -34,6 +34,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_right_pane_reset") as install_right_pane_reset,
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
+            patch.object(cockpit, "_enable_truecolor") as enable_truecolor,
             patch.object(cockpit, "_install_bindings") as install_bindings,
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
@@ -46,6 +47,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_right_pane_reset.assert_called_once_with("%1", "%2", "C-x")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
+        enable_truecolor.assert_called_once_with()
         install_bindings.assert_called_once_with("C-x")
         self.assertEqual(
             tmux_call.call_args_list,
@@ -65,6 +67,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_bindings") as install_bindings,
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
+            patch.object(cockpit, "_enable_truecolor") as enable_truecolor,
             patch.object(cockpit, "_install_bell_hook") as install_bell_hook,
             patch.object(cockpit, "_install_right_pane_reset") as install_right_pane_reset,
             patch.object(cockpit, "load_prefix", return_value="C-x"),
@@ -81,6 +84,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_bindings.assert_called_once_with("C-x")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
+        enable_truecolor.assert_called_once_with()
         self.assertEqual(
             tmux_call.call_args_list,
             [
@@ -121,6 +125,24 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._enable_clipboard()
 
         tmux_call.assert_called_once_with("set-option", "-s", "set-clipboard", "on")
+
+    def test_enable_truecolor_appends_rgb_when_colorterm_is_truecolor(self):
+        with patch.dict(cockpit.os.environ, {"COLORTERM": "truecolor"}), patch.object(cockpit.tmux, "tmux") as tmux_call:
+            cockpit._enable_truecolor()
+
+        tmux_call.assert_called_once_with("set-option", "-as", "terminal-features", ",xterm-256color:RGB")
+
+    def test_enable_truecolor_appends_rgb_when_colorterm_is_24bit(self):
+        with patch.dict(cockpit.os.environ, {"COLORTERM": "24bit"}), patch.object(cockpit.tmux, "tmux") as tmux_call:
+            cockpit._enable_truecolor()
+
+        tmux_call.assert_called_once_with("set-option", "-as", "terminal-features", ",xterm-256color:RGB")
+
+    def test_enable_truecolor_skips_when_colorterm_is_absent(self):
+        with patch.dict(cockpit.os.environ, {}, clear=True), patch.object(cockpit.tmux, "tmux") as tmux_call:
+            cockpit._enable_truecolor()
+
+        tmux_call.assert_not_called()
 
     def test_bindings_include_sidebar_focus_and_numbered_star_shortcuts(self):
         calls = []
@@ -183,6 +205,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_right_pane_reset"),
             patch.object(cockpit, "_install_bindings"),
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
+            patch.object(cockpit, "_enable_truecolor"),
         ):
             cockpit._build("C-x", 52)
 
@@ -211,6 +234,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_bindings"),
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
+            patch.object(cockpit, "_enable_truecolor"),
         ):
             cockpit.ensure_cockpit()
 
