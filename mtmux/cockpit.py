@@ -10,6 +10,12 @@ from .config import ensure_config, load_prefix, load_sidebar_width
 from .names import Target, parse_target
 from . import tmux
 
+
+def _truecolor_enabled() -> bool:
+    """Detect whether the host terminal supports truecolor (24-bit color)."""
+    colorterm = os.environ.get("COLORTERM", "").lower()
+    return colorterm in ("truecolor", "24bit")
+
 def help_command(prefix: str) -> str:
     text = f"""mtmux cockpit
 
@@ -105,6 +111,12 @@ def _enable_clipboard() -> None:
     tmux.tmux("set-option", "-s", "set-clipboard", "on")
 
 
+def _enable_truecolor() -> None:
+    """Propagate RGB terminal capability when the host reports truecolor."""
+    if _truecolor_enabled():
+        tmux.tmux("set-option", "-as", "terminal-features", ",xterm-256color:RGB")
+
+
 def _install_bell_hook() -> None:
     tmux.tmux("set-window-option", "-t", TARGET, "monitor-bell", "on")
     tmux.tmux("set-option", "-t", tmux.SESSION, "bell-action", "any")
@@ -127,6 +139,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     tmux.tmux("set-option", "-t", tmux.SESSION, "status", "off")
     _enable_mouse()
     _enable_clipboard()
+    _enable_truecolor()
     _install_bindings(prefix)
 
 
