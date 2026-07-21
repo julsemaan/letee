@@ -94,6 +94,7 @@ def _init_colors() -> None:
             "danger": (7, curses.COLOR_RED, -1, 0),
             "hints": (8, teal, -1, curses.A_DIM),
             "add_entry": (9, charcoal, mint, curses.A_BOLD),
+            "slot": (10, mint, charcoal, curses.A_BOLD),
         }
         for name, (pair, fg, bg, attr) in pairs.items():
             curses.init_pair(pair, fg, bg)
@@ -500,13 +501,10 @@ def _entry_lines(
         bell = " BELL" if _ascii() else " 🔔"
         bell = bell if entry.target in bell_targets and entry.target != current_target else ""
         if entry.tracked:
-            prefix = f"{pointer}{icon[kind] if not selected else ' '} "
-            slot = f" {entry.shortcut_slot}" if entry.shortcut_slot is not None else ""
-            room = max(0, width - _cell_width(prefix) - _cell_width(bell) - _cell_width(slot))
+            prefix = f"{pointer} "
+            room = max(0, width - _cell_width(prefix) - _cell_width(bell))
             label = _truncate_cells(entry.label, room)
             first = prefix + label + bell
-            if slot:
-                first += " " * max(0, width - _cell_width(first) - _cell_width(slot)) + slot
             host_prefix = "@" if entry.target and entry.target.kind == "ssh" else ""
             suffix = " unavailable" if entry.unavailable_favorite else ""
             branch = "`-" if _ascii() else "└─"
@@ -588,11 +586,20 @@ def _draw_entries(
         )
         host_selected = selected_entry and entry.kind == "host" and not dimmed
         base_attr = _entry_attr(entry, active_entry or host_selected, dimmed)
+        slot_badge = ""
+        slot_width = 0
+        if entry.tracked and entry.shortcut_slot is not None:
+            slot_badge = f"[{entry.shortcut_slot}] "
+            slot_width = _cell_width(slot_badge)
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
             attr = _fade(base_attr) if line_number and not active_entry else base_attr
-            stdscr.addnstr(row, 0, line, w, attr)
+            if line_number == 0 and slot_width:
+                stdscr.addnstr(row, 0, slot_badge, w, _color("slot") or curses.A_BOLD)
+                stdscr.addnstr(row, slot_width, line, w - slot_width, attr)
+            else:
+                stdscr.addnstr(row, 0, line, w, attr)
             if entry.kind == "host" and entry.host == creation_host:
                 cursor = (row, min(w - 1, _cell_width(line)))
             row += 1

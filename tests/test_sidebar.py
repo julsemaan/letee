@@ -343,12 +343,14 @@ class SidebarColorTest(unittest.TestCase):
                 call(7, curses.COLOR_RED, -1),
                 call(8, 30, -1),
                 call(9, 233, 79),
+                call(10, 79, 233),
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["hints"], (8 << 8) | curses.A_DIM)
+        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD)
 
     def test_8_color_terminal_uses_safe_palette(self):
         with (
@@ -373,10 +375,12 @@ class SidebarColorTest(unittest.TestCase):
                 call(7, curses.COLOR_RED, -1),
                 call(8, curses.COLOR_CYAN, -1),
                 call(9, curses.COLOR_BLACK, curses.COLOR_CYAN),
+                call(10, curses.COLOR_CYAN, curses.COLOR_BLACK),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
+        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD)
 
     def test_no_color_terminal_leaves_palette_empty(self):
         sidebar._COLOR = {"title": 123}
@@ -1033,27 +1037,46 @@ class SidebarDrawTest(unittest.TestCase):
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertTrue(title[3].endswith("1 session"))
 
-    def test_numbered_tracked_is_slot_free_and_right_aligned_in_unicode_and_ascii(self):
+    def test_numbered_tracked_has_no_slot_in_entry_lines_in_unicode_and_ascii(self):
         entry = Entry(
             "work", "session", Target("local", "work"), host="laptop",
             tracked=True, shortcut_slot=3,
         )
 
-        for ascii_mode, expected in ((False, " ● work                      3"), (True, " * work                      3")):
+        for ascii_mode, expected in ((False, "  work"), (True, "  work")):
             with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
                 line = _entry_lines(entry, False, set(), None, 30)[0]
             self.assertEqual(line, expected)
             self.assertNotIn("✱", line)
+            self.assertNotIn("3", line)
+
+    def test_tracked_entry_draws_slot_badge_with_correct_attribute(self):
+        entry = Entry("work", "session", Target("local", "work"), host="laptop",
+                      tracked=True, shortcut_slot=3)
+        screen = FakeScreen(size=(6, 30))
+
+        with patch.dict("mtmux.sidebar._COLOR", {"slot": 456, "local": 123}, clear=True):
+            sidebar._draw_entries(
+                screen, [entry], 0, 4, 30, set(), None, dimmed=False, top=1,
+            )
+
+        slot_call = next(call for call in screen.calls
+                         if call[0] == "addnstr" and call[1] == 1 and call[3].startswith("["))
+        self.assertEqual(slot_call[3], "[3] ")
+        self.assertEqual(slot_call[5], 456)
+        line_call = next(call for call in screen.calls
+                         if call[0] == "addnstr" and call[1] == 1 and not call[3].startswith("["))
+        self.assertEqual(line_call[5], 123)
 
     def test_tracked_entries_render_session_then_source_without_raw_targets(self):
         local = Entry("dashboard", "session", Target("local", "dashboard"), host="laptop", tracked=True)
         remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", tracked=True)
 
         with patch("mtmux.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["›  dashboard", "  └─ laptop"])
-            self.assertEqual(_entry_lines(remote, False, set(), None, 30), [" ◆ auth", "  └─ @dev"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["› dashboard", "  └─ laptop"])
+            self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["  auth", "  └─ @dev"])
         with patch("mtmux.sidebar._ascii", return_value=True):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), [">  dashboard", "  `- laptop"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["> dashboard", "  `- laptop"])
 
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
         self.assertNotIn("ssh:", "".join(_entry_lines(remote, False, set(), None, 30)))
@@ -1120,7 +1143,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_tracked_rows_have_no_tracked_glyph(self):
         target = Target("local", "work")
         entry = Entry("work", "session", target, host="laptop", tracked=True)
-        for ascii_mode, pointer in ((False, "›  work"), (True, ">  work")):
+        for ascii_mode, pointer in ((False, "› work"), (True, "> work")):
             screen = FakeScreen(size=(7, 30))
             with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
                 _draw(screen, [entry], 0, "ok", "")
