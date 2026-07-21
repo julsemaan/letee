@@ -22,7 +22,7 @@ COCKPIT_BELL_POLL_INTERVAL = 0.5
 
 @dataclass(frozen=True)
 class Effect:
-    kind: Literal["switch", "create", "kill", "refresh", "help", "save_favorites", "status", "quit"]
+    kind: Literal["switch", "add_switch", "create", "kill", "help", "save_favorites", "status", "quit"]
     target: Target | None = None
     favorites: tuple[Target, ...] | None = None
     message: str = ""
@@ -32,6 +32,7 @@ class Effect:
 class SidebarState:
     filter_text: str = ""
     filtering: bool = False
+    adding: bool = False
     creation_host: str | None = None
     creation_text: str = ""
     selected_target: Target | None = None
@@ -118,22 +119,26 @@ def _entries(
     filter_text: str,
     snapshot: SessionSnapshot,
     favorites: list[Target] | None = None,
+    adding: bool = False,
 ) -> list[Entry]:
     needle = filter_text.lower()
+    adding = adding or favorites is None
     favorites = favorites or []
     available = set(snapshot.sessions)
-
-    slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
-    starred = [target for target in favorites if needle in target.session.lower()]
-    icons = _icons()
-    out = [Entry(f"{icons['starred']} STARRED", "section")] if starred else []
     hostname = socket.gethostname()
-    out.extend(
-        Entry(target.session, "session", target, target.host or hostname, True, target not in available, True, slots.get(target))
-        for target in starred
-    )
-    if starred:
-        out.append(Entry("ALL SESSIONS", "section"))
+    if not adding:
+        slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
+        out = [
+            Entry(target.session, "session", target, target.host or hostname, True, target not in available, True, slots.get(target))
+            for target in favorites
+        ]
+        if not out:
+            out.append(Entry("No starred sessions", "unavailable"))
+        out.append(Entry(f"{_icons()['create']} Add session", "add"))
+        return out
+
+    icons = _icons()
+    out: list[Entry] = []
     local_kind = "host" if snapshot.local.available and not filter_text else "header"
     local_label = hostname if local_kind == "host" else f"{icons['local_header']} {hostname}"
     out.append(Entry(local_label, local_kind, host=""))
@@ -142,8 +147,8 @@ def _entries(
         out.append(Entry(label, "unavailable", host=""))
     else:
         for target in snapshot.local.sessions:
-            if needle in target.session.lower():
-                out.append(Entry(target.session, "session", target, starred=target in favorites))
+            if target not in favorites and needle in target.session.lower():
+                out.append(Entry(target.session, "session", target))
 
     for host, source in snapshot.remotes.items():
         available = source is not None and source.available
@@ -158,13 +163,13 @@ def _entries(
             out.append(Entry(label, "unavailable", host=host))
             continue
         for target in source.sessions:
-            if needle in target.session.lower():
-                out.append(Entry(target.session, "session", target, host, target in favorites))
+            if target not in favorites and needle in target.session.lower():
+                out.append(Entry(target.session, "session", target, host))
     return out
 
 
 def _selectable(entries: list[Entry]) -> list[int]:
-    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host")]
+    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "add")]
 
 
 def _selected_index(entries: list[Entry], target: Target | None) -> int:
@@ -172,7 +177,7 @@ def _selected_index(entries: list[Entry], target: Target | None) -> int:
         for i, entry in enumerate(entries):
             if entry.target == target:
                 return i
-    for kind in ("session", "host"):
+    for kind in ("session", "host", "add"):
         for i, entry in enumerate(entries):
             if entry.kind == kind:
                 return i
@@ -215,7 +220,7 @@ def _transition(
     unavailable: bool = False,
 ) -> Effect | None:
     target = target or state.selected_target
-    if action in ("switch", "kill"):
+    if action in ("switch", "add_switch", "kill"):
         return Effect(action, target=target) if target else None
     if action == "create":
         return Effect("create", target=target) if target else None
@@ -240,7 +245,7 @@ def _transition(
         state.favorites[index], state.favorites[new_index] = state.favorites[new_index], state.favorites[index]
         direction = "up" if offset < 0 else "down"
         return Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()} {direction}")
-    if action in ("refresh", "help", "quit"):
+    if action in ("help", "quit"):
         return Effect(action)
     return None
 
@@ -252,7 +257,10 @@ def _set_status(state: SidebarState, message: str, timeout: float) -> None:
 
 def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, status_timeout: float) -> bool:
     try:
-        if effect.kind == "switch" and effect.target:
+        if effect.kind in ("switch", "add_switch") and effect.target:
+            if effect.kind == "add_switch" and effect.target not in state.favorites:
+                state.favorites.append(effect.target)
+                save_stars(state.favorites)
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
             state.filter_text = ""
             state.filtering = False
@@ -260,7 +268,11 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             _set_status(state, f"switched {effect.target.format()}", status_timeout)
         elif effect.kind == "create" and effect.target:
             sessions.create(effect.target)
+            if effect.target not in state.favorites:
+                state.favorites.append(effect.target)
+                save_stars(state.favorites)
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
+            state.adding = False
             state.pending_selection = effect.target
             poller.refresh()
             _set_status(state, f"created {effect.target.session}", status_timeout)
@@ -268,11 +280,8 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             sessions.kill(effect.target)
             poller.discard(effect.target)
             poller.refresh()
-            state.selected_target = None
+            state.selected_target = effect.target
             _set_status(state, f"killed {effect.target.format()}", status_timeout)
-        elif effect.kind == "refresh":
-            poller.refresh()
-            _set_status(state, "refreshing", status_timeout)
         elif effect.kind == "help":
             cockpit.show_help()
             _set_status(state, "help opened", status_timeout)
@@ -332,11 +341,15 @@ def _filter_key(filter_text: str, key: int) -> str | None:
     return None
 
 
-def _bell_targets(snapshot: SessionSnapshot, cockpit_target: Target | None = None) -> set[Target]:
+def _bell_targets(
+    snapshot: SessionSnapshot,
+    cockpit_target: Target | None = None,
+    favorites: list[Target] | tuple[Target, ...] | None = None,
+) -> set[Target]:
     targets = set(snapshot.bells)
     if cockpit_target:
         targets.add(cockpit_target)
-    return targets
+    return targets if favorites is None else targets & set(favorites)
 
 
 def _entry_height(entry: Entry) -> int:
@@ -374,7 +387,7 @@ def _entry_at_row(entries: list[Entry], selected: int, row: int, height: int, fo
         return None
     for index in range(start, end):
         if entry_row < _entry_height(entries[index]):
-            return index if entries[index].kind in ("session", "host") else None
+            return index if entries[index].kind in ("session", "host", "add") else None
         entry_row -= _entry_height(entries[index])
     return None
 
@@ -453,6 +466,8 @@ def _entry_lines(
         return [entry.label + " " + rule * (width - len(entry.label) - 1)]
     if entry.kind == "header":
         return [_truncate(entry.label, width)]
+    if entry.kind == "add":
+        return [_truncate(f"{pointer} {entry.label}", width)]
     if entry.kind == "host":
         if creation_host is not None and entry.host == creation_host:
             prefix = f"{icon['create']} {entry.label} / new: "
@@ -488,7 +503,7 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
         attr = _color("active") or curses.A_REVERSE
     elif entry.kind == "section":
         attr = _color("section") or curses.A_BOLD
-    elif entry.kind in ("header", "host"):
+    elif entry.kind in ("header", "host", "add"):
         attr = curses.A_BOLD
     elif entry.unavailable_favorite:
         attr = _color("unavailable") or curses.A_DIM
@@ -567,13 +582,16 @@ def _draw_footer(
     filtering: bool = False,
     dimmed: bool = False,
     creating: bool = False,
+    adding: bool = False,
 ) -> int:
     if creating:
         logical_rows = ["Esc cancel · Enter create" if not _ascii() else "Esc cancel  Enter create"]
     elif filtering:
         logical_rows = ["type to filter  backspace edit", f"esc clear  {'Enter' if _ascii() else '↵'} switch"]
+    elif adding:
+        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} add  x kill", "/ filter  Esc back  ? help  q quit"]
     else:
-        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} activate  f star  x kill", "/ filter  r refresh  ? help  q quit"]
+        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} activate  a add  x kill", "r unstar  K/J reorder  ? help  q quit"]
     width = max(1, w - 1)
     lines = [line for logical_row in logical_rows for line in (textwrap.wrap(logical_row, width=width) or [""])]
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
@@ -596,11 +614,12 @@ def _draw(
     dimmed: bool = False,
     creation_host: str | None = None,
     creation_text: str = "",
+    adding: bool = False,
 ) -> int:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     cursor = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed)
-    footer_height = _draw_footer(stdscr, h, w, status, filtering, dimmed, creation_host is not None)
+    footer_height = _draw_footer(stdscr, h, w, status, filtering, dimmed, creation_host is not None, adding)
     creation_cursor = _draw_entries(
         stdscr,
         entries,
@@ -628,7 +647,7 @@ def run(stdscr: curses.window) -> None:
     status_timeout = load_status_timeout()
     state = SidebarState(favorites=load_stars(), selected_target=_current_target())
     poller = DiscoveryPoller(load_hosts())
-    entries = _entries(state.filter_text, poller.snapshot, state.favorites)
+    entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
     state.selected_index = _selected_index(entries, state.selected_target)
     _sync_selection(state, entries)
     cockpit_bell_target: Target | None = None
@@ -642,7 +661,7 @@ def run(stdscr: curses.window) -> None:
 
     def rebuild() -> None:
         nonlocal entries
-        entries = _entries(state.filter_text, poller.snapshot, state.favorites)
+        entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
         _sync_selection(state, entries)
 
     try:
@@ -659,7 +678,7 @@ def run(stdscr: curses.window) -> None:
             if now >= next_cockpit_bell_poll:
                 cockpit_bell_target = cockpit.bell_target()
                 next_cockpit_bell_poll = now + COCKPIT_BELL_POLL_INTERVAL
-            bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target)
+            bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
             current_target = _current_target()
             visible_bells = bell_targets - ({current_target} if current_target else set())
             if visible_bells - state.rang_bells:
@@ -668,20 +687,20 @@ def run(stdscr: curses.window) -> None:
             dimmed = not _pane_active()
             render_state = (
                 tuple(entries), state.selected_index, state.status, state.filter_text,
-                state.filtering, state.creation_host, state.creation_text,
+                state.filtering, state.adding, state.creation_host, state.creation_text,
                 frozenset(bell_targets), current_target, dimmed, stdscr.getmaxyx(),
             )
             if render_state != rendered:
                 footer_height = _draw(
                     stdscr, entries, state.selected_index, state.status, state.filter_text,
                     state.filtering, bell_targets, current_target, dimmed,
-                    state.creation_host, state.creation_text,
+                    state.creation_host, state.creation_text, state.adding,
                 )
                 rendered = render_state
             try:
                 key = stdscr.getch()
             except KeyboardInterrupt:
-                if not state.filtering and state.creation_host is None:
+                if not state.filtering and not state.adding and state.creation_host is None:
                     raise
                 key = 3
             if key == -1:
@@ -738,6 +757,12 @@ def run(stdscr: curses.window) -> None:
                     if not state.filter_text:
                         show_status("filter cleared")
                     continue
+            if key in (27, 3) and state.adding:
+                state.adding = False
+                state.filter_text = ""
+                rebuild()
+                show_status("cancelled")
+                continue
             selectable = _selectable(entries)
             effect: Effect | None = None
             if key == ord("q"):
@@ -754,29 +779,34 @@ def run(stdscr: curses.window) -> None:
                 effect = _transition(state, "move_favorite_up")
             elif key == ord("J"):
                 effect = _transition(state, "move_favorite_down")
-            elif key == ord("r"):
-                effect = _transition(state, "refresh")
+            elif key == ord("a") and not state.adding:
+                state.adding = True
+                state.selected_target = None
+                rebuild()
+            elif key == ord("r") and not state.adding:
+                entry = entries[state.selected_index]
+                if entry.target:
+                    effect = _transition(state, "toggle_favorite", entry.target)
             elif key == ord("/"):
+                if not state.adding:
+                    state.adding = True
+                    state.selected_target = None
+                    rebuild()
                 state.filtering = True
                 curses.curs_set(1)
             elif key == ord("?"):
                 effect = _transition(state, "help")
-            elif key == ord("f"):
-                entry = entries[state.selected_index]
-                if not entry.target:
-                    show_status("select session to star")
-                    continue
-                effect = _transition(
-                    state, "toggle_favorite", entry.target,
-                    unavailable=entry.unavailable_favorite,
-                )
             elif key in (10, 13, curses.KEY_ENTER):
                 entry = entries[state.selected_index]
-                if entry.unavailable_favorite:
-                    show_status(f"unavailable {entry.target.format()}")
+                if entry.kind == "add":
+                    state.adding = True
+                    state.selected_target = None
+                    rebuild()
                     continue
                 if entry.target:
-                    effect = _transition(state, "switch", entry.target)
+                    effect = _transition(state, "add_switch" if state.adding else "switch", entry.target)
+                    if state.adding:
+                        state.adding = False
                 elif entry.kind == "host":
                     state.creation_host = entry.host
                     state.creation_text = ""
@@ -787,7 +817,7 @@ def run(stdscr: curses.window) -> None:
                     show_status("select session to kill")
                     continue
                 if entry.unavailable_favorite:
-                    show_status(f"unavailable {entry.target.format()}")
+                    show_status(f"missing {entry.target.format()}")
                     continue
                 if _read_key(stdscr, f"kill {entry.target.format()}? y/N") != ord("y"):
                     show_status("cancelled")

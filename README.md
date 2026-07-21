@@ -110,18 +110,18 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `C-s s`: focus sidebar; recreates it if quit
 - `C-s 1`–`C-s 9`: switch directly to numbered starred target
 - `j` / `k` or arrows: move selection pointer (`›`)
-- `Enter`: switch selected session, or prompt to create on selected host line
-- `f`: star or unstar selected target; new stars append to STARRED order
-- `K` / `J`: move selected STARRED target up/down without wrapping
-- `x`: kill selected session (asks first)
-- `r`: refresh discovery
-- `/`: filter
+- `Enter`: switch selected star, open Add, or create on selected host line
+- `a`: open grouped local/SSH Add picker
+- `r`: unstar selected target without killing it
+- `K` / `J`: move selected starred target up/down without wrapping
+- `x`: kill selected session but retain its star (asks first)
+- `/`: open Add picker and filter unstarred sessions
 - `?`: open help in right pane
 - `q`: quit sidebar only
 
 `›` marks keyboard selection; mint reverse highlight marks active cockpit session. Both appear independently while sidebar is focused. Unfocused sidebar hides pointer and keeps active session highlighted and visible.
 
-Starred sessions appear first in persisted order and remain in their LOCAL/SSH sections. New stars append. First nine receive stable shortcut numbers in STARRED order; `K`/`J` updates that order, filtering preserves original numbers, and later stars remain sidebar-only. Prefix-number shortcuts load stars on every use, so star changes apply immediately without restarting cockpit. Each STARRED entry uses two rows: session name first, then local hostname or SSH host. Long text is truncated with an ellipsis. Filtering matches session names. Favorites persist in `~/.config/mtmux/stars`; unavailable favorites remain selectable so `f` can remove them, while sidebar switch and kill report them unavailable. Numbered shortcuts still attempt normal switch, whose tmux `new-session -A` behavior may recreate a missing session. Set `MTMUX_ASCII=1` for text-only stars, source labels, and ellipses.
+Normal sidebar shows only starred sessions in persisted order, followed by `＋ Add session`; no full-inventory duplicates. Add picker groups unstarred sessions under local and SSH hosts. Selecting or creating one stars it and switches immediately. First nine stars receive stable shortcut numbers; `K`/`J` updates order, while later stars remain sidebar-only. Prefix-number shortcuts load stars on every use, so changes apply without restart. Each star uses two rows: session name, then local hostname or SSH host. Missing stars remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Favorites persist in `~/.config/mtmux/stars`. Only starred sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only stars, source labels, and ellipses.
 
 ## Mouse controls
 

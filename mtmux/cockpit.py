@@ -26,12 +26,12 @@ Navigation
   q      quit sidebar only
 
 Session actions
-  Enter  switch session / create on host line
-  f      star/unstar session
+  Enter  switch starred session / open Add / create on host
+  a      open grouped local/SSH Add picker
+  r      unstar selected session (session keeps running)
   K/J    move starred session up/down
-  x      kill selected session
-  /      filter sessions
-  r      refresh
+  x      kill selected session (star remains)
+  /      open Add picker and filter unstarred sessions
 
 Recovery
   {prefix} d  detach cockpit
@@ -39,8 +39,8 @@ Recovery
   Esc    cancel prompts/filter
 
 Examples
-  /work  filter sessions matching work
-  Enter  create session on selected local or remote host line
+  /work  find unstarred sessions matching work
+  Enter  recreate a missing star or create on selected host line
 """
     return f"printf %s {shlex.quote(text)}; exec sh"
 

@@ -15,11 +15,11 @@
 - [x] When switching from one session to another, it creates a bell ring. Doesn't happen 100% of the time for some reason
 - [x] Prevent sidebar from being resized live in tmux (interferes with mouse selection to copy/paste) while retaining keyboard resizing
 - [x] Creating a new session opens a text input at the bottom which is not obvious. Find alternatives
-- [] When hitting enter on a starred session that doesn't exist anymore, create it with that name either lcoally or on the right host
+- [x] When hitting enter on a starred session that doesn't exist anymore, create it with that name either locally or on the right host
 - [] The highlighted row when left pane is unfocused makes text hard to read
 - [] The highlight of the active row is too strong and confuses with the cursor
 
 MAY be superseded by UI rework
 - [] Highlighting the row to mark the new session on a host confuses with the active session. Find a better way to mark the new session
 - [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like favorite). See about supporting right-click to open a context menu for the session
-- [] Selecting a starred session highlights both the starred session and the one in all sessions. Need to review how to better organize sessions
+- [x] Selecting a starred session highlights both the starred session and the one in all sessions. Need to review how to better organize sessions

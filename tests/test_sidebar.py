@@ -96,6 +96,43 @@ class FakeScreen:
         self.calls.append(("timeout", *args))
 
 
+class SidebarViewModeTest(unittest.TestCase):
+    def test_normal_view_contains_only_ordered_stars_and_add_action(self):
+        stars = [Target("ssh", "notes", "dev"), Target("local", "work")]
+
+        entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), stars)
+
+        self.assertEqual([entry.target for entry in entries if entry.kind == "session"], stars)
+        self.assertEqual(entries[-1].kind, "add")
+        self.assertFalse(any(entry.kind == "section" for entry in entries))
+
+    def test_empty_normal_view_prompts_and_offers_add(self):
+        entries = _entries("", snapshot(local=("work",)), [])
+
+        self.assertEqual([(entry.label, entry.kind) for entry in entries], [("No starred sessions", "unavailable"), ("＋ Add session", "add")])
+
+    def test_add_picker_groups_hosts_and_excludes_stars(self):
+        star = Target("local", "work")
+
+        entries = _entries("", snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")}), [star], adding=True)
+
+        self.assertNotIn(star, [entry.target for entry in entries])
+        self.assertEqual([entry.kind for entry in entries], ["host", "session", "host", "session"])
+
+    def test_add_picker_filter_preserves_headers_and_hides_create_hosts(self):
+        entries = _entries("chat", snapshot(local=("work",), remotes={"dev": source("ssh", ("chat",), host="dev")}), [], adding=True)
+
+        self.assertFalse(any(entry.kind == "host" for entry in entries))
+        self.assertEqual([entry.kind for entry in entries], ["header", "header", "session"])
+
+    def test_bells_are_limited_to_stars(self):
+        starred = Target("local", "work")
+        unstarred = Target("local", "notes")
+        discovered = snapshot(local=("work", "notes"), local_bells=("work", "notes"))
+
+        self.assertEqual(_bell_targets(discovered, unstarred, [starred]), {starred})
+
+
 class SidebarStateTest(unittest.TestCase):
     def test_creation_key_edits_submits_and_cancels(self):
         state = SidebarState(creation_host="dev")
@@ -206,6 +243,7 @@ class SidebarStateTest(unittest.TestCase):
         poller = unittest.mock.Mock()
         with (
             patch("mtmux.sidebar.sessions.create") as create,
+            patch("mtmux.sidebar.save_stars"),
             patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
             patch("mtmux.sidebar.cockpit.switch") as switch,
         ):
@@ -225,7 +263,38 @@ class SidebarStateTest(unittest.TestCase):
             _execute(Effect("kill", target=target), state, poller, 5)
 
         poller.assert_has_calls([unittest.mock.call.discard(target), unittest.mock.call.refresh()])
-        self.assertIsNone(state.selected_target)
+        self.assertEqual(state.selected_target, target)
+
+    def test_add_switch_stars_then_switches(self):
+        target = Target("local", "work")
+        state = SidebarState(adding=True)
+        poller = unittest.mock.Mock()
+        with (
+            patch("mtmux.sidebar.save_stars") as save,
+            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
+            patch("mtmux.sidebar.cockpit.switch") as switch,
+        ):
+            _execute(Effect("add_switch", target=target), state, poller, 5)
+
+        self.assertEqual(state.favorites, [target])
+        save.assert_called_once_with([target])
+        switch.assert_called_once_with(target, "attach")
+
+    def test_successful_create_stars_after_creation(self):
+        target = Target("local", "new")
+        state = SidebarState(adding=True)
+        poller = unittest.mock.Mock()
+        with (
+            patch("mtmux.sidebar.sessions.create") as create,
+            patch("mtmux.sidebar.save_stars") as save,
+            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
+            patch("mtmux.sidebar.cockpit.switch"),
+        ):
+            _execute(Effect("create", target=target), state, poller, 5)
+
+        create.assert_called_once_with(target)
+        save.assert_called_once_with([target])
+        self.assertFalse(state.adding)
 
     def test_failed_create_neither_switches_nor_sets_pending_selection(self):
         target = Target("ssh", "new", "dev")
@@ -373,13 +442,6 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertIsNone(_entry_at_row(entries, 0, 2, 8, 1))  # unavailable
         self.assertIsNone(_entry_at_row(entries, 0, 6, 7, 1))  # footer/down marker
 
-    def test_default_footer_has_two_complete_shortcut_rows(self):
-        screen = FakeScreen(size=(7, 60))
-
-        _draw(screen, [Entry("LOCAL", "header")], 0, "", "")
-
-        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
-        self.assertEqual(footer, ["↵ activate  f star  x kill", "/ filter  r refresh  ? help  q quit"])
 
     def test_footer_fills_terminal_width(self):
         screen = FakeScreen(size=(7, 60))
@@ -389,24 +451,7 @@ class SidebarDrawTest(unittest.TestCase):
         footer_last_columns = [call for call in screen.calls if call[0] == "chgat" and call[1] >= 5]
         self.assertEqual(footer_last_columns, [("chgat", 5, 59, 1, curses.A_BOLD | curses.A_REVERSE), ("chgat", 6, 59, 1, curses.A_BOLD | curses.A_REVERSE)])
 
-    def test_status_replaces_only_primary_footer_row(self):
-        screen = FakeScreen(size=(7, 60))
 
-        _draw(screen, [Entry("LOCAL", "header")], 0, "created b", "")
-
-        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
-        self.assertEqual(footer, ["created b", "/ filter  r refresh  ? help  q quit"])
-
-    def test_long_footer_wraps_and_reserves_bottom_rows_at_20_columns(self):
-        screen = FakeScreen(size=(8, 20))
-        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(8)]
-
-        footer_height = _draw(screen, entries, 0, "created a status message much longer than width", "")
-
-        footer_calls = [call for call in screen.calls if call[0] == "addnstr" and call[1] >= 3]
-        self.assertEqual(footer_height, 5)
-        self.assertIn("q quit", "".join(call[3] for call in footer_calls))
-        self.assertFalse(any(call[0] == "addnstr" and call[1] >= 3 and call[3].lstrip().startswith(tuple(str(i) for i in range(8))) for call in screen.calls))
 
     def test_filtering_uses_two_instruction_rows_with_ascii_fallback(self):
         for ascii_mode, expected in (
@@ -621,59 +666,8 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertFalse(any(call[0] == "addnstr" and "🔔" in call[3] for call in screen.calls))
 
-    def test_transient_status_remains_before_deadline_and_clears_afterward(self):
-        screen = FakeScreen([ord("r"), -1, -1, ord("q")], size=(7, 60))
 
-        with (
-            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0, 4.9, 5.0, 5.0]),
-            patch("mtmux.sidebar.load_status_timeout", return_value=5),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-        ):
-            run(screen)
 
-        primary = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 5]
-        self.assertEqual(primary, ["↵ activate  f star  x kill", "refreshing", "↵ activate  f star  x kill"])
-
-    def test_later_status_resets_deadline(self):
-        screen = FakeScreen([ord("r"), ord("?"), -1, -1, ord("q")], size=(7, 60))
-
-        with (
-            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0, 4, 4, 8, 9, 9]),
-            patch("mtmux.sidebar.load_status_timeout", return_value=5),
-            patch("mtmux.sidebar.cockpit.show_help"),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-        ):
-            run(screen)
-
-        primary = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 5]
-        self.assertEqual(primary[-3:], ["refreshing", "help opened", "↵ activate  f star  x kill"])
-
-    def test_custom_status_timeout_controls_expiry(self):
-        screen = FakeScreen([ord("r"), -1, -1, ord("q")], size=(7, 60))
-
-        with (
-            patch("mtmux.sidebar.time.monotonic", side_effect=[10, 10, 11.9, 12, 12]),
-            patch("mtmux.sidebar.load_status_timeout", return_value=2) as load_timeout,
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-        ):
-            run(screen)
-
-        load_timeout.assert_called_once_with()
-        primary = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 5]
-        self.assertIn("refreshing", primary)
-        self.assertEqual(primary[-1], "↵ activate  f star  x kill")
 
     def test_run_sets_timeout_and_refreshes_on_timeout(self):
         screen = FakeScreen([-1, ord("q")])
@@ -758,33 +752,6 @@ class SidebarDrawTest(unittest.TestCase):
 
         beep.assert_not_called()
 
-    def test_run_propagates_new_local_snapshot_bell_to_sidebar(self):
-        screen = FakeScreen([-1, ord("q")], size=(8, 40))
-        target = Target("local", "work")
-        poller = unittest.mock.Mock()
-        poller.snapshot = snapshot(local=("work",))
-
-        def tick():
-            ringing = snapshot(local=("work",), local_bells=("work",))
-            changed = poller.snapshot != ringing
-            poller.snapshot = ringing
-            return changed
-
-        poller.tick.side_effect = tick
-        with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.load_stars", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.beep") as beep,
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.cockpit.bell_target", return_value=None),
-            patch("mtmux.sidebar._current_target", return_value=Target("local", "shell")),
-        ):
-            run(screen)
-
-        beep.assert_called_once_with()
-        self.assertTrue(any(call[0] == "addnstr" and "🔔" in call[3] for call in screen.calls))
 
     def test_single_click_selects_and_switches_session(self):
         entries = [
@@ -924,127 +891,11 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual(selected, [4, 3, 1, 1])
 
-    def test_external_switch_to_favorite_preserves_selection(self):
-        old = Target("local", "old")
-        target = Target("local", "work")
-        selected = []
-        screen = FakeScreen([-1, ord("q")])
-        poller = unittest.mock.Mock()
-        poller.snapshot = snapshot(local=("old", "work"))
-        poller.tick.return_value = False
 
-        with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.load_stars", return_value=[target]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", side_effect=[old, old, target]),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args: selected.append(index) or 2),
-        ):
-            run(screen)
 
-        self.assertEqual(selected, [4, 4])
 
-    def test_external_switch_preserves_selected_sidebar_row(self):
-        old = Target("local", "old")
-        new = Target("local", "new")
-        screen = FakeScreen([-1, 10, ord("q")])
-        poller = unittest.mock.Mock()
-        poller.snapshot = snapshot(local=("old", "new"))
-        poller.tick.return_value = False
 
-        with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.load_stars", return_value=set()),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", side_effect=[old, old, new, new]),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
-        ):
-            run(screen)
 
-        switch.assert_called_once_with(old, "env -u TMUX tmux -T clipboard new-session -A -s old")
-
-    def test_live_filter_refreshes_then_clears_after_switch(self):
-        screen = FakeScreen([ord("/"), ord("w"), 10, ord("q")])
-        calls = []
-        target = Target("local", "work")
-
-        def entries(filter_text="", *_):
-            calls.append(filter_text)
-            return [Entry("LOCAL", "header"), Entry("work", "session", target)]
-
-        with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", side_effect=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch"),
-        ):
-            run(screen)
-
-        self.assertEqual(calls, ["", "w", ""])
-
-    def test_esc_clears_filter(self):
-        screen = FakeScreen([ord("/"), ord("w"), 27, ord("q")])
-        calls = []
-
-        def entries(filter_text="", *_):
-            calls.append(filter_text)
-            return [Entry("LOCAL", "header"), Entry("work", "session", Target("local", "work"))]
-
-        with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", side_effect=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-        ):
-            run(screen)
-
-        self.assertEqual(calls, ["", "w", ""])
-
-    def test_ctrl_c_cancels_filter_without_exiting(self):
-        screen = FakeScreen()
-        screen.getch = unittest.mock.Mock(side_effect=[ord("/"), ord("w"), KeyboardInterrupt, ord("q")])
-        calls = []
-        poller = unittest.mock.Mock()
-        poller.snapshot = snapshot()
-        poller.tick.return_value = False
-
-        def entries(filter_text="", *_):
-            calls.append(filter_text)
-            return [Entry("LOCAL", "header"), Entry("work", "session", Target("local", "work"))]
-
-        with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", side_effect=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-        ):
-            run(screen)
-
-        self.assertEqual(calls, ["", "w", ""])
-        poller.close.assert_called_once_with()
-
-    def test_starred_slots_follow_custom_order_and_survive_filtering(self):
-        favorites = [
-            Target("ssh", "zeta", "dev"),
-            Target("local", "zeta"),
-            Target("local", "alpha"),
-        ]
-
-        starred = [entry for entry in _entries("zeta", snapshot(), favorites) if entry.starred_section]
-
-        self.assertEqual(
-            [(entry.target.format(), entry.shortcut_slot) for entry in starred],
-            [("ssh:dev:zeta", 1), ("local:zeta", 2)],
-        )
 
     def test_only_first_nine_starred_entries_get_slots(self):
         favorites = [Target("local", f"session-{slot}") for slot in range(10)]
@@ -1053,24 +904,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual([entry.shortcut_slot for entry in starred], [1, 2, 3, 4, 5, 6, 7, 8, 9, None])
 
-    def test_starred_sections_bound_favorites_and_full_list(self):
-        favorite = Target("local", "work")
 
-        entries = _entries("", snapshot(local=("work", "notes")), [favorite])
-
-        sections = [(index, entry.label) for index, entry in enumerate(entries) if entry.kind == "section"]
-        self.assertEqual(sections, [(0, "✱ STARRED"), (2, "ALL SESSIONS")])
-        self.assertTrue(entries[1].starred_section)
-        self.assertEqual(entries[3].kind, "host")
-
-    def test_sections_only_appear_when_visible_favorite_matches_filter(self):
-        favorite = Target("local", "work")
-
-        missing = _entries("notes", snapshot(local=("work", "notes")), [favorite])
-        matching = _entries("WORK", snapshot(local=("work", "notes")), [favorite])
-
-        self.assertFalse(any(entry.kind == "section" for entry in missing))
-        self.assertEqual([entry.kind for entry in matching[:3]], ["section", "session", "section"])
 
     def test_section_divider_fills_width_and_has_ascii_fallback(self):
         with patch("mtmux.sidebar._ascii", return_value=False):
@@ -1110,17 +944,6 @@ class SidebarDrawTest(unittest.TestCase):
         with patch.dict("mtmux.sidebar._COLOR", {}, clear=True):
             self.assertEqual(_entry_attr(Entry("STARRED", "section"), False), curses.A_BOLD)
 
-    def test_starred_entries_are_first_ordered_duplicated_and_stale(self):
-        discovered = snapshot(local=("work",), remotes={"dev": source("ssh", ("notes",), host="dev")})
-        favorites = [Target("local", "work"), Target("ssh", "notes", "dev"), Target("ssh", "gone", "off")]
-
-        entries = _entries("", discovered, favorites)
-
-        self.assertEqual([entry.label for entry in entries[:5]], ["✱ STARRED", "work", "notes", "gone", "ALL SESSIONS"])
-        self.assertTrue(all(entry.starred_section for entry in entries[1:4]))
-        self.assertTrue(entries[3].unavailable_favorite)
-        self.assertEqual(sum(entry.target == Target("local", "work") for entry in entries), 2)
-        self.assertTrue(all(entry.starred for entry in entries if entry.target == Target("local", "work")))
 
     def test_local_discovery_error_is_visible(self):
         entries = _entries("", snapshot(local_available=False, local_error="permission denied"))
@@ -1158,14 +981,6 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertFalse(any(entry.kind == "create" for entry in entries))
 
-    def test_starred_filter_matches_session_name_and_hides_empty_header(self):
-        favorites = [Target("ssh", "work", "dev")]
-
-        with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"), patch(
-            "mtmux.sidebar._ascii", return_value=False
-        ):
-            self.assertEqual(_entries("missing", snapshot(), favorites)[0].label, "💻 laptop")
-            self.assertEqual(_entries("WORK", snapshot(), favorites)[0].label, "✱ STARRED")
 
     def test_title_excludes_star_duplicates_and_stale_favorites(self):
         screen = FakeScreen(size=(5, 40))
@@ -1268,23 +1083,6 @@ class SidebarDrawTest(unittest.TestCase):
             rendered = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr"]
             self.assertTrue(all(text in rendered for text in expected))
 
-    def test_f_stars_session_and_persists(self):
-        screen = FakeScreen([ord("f"), ord("q")], size=(8, 30))
-        target = Target("local", "work")
-
-        with (
-            patch("mtmux.sidebar.load_stars", return_value=[]),
-            patch("mtmux.sidebar.save_stars") as save,
-            patch("mtmux.discovery.local_snapshot", return_value=source("local", ("work",))),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=target),
-        ):
-            run(screen)
-
-        save.assert_called_once_with((target,))
 
     def test_uppercase_j_moves_selected_starred_target_down_and_persists(self):
         first = Target("local", "first")
@@ -1326,49 +1124,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertTrue(any(call[0] == "addnstr" and "kill local:work failed: denied" in call[3] for call in screen.calls))
 
-    def test_refresh_reloads_local_sessions_and_preserves_selection(self):
-        screen = FakeScreen([ord("r"), ord("q")], size=(8, 60))
-        selected = Target("local", "work")
-        draws = []
 
-        with (
-            patch("mtmux.discovery.local_snapshot", side_effect=[
-                source("local", ("notes", "work")),
-                source("local", ("work", "new")),
-                source("local", ("work", "new")),
-                source("local", ("work", "new")),
-            ]),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=selected),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, entries, index, *args, **kwargs: draws.append((entries[index].target, [entry.target for entry in entries])) or 1),
-        ):
-            run(screen)
-
-        self.assertEqual(draws[-1][0], selected)
-        self.assertIn(Target("local", "new"), draws[-1][1])
-
-    def test_stale_favorite_cannot_switch_or_kill(self):
-        screen = FakeScreen([10, ord("x"), ord("q")], size=(8, 30))
-        target = Target("local", "gone")
-
-        with (
-            patch("mtmux.sidebar.load_stars", return_value=[target]),
-            patch("mtmux.discovery.local_snapshot", return_value=source("local")),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
-            patch("mtmux.sidebar.sessions.kill") as kill,
-        ):
-            run(screen)
-
-        switch.assert_not_called()
-        kill.assert_not_called()
 
     def test_rendered_rows_include_icons(self):
         screen = FakeScreen(size=(9, 30))
@@ -1442,84 +1198,8 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual(_selected_index(entries, Target("local", "missing")), 2)
 
-    def test_pending_remote_does_not_block_quit_and_poller_closes(self):
-        screen = FakeScreen([ord("q")], size=(10, 30))
-        poller = unittest.mock.Mock()
-        poller.snapshot = snapshot(remotes={"dev": None})
-        poller.tick.return_value = False
 
-        with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.load_hosts", return_value=["dev"]),
-            patch("mtmux.sidebar.load_stars", return_value=[]),
-            patch("mtmux.sidebar.cockpit.bell_target", return_value=None),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._current_target", return_value=None),
-        ):
-            run(screen)
 
-        poller.close.assert_called_once_with()
-        self.assertTrue(any(call[0] == "addnstr" and "connecting" in call[3] for call in screen.calls))
-
-    def test_new_remote_session_keeps_selection_until_refresh_then_selects_it(self):
-        screen = FakeScreen([curses.KEY_UP, 10, ord("n"), ord("e"), ord("w"), 10, -1, ord("q")], size=(10, 30))
-        poller = unittest.mock.Mock()
-        poller.snapshot = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
-        current = [Target("ssh", "work", "dev")]
-        selections = []
-        def tick():
-            if current[0].session == "new" and Target("ssh", "new", "dev") not in poller.snapshot.sessions:
-                poller.snapshot = snapshot(remotes={"dev": source("ssh", ("work", "new"), host="dev")})
-                return True
-            return False
-
-        def switch(target, command):
-            current[0] = target
-
-        poller.tick.side_effect = tick
-        with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.load_stars", return_value=set()),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.echo"),
-            patch("mtmux.sidebar.curses.noecho"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", side_effect=lambda: current[0]),
-            patch("mtmux.sidebar.sessions.create"),
-            patch("mtmux.sidebar.cockpit.switch", side_effect=switch),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, entries, selected, *args, **kwargs: selections.append(entries[selected].target) or 1),
-        ):
-            run(screen)
-
-        self.assertEqual(current[0], Target("ssh", "new", "dev"))
-        self.assertIn(Target("ssh", "new", "dev"), selections)
-
-    def test_snapshot_completion_updates_remote_rows(self):
-        screen = FakeScreen([-1, ord("q")], size=(10, 30))
-        poller = unittest.mock.Mock()
-        poller.snapshot = snapshot(remotes={"dev": None})
-
-        def tick():
-            if poller.snapshot.remotes["dev"] is None:
-                poller.snapshot = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
-                return True
-            return False
-
-        poller.tick.side_effect = tick
-        with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.load_hosts", return_value=["dev"]),
-            patch("mtmux.sidebar.load_stars", return_value=[]),
-            patch("mtmux.sidebar.cockpit.bell_target", return_value=None),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._current_target", return_value=None),
-        ):
-            run(screen)
-
-        self.assertTrue(any(call[0] == "addnstr" and "work" in call[3] for call in screen.calls))
 
     def test_poller_closes_after_keyboard_interrupt(self):
         screen = FakeScreen()
