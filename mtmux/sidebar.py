@@ -94,7 +94,7 @@ def _init_colors() -> None:
             "danger": (7, curses.COLOR_RED, -1, 0),
             "hints": (8, teal, -1, curses.A_DIM),
             "add_entry": (9, charcoal, mint, curses.A_BOLD),
-            "slot": (10, mint, charcoal, curses.A_BOLD),
+            "slot": (10, mint, -1, curses.A_BOLD | curses.A_REVERSE),
         }
         for name, (pair, fg, bg, attr) in pairs.items():
             curses.init_pair(pair, fg, bg)

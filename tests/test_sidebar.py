@@ -343,14 +343,14 @@ class SidebarColorTest(unittest.TestCase):
                 call(7, curses.COLOR_RED, -1),
                 call(8, 30, -1),
                 call(9, 233, 79),
-                call(10, 79, 233),
+                call(10, 79, -1),
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["hints"], (8 << 8) | curses.A_DIM)
-        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD)
+        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD | curses.A_REVERSE)
 
     def test_8_color_terminal_uses_safe_palette(self):
         with (
@@ -375,12 +375,12 @@ class SidebarColorTest(unittest.TestCase):
                 call(7, curses.COLOR_RED, -1),
                 call(8, curses.COLOR_CYAN, -1),
                 call(9, curses.COLOR_BLACK, curses.COLOR_CYAN),
-                call(10, curses.COLOR_CYAN, curses.COLOR_BLACK),
+                call(10, curses.COLOR_CYAN, -1),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
-        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD)
+        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD | curses.A_REVERSE)
 
     def test_no_color_terminal_leaves_palette_empty(self):
         sidebar._COLOR = {"title": 123}
