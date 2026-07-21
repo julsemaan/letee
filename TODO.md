@@ -27,3 +27,4 @@
 - [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
 - [] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
 - [] Rethink the second row with the hostname. Emojis look off
+- [] When on a fresh one, you press enter to add a session, then are presented with a menu to create a session on the current host and it's the only option and it isn't clear you have to press enter again. Could be implicit if there is a single host and it has no existing sessions. Also having the cursor be there could be useful. This has to be rethought and polished.
