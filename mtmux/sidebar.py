@@ -501,7 +501,7 @@ def _entry_lines(
         bell = " BELL" if _ascii() else " 🔔"
         bell = bell if entry.target in bell_targets and entry.target != current_target else ""
         if entry.starred_section:
-            prefix = f"{pointer} "
+            prefix = f"{pointer}{icon[kind] if not selected else ' '} "
             slot = f" {entry.shortcut_slot}" if entry.shortcut_slot is not None else ""
             room = max(0, width - _cell_width(prefix) - _cell_width(bell) - _cell_width(slot))
             label = _truncate_cells(entry.label, room)

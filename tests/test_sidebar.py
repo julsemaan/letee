@@ -1039,22 +1039,21 @@ class SidebarDrawTest(unittest.TestCase):
             starred=True, starred_section=True, shortcut_slot=3,
         )
 
-        for ascii_mode in (False, True):
+        for ascii_mode, expected in ((False, " ● work                      3"), (True, " * work                      3")):
             with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
                 line = _entry_lines(entry, False, set(), None, 30)[0]
-            self.assertEqual(line, "  work                       3")
+            self.assertEqual(line, expected)
             self.assertNotIn("✱", line)
-            self.assertNotIn("*", line)
 
     def test_starred_entries_render_session_then_source_without_raw_targets(self):
         local = Entry("dashboard", "session", Target("local", "dashboard"), host="laptop", starred=True, starred_section=True)
         remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", starred=True, starred_section=True)
 
         with patch("mtmux.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["› dashboard", "  └─ 💻 laptop"])
-            self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["  auth", "  └─ 🌐 dev"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["›  dashboard", "  └─ 💻 laptop"])
+            self.assertEqual(_entry_lines(remote, False, set(), None, 30), [" ◆ auth", "  └─ 🌐 dev"])
         with patch("mtmux.sidebar._ascii", return_value=True):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["> dashboard", "  `- LOCAL laptop"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), [">  dashboard", "  `- LOCAL laptop"])
 
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
         self.assertNotIn("ssh:", "".join(_entry_lines(remote, False, set(), None, 30)))
@@ -1121,7 +1120,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_starred_rows_have_no_star_glyph(self):
         target = Target("local", "work")
         entry = Entry("work", "session", target, host="laptop", starred=True, starred_section=True)
-        for ascii_mode, pointer in ((False, "› work"), (True, "> work")):
+        for ascii_mode, pointer in ((False, "›  work"), (True, ">  work")):
             screen = FakeScreen(size=(7, 30))
             with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
                 _draw(screen, [entry], 0, "ok", "")
