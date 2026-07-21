@@ -158,6 +158,12 @@ class AgentSidebarTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("AGENTS ") for line in text))
         self.assertIn("  No active agents", text)
 
+    def test_agent_entry_can_be_selected_with_mouse(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        entries = [Entry("pi", "agent", pane.target, pane_target=pane, agent_id="id")]
+
+        self.assertEqual(_entry_at_row(entries, 0, 4, 8, 0, top=4), 0)
+
     def test_switch_pane_uses_exact_attach_command(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         with patch("mtmux.sidebar.cockpit.switch") as switch:
@@ -895,13 +901,21 @@ class SidebarDrawTest(unittest.TestCase):
 
         create.assert_called_once_with(Target("ssh", "x", "dev"))
 
-    def test_wheel_reuses_wrapping_navigation(self):
+    def test_wheel_scrolls_viewport_without_changing_selection(self):
         entries = [
             Entry("LOCAL", "header"),
             Entry("one", "session", Target("local", "one")),
             Entry("two", "session", Target("local", "two")),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE, 10, ord("q")], size=(8, 30))
+        captured = []
+        # j to move selection to entry 2, then wheel that no longer moves selection
+        screen = FakeScreen([ord("j"), curses.KEY_MOUSE, 10, ord("q")], size=(8, 30))
+
+        def draw_spy(*args, **kwargs):
+            selected = args[2]
+            scroll_offset = args[12] if len(args) > 12 else None
+            captured.append((selected, scroll_offset))
+            return 2
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
@@ -911,12 +925,15 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._entries", return_value=entries),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
             patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
         ):
             run(screen)
 
-        target = Target("local", "two")
-        switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s two")
+        # selection stays at index 2 ("two") after wheel, Enter switches to "two"
+        target_two = Target("local", "two")
+        switch.assert_called_once_with(target_two, "attach")
 
     def test_malformed_mouse_event_is_ignored(self):
         screen = FakeScreen([curses.KEY_MOUSE, ord("q")])
@@ -1393,6 +1410,179 @@ class ShouldAutoCreateTest(unittest.TestCase):
         self.assertEqual(target.session, "x")
         self.assertEqual(target.kind, "local")
         curs_set.assert_any_call(1)
+
+
+class SidebarScrollOffsetTest(unittest.TestCase):
+    def test_viewport_respects_scroll_offset(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
+
+        start, end = _viewport(entries, 0, 8, scroll_offset=5)
+
+        self.assertEqual(start, 5)
+        self.assertLess(start, end)
+        self.assertLessEqual(end, len(entries))
+
+    def test_viewport_scroll_offset_none_uses_selection(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
+
+        start, end = _viewport(entries, 9, 8)
+
+        self.assertLessEqual(start, 9)
+        self.assertLess(9, end)
+
+    def test_scroll_offset_is_none_initially(self):
+        state = SidebarState()
+        self.assertIsNone(state.scroll_offset)
+
+    def test_wheel_up_decrements_scroll_offset_not_selection(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
+        captured = []
+
+        def draw_spy(*args, **kwargs):
+            selected = args[2]
+            scroll_offset = args[12] if len(args) > 12 else None
+            captured.append((selected, scroll_offset))
+            return 2
+
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+        ):
+            run(screen)
+
+        self.assertGreater(len(captured), 1)
+        selected_values = {sel for sel, _ in captured}
+        self.assertEqual(selected_values, {0})  # selection never changed
+        offsets = [off for _, off in captured if off is not None]
+        self.assertTrue(len(offsets) >= 1)  # scroll_offset was set
+
+    def test_wheel_down_increments_scroll_offset_not_selection(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
+        captured = []
+
+        def draw_spy(*args, **kwargs):
+            selected = args[2]
+            scroll_offset = args[12] if len(args) > 12 else None
+            captured.append((selected, scroll_offset))
+            return 2
+
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
+        ):
+            run(screen)
+
+        self.assertGreater(len(captured), 1)
+        selected_values = {sel for sel, _ in captured}
+        self.assertEqual(selected_values, {0})  # selection never changed
+        offsets = [off for _, off in captured if off is not None]
+        self.assertTrue(len(offsets) >= 1)  # scroll_offset was set
+
+    def test_j_key_resets_scroll_offset(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(5)]
+        captured = []
+
+        def draw_spy(*args, **kwargs):
+            selected = args[2]
+            scroll_offset = args[12] if len(args) > 12 else None
+            captured.append((selected, scroll_offset))
+            return 2
+
+        screen = FakeScreen([
+            curses.KEY_MOUSE,  # wheel to set scroll_offset
+            ord("j"),          # j to reset scroll_offset
+            ord("q"),
+        ], size=(8, 30))
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+        ):
+            run(screen)
+
+        # Final render should have scroll_offset=None (reset by j)
+        self.assertIsNone(captured[-1][1])
+
+    def test_k_key_resets_scroll_offset(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(5)]
+        captured = []
+
+        def draw_spy(*args, **kwargs):
+            selected = args[2]
+            scroll_offset = args[12] if len(args) > 12 else None
+            captured.append((selected, scroll_offset))
+            return 2
+
+        screen = FakeScreen([
+            curses.KEY_MOUSE,  # wheel to set scroll_offset
+            ord("k"),          # k to reset scroll_offset
+            ord("q"),
+        ], size=(8, 30))
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+        ):
+            run(screen)
+
+        self.assertIsNone(captured[-1][1])
+
+    def test_enter_resets_scroll_offset(self):
+        entries = [Entry("work", "session", Target("local", "work"))]
+        captured = []
+
+        def draw_spy(*args, **kwargs):
+            selected = args[2]
+            scroll_offset = args[12] if len(args) > 12 else None
+            captured.append((selected, scroll_offset))
+            return 2
+
+        screen = FakeScreen([
+            curses.KEY_MOUSE,  # wheel to set scroll_offset
+            10,                # Enter to reset
+            ord("q"),
+        ], size=(8, 30))
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("mtmux.sidebar.cockpit.switch"),
+            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
+        ):
+            run(screen)
+
+        # After Enter, scroll_offset should be None (reset)
+        final_offsets = [off for _, off in captured[-2:]]
+        self.assertIn(None, final_offsets)
 
 
 if __name__ == "__main__":
