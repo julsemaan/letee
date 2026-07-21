@@ -67,8 +67,8 @@ def _ascii() -> bool:
 
 def _icons() -> dict[str, str]:
     if _ascii():
-        return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ">", "starred": "*"}
-    return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": "›", "starred": "✱"}
+        return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ">", "starred": "*", "enter": "<-"}
+    return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": "›", "starred": "✱", "enter": "↵"}
 
 
 def _init_colors() -> None:
@@ -135,7 +135,7 @@ def _entries(
             for target in favorites
         )
         if len(out) == 2:
-            out.append(Entry("No starred sessions", "unavailable"))
+            out.append(Entry("Press enter to add a session", "hint"))
         return out
 
     icons = _icons()
@@ -517,6 +517,8 @@ def _entry_lines(
         prefix = f"{pointer} {icon[kind]} "
         first = prefix + _truncate_cells(entry.label, max(0, width - _cell_width(prefix) - _cell_width(bell))) + bell
         return [first]
+    if entry.kind == "hint":
+        return [_truncate_cells(f"  {icon['enter']} {entry.label}", width)]
     return [_truncate(f"  {icon['unavailable']} {entry.label}", width)]
 
 
@@ -535,6 +537,8 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
         attr = _color("remote")
     elif entry.kind == "session":
         attr = _color("local")
+    elif entry.kind == "hint":
+        attr = _color("hints") or curses.A_DIM
     elif entry.kind == "unavailable":
         attr = _color("unavailable") or curses.A_DIM
     else:

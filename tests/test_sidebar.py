@@ -111,7 +111,7 @@ class SidebarViewModeTest(unittest.TestCase):
 
         self.assertEqual(
             [(entry.label, entry.kind) for entry in entries],
-            [("Add session", "add"), ("", "spacer"), ("No starred sessions", "unavailable")],
+            [("Add session", "add"), ("", "spacer"), ("Press enter to add a session", "hint")],
         )
 
     def test_add_picker_groups_hosts_and_excludes_stars(self):
