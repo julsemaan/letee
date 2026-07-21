@@ -9,4 +9,3 @@ Mtmux is short for "Multiple tmux" and it allows to manage multiple local and re
 - Follow Python best practices
 - Introduce 3rd party dependencies if this results in better maintainability
 - Run the tests (`make test`) as part of the definition of done
-- Verify if one of the items in TODO.md is resolved by this and check the box for it if it is the case
