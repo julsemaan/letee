@@ -37,6 +37,7 @@ from mtmux.sidebar import (
     _mouse_mask,
     _read_key,
     _selected_index,
+    _should_auto_create,
     _sync_selection,
     _transition,
     _execute,
@@ -1294,6 +1295,68 @@ class SidebarDrawTest(unittest.TestCase):
                 run(screen)
 
         poller.close.assert_called_once_with()
+
+class ShouldAutoCreateTest(unittest.TestCase):
+    def test_should_auto_create_true_single_host_no_sessions(self):
+        entries = [Entry("laptop", "host", host="")]
+        self.assertTrue(_should_auto_create(entries))
+
+    def test_should_auto_create_false_multiple_hosts(self):
+        entries = [
+            Entry("laptop", "host", host=""),
+            Entry("dev", "host", host="dev"),
+        ]
+        self.assertFalse(_should_auto_create(entries))
+
+    def test_should_auto_create_false_with_sessions(self):
+        entries = [
+            Entry("laptop", "host", host=""),
+            Entry("work", "session", Target("local", "work")),
+        ]
+        self.assertFalse(_should_auto_create(entries))
+
+    def test_enter_add_auto_creates_on_single_host(self):
+        entry = Entry("laptop", "host", host="")
+        screen = FakeScreen([10, ord("w"), ord("o"), 10, ord("q")])
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set") as curs_set,
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=[Entry("Add session", "add"), entry]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.sessions.create") as create,
+            patch("mtmux.sidebar.cockpit.switch"),
+        ):
+            run(screen)
+
+        create.assert_called_once()
+        target = create.call_args[0][0]
+        self.assertEqual(target.session, "wo")
+        self.assertEqual(target.kind, "local")
+        curs_set.assert_any_call(1)
+
+    def test_a_key_auto_creates_on_single_host(self):
+        entry = Entry("laptop", "host", host="")
+        screen = FakeScreen([ord("a"), ord("x"), 10, ord("q")])
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set") as curs_set,
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=[entry]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.sessions.create") as create,
+            patch("mtmux.sidebar.cockpit.switch"),
+        ):
+            run(screen)
+
+        create.assert_called_once()
+        target = create.call_args[0][0]
+        self.assertEqual(target.session, "x")
+        self.assertEqual(target.kind, "local")
+        curs_set.assert_any_call(1)
+
 
 if __name__ == "__main__":
     unittest.main()

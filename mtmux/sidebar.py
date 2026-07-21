@@ -174,6 +174,13 @@ def _selectable(entries: list[Entry]) -> list[int]:
     return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "add")]
 
 
+def _should_auto_create(entries: list[Entry]) -> bool:
+    """True when exactly one host and no sessions — skip host selection step."""
+    hosts = [e for e in entries if e.kind == "host"]
+    sessions = [e for e in entries if e.kind == "session"]
+    return len(hosts) == 1 and len(sessions) == 0
+
+
 def _selected_index(entries: list[Entry], target: Target | None) -> int:
     if target:
         for i, entry in enumerate(entries):
@@ -830,6 +837,10 @@ def run(stdscr: curses.window) -> None:
                 state.adding = True
                 state.selected_target = None
                 rebuild()
+                if _should_auto_create(entries):
+                    state.creation_host = next(e for e in entries if e.kind == "host").host
+                    state.creation_text = ""
+                    curses.curs_set(1)
             elif key == ord("r") and not state.adding:
                 entry = entries[state.selected_index]
                 if entry.target:
@@ -849,6 +860,10 @@ def run(stdscr: curses.window) -> None:
                     state.adding = True
                     state.selected_target = None
                     rebuild()
+                    if _should_auto_create(entries):
+                        state.creation_host = next(e for e in entries if e.kind == "host").host
+                        state.creation_text = ""
+                        curses.curs_set(1)
                     continue
                 if entry.target:
                     effect = _transition(state, "add_switch" if state.adding else "switch", entry.target)
