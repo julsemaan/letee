@@ -501,7 +501,7 @@ def _entry_lines(
         bell = " BELL" if _ascii() else " 🔔"
         bell = bell if entry.target in bell_targets and entry.target != current_target else ""
         if entry.tracked:
-            prefix = f"{pointer} "
+            prefix = "" if entry.shortcut_slot is not None else f"{pointer} "
             room = max(0, width - _cell_width(prefix) - _cell_width(bell))
             label = _truncate_cells(entry.label, room)
             first = prefix + label + bell
@@ -589,15 +589,17 @@ def _draw_entries(
         slot_badge = ""
         slot_width = 0
         if entry.tracked and entry.shortcut_slot is not None:
-            slot_badge = f"[{entry.shortcut_slot}] "
-            slot_width = _cell_width(slot_badge)
+            slot_width = 4
+            ico = _icons()
+            pointer_char = ico["selected"] if selected_entry and not dimmed else " "
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
             attr = _fade(base_attr) if line_number and not active_entry else base_attr
             if line_number == 0 and slot_width:
+                slot_badge = f" {pointer_char} " if selected_entry else f"[{entry.shortcut_slot}]"
                 stdscr.addnstr(row, 0, slot_badge, w, _color("slot") or curses.A_BOLD)
-                stdscr.addnstr(row, slot_width, line, w - slot_width, attr)
+                stdscr.addnstr(row, 3, " " + line, w - 3, attr)
             else:
                 stdscr.addnstr(row, 0, line, w, attr)
             if entry.kind == "host" and entry.host == creation_host:

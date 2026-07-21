@@ -1043,7 +1043,7 @@ class SidebarDrawTest(unittest.TestCase):
             tracked=True, shortcut_slot=3,
         )
 
-        for ascii_mode, expected in ((False, "  work"), (True, "  work")):
+        for ascii_mode, expected in ((False, "work"), (True, "work")):
             with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
                 line = _entry_lines(entry, False, set(), None, 30)[0]
             self.assertEqual(line, expected)
@@ -1051,21 +1051,22 @@ class SidebarDrawTest(unittest.TestCase):
             self.assertNotIn("3", line)
 
     def test_tracked_entry_draws_slot_badge_with_correct_attribute(self):
-        entry = Entry("work", "session", Target("local", "work"), host="laptop",
-                      tracked=True, shortcut_slot=3)
-        screen = FakeScreen(size=(6, 30))
+        tracked = Entry("work", "session", Target("local", "work"), host="laptop",
+                        tracked=True, shortcut_slot=3)
+        other = Entry("other", "session", Target("local", "other"))
+        screen = FakeScreen(size=(7, 30))
 
         with patch.dict("mtmux.sidebar._COLOR", {"slot": 456, "local": 123}, clear=True):
             sidebar._draw_entries(
-                screen, [entry], 0, 4, 30, set(), None, dimmed=False, top=1,
+                screen, [other, tracked], 0, 5, 30, set(), None, dimmed=False, top=1,
             )
 
         slot_call = next(call for call in screen.calls
-                         if call[0] == "addnstr" and call[1] == 1 and call[3].startswith("["))
-        self.assertEqual(slot_call[3], "[3] ")
+                         if call[0] == "addnstr" and call[3].startswith("["))
+        self.assertEqual(slot_call[3], "[3]")
         self.assertEqual(slot_call[5], 456)
         line_call = next(call for call in screen.calls
-                         if call[0] == "addnstr" and call[1] == 1 and not call[3].startswith("["))
+                         if call[0] == "addnstr" and call[1] == slot_call[1] and not call[3].startswith("["))
         self.assertEqual(line_call[5], 123)
 
     def test_tracked_entries_render_session_then_source_without_raw_targets(self):
