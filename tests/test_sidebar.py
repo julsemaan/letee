@@ -103,13 +103,17 @@ class SidebarViewModeTest(unittest.TestCase):
         entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), stars)
 
         self.assertEqual([entry.target for entry in entries if entry.kind == "session"], stars)
-        self.assertEqual(entries[-1].kind, "add")
-        self.assertFalse(any(entry.kind == "section" for entry in entries))
+        self.assertEqual([entry.kind for entry in entries[:2]], ["add", "section"])
+        self.assertEqual(sidebar._selectable(entries)[0], 0)
+        self.assertEqual(entries[1].label, "SESSIONS")
 
     def test_empty_normal_view_prompts_and_offers_add(self):
         entries = _entries("", snapshot(local=("work",)), [])
 
-        self.assertEqual([(entry.label, entry.kind) for entry in entries], [("No starred sessions", "unavailable"), ("＋ Add session", "add")])
+        self.assertEqual(
+            [(entry.label, entry.kind) for entry in entries],
+            [("Add session", "add"), ("SESSIONS", "section"), ("No starred sessions", "unavailable")],
+        )
 
     def test_add_picker_groups_hosts_and_excludes_stars(self):
         star = Target("local", "work")
@@ -431,16 +435,17 @@ class SidebarDrawTest(unittest.TestCase):
         entries = [
             Entry("LOCAL", "header"),
             Entry("offline", "unavailable"),
+            Entry("", "spacer"),
             Entry("work", "session", Target("local", "work")),
-            Entry("new", "create", host=""),
             *[Entry(str(i), "session", Target("local", str(i))) for i in range(6)],
         ]
 
-        self.assertIsNone(_entry_at_row(entries, 2, 0, 7, 1))  # title
-        self.assertIsNone(_entry_at_row(entries, 2, 1, 7, 1))  # up marker
-        self.assertIsNone(_entry_at_row(entries, 0, 1, 8, 1))  # header
-        self.assertIsNone(_entry_at_row(entries, 0, 2, 8, 1))  # unavailable
-        self.assertIsNone(_entry_at_row(entries, 0, 6, 7, 1))  # footer/down marker
+        self.assertEqual(sidebar._selectable(entries), [3, 4, 5, 6, 7, 8, 9])
+        self.assertIsNone(_entry_at_row(entries, 3, 0, 8, 1))  # title
+        self.assertIsNone(_entry_at_row(entries, 0, 1, 10, 1))  # header
+        self.assertIsNone(_entry_at_row(entries, 0, 2, 10, 1))  # unavailable
+        self.assertIsNone(_entry_at_row(entries, 0, 3, 10, 1))  # spacer
+        self.assertIsNone(_entry_at_row(entries, 3, 7, 8, 1))  # footer/down marker
 
 
     def test_footer_fills_terminal_width(self):
@@ -982,6 +987,25 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertFalse(any(entry.kind == "create" for entry in entries))
 
 
+    def test_add_titles_name_mode_and_filter_query(self):
+        for query, filtering, expected in (
+            ("", False, "mtmux / Add session"),
+            ("work", True, "mtmux / Add session / work"),
+        ):
+            screen = FakeScreen(size=(5, 50))
+            _draw(screen, [], 0, "", query, filtering=filtering, adding=True)
+            title = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+            self.assertIn(expected, title)
+
+    def test_add_action_puts_plus_at_right_and_uses_dimmed_create_accent(self):
+        entry = Entry("Add session", "add")
+        with patch("mtmux.sidebar._ascii", return_value=False), patch.dict(
+            "mtmux.sidebar._COLOR", {"create": 123}, clear=True
+        ):
+            self.assertEqual(_entry_lines(entry, True, set(), None, 30), ["› Add session               ＋"])
+            self.assertEqual(_entry_attr(entry, False), 123)
+            self.assertEqual(_entry_attr(entry, False, True), _fade(123))
+
     def test_title_excludes_star_duplicates_and_stale_favorites(self):
         screen = FakeScreen(size=(5, 40))
         target = Target("local", "work")
@@ -992,24 +1016,28 @@ class SidebarDrawTest(unittest.TestCase):
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertTrue(title[3].endswith("1 session"))
 
-    def test_numbered_star_renders_slot_beside_star_in_unicode_and_ascii(self):
+    def test_numbered_star_is_star_free_and_right_aligned_in_unicode_and_ascii(self):
         entry = Entry(
             "work", "session", Target("local", "work"), host="laptop",
             starred=True, starred_section=True, shortcut_slot=3,
         )
 
-        with patch("mtmux.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, False, set(), None, 30)[0], "  ✱ 3 work")
-        with patch("mtmux.sidebar._ascii", return_value=True):
-            self.assertEqual(_entry_lines(entry, False, set(), None, 30)[0], "  * 3 work")
+        for ascii_mode in (False, True):
+            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+                line = _entry_lines(entry, False, set(), None, 30)[0]
+            self.assertEqual(line, "  work                       3")
+            self.assertNotIn("✱", line)
+            self.assertNotIn("*", line)
 
     def test_starred_entries_render_session_then_source_without_raw_targets(self):
         local = Entry("dashboard", "session", Target("local", "dashboard"), host="laptop", starred=True, starred_section=True)
         remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", starred=True, starred_section=True)
 
         with patch("mtmux.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["› ✱ dashboard", "    💻 laptop"])
-            self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["  ✱ auth", "    🌐 dev"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["› dashboard", "  └─ 💻 laptop"])
+            self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["  auth", "  └─ 🌐 dev"])
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["> dashboard", "  `- LOCAL laptop"])
 
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
         self.assertNotIn("ssh:", "".join(_entry_lines(remote, False, set(), None, 30)))
@@ -1073,15 +1101,16 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertGreater(end, 1)
         self.assertLessEqual(sum(2 if entry.starred_section else 1 for entry in entries[start:end]) + int(start > 0) + int(end < len(entries)), 4)
 
-    def test_rendered_star_replaces_session_icon(self):
+    def test_starred_rows_have_no_star_glyph(self):
         target = Target("local", "work")
-        entries = [Entry("work", "session", target, starred=True), Entry("notes", "session", Target("local", "notes"))]
-        for ascii_mode, expected in ((False, ("› ✱ work", "  ● notes")), (True, ("> * work", "  * notes"))):
-            screen = FakeScreen(size=(6, 30))
+        entry = Entry("work", "session", target, host="laptop", starred=True, starred_section=True)
+        for ascii_mode, pointer in ((False, "› work"), (True, "> work")):
+            screen = FakeScreen(size=(7, 30))
             with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
-                _draw(screen, entries, 0, "ok", "")
+                _draw(screen, [entry], 0, "ok", "")
             rendered = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr"]
-            self.assertTrue(all(text in rendered for text in expected))
+            self.assertIn(pointer, rendered)
+            self.assertNotIn("✱", "".join(rendered))
 
 
     def test_uppercase_j_moves_selected_starred_target_down_and_persists(self):
@@ -1113,6 +1142,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         with (
             patch("mtmux.discovery.local_snapshot", return_value=source("local", ("work",))),
+            patch("mtmux.sidebar.load_stars", return_value=[target]),
             patch("mtmux.sidebar.load_hosts", return_value=[]),
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar._init_colors"),

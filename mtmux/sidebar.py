@@ -128,13 +128,13 @@ def _entries(
     hostname = socket.gethostname()
     if not adding:
         slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
-        out = [
+        out = [Entry("Add session", "add"), Entry("SESSIONS", "section")]
+        out.extend(
             Entry(target.session, "session", target, target.host or hostname, True, target not in available, True, slots.get(target))
             for target in favorites
-        ]
-        if not out:
+        )
+        if len(out) == 2:
             out.append(Entry("No starred sessions", "unavailable"))
-        out.append(Entry(f"{_icons()['create']} Add session", "add"))
         return out
 
     icons = _icons()
@@ -411,11 +411,14 @@ def _draw_title(
     filter_text: str,
     filtering: bool = False,
     dimmed: bool = False,
+    adding: bool = False,
 ) -> int:
     width = max(1, w)
     count = len({entry.target for entry in entries if entry.kind == "session" and not entry.unavailable_favorite})
     brand = " mtmux" if _ascii() else "  mtmux"
-    left = f"{brand} / {filter_text}" if filtering else brand
+    left = f"{brand} / Add session" if adding else brand
+    if filtering:
+        left += f" / {filter_text}"
     noun = ("match" if count == 1 else "matches") if filtering else ("session" if count == 1 else "sessions")
     right = f"{count} {noun}"
     title = f"{left}{right.rjust(width - len(left))}" if len(left) + len(right) < width else left
@@ -467,7 +470,10 @@ def _entry_lines(
     if entry.kind == "header":
         return [_truncate(entry.label, width)]
     if entry.kind == "add":
-        return [_truncate(f"{pointer} {entry.label}", width)]
+        suffix = icon["create"]
+        label = _truncate_cells(f"{pointer} {entry.label}", max(0, width - _cell_width(suffix) - 1))
+        padding = max(1, width - _cell_width(label) - _cell_width(suffix))
+        return [label + " " * padding + suffix]
     if entry.kind == "host":
         if creation_host is not None and entry.host == creation_host:
             prefix = f"{icon['create']} {entry.label} / new: "
@@ -481,20 +487,25 @@ def _entry_lines(
         return [_truncate(label + " " * padding + suffix, width)]
     if entry.kind == "session":
         kind = "unavailable" if entry.unavailable_favorite else ("remote" if entry.target and entry.target.kind == "ssh" else "local")
-        session_icon = icon["starred"] if entry.starred else icon[kind]
-        if entry.shortcut_slot is not None:
-            session_icon += f" {entry.shortcut_slot}"
         bell = " BELL" if _ascii() else " 🔔"
         bell = bell if entry.target in bell_targets and entry.target != current_target else ""
-        prefix = f"{pointer} {session_icon} "
-        first = prefix + _truncate(entry.label, max(0, width - len(prefix) - len(bell))) + bell
-        if not entry.starred_section:
-            return [first]
-        source = icon["remote_header"] if entry.target and entry.target.kind == "ssh" else icon["local_header"]
-        suffix = " unavailable" if entry.unavailable_favorite else ""
-        meta_prefix = f"    {source} "
-        host = _truncate(entry.host or "", max(0, width - len(meta_prefix) - len(suffix)))
-        return [first, meta_prefix + host + suffix]
+        if entry.starred_section:
+            prefix = f"{pointer} "
+            slot = f" {entry.shortcut_slot}" if entry.shortcut_slot is not None else ""
+            room = max(0, width - _cell_width(prefix) - _cell_width(bell) - _cell_width(slot))
+            label = _truncate_cells(entry.label, room)
+            first = prefix + label + bell
+            if slot:
+                first += " " * max(0, width - _cell_width(first) - _cell_width(slot)) + slot
+            source = icon["remote_header"] if entry.target and entry.target.kind == "ssh" else icon["local_header"]
+            suffix = " unavailable" if entry.unavailable_favorite else ""
+            branch = "`-" if _ascii() else "└─"
+            meta_prefix = f"  {branch} {source} "
+            host = _truncate_cells(entry.host or "", max(0, width - _cell_width(meta_prefix) - _cell_width(suffix)))
+            return [first, meta_prefix + host + suffix]
+        prefix = f"{pointer} {icon[kind]} "
+        first = prefix + _truncate_cells(entry.label, max(0, width - _cell_width(prefix) - _cell_width(bell))) + bell
+        return [first]
     return [_truncate(f"  {icon['unavailable']} {entry.label}", width)]
 
 
@@ -503,7 +514,9 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
         attr = _color("active") or curses.A_REVERSE
     elif entry.kind == "section":
         attr = _color("section") or curses.A_BOLD
-    elif entry.kind in ("header", "host", "add"):
+    elif entry.kind == "add":
+        attr = _color("create") or curses.A_BOLD
+    elif entry.kind in ("header", "host"):
         attr = curses.A_BOLD
     elif entry.unavailable_favorite:
         attr = _color("unavailable") or curses.A_DIM
@@ -618,7 +631,7 @@ def _draw(
 ) -> int:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
-    cursor = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed)
+    cursor = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed, adding)
     footer_height = _draw_footer(stdscr, h, w, status, filtering, dimmed, creation_host is not None, adding)
     creation_cursor = _draw_entries(
         stdscr,
