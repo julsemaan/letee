@@ -128,12 +128,12 @@ def _entries(
     hostname = socket.gethostname()
     if not adding:
         slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
-        out = [Entry("Add session", "add"), Entry("SESSIONS", "section")]
+        out = [Entry("Add session", "add"), Entry("", "spacer"), Entry("SESSIONS", "section")]
         out.extend(
             Entry(target.session, "session", target, target.host or hostname, True, target not in available, True, slots.get(target))
             for target in favorites
         )
-        if len(out) == 2:
+        if len(out) == 3:
             out.append(Entry("No starred sessions", "unavailable"))
         return out
 
@@ -379,10 +379,12 @@ def _viewport(entries: list[Entry], selected: int, height: int) -> tuple[int, in
     return best
 
 
-def _entry_at_row(entries: list[Entry], selected: int, row: int, height: int, footer_height: int) -> int | None:
-    content_height = height - footer_height + 1
+def _entry_at_row(
+    entries: list[Entry], selected: int, row: int, height: int, footer_height: int, top: int = 1
+) -> int | None:
+    content_height = height - footer_height - top + 2
     start, end = _viewport(entries, selected, content_height)
-    entry_row = row - 1 - int(start > 0)
+    entry_row = row - top - int(start > 0)
     if entry_row < 0 or row >= height - footer_height:
         return None
     for index in range(start, end):
@@ -417,8 +419,6 @@ def _draw_title(
     count = len({entry.target for entry in entries if entry.kind == "session" and not entry.unavailable_favorite})
     brand = " mtmux" if _ascii() else "  mtmux"
     left = f"{brand} / Add session" if adding else brand
-    if filtering:
-        left += f" / {filter_text}"
     noun = ("match" if count == 1 else "matches") if filtering else ("session" if count == 1 else "sessions")
     right = f"{count} {noun}"
     title = f"{left}{right.rjust(width - len(left))}" if len(left) + len(right) < width else left
@@ -426,6 +426,15 @@ def _draw_title(
     stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
     stdscr.redrawln(0, 1)
     return min(width - 1, len(left))
+
+
+def _draw_filter(stdscr: curses.window, w: int, filter_text: str, dimmed: bool) -> tuple[int, int]:
+    prefix = " Filter: "
+    text = _truncate_cells(filter_text, max(0, w - _cell_width(prefix)))
+    line = prefix + text
+    attr = _color("hints") or curses.A_DIM
+    stdscr.addnstr(1, 0, line.ljust(w), w, _fade(attr) if dimmed else attr)
+    return 1, min(w - 1, _cell_width(line))
 
 
 def _truncate(text: str, width: int) -> str:
@@ -553,10 +562,11 @@ def _draw_entries(
     dimmed: bool = False,
     creation_host: str | None = None,
     creation_text: str = "",
+    top: int = 1,
 ) -> tuple[int, int] | None:
     cursor = None
-    start, end = _viewport(entries, _view_index(entries, selected, current_target, dimmed), h)
-    row = 1
+    start, end = _viewport(entries, _view_index(entries, selected, current_target, dimmed), h - top + 1)
+    row = top
     if start:
         attr = _color("hints") or curses.A_DIM
         stdscr.addnstr(row, 0, "↑ more", w - 1, _fade(attr) if dimmed else attr)
@@ -568,7 +578,7 @@ def _draw_entries(
         selected_entry = idx == selected
         active_entry = entry.target is not None and entry.target == current_target
         lines = _entry_lines(
-            entry, selected_entry and not dimmed, bell_targets, current_target, w - 1,
+            entry, selected_entry and not dimmed, bell_targets, current_target, w,
             creation_host, creation_text,
         )
         host_selected = selected_entry and entry.kind == "host" and not dimmed
@@ -577,7 +587,7 @@ def _draw_entries(
             if row >= h - 1:
                 break
             attr = _fade(base_attr) if line_number and not active_entry else base_attr
-            stdscr.addnstr(row, 0, line, w - 1, attr)
+            stdscr.addnstr(row, 0, line, w, attr)
             if entry.kind == "host" and entry.host == creation_host:
                 cursor = (row, min(w - 1, _cell_width(line)))
             row += 1
@@ -632,6 +642,8 @@ def _draw(
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     cursor = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed, adding)
+    if filtering:
+        cursor = _draw_filter(stdscr, w, filter_text, dimmed)
     footer_height = _draw_footer(stdscr, h, w, status, filtering, dimmed, creation_host is not None, adding)
     creation_cursor = _draw_entries(
         stdscr,
@@ -644,11 +656,12 @@ def _draw(
         dimmed,
         creation_host,
         creation_text,
+        2 if filtering else 1,
     )
     if creation_cursor:
         stdscr.move(*creation_cursor)
     elif filtering:
-        stdscr.move(0, cursor)
+        stdscr.move(*cursor)
     stdscr.refresh()
     return footer_height
 
@@ -745,7 +758,10 @@ def run(stdscr: curses.window) -> None:
                     key = curses.KEY_DOWN
                 else:
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
-                    index = _entry_at_row(entries, view_index, row, stdscr.getmaxyx()[0], footer_height)
+                    index = _entry_at_row(
+                        entries, view_index, row, stdscr.getmaxyx()[0], footer_height,
+                        2 if state.filtering else 1,
+                    )
                     if index is None:
                         continue
                     state.selected_index = index

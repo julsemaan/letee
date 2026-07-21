@@ -103,16 +103,16 @@ class SidebarViewModeTest(unittest.TestCase):
         entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), stars)
 
         self.assertEqual([entry.target for entry in entries if entry.kind == "session"], stars)
-        self.assertEqual([entry.kind for entry in entries[:2]], ["add", "section"])
+        self.assertEqual([entry.kind for entry in entries[:3]], ["add", "spacer", "section"])
         self.assertEqual(sidebar._selectable(entries)[0], 0)
-        self.assertEqual(entries[1].label, "SESSIONS")
+        self.assertEqual(entries[2].label, "SESSIONS")
 
     def test_empty_normal_view_prompts_and_offers_add(self):
         entries = _entries("", snapshot(local=("work",)), [])
 
         self.assertEqual(
             [(entry.label, entry.kind) for entry in entries],
-            [("Add session", "add"), ("SESSIONS", "section"), ("No starred sessions", "unavailable")],
+            [("Add session", "add"), ("", "spacer"), ("SESSIONS", "section"), ("No starred sessions", "unavailable")],
         )
 
     def test_add_picker_groups_hosts_and_excludes_stars(self):
@@ -574,29 +574,44 @@ class SidebarDrawTest(unittest.TestCase):
         normal = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertTrue(normal[3].endswith("1 session"))
 
-        screen = FakeScreen(size=(5, 40))
+        screen = FakeScreen(size=(6, 40))
         _draw(screen, entries, 0, "filtering", "work", filtering=True)
         filtering = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertEqual(filtering[3].rstrip(), "  mtmux / work                  1 match")
+        filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        self.assertEqual(filtering[3].rstrip(), "  mtmux                         1 match")
+        self.assertTrue(filter_row[3].startswith(" Filter: work"))
 
-    def test_filter_keeps_brand_query_count_and_cursor(self):
-        screen = FakeScreen(size=(5, 40))
+    def test_filter_uses_dedicated_full_width_row(self):
+        screen = FakeScreen(size=(6, 40))
         entries = [Entry("work", "session", Target("local", "work"))]
 
-        _draw(screen, entries, 0, "filtering", "work", filtering=True)
+        _draw(screen, entries, 0, "filtering", "work", filtering=True, adding=True)
 
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertEqual(title[3].rstrip(), "  mtmux / work                  1 match")
-        self.assertIn(("move", 0, len("  mtmux / work")), screen.calls)
+        filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        self.assertNotIn("work", title[3])
+        self.assertEqual(filter_row[3], " Filter: work" + " " * 27)
+        self.assertEqual(filter_row[4], 40)
+        self.assertIn(("move", 1, len(" Filter: work")), screen.calls)
+
+    def test_session_rows_use_last_available_column(self):
+        screen = FakeScreen(size=(7, 20))
+        entry = Entry("x" * 40, "session", Target("local", "work"))
+
+        _draw(screen, [entry], 0, "", "")
+
+        row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        self.assertEqual(row[4], 20)
+        self.assertEqual(sidebar._cell_width(row[3]), 20)
 
     def test_empty_filter_has_visible_input_position(self):
-        screen = FakeScreen(size=(5, 20))
+        screen = FakeScreen(size=(6, 20))
 
         _draw(screen, [], 0, "filtering", "", filtering=True)
 
-        title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].startswith("  mtmux / "))
-        self.assertIn(("move", 0, len("  mtmux / ")), screen.calls)
+        filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        self.assertTrue(filter_row[3].startswith(" Filter: "))
+        self.assertIn(("move", 1, len(" Filter: ")), screen.calls)
 
     def test_narrow_filter_drops_count_before_clipping_query(self):
         screen = FakeScreen(size=(5, 16))
@@ -604,11 +619,11 @@ class SidebarDrawTest(unittest.TestCase):
         _draw(screen, [Entry("work", "session", Target("local", "work"))], 0, "filtering", "abcdefghij", filtering=True)
 
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertEqual(title[3], "  mtmux / abcde")
-        self.assertNotIn("match", title[3])
+        filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        self.assertNotIn("abcdefghij", title[3])
+        self.assertEqual(filter_row[3], " Filter: abcdef…")
         cursor = next(call for call in screen.calls if call[0] == "move")
-        self.assertEqual(cursor, ("move", 0, 15))
-        self.assertLessEqual(cursor[2], 15)
+        self.assertEqual(cursor, ("move", 1, 15))
 
     def test_title_colors_final_terminal_column(self):
         screen = FakeScreen(size=(5, 20))
@@ -990,7 +1005,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_add_titles_name_mode_and_filter_query(self):
         for query, filtering, expected in (
             ("", False, "mtmux / Add session"),
-            ("work", True, "mtmux / Add session / work"),
+            ("work", True, "mtmux / Add session"),
         ):
             screen = FakeScreen(size=(5, 50))
             _draw(screen, [], 0, "", query, filtering=filtering, adding=True)
@@ -1164,7 +1179,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         text = "\n".join(str(call) for call in screen.calls)
         self.assertIn("● work", text)
-        self.assertIn("💻 laptop                  ＋", text)
+        self.assertIn("💻 laptop                   ＋", text)
 
     def test_selection_pointer_and_active_color_are_independent(self):
         active = Target("local", "active")
