@@ -23,6 +23,6 @@
   - julsemaan-tmp/html-plans/2026-07-19-1537-automatic-starred-agent-panes.html
 - [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
 - [] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
-- [] When starting a fresh mtmux, there are these bugs
+- [x] When starting a fresh mtmux, there are these bugs
   - [x] Default tmux server may not be running which leads to errors
   - [x] Sessions section shows "No starred sessions" but sessions are not starred anymore, they are just "sessions". Change the text for now, a larger refactor will follow
