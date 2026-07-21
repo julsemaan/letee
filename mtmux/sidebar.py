@@ -591,13 +591,15 @@ def _draw_entries(
         if entry.tracked and entry.shortcut_slot is not None:
             slot_width = 4
             ico = _icons()
-            pointer_char = ico["selected"] if selected_entry and not dimmed else " "
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
             attr = _fade(base_attr) if line_number and not active_entry else base_attr
             if line_number == 0 and slot_width:
-                slot_badge = f" {pointer_char} " if selected_entry else f"[{entry.shortcut_slot}]"
+                if selected_entry and not dimmed:
+                    slot_badge = f" {ico['selected']} "
+                else:
+                    slot_badge = f"[{entry.shortcut_slot}]"
                 stdscr.addnstr(row, 0, slot_badge, w, _color("slot") or curses.A_BOLD)
                 stdscr.addnstr(row, 3, " " + line, w - 3, attr)
             else:
