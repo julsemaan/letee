@@ -95,6 +95,7 @@ def _init_colors() -> None:
             "hints": (8, teal, -1, curses.A_DIM),
             "add_entry": (9, charcoal, mint, curses.A_BOLD),
             "slot": (10, mint, -1, curses.A_BOLD | curses.A_REVERSE),
+            "slot_active": (11, orange, -1, curses.A_BOLD | curses.A_REVERSE),
         }
         for name, (pair, fg, bg, attr) in pairs.items():
             curses.init_pair(pair, fg, bg)
@@ -600,7 +601,8 @@ def _draw_entries(
                     slot_badge = f" {ico['selected']} "
                 else:
                     slot_badge = f"[{entry.shortcut_slot}]"
-                stdscr.addnstr(row, 0, slot_badge, w, _color("slot") or curses.A_BOLD)
+                slot_attr = _color("slot_active") if active_entry else _color("slot")
+                stdscr.addnstr(row, 0, slot_badge, w, slot_attr or curses.A_BOLD)
                 stdscr.addnstr(row, 3, " " + line, w - 3, attr)
             else:
                 stdscr.addnstr(row, 0, line, w, attr)
