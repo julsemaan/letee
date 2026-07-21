@@ -540,8 +540,6 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
         attr = curses.A_BOLD
     elif entry.unavailable_favorite:
         attr = _color("unavailable") or curses.A_DIM
-    elif entry.kind == "session" and entry.target and entry.target.kind == "ssh":
-        attr = _color("remote")
     elif entry.kind == "session":
         attr = _color("local")
     elif entry.kind == "hint":
