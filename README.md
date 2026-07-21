@@ -112,7 +112,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `j` / `k` or arrows: move selection pointer (`›`)
 - `Enter`: switch selected star, open Add, or create on selected host line
 - `a`: open grouped local/SSH Add picker
-- `r`: unstar selected target without killing it
+- `r`: remove selected target without killing it
 - `K` / `J`: move selected starred target up/down without wrapping
 - `x`: kill selected session but retain its star (asks first)
 - `/`: open Add picker and filter unstarred sessions

@@ -28,7 +28,7 @@ Navigation
 Session actions
   Enter  switch starred session / open Add / create on host
   a      open grouped local/SSH Add picker
-  r      unstar selected session (session keeps running)
+  r      remove selected session (session keeps running)
   K/J    move starred session up/down
   x      kill selected session (star remains)
   /      open Add picker and filter unstarred sessions

@@ -185,7 +185,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("K/J    move starred session up/down", command)
         self.assertIn("Enter  switch starred session / open Add / create on host", command)
         self.assertIn("a      open grouped local/SSH Add picker", command)
-        self.assertIn("r      unstar selected session", command)
+        self.assertIn("r      remove selected session", command)
         self.assertNotIn("f      star/unstar", command)
         self.assertNotIn("r      refresh", command)
         self.assertIn("C-x d  detach cockpit", command)

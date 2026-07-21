@@ -620,7 +620,7 @@ def _draw_footer(
     elif adding:
         logical_rows = [status or f"{'Enter' if _ascii() else '↵'} add  x kill", "/ filter  Esc back  ? help  q quit"]
     else:
-        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} activate  a add  x kill", "r unstar  K/J reorder  ? help  q quit"]
+        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} activate  a add  r remove", "x kill  K/J reorder  ? help  q quit"]
     width = max(1, w - 1)
     lines = [line for logical_row in logical_rows for line in (textwrap.wrap(logical_row, width=width) or [""])]
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
