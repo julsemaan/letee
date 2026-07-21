@@ -87,8 +87,8 @@ def _init_colors() -> None:
         pairs = {
             "title": (1, mint, charcoal, curses.A_BOLD),
             "active": (2, orange, -1, curses.A_BOLD),
-            "local": (3, green, -1, 0),
-            "remote": (4, teal, -1, 0),
+            "local": (3, green, -1, curses.A_BOLD),
+            "remote": (4, teal, -1, curses.A_BOLD),
             "create": (5, mint, -1, 0),
             "unavailable": (6, curses.COLOR_YELLOW, -1, curses.A_DIM),
             "danger": (7, curses.COLOR_RED, -1, 0),
