@@ -129,12 +129,12 @@ def _entries(
     hostname = socket.gethostname()
     if not adding:
         slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
-        out = [Entry("Add session", "add"), Entry("", "spacer"), Entry("SESSIONS", "section")]
+        out = [Entry("Add session", "add"), Entry("", "spacer")]
         out.extend(
             Entry(target.session, "session", target, target.host or hostname, True, target not in available, True, slots.get(target))
             for target in favorites
         )
-        if len(out) == 3:
+        if len(out) == 2:
             out.append(Entry("No starred sessions", "unavailable"))
         return out
 

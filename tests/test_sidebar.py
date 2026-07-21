@@ -103,16 +103,15 @@ class SidebarViewModeTest(unittest.TestCase):
         entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), stars)
 
         self.assertEqual([entry.target for entry in entries if entry.kind == "session"], stars)
-        self.assertEqual([entry.kind for entry in entries[:3]], ["add", "spacer", "section"])
+        self.assertEqual([entry.kind for entry in entries[:2]], ["add", "spacer"])
         self.assertEqual(sidebar._selectable(entries)[0], 0)
-        self.assertEqual(entries[2].label, "SESSIONS")
 
     def test_empty_normal_view_prompts_and_offers_add(self):
         entries = _entries("", snapshot(local=("work",)), [])
 
         self.assertEqual(
             [(entry.label, entry.kind) for entry in entries],
-            [("Add session", "add"), ("", "spacer"), ("SESSIONS", "section"), ("No starred sessions", "unavailable")],
+            [("Add session", "add"), ("", "spacer"), ("No starred sessions", "unavailable")],
         )
 
     def test_add_picker_groups_hosts_and_excludes_stars(self):
