@@ -499,14 +499,13 @@ def _entry_lines(
             room = max(0, width - _cell_width(prefix))
             text = creation_text[-room:] if room else ""
             return [_truncate_cells(prefix, width - _cell_width(text)) + text]
-        host_icon = icon["local_header"] if entry.host == "" else icon["remote_header"]
-        suffix = icon["create"]
+        suffix = f" {icon['create']}"
         if selected:
             label = _truncate_cells(f"{pointer} {entry.label}", max(0, width - _cell_width(suffix) - 1))
         else:
+            host_icon = icon["local_header"] if entry.host == "" else icon["remote_header"]
             label = _truncate_cells(f"{host_icon} {entry.label}", max(0, width - _cell_width(suffix) - 1))
-        padding = max(1, width - _cell_width(label) - _cell_width(suffix))
-        return [_truncate(label + " " * padding + suffix, width)]
+        return [_truncate(label + suffix, width)]
     if entry.kind == "session":
         kind = "unavailable" if entry.unavailable_favorite else ("remote" if entry.target and entry.target.kind == "ssh" else "local")
         bell = " BELL" if _ascii() else " 🔔"

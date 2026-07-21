@@ -989,7 +989,7 @@ class SidebarDrawTest(unittest.TestCase):
         hosts = [entry for entry in entries if entry.kind == "host"]
         self.assertEqual([(entry.label, entry.host) for entry in hosts], [("laptop", ""), ("dev", "dev")])
         self.assertFalse(any(entry.kind == "create" for entry in entries))
-        self.assertEqual(_entry_lines(hosts[0], False, set(), None, 40), ["💻 laptop                             ＋"])
+        self.assertEqual(_entry_lines(hosts[0], False, set(), None, 40), ["💻 laptop ＋"])
 
     def test_filtering_and_unavailable_hosts_are_not_selectable(self):
         filtered = _entries("work", snapshot(local=("work",), remotes={"dev": source("ssh", ("work",), host="dev")}))
@@ -1209,7 +1209,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         text = "\n".join(str(call) for call in screen.calls)
         self.assertIn("● work", text)
-        self.assertIn("💻 laptop                   ＋", text)
+        self.assertIn("💻 laptop ＋", text)
 
     def test_selection_pointer_and_active_color_are_independent(self):
         active = Target("local", "active")
