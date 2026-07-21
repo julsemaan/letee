@@ -336,7 +336,7 @@ class SidebarColorTest(unittest.TestCase):
             init_pair.call_args_list,
             [
                 call(1, 79, 233),
-                call(2, 233, 79),
+                call(2, 214, -1),
                 call(3, 36, -1),
                 call(4, 30, -1),
                 call(5, 79, -1),
@@ -347,7 +347,7 @@ class SidebarColorTest(unittest.TestCase):
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
-        self.assertEqual(sidebar._COLOR["active"], 2 << 8)
+        self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["hints"], (8 << 8) | curses.A_DIM)
 
@@ -366,7 +366,7 @@ class SidebarColorTest(unittest.TestCase):
             init_pair.call_args_list,
             [
                 call(1, curses.COLOR_CYAN, curses.COLOR_BLACK),
-                call(2, curses.COLOR_BLACK, curses.COLOR_CYAN),
+                call(2, curses.COLOR_YELLOW, -1),
                 call(3, curses.COLOR_GREEN, -1),
                 call(4, curses.COLOR_CYAN, -1),
                 call(5, curses.COLOR_CYAN, -1),
@@ -376,7 +376,7 @@ class SidebarColorTest(unittest.TestCase):
                 call(9, curses.COLOR_BLACK, curses.COLOR_CYAN),
             ],
         )
-        self.assertEqual(sidebar._COLOR["active"], 2 << 8)
+        self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
 
     def test_no_color_terminal_leaves_palette_empty(self):

@@ -80,14 +80,14 @@ def _init_colors() -> None:
         curses.start_color()
         curses.use_default_colors()
         if getattr(curses, "COLORS", 0) >= 256:
-            charcoal, teal, green, mint = 233, 30, 36, 79
+            charcoal, teal, green, mint, orange = 233, 30, 36, 79, 214
         else:
-            charcoal, teal, green, mint = (
-                curses.COLOR_BLACK, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_CYAN
+            charcoal, teal, green, mint, orange = (
+                curses.COLOR_BLACK, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_CYAN, curses.COLOR_YELLOW
             )
         pairs = {
             "title": (1, mint, charcoal, curses.A_BOLD),
-            "active": (2, charcoal, mint, 0),
+            "active": (2, orange, -1, curses.A_BOLD),
             "local": (3, green, -1, 0),
             "remote": (4, teal, -1, 0),
             "create": (5, mint, -1, 0),
