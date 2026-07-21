@@ -18,6 +18,10 @@
 - [x] When hitting enter on a starred session that doesn't exist anymore, create it with that name either locally or on the right host
 - [] The highlighted row when left pane is unfocused makes text hard to read
 - [] The highlight of the active row is too strong and confuses with the cursor
+- [] When starting a fresh mtmux, there are these bugs
+  - [] Default tmux server may not be running which leads to errors
+  - [] Sessions section shows "No starred sessions" but sessions are not starred anymore, they are just "sessions". Change the text for now, a larger refactor will follow
+- [] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
 
 MAY be superseded by UI rework
 - [] Highlighting the row to mark the new session on a host confuses with the active session. Find a better way to mark the new session
