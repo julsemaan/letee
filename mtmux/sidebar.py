@@ -43,6 +43,7 @@ class SidebarState:
     status: str = ""
     status_deadline: float | None = None
     rang_bells: set[Target] = field(default_factory=set)
+    scroll_offset: int | None = None
 
 
 @dataclass(frozen=True)
@@ -365,12 +366,29 @@ def _entry_height(entry: Entry) -> int:
     return 2 if entry.tracked else 1
 
 
-def _viewport(entries: list[Entry], selected: int, height: int) -> tuple[int, int]:
+def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: int | None = None) -> tuple[int, int]:
     body = max(0, height - 2)
     if not entries or body <= 0:
         return selected, selected
     if body == 1:
+        if scroll_offset is not None:
+            start = max(0, min(scroll_offset, len(entries) - 1))
+            return start, min(len(entries), start + 1)
         return selected, min(len(entries), selected + 1)
+
+    if scroll_offset is not None:
+        start = max(0, min(scroll_offset, len(entries) - 1))
+        row_offsets = [0]
+        for entry in entries:
+            row_offsets.append(row_offsets[-1] + _entry_height(entry))
+        end = start + 1
+        while end < len(entries):
+            rows = row_offsets[end + 1] - row_offsets[start]
+            used = rows + int(start > 0) + int(end + 1 < len(entries))
+            if used > body:
+                break
+            end += 1
+        return start, end
 
     best = (selected, min(len(entries), selected + 1))
     best_score = (-1, -1, -1)
@@ -389,10 +407,11 @@ def _viewport(entries: list[Entry], selected: int, height: int) -> tuple[int, in
 
 
 def _entry_at_row(
-    entries: list[Entry], selected: int, row: int, height: int, footer_height: int, top: int = 1
+    entries: list[Entry], selected: int, row: int, height: int, footer_height: int, top: int = 1,
+    scroll_offset: int | None = None,
 ) -> int | None:
     content_height = height - footer_height - top + 2
-    start, end = _viewport(entries, selected, content_height)
+    start, end = _viewport(entries, selected, content_height, scroll_offset)
     entry_row = row - top - int(start > 0)
     if entry_row < 0 or row >= height - footer_height:
         return None
@@ -574,9 +593,11 @@ def _draw_entries(
     creation_host: str | None = None,
     creation_text: str = "",
     top: int = 1,
+    scroll_offset: int | None = None,
 ) -> tuple[int, int] | None:
     cursor = None
-    start, end = _viewport(entries, _view_index(entries, selected, current_target, dimmed), h - top + 1)
+    view_index = _view_index(entries, selected, current_target, dimmed)
+    start, end = _viewport(entries, view_index, h - top + 1, scroll_offset)
     row = top
     if start:
         attr = _color("hints") or curses.A_DIM
@@ -663,6 +684,7 @@ def _draw(
     creation_host: str | None = None,
     creation_text: str = "",
     adding: bool = False,
+    scroll_offset: int | None = None,
 ) -> int:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -682,6 +704,7 @@ def _draw(
         creation_host,
         creation_text,
         2 if filtering else 1,
+        scroll_offset,
     )
     if creation_cursor:
         stdscr.move(*creation_cursor)
@@ -714,6 +737,7 @@ def run(stdscr: curses.window) -> None:
         nonlocal entries
         entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
         _sync_selection(state, entries)
+        state.scroll_offset = None
 
     try:
         while True:
@@ -740,12 +764,14 @@ def run(stdscr: curses.window) -> None:
                 tuple(entries), state.selected_index, state.status, state.filter_text,
                 state.filtering, state.adding, state.creation_host, state.creation_text,
                 frozenset(bell_targets), current_target, dimmed, stdscr.getmaxyx(),
+                state.scroll_offset,
             )
             if render_state != rendered:
                 footer_height = _draw(
                     stdscr, entries, state.selected_index, state.status, state.filter_text,
                     state.filtering, bell_targets, current_target, dimmed,
                     state.creation_host, state.creation_text, state.adding,
+                    state.scroll_offset,
                 )
                 rendered = render_state
             try:
@@ -778,14 +804,36 @@ def run(stdscr: curses.window) -> None:
                 if not isinstance(row, int) or not isinstance(mouse_state, int):
                     continue
                 if mouse_state & (getattr(curses, "BUTTON4_PRESSED", 0) or 0):
-                    key = curses.KEY_UP
+                    if state.scroll_offset is None:
+                        view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                        start, _ = _viewport(entries, view_index, stdscr.getmaxyx()[0] - footer_height)
+                        state.scroll_offset = start
+                    state.scroll_offset = max(0, state.scroll_offset - 1)
+                    continue
                 elif mouse_state & (getattr(curses, "BUTTON5_PRESSED", 0) or 0):
-                    key = curses.KEY_DOWN
+                    if state.scroll_offset is None:
+                        view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                        start, _ = _viewport(entries, view_index, stdscr.getmaxyx()[0] - footer_height)
+                        state.scroll_offset = start
+                    # ponytail: compute max scroll by finding last start that fits one entry
+                    body = max(1, stdscr.getmaxyx()[0] - footer_height - 2)
+                    row_offsets = [0]
+                    for entry in entries:
+                        row_offsets.append(row_offsets[-1] + _entry_height(entry))
+                    total = row_offsets[-1]
+                    max_offset = 0
+                    for i in range(len(entries)):
+                        if total - row_offsets[i] <= body:
+                            max_offset = i
+                            break
+                    state.scroll_offset = min(max_offset, state.scroll_offset + 1)
+                    continue
                 else:
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
                     index = _entry_at_row(
                         entries, view_index, row, stdscr.getmaxyx()[0], footer_height,
                         2 if state.filtering else 1,
+                        state.scroll_offset,
                     )
                     if index is None:
                         continue
@@ -822,10 +870,12 @@ def run(stdscr: curses.window) -> None:
             if key == ord("q"):
                 effect = _transition(state, "quit")
             elif key in (curses.KEY_DOWN, ord("j")) and selectable:
+                state.scroll_offset = None
                 state.selected_index = selectable[(selectable.index(state.selected_index) + 1) % len(selectable)]
                 state.selected_target = entries[state.selected_index].target
                 state.selected_tracked = entries[state.selected_index].tracked
             elif key in (curses.KEY_UP, ord("k")) and selectable:
+                state.scroll_offset = None
                 state.selected_index = selectable[(selectable.index(state.selected_index) - 1) % len(selectable)]
                 state.selected_target = entries[state.selected_index].target
                 state.selected_tracked = entries[state.selected_index].tracked
@@ -855,6 +905,7 @@ def run(stdscr: curses.window) -> None:
             elif key == ord("?"):
                 effect = _transition(state, "help")
             elif key in (10, 13, curses.KEY_ENTER):
+                state.scroll_offset = None
                 entry = entries[state.selected_index]
                 if entry.kind == "add":
                     state.adding = True
