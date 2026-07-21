@@ -501,7 +501,10 @@ def _entry_lines(
             return [_truncate_cells(prefix, width - _cell_width(text)) + text]
         host_icon = icon["local_header"] if entry.host == "" else icon["remote_header"]
         suffix = icon["create"]
-        label = _truncate_cells(f"{host_icon} {entry.label}", max(0, width - _cell_width(suffix) - 1))
+        if selected:
+            label = _truncate_cells(f"{pointer} {entry.label}", max(0, width - _cell_width(suffix) - 1))
+        else:
+            label = _truncate_cells(f"{host_icon} {entry.label}", max(0, width - _cell_width(suffix) - 1))
         padding = max(1, width - _cell_width(label) - _cell_width(suffix))
         return [_truncate(label + " " * padding + suffix, width)]
     if entry.kind == "session":
