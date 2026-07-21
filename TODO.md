@@ -28,3 +28,4 @@
 - [] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
 - [] Rethink the second row with the hostname. Emojis look off
 - [] When on a fresh one, you press enter to add a session, then are presented with a menu to create a session on the current host and it's the only option and it isn't clear you have to press enter again. Could be implicit if there is a single host and it has no existing sessions. Also having the cursor be there could be useful. This has to be rethought and polished.
+- [] Not overly satisfied of the placement of the session number at the end of the row. Rethink that, maybe like tmux where it is in a differently colored box left of the name
