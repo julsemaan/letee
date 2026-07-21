@@ -20,7 +20,7 @@ Star important sessions, see at a glance which ones need attention, and jump bet
 
 ## Quick start
 
-Requires Python 3.11+, tmux, and OpenSSH.
+Requires Python 3.11+, tmux, and OpenSSH. Automatic coding-agent discovery additionally requires [astatus](https://github.com/julsemaan/astatus) locally and on configured remote hosts.
 
 ```sh
 git clone https://github.com/julsemaan/mtmux.git
@@ -109,8 +109,10 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 
 - `C-s s`: focus sidebar; recreates it if quit
 - `C-s 1`–`C-s 9`: switch directly to numbered starred target
-- `j` / `k` or arrows: move selection pointer (`›`)
-- `Enter`: switch selected star, open Add, or create on selected host line
+- `j` / `k` or arrows: move selection pointer (`›`) in focused region
+- `Tab`: switch focus between Sessions and Agents
+- `[` / `]`: give Agents/Sessions region more rows for current run
+- `Enter`: switch selected session or exact agent pane, open Add, or create on selected host line
 - `a`: open grouped local/SSH Add picker
 - `r`: remove selected target without killing it
 - `K` / `J`: move selected starred target up/down without wrapping
@@ -121,7 +123,9 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 
 `›` marks keyboard selection; mint reverse highlight marks active cockpit session. Both appear independently while sidebar is focused. Unfocused sidebar hides pointer and keeps active session highlighted and visible.
 
-Normal sidebar puts `Add session` first with a right-aligned plus, followed by a `SESSIONS` divider and starred sessions in persisted order; no full-inventory duplicates or star glyphs. Add picker groups unstarred sessions under local and SSH hosts. Selecting or creating one stars it and switches immediately. First nine stars receive stable, right-aligned shortcut numbers; `K`/`J` updates order, while later stars remain sidebar-only. Prefix-number shortcuts load stars on every use, so changes apply without restart. Each star uses two rows: session name, then local hostname or SSH host. Missing stars remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Favorites persist in `~/.config/mtmux/stars`. Only starred sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only source labels and ellipses.
+Normal sidebar puts `Add session` first, followed by sessions in persisted order; no full-inventory duplicates or star glyphs. Independently navigable Agents region remains visible below `AGENTS` divider, including when empty. Add picker groups unstarred sessions under local and SSH hosts. Selecting or creating one stars it and switches immediately. First nine stars receive stable, right-aligned shortcut numbers; `K`/`J` updates order, while later stars remain sidebar-only. Prefix-number shortcuts load stars on every use, so changes apply without restart. Each star uses two rows: session name, then local hostname or SSH host. Missing stars remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Favorites persist in `~/.config/mtmux/stars`. Only starred sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only source labels and ellipses.
+
+Agent records are read from `$AGENT_STATUS_DIR`, `$XDG_STATE_HOME/agent-status`, or `~/.local/state/agent-status`, in that order. Local and remote running agents updated within 60 seconds are correlated by exact tmux socket and pane ID. Selecting agent navigates to exact server, window, and pane. Task state stays visible as text and receives semantic color; attention states remain bold and idle/canceled remain dim without color. Agents are discovered automatically and cannot be added, removed, reordered, or killed as favorites.
 
 ## Mouse controls
 

@@ -5,7 +5,7 @@ import shlex
 import subprocess
 
 from .config import load_persistent_ssh
-from .names import Target
+from .names import PaneTarget, Target
 
 
 PERSISTENT_SSH_OPTIONS = (
@@ -32,6 +32,19 @@ def attach_command(target: Target) -> str:
     if target.kind == "local":
         return f"env -u TMUX tmux -T clipboard new-session -A -s {session}"
     return shlex.join(ssh_command("-t", target.host or "", f"tmux -T clipboard new-session -A -s {session}"))
+
+
+def pane_attach_command(pane_target: PaneTarget) -> str:
+    target = pane_target.target
+    tmux = shlex.join(("tmux", "-S", pane_target.socket_path))
+    command = (
+        f"{tmux} select-window -t {shlex.quote(target.session + ':' + pane_target.window_id)} "
+        f"\\; select-pane -t {shlex.quote(pane_target.pane_id)} "
+        f"\\; attach-session -t {shlex.quote(target.session)}"
+    )
+    if target.kind == "local":
+        return f"env -u TMUX {command}"
+    return shlex.join(ssh_command("-t", target.host or "", command))
 
 
 def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> None:

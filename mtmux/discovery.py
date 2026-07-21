@@ -2,22 +2,50 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
 import os
+from pathlib import Path
 from random import random
+import shlex
 import subprocess
 import tempfile
 import time
 
 from .config import load_hosts, load_persistent_ssh
-from .names import Target, validate_host
+from .names import PaneTarget, Target, validate_host
 from .sessions import ssh_command
 
 
-WINDOWS_COMMAND = 'tmux list-windows -a -F "#{session_name}:#{window_bell_flag}:#{window_flags}"'
+PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{socket_path}"
+PANES_COMMAND = f'tmux list-panes -a -F "{PANES_FORMAT}"'
+REMOTE_SEPARATOR = "__MTMUX_AGENT_STATUS__"
+_REMOTE_READER = """import glob,json,os,pathlib
+root=os.environ.get('AGENT_STATUS_DIR') or str(pathlib.Path(os.environ.get('XDG_STATE_HOME', '~/.local/state')).expanduser() / 'agent-status')
+for path in sorted(glob.glob(os.path.join(root,'*.json'))):
+ try:
+  print(json.dumps(json.load(open(path))))
+ except Exception:
+  pass
+"""
+REMOTE_COMMAND = f"{PANES_COMMAND}; rc=$?; printf '\\n{REMOTE_SEPARATOR}\\n'; python3 -c {shlex.quote(_REMOTE_READER)}; exit $rc"
+AGENT_STALE_SECONDS = 60
+SUPPORTED_TASK_STATES = {
+    "working", "submitted", "input-required", "auth-required", "failed",
+    "rejected", "completed", "canceled",
+}
 MAX_REMOTE_OUTPUT = 1024 * 1024
 LOCAL_POLL_INTERVAL = 0.5
 SUCCESS_POLL_INTERVAL = 10
 MAX_FAILURE_POLL_INTERVAL = 60
+
+
+@dataclass(frozen=True)
+class AgentEntry:
+    pane_target: PaneTarget
+    agent_id: str
+    agent_name: str
+    task_state: str | None
 
 
 @dataclass(frozen=True)
@@ -26,6 +54,8 @@ class SourceSnapshot:
     sessions: tuple[Target, ...]
     bells: frozenset[Target]
     error: str | None = None
+    panes: tuple[PaneTarget, ...] = ()
+    agents: tuple[AgentEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,6 +78,16 @@ class SessionSnapshot:
             *(snapshot.bells for snapshot in self.remotes.values() if snapshot and snapshot.available)
         )
 
+    @property
+    def agents(self) -> tuple[AgentEntry, ...]:
+        agents = self.local.agents + tuple(
+            agent
+            for snapshot in self.remotes.values()
+            if snapshot and snapshot.available
+            for agent in snapshot.agents
+        )
+        return tuple(sorted(agents, key=_agent_sort_key))
+
 
 UNAVAILABLE = SourceSnapshot(False, (), frozenset())
 
@@ -58,23 +98,85 @@ def _clean_env() -> dict[str, str]:
     return env
 
 
+def _agent_sort_key(agent: AgentEntry) -> tuple[str, str, int, int, str]:
+    target = agent.pane_target.target
+    return (target.host or "", target.session, int(agent.pane_target.window_id[1:]), int(agent.pane_target.pane_id[1:]), agent.agent_id)
+
+
 def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None) -> SourceSnapshot:
     sessions: list[Target] = []
     bells: set[Target] = set()
+    panes: list[PaneTarget] = []
     for line in text.splitlines():
-        parts = line.split(":", 2)
-        if len(parts) != 3:
+        parts = line.split(":", 5)
+        if len(parts) != 6:
             continue
-        name, bell_flag, window_flags = parts
+        name, window_id, pane_id, bell_flag, window_flags, socket_path = parts
         try:
             target = Target("local", name) if kind == "local" else Target("ssh", name, host)
+            pane = PaneTarget(target, window_id, pane_id, socket_path)
         except SystemExit:
             continue
         if target not in sessions:
             sessions.append(target)
+        panes.append(pane)
         if bell_flag in ("1", "!") or "!" in window_flags:
             bells.add(target)
-    return SourceSnapshot(True, tuple(sessions), frozenset(bells))
+    return SourceSnapshot(True, tuple(sessions), frozenset(bells), panes=tuple(panes))
+
+
+def _status_dir() -> Path:
+    if value := os.environ.get("AGENT_STATUS_DIR"):
+        return Path(value).expanduser()
+    if value := os.environ.get("XDG_STATE_HOME"):
+        return Path(value).expanduser() / "agent-status"
+    return Path.home() / ".local/state/agent-status"
+
+
+def _parse_agent(payload: object, panes: tuple[PaneTarget, ...], now: datetime) -> AgentEntry | None:
+    if not isinstance(payload, dict):
+        return None
+    runtime, meta = payload.get("runtime"), payload.get("x_meta")
+    if payload.get("schema_version") != "agent-status/v1alpha1":
+        return None
+    if not isinstance(runtime, dict) or runtime.get("lifecycle") != "running" or not isinstance(meta, dict):
+        return None
+    try:
+        updated = datetime.fromisoformat(str(runtime["updated_at"]).replace("Z", "+00:00"))
+        if updated.tzinfo is None or (now - updated.astimezone(timezone.utc)).total_seconds() > AGENT_STALE_SECONDS:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    socket_path, pane_id = meta.get("tmux_socket"), meta.get("tmux_pane")
+    pane = next((item for item in panes if (item.socket_path, item.pane_id) == (socket_path, pane_id)), None)
+    agent_id, agent_name = payload.get("agent_id"), payload.get("agent_name")
+    if pane is None or not isinstance(agent_id, str) or not agent_id or not isinstance(agent_name, str) or not agent_name:
+        return None
+    task = payload.get("task")
+    state = task.get("state") if isinstance(task, dict) else None
+    if state is not None and state not in SUPPORTED_TASK_STATES:
+        state = "unknown"
+    return AgentEntry(pane, agent_id, agent_name, state)
+
+
+def _read_agents(panes: tuple[PaneTarget, ...], records: Iterable[object], now: datetime | None = None) -> tuple[AgentEntry, ...]:
+    clock = now or datetime.now(timezone.utc)
+    agents = [entry for payload in records if (entry := _parse_agent(payload, panes, clock))]
+    return tuple(sorted(agents, key=_agent_sort_key))
+
+
+def _read_local_agents(panes: tuple[PaneTarget, ...]) -> tuple[AgentEntry, ...]:
+    records: list[object] = []
+    try:
+        paths = sorted(_status_dir().glob("*.json"))
+    except OSError:
+        return ()
+    for path in paths:
+        try:
+            records.append(json.loads(path.read_text()))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+    return _read_agents(panes, records)
 
 
 def _source_result(
@@ -87,33 +189,47 @@ def _source_result(
 ) -> SourceSnapshot:
     if stdout is None or stderr is None:
         return SourceSnapshot(False, (), frozenset(), "output exceeded 1 MiB")
+    pane_text, separator, agent_text = stdout.partition(f"\n{REMOTE_SEPARATOR}\n")
+    first_error = stderr.splitlines()[0] if stderr.splitlines() else ""
     missing_server = returncode == 1 and (
-        stderr.startswith("no server running on ")
-        or (stderr.startswith("error connecting to ") and stderr.strip().endswith("(No such file or directory)"))
+        first_error.startswith("no server running on ")
+        or (first_error.startswith("error connecting to ") and first_error.endswith("(No such file or directory)"))
     )
     if returncode == 0 or missing_server:
-        return _parse_source_snapshot(stdout if returncode == 0 else "", kind=kind, host=host)
+        snapshot = _parse_source_snapshot(pane_text if returncode == 0 else "", kind=kind, host=host)
+        if not separator:
+            return snapshot
+        records = []
+        for line in agent_text.splitlines():
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_agents(snapshot.panes, records))
     return SourceSnapshot(False, (), frozenset(), stderr.strip() or f"remote command exited {returncode}")
 
 
 def local_snapshot() -> SourceSnapshot:
     try:
         proc = subprocess.run(
-            ["tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_bell_flag}:#{window_flags}"],
+            ["tmux", "list-panes", "-a", "-F", PANES_FORMAT],
             text=True,
             capture_output=True,
             env=_clean_env(),
         )
     except OSError as error:
         return SourceSnapshot(False, (), frozenset(), error.strerror or str(error))
-    return _source_result(proc.returncode, proc.stdout, proc.stderr, kind="local")
+    snapshot = _source_result(proc.returncode, proc.stdout, proc.stderr, kind="local")
+    if not snapshot.available:
+        return snapshot
+    return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_local_agents(snapshot.panes))
 
 
 def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
     return ssh_command(
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
         "-o", "ServerAliveInterval=1", "-o", "ServerAliveCountMax=1",
-        validate_host(host), WINDOWS_COMMAND,
+        validate_host(host), REMOTE_COMMAND,
         persistent_ssh=persistent_ssh,
     )
 
@@ -277,6 +393,8 @@ class DiscoveryPoller:
                 tuple(item for item in source.sessions if item != target),
                 frozenset(item for item in source.bells if item != target),
                 source.error,
+                tuple(item for item in source.panes if item.target != target),
+                tuple(item for item in source.agents if item.pane_target.target != target),
             )
             return
         if target.host not in self.remotes:
@@ -292,6 +410,8 @@ class DiscoveryPoller:
                 tuple(item for item in source.sessions if item != target),
                 frozenset(item for item in source.bells if item != target),
                 source.error,
+                tuple(item for item in source.panes if item.target != target),
+                tuple(item for item in source.agents if item.pane_target.target != target),
             )
 
     def close(self) -> None:

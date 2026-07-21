@@ -3,8 +3,8 @@ import unittest
 from unittest.mock import call, patch
 
 import mtmux.sidebar as sidebar
-from mtmux.discovery import SessionSnapshot, SourceSnapshot
-from mtmux.names import Target
+from mtmux.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
+from mtmux.names import PaneTarget, Target
 
 
 def source(kind, sessions=(), bells=(), host=None, available=True, error=None):
@@ -24,6 +24,7 @@ from mtmux.sidebar import (
     Effect,
     Entry,
     SidebarState,
+    _agent_entries,
     _bell_targets,
     _creation_key,
     _draw,
@@ -135,6 +136,34 @@ class SidebarViewModeTest(unittest.TestCase):
         discovered = snapshot(local=("work", "notes"), local_bells=("work", "notes"))
 
         self.assertEqual(_bell_targets(discovered, untracked, [tracked]), {tracked})
+
+
+class AgentSidebarTest(unittest.TestCase):
+    def test_agent_entries_are_compact_and_keep_exact_pane(self):
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(SourceSnapshot(True, (), frozenset()), {"dev": SourceSnapshot(True, (pane.target,), frozenset(), panes=(pane,), agents=(AgentEntry(pane, "id", "pi", None),))})
+
+        entry = _agent_entries(data)[0]
+
+        self.assertEqual(entry.pane_target, pane)
+        with patch("mtmux.sidebar._ascii", return_value=False):
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ dev · work"])
+
+    def test_draw_shows_agent_divider_and_empty_state(self):
+        screen = FakeScreen(size=(10, 40))
+
+        _draw(screen, [], 0, "", "", agent_entries=[])
+
+        text = [item[3] for item in screen.calls if item[0] == "addnstr"]
+        self.assertTrue(any(line.startswith("AGENTS ") for line in text))
+        self.assertIn("  No active agents", text)
+
+    def test_switch_pane_uses_exact_attach_command(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        with patch("mtmux.sidebar.cockpit.switch") as switch:
+            _execute(Effect("switch_pane", pane, message="id"), SidebarState(), unittest.mock.Mock(), 5)
+
+        switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work")
 
 
 class SidebarStateTest(unittest.TestCase):
@@ -346,6 +375,10 @@ class SidebarColorTest(unittest.TestCase):
                 call(9, 233, 79),
                 call(10, 79, -1),
                 call(11, 214, -1),
+                call(12, 36, -1), call(13, 30, -1), call(14, 214, -1),
+                call(15, curses.COLOR_MAGENTA, -1), call(16, curses.COLOR_RED, -1),
+                call(17, curses.COLOR_RED, -1), call(18, 79, -1),
+                call(19, curses.COLOR_YELLOW, -1),
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
@@ -380,6 +413,10 @@ class SidebarColorTest(unittest.TestCase):
                 call(9, curses.COLOR_BLACK, curses.COLOR_CYAN),
                 call(10, curses.COLOR_CYAN, -1),
                 call(11, curses.COLOR_YELLOW, -1),
+                call(12, curses.COLOR_GREEN, -1), call(13, curses.COLOR_CYAN, -1),
+                call(14, curses.COLOR_YELLOW, -1), call(15, curses.COLOR_MAGENTA, -1),
+                call(16, curses.COLOR_RED, -1), call(17, curses.COLOR_RED, -1),
+                call(18, curses.COLOR_CYAN, -1), call(19, curses.COLOR_YELLOW, -1),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)

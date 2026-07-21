@@ -2,8 +2,8 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from mtmux.names import Target
-from mtmux.sessions import attach_command, create, kill, ssh_command
+from mtmux.names import PaneTarget, Target
+from mtmux.sessions import attach_command, create, kill, pane_attach_command, ssh_command
 
 
 class SessionOperationsTest(unittest.TestCase):
@@ -29,6 +29,19 @@ class SessionOperationsTest(unittest.TestCase):
             self.assertEqual(
                 attach_command(Target("ssh", "work", "dev")),
                 "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/mtmux-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+            )
+
+    def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
+        local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
+        self.assertEqual(
+            pane_attach_command(local),
+            "env -u TMUX tmux -S '/tmp/tmux socket' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
+        )
+        remote = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket")
+        with patch("mtmux.sessions.load_persistent_ssh", return_value=False):
+            self.assertEqual(
+                pane_attach_command(remote),
+                "ssh -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
             )
 
     def test_kill_local_session_uses_default_server(self):

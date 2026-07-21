@@ -3,17 +3,23 @@ import unittest
 from unittest.mock import Mock, patch
 
 from mtmux.discovery import (
+    AgentEntry,
     DiscoveryPoller,
+    REMOTE_COMMAND,
     SessionSnapshot,
     SourceSnapshot,
     _clean_env,
     _parse_source_snapshot,
+    _read_agents,
+    _source_result,
     _ssh_command,
     discover,
     local_snapshot,
     remote_snapshot,
 )
-from mtmux.names import Target
+from datetime import datetime, timezone
+
+from mtmux.names import PaneTarget, Target
 
 
 EMPTY_LOCAL = SourceSnapshot(True, (), frozenset())
@@ -26,38 +32,37 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
     def test_source_parser_deduplicates_targets_and_collects_bells(self):
         snapshot = _parse_source_snapshot(
-            "work:0:-\nwork:1:-\nchat:!:-\nbad name:1:!\n",
+            "work:@1:%1:0:-:/tmp/tmux:dev\nwork:@1:%2:1:-:/tmp/tmux:dev\nchat:@2:%3:!:-:/tmp/tmux:dev\nbad name:@3:%4:1:!:/tmp/tmux\n",
             kind="ssh",
             host="dev",
         )
 
         work = Target("ssh", "work", "dev")
         chat = Target("ssh", "chat", "dev")
-        self.assertEqual(snapshot, SourceSnapshot(True, (work, chat), frozenset({work, chat})))
+        self.assertEqual(snapshot.sessions, (work, chat))
+        self.assertEqual(snapshot.bells, frozenset({work, chat}))
+        self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2", "%3"])
+        self.assertEqual(snapshot.panes[0].socket_path, "/tmp/tmux:dev")
 
     def test_source_parser_keeps_sessions_named_mtmux(self):
         for kind, host in (("local", None), ("ssh", "dev")):
             with self.subTest(kind=kind):
                 target = Target(kind, "mtmux", host)
-                snapshot = _parse_source_snapshot("mtmux:1:!\n", kind=kind, host=host)
+                snapshot = _parse_source_snapshot("mtmux:@1:%1:1:!:/tmp/tmux\n", kind=kind, host=host)
 
-                self.assertEqual(snapshot, SourceSnapshot(True, (target,), frozenset({target})))
+                self.assertEqual(snapshot.sessions, (target,))
+                self.assertEqual(snapshot.bells, frozenset({target}))
 
     def test_local_snapshot_derives_sessions_and_bells_from_one_sample(self):
-        proc = Mock(returncode=0, stdout="work:1:!\nidle:0:-\n", stderr="")
+        proc = Mock(returncode=0, stdout="work:@1:%1:1:!:/tmp/tmux\nidle:@2:%2:0:-:/tmp/tmux\n", stderr="")
         with patch("mtmux.discovery.subprocess.run", return_value=proc) as run:
             snapshot = local_snapshot()
 
-        self.assertEqual(
-            snapshot,
-            SourceSnapshot(
-                True,
-                (Target("local", "work"), Target("local", "idle")),
-                frozenset({Target("local", "work")}),
-            ),
-        )
+        self.assertEqual(snapshot.sessions, (Target("local", "work"), Target("local", "idle")))
+        self.assertEqual(snapshot.bells, frozenset({Target("local", "work")}))
+        self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2"])
         run.assert_called_once()
-        self.assertEqual(run.call_args.args[0][:3], ["tmux", "list-windows", "-a"])
+        self.assertEqual(run.call_args.args[0][:3], ["tmux", "list-panes", "-a"])
 
     def test_local_no_server_is_available_empty_and_other_failure_is_explicit(self):
         no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/default\n")
@@ -80,11 +85,39 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(snapshot.sessions, (Target("local", "work"), Target("ssh", "chat", "dev")))
         self.assertEqual(snapshot.bells, frozenset({Target("local", "work"), Target("ssh", "chat", "dev")}))
 
+    def test_agent_reader_correlates_exact_socket_and_pane_and_normalizes_state(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%1", "/tmp/a")
+        other = PaneTarget(Target("local", "other"), "@2", "%1", "/tmp/b")
+        now = datetime(2026, 6, 20, 16, 45, 30, tzinfo=timezone.utc)
+
+        def record(agent_id, socket_path="/tmp/a", pane_id="%1", state="working", age="2026-06-20T16:45:00Z"):
+            payload = {
+                "schema_version": "agent-status/v1alpha1",
+                "agent_id": agent_id,
+                "agent_name": "pi",
+                "runtime": {"lifecycle": "running", "updated_at": age},
+                "x_meta": {"tmux_socket": socket_path, "tmux_pane": pane_id},
+            }
+            if state is not None:
+                payload["task"] = {"state": state}
+            return payload
+
+        agents = _read_agents(
+            (pane, other),
+            [record("b", state="future-state"), record("a", state=None), record("wrong", socket_path="/tmp/missing"), record("stale", age="2026-06-20T16:44:00Z")],
+            now,
+        )
+
+        self.assertEqual(
+            agents,
+            (AgentEntry(pane, "a", "pi", None), AgentEntry(pane, "b", "pi", "unknown")),
+        )
+
     def test_ssh_command_preserves_discovery_options_with_optional_persistence(self):
         base = (
             "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
             "-o", "ServerAliveInterval=1", "-o", "ServerAliveCountMax=1",
-            "dev", 'tmux list-windows -a -F "#{session_name}:#{window_bell_flag}:#{window_flags}"',
+            "dev", REMOTE_COMMAND,
         )
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
@@ -92,6 +125,20 @@ class DiscoverySnapshotTest(unittest.TestCase):
         )
         self.assertEqual(_ssh_command("dev", True), ("ssh", *persistence, *base))
         self.assertEqual(_ssh_command("dev", False), ("ssh", *base))
+
+    def test_remote_result_keeps_panes_when_agent_reader_is_missing(self):
+        pane_line = "work:@1:%2:0:-:/tmp/tmux"
+        snapshot = _source_result(
+            0,
+            pane_line + "\n__MTMUX_AGENT_STATUS__\n",
+            "sh: python3: not found\n",
+            kind="ssh",
+            host="dev",
+        )
+
+        self.assertTrue(snapshot.available)
+        self.assertEqual(snapshot.sessions, (Target("ssh", "work", "dev"),))
+        self.assertEqual(snapshot.agents, ())
 
     def test_remote_snapshot_resolves_persistence_for_command(self):
         proc = Mock(returncode=0, stdout="", stderr="")
@@ -227,13 +274,14 @@ class DiscoveryPollerTest(unittest.TestCase):
         poller.close()
 
     def test_completed_and_failed_processes_update_snapshots(self):
-        healthy = FakeProcess(0, "work:1:!\n")
+        healthy = FakeProcess(0, "work:@1:%1:1:!:/tmp/tmux\n")
         failed = FakeProcess(255)
         poller = self.make_poller(["dev", "off"], popen=Mock(side_effect=[healthy, failed]), clock=Mock(return_value=0))
 
         self.assertTrue(poller.tick())
         work = Target("ssh", "work", "dev")
-        self.assertEqual(poller.snapshot.remotes["dev"], SourceSnapshot(True, (work,), frozenset({work})))
+        self.assertEqual(poller.snapshot.remotes["dev"].sessions, (work,))
+        self.assertEqual(poller.snapshot.remotes["dev"].bells, frozenset({work}))
         self.assertEqual(poller.snapshot.remotes["off"].error, "remote command exited 255")
         self.assertTrue(healthy.communicated)
 
@@ -262,7 +310,7 @@ class DiscoveryPollerTest(unittest.TestCase):
     def test_timeout_isolated_from_completed_host(self):
         clock = Mock(side_effect=[0, 0, 11])
         slow = FakeProcess()
-        healthy = FakeProcess(0, "work:0:-\n")
+        healthy = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n")
         poller = self.make_poller(["slow", "dev"], popen=Mock(side_effect=[slow, healthy, FakeProcess()]), clock=clock)
 
         poller.tick()
@@ -338,7 +386,7 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(process.wait_timeouts, [1, None])
 
     def test_discard_removes_target_and_cancels_stale_request(self):
-        completed = FakeProcess(0, "work:0:-\n")
+        completed = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n")
         stale = FakeProcess()
         poller = self.make_poller(
             ["dev"], popen=Mock(side_effect=[completed, stale]),
