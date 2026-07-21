@@ -1050,10 +1050,10 @@ class SidebarDrawTest(unittest.TestCase):
         remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", tracked=True)
 
         with patch("mtmux.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["›  dashboard", "  └─ 💻 laptop"])
-            self.assertEqual(_entry_lines(remote, False, set(), None, 30), [" ◆ auth", "  └─ 🌐 dev"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["›  dashboard", "  └─ laptop"])
+            self.assertEqual(_entry_lines(remote, False, set(), None, 30), [" ◆ auth", "  └─ @dev"])
         with patch("mtmux.sidebar._ascii", return_value=True):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), [">  dashboard", "  `- LOCAL laptop"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), [">  dashboard", "  `- laptop"])
 
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
         self.assertNotIn("ssh:", "".join(_entry_lines(remote, False, set(), None, 30)))
@@ -1077,7 +1077,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertTrue(lines[0].isascii())
         self.assertTrue(lines[1].isascii())
-        self.assertIn("SSH", lines[1])
+        self.assertIn("@", lines[1])
         self.assertIn("unavailable", lines[1])
         self.assertIn("...", "".join(lines))
 

@@ -507,12 +507,12 @@ def _entry_lines(
             first = prefix + label + bell
             if slot:
                 first += " " * max(0, width - _cell_width(first) - _cell_width(slot)) + slot
-            source = icon["remote_header"] if entry.target and entry.target.kind == "ssh" else icon["local_header"]
+            host_prefix = "@" if entry.target and entry.target.kind == "ssh" else ""
             suffix = " unavailable" if entry.unavailable_favorite else ""
             branch = "`-" if _ascii() else "└─"
-            meta_prefix = f"  {branch} {source} "
-            host = _truncate_cells(entry.host or "", max(0, width - _cell_width(meta_prefix) - _cell_width(suffix)))
-            return [first, meta_prefix + host + suffix]
+            meta_prefix = f"  {branch} "
+            host = _truncate_cells(entry.host or "", max(0, width - _cell_width(meta_prefix) - _cell_width(host_prefix) - _cell_width(suffix)))
+            return [first, meta_prefix + host_prefix + host + suffix]
         prefix = f"{pointer} {icon[kind]} "
         first = prefix + _truncate_cells(entry.label, max(0, width - _cell_width(prefix) - _cell_width(bell))) + bell
         return [first]
