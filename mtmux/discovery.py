@@ -87,7 +87,11 @@ def _source_result(
 ) -> SourceSnapshot:
     if stdout is None or stderr is None:
         return SourceSnapshot(False, (), frozenset(), "output exceeded 1 MiB")
-    if returncode == 0 or (returncode == 1 and stderr.startswith("no server running on ")):
+    missing_server = returncode == 1 and (
+        stderr.startswith("no server running on ")
+        or (stderr.startswith("error connecting to ") and stderr.strip().endswith("(No such file or directory)"))
+    )
+    if returncode == 0 or missing_server:
         return _parse_source_snapshot(stdout if returncode == 0 else "", kind=kind, host=host)
     return SourceSnapshot(False, (), frozenset(), stderr.strip() or f"remote command exited {returncode}")
 

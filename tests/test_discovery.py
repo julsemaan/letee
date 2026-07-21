@@ -61,8 +61,14 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
     def test_local_no_server_is_available_empty_and_other_failure_is_explicit(self):
         no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/default\n")
+        missing_socket = Mock(
+            returncode=1,
+            stdout="",
+            stderr="error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
+        )
         failure = Mock(returncode=1, stdout="", stderr="tmux: permission denied\n")
-        with patch("mtmux.discovery.subprocess.run", side_effect=[no_server, failure]):
+        with patch("mtmux.discovery.subprocess.run", side_effect=[no_server, missing_socket, failure]):
+            self.assertEqual(local_snapshot(), EMPTY_LOCAL)
             self.assertEqual(local_snapshot(), EMPTY_LOCAL)
             self.assertEqual(local_snapshot().error, "tmux: permission denied")
 
