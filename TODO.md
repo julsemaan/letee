@@ -5,8 +5,6 @@
 - [x] The emoji for remote sessions looks more like ssh than remote
 - [x] Refactor polling loop. The 500ms is tied to the bell refresh and to some UI features which means the UI refreshes slowly in some cases
 - [x] When filtering rows, remove the "new" options
-- [] Start designing agents status in the left bar based on julsemaan/astatus
-  - julsemaan-tmp/html-plans/2026-07-19-1537-automatic-starred-agent-panes.html
 - [x] Make targets for common tasks (dev install, tests, etc)
 - [x] Handle persistent SSH connections via options in mtmux instead of forcing configuration in .ssh/config
 - [x] Don't require double clicks to switch session, clicking once switches to it
@@ -16,14 +14,15 @@
 - [x] Prevent sidebar from being resized live in tmux (interferes with mouse selection to copy/paste) while retaining keyboard resizing
 - [x] Creating a new session opens a text input at the bottom which is not obvious. Find alternatives
 - [x] When hitting enter on a starred session that doesn't exist anymore, create it with that name either locally or on the right host
-- [] The highlighted row when left pane is unfocused makes text hard to read
-- [] The highlight of the active row is too strong and confuses with the cursor
+- [x] The highlighted row when left pane is unfocused makes text hard to read
+- [x] The highlight of the active row is too strong and confuses with the cursor
+- [x] Highlighting the row to mark the new session on a host confuses with the active session. Find a better way to mark the new session
+- [x] Selecting a starred session highlights both the starred session and the one in all sessions. Need to review how to better organize sessions
+
+- [] Start designing agents status in the left bar based on julsemaan/astatus
+  - julsemaan-tmp/html-plans/2026-07-19-1537-automatic-starred-agent-panes.html
+- [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
+- [] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
 - [] When starting a fresh mtmux, there are these bugs
   - [] Default tmux server may not be running which leads to errors
-  - [] Sessions section shows "No starred sessions" but sessions are not starred anymore, they are just "sessions". Change the text for now, a larger refactor will follow
-- [] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
-
-MAY be superseded by UI rework
-- [] Highlighting the row to mark the new session on a host confuses with the active session. Find a better way to mark the new session
-- [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like favorite). See about supporting right-click to open a context menu for the session
-- [x] Selecting a starred session highlights both the starred session and the one in all sessions. Need to review how to better organize sessions
+  - [x] Sessions section shows "No starred sessions" but sessions are not starred anymore, they are just "sessions". Change the text for now, a larger refactor will follow
