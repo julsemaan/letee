@@ -94,6 +94,7 @@ def _init_colors() -> None:
             "unavailable": (6, curses.COLOR_YELLOW, -1, curses.A_DIM),
             "danger": (7, curses.COLOR_RED, -1, 0),
             "hints": (8, teal, -1, curses.A_DIM),
+            "add_entry": (9, charcoal, mint, curses.A_BOLD),
         }
         for name, (pair, fg, bg, attr) in pairs.items():
             curses.init_pair(pair, fg, bg)
@@ -479,10 +480,11 @@ def _entry_lines(
     if entry.kind == "header":
         return [_truncate(entry.label, width)]
     if entry.kind == "add":
-        suffix = icon["create"]
-        label = _truncate_cells(f"{pointer} {entry.label}", max(0, width - _cell_width(suffix) - 1))
-        padding = max(1, width - _cell_width(label) - _cell_width(suffix))
-        return [label + " " * padding + suffix]
+        label = f"{pointer} {icon['create']} {entry.label}"
+        truncated = _truncate_cells(label, width)
+        return [truncated + " " * (width - _cell_width(truncated))]
+    if entry.kind == "spacer":
+        return [""]
     if entry.kind == "host":
         if creation_host is not None and entry.host == creation_host:
             prefix = f"{icon['create']} {entry.label} / new: "
@@ -524,7 +526,7 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
     elif entry.kind == "section":
         attr = _color("section") or curses.A_BOLD
     elif entry.kind == "add":
-        attr = _color("create") or curses.A_BOLD
+        attr = _color("add_entry") or (curses.A_BOLD | curses.A_REVERSE)
     elif entry.kind in ("header", "host"):
         attr = curses.A_BOLD
     elif entry.unavailable_favorite:

@@ -343,6 +343,7 @@ class SidebarColorTest(unittest.TestCase):
                 call(6, curses.COLOR_YELLOW, -1),
                 call(7, curses.COLOR_RED, -1),
                 call(8, 30, -1),
+                call(9, 233, 79),
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
@@ -372,6 +373,7 @@ class SidebarColorTest(unittest.TestCase):
                 call(6, curses.COLOR_YELLOW, -1),
                 call(7, curses.COLOR_RED, -1),
                 call(8, curses.COLOR_CYAN, -1),
+                call(9, curses.COLOR_BLACK, curses.COLOR_CYAN),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], 2 << 8)
@@ -1012,12 +1014,13 @@ class SidebarDrawTest(unittest.TestCase):
             title = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
             self.assertIn(expected, title)
 
-    def test_add_action_puts_plus_at_right_and_uses_dimmed_create_accent(self):
+    def test_add_entry_band_and_left_aligned_plus(self):
         entry = Entry("Add session", "add")
         with patch("mtmux.sidebar._ascii", return_value=False), patch.dict(
-            "mtmux.sidebar._COLOR", {"create": 123}, clear=True
+            "mtmux.sidebar._COLOR", {"add_entry": 123}, clear=True
         ):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 30), ["› Add session               ＋"])
+            self.assertEqual(_entry_lines(entry, True, set(), None, 30), ["› ＋ Add session" + " " * 14])
+            self.assertEqual(_entry_lines(entry, False, set(), None, 30), ["  ＋ Add session" + " " * 14])
             self.assertEqual(_entry_attr(entry, False), 123)
             self.assertEqual(_entry_attr(entry, False, True), _fade(123))
 
