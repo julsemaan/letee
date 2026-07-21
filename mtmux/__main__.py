@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from . import cockpit, sessions
-from .config import ensure_config, load_stars
+from .config import ensure_config, load_sessions
 from .discovery import discover
 from .names import Target, parse_target
 
@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     switch = sub.add_parser("switch", help="switch cockpit target")
     switch.add_argument("target")
 
-    switch_star = sub.add_parser("switch-star", help="switch to numbered starred target")
+    switch_star = sub.add_parser("switch-session", help="switch to numbered tracked target")
     switch_star.add_argument("slot", type=int, choices=range(1, 10))
 
     kill_parser = sub.add_parser("kill", help="kill target tmux session")
@@ -72,10 +72,10 @@ def main(argv: list[str] | None = None) -> int:
         target = parse_target(args.target)
         cockpit.switch(target, sessions.attach_command(target))
         return 0
-    if args.command == "switch-star":
-        favorites = load_stars()
+    if args.command == "switch-session":
+        favorites = load_sessions()
         if args.slot > len(favorites):
-            raise SystemExit(f"No starred session in slot {args.slot}")
+            raise SystemExit(f"No session in slot {args.slot}")
         target = favorites[args.slot - 1]
         cockpit.switch(target, sessions.attach_command(target))
         return 0

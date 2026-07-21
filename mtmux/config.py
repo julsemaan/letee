@@ -90,8 +90,8 @@ def load_hosts() -> list[str]:
         raise SystemExit(f"Invalid config {cfg}: {error}") from error
 
 
-def load_stars() -> list[Target]:
-    path = config_dir() / "stars"
+def load_sessions() -> list[Target]:
+    path = config_dir() / "sessions"
     if not path.exists():
         return []
     favorites: list[Target] = []
@@ -109,7 +109,7 @@ def load_stars() -> list[Target]:
     return favorites
 
 
-def save_stars(favorites: list[Target] | tuple[Target, ...]) -> None:
-    path = config_dir() / "stars"
+def save_sessions(favorites: list[Target] | tuple[Target, ...]) -> None:
+    path = config_dir() / "sessions"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"{target.format()}\n" for target in favorites))

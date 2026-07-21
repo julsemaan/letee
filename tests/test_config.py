@@ -105,31 +105,31 @@ class ConfigTest(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, rf"Invalid config .*Invalid host: {host!r}"):
                     config.load_hosts()
 
-    def test_missing_stars_file_loads_empty(self):
-        self.assertEqual(config.load_stars(), [])
+    def test_missing_sessions_file_loads_empty(self):
+        self.assertEqual(config.load_sessions(), [])
 
-    def test_stars_preserve_order_ignore_blanks_and_deduplicate(self):
-        stars = Path(self.tempdir.name) / "stars"
+    def test_sessions_preserve_order_ignore_blanks_and_deduplicate(self):
+        stars = Path(self.tempdir.name) / "sessions"
         stars.write_text("\nssh:dev:notes\nlocal:work\nssh:dev:notes\n\n")
 
         self.assertEqual(
-            config.load_stars(),
+            config.load_sessions(),
             [config.parse_target("ssh:dev:notes"), config.parse_target("local:work")],
         )
 
-    def test_invalid_star_reports_file_context(self):
-        stars = Path(self.tempdir.name) / "stars"
+    def test_invalid_session_reports_file_context(self):
+        stars = Path(self.tempdir.name) / "sessions"
         stars.write_text("bad target\n")
 
         with self.assertRaisesRegex(SystemExit, rf"Invalid favorite in {stars}"):
-            config.load_stars()
+            config.load_sessions()
 
-    def test_save_stars_preserves_supplied_order(self):
+    def test_save_sessions_preserves_supplied_order(self):
         favorites = [config.parse_target("ssh:dev:work"), config.parse_target("local:notes")]
 
-        config.save_stars(favorites)
+        config.save_sessions(favorites)
 
-        self.assertEqual((Path(self.tempdir.name) / "stars").read_text(), "ssh:dev:work\nlocal:notes\n")
+        self.assertEqual((Path(self.tempdir.name) / "sessions").read_text(), "ssh:dev:work\nlocal:notes\n")
 
 
 if __name__ == "__main__":

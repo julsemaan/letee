@@ -21,17 +21,17 @@ def help_command(prefix: str) -> str:
 
 Navigation
   {prefix} s  focus/open sidebar
-  {prefix} 1-9  switch starred session
+  {prefix} 1-9  switch session
   ?      open help
   q      quit sidebar only
 
 Session actions
-  Enter  switch starred session / open Add / create on host
+  Enter  switch session / open Add / create on host
   a      open grouped local/SSH Add picker
   r      remove selected session (session keeps running)
-  K/J    move starred session up/down
-  x      kill selected session (star remains)
-  /      open Add picker and filter unstarred sessions
+  K/J    move session up/down
+  x      kill selected session (session keeps running)
+  /      open Add picker and filter available sessions
 
 Recovery
   {prefix} d  detach cockpit
@@ -39,8 +39,8 @@ Recovery
   Esc    cancel prompts/filter
 
 Examples
-  /work  find unstarred sessions matching work
-  Enter  recreate a missing star or create on selected host line
+  /work  find available sessions matching work
+  Enter  recreate a missing session or create on selected host line
 """
     return f"printf %s {shlex.quote(text)}; exec sh"
 
@@ -99,7 +99,7 @@ def _install_bindings(prefix: str) -> None:
     tmux.tmux("bind-key", prefix, "send-prefix")
     tmux.tmux("bind-key", "s", "run-shell", FOCUS_SIDEBAR)
     for slot in range(1, 10):
-        tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m mtmux switch-star {slot}")
+        tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m mtmux switch-session {slot}")
 
 
 def _enable_mouse() -> None:

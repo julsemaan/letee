@@ -12,7 +12,7 @@ from typing import Literal
 
 from . import cockpit, sessions
 from .discovery import DiscoveryPoller, SessionSnapshot
-from .config import load_hosts, load_stars, load_status_timeout, save_stars
+from .config import load_hosts, load_sessions, load_status_timeout, save_sessions
 from .names import Target, validate_name
 
 
@@ -37,7 +37,7 @@ class SidebarState:
     creation_text: str = ""
     selected_target: Target | None = None
     selected_index: int = 0
-    selected_starred_section: bool = False
+    selected_tracked: bool = False
     pending_selection: Target | None = None
     favorites: list[Target] = field(default_factory=list)
     status: str = ""
@@ -51,9 +51,8 @@ class Entry:
     kind: str  # section | header | host | session | unavailable
     target: Target | None = None
     host: str | None = None
-    starred: bool = False
     unavailable_favorite: bool = False
-    starred_section: bool = False
+    tracked: bool = False
     shortcut_slot: int | None = None
 
 
@@ -67,8 +66,8 @@ def _ascii() -> bool:
 
 def _icons() -> dict[str, str]:
     if _ascii():
-        return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ">", "starred": "*", "enter": "<-"}
-    return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": "›", "starred": "✱", "enter": "↵"}
+        return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ">", "enter": "<-"}
+    return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": "›", "enter": "↵"}
 
 
 def _init_colors() -> None:
@@ -131,7 +130,7 @@ def _entries(
         slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
         out = [Entry("Add session", "add"), Entry("", "spacer")]
         out.extend(
-            Entry(target.session, "session", target, target.host or hostname, True, target not in available, True, slots.get(target))
+            Entry(target.session, "session", target, target.host or hostname, target not in available, True, slots.get(target))
             for target in favorites
         )
         if len(out) == 2:
@@ -185,11 +184,11 @@ def _selected_index(entries: list[Entry], target: Target | None) -> int:
     return 0
 
 
-def _target_index(entries: list[Entry], target: Target, starred_section: bool = False) -> int | None:
+def _target_index(entries: list[Entry], target: Target, tracked: bool = False) -> int | None:
     matches = [i for i, entry in enumerate(entries) if entry.target == target]
     if not matches:
         return None
-    return next((i for i in matches if entries[i].starred_section == starred_section), matches[0])
+    return next((i for i in matches if entries[i].tracked == tracked), matches[0])
 
 
 def _sync_selection(state: SidebarState, entries: list[Entry]) -> None:
@@ -198,19 +197,19 @@ def _sync_selection(state: SidebarState, entries: list[Entry]) -> None:
         if index is not None:
             state.selected_index = index
             state.selected_target = state.pending_selection
-            state.selected_starred_section = entries[index].starred_section
+            state.selected_tracked = entries[index].tracked
             state.pending_selection = None
         return
     if state.selected_target is not None:
-        index = _target_index(entries, state.selected_target, state.selected_starred_section)
+        index = _target_index(entries, state.selected_target, state.selected_tracked)
         if index is not None:
             state.selected_index = index
-            state.selected_starred_section = entries[index].starred_section
+            state.selected_tracked = entries[index].tracked
             return
     choices = _selectable(entries)
     state.selected_index = min(choices, key=lambda index: abs(index - state.selected_index)) if choices else 0
     state.selected_target = entries[state.selected_index].target if choices else None
-    state.selected_starred_section = entries[state.selected_index].starred_section if choices else False
+    state.selected_tracked = entries[state.selected_index].tracked if choices else False
 
 
 def _transition(
@@ -225,24 +224,24 @@ def _transition(
         return Effect(action, target=target) if target else None
     if action == "create":
         return Effect("create", target=target) if target else None
-    if action == "toggle_favorite" and target:
+    if action == "toggle_session" and target:
         if target in state.favorites:
             state.favorites.remove(target)
-            message = f"unstarred {target.format()}"
+            message = f"removed {target.format()}"
         else:
             state.favorites.append(target)
-            message = f"starred {target.format()}"
+            message = f"added {target.format()}"
         state.selected_target = None if unavailable else target
         return Effect("save_favorites", favorites=tuple(state.favorites), message=message)
-    if action in ("move_favorite_up", "move_favorite_down"):
-        if not target or not state.selected_starred_section or target not in state.favorites:
+    if action in ("move_session_up", "move_session_down"):
+        if not target or not state.selected_tracked or target not in state.favorites:
             return None
         index = state.favorites.index(target)
-        offset = -1 if action == "move_favorite_up" else 1
+        offset = -1 if action == "move_session_up" else 1
         new_index = index + offset
         if not 0 <= new_index < len(state.favorites):
             edge = "first" if offset < 0 else "last"
-            return Effect("status", message=f"already {edge} starred session")
+            return Effect("status", message=f"already {edge} session")
         state.favorites[index], state.favorites[new_index] = state.favorites[new_index], state.favorites[index]
         direction = "up" if offset < 0 else "down"
         return Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()} {direction}")
@@ -261,7 +260,7 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
         if effect.kind in ("switch", "add_switch") and effect.target:
             if effect.kind == "add_switch" and effect.target not in state.favorites:
                 state.favorites.append(effect.target)
-                save_stars(state.favorites)
+                save_sessions(state.favorites)
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
             state.filter_text = ""
             state.filtering = False
@@ -271,7 +270,7 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             sessions.create(effect.target)
             if effect.target not in state.favorites:
                 state.favorites.append(effect.target)
-                save_stars(state.favorites)
+                save_sessions(state.favorites)
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
             state.adding = False
             state.pending_selection = effect.target
@@ -287,7 +286,7 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             cockpit.show_help()
             _set_status(state, "help opened", status_timeout)
         elif effect.kind == "save_favorites":
-            save_stars(effect.favorites or ())
+            save_sessions(effect.favorites or ())
             _set_status(state, effect.message, status_timeout)
         elif effect.kind == "status":
             _set_status(state, effect.message, status_timeout)
@@ -354,7 +353,7 @@ def _bell_targets(
 
 
 def _entry_height(entry: Entry) -> int:
-    return 2 if entry.starred_section else 1
+    return 2 if entry.tracked else 1
 
 
 def _viewport(entries: list[Entry], selected: int, height: int) -> tuple[int, int]:
@@ -500,7 +499,7 @@ def _entry_lines(
         kind = "unavailable" if entry.unavailable_favorite else ("remote" if entry.target and entry.target.kind == "ssh" else "local")
         bell = " BELL" if _ascii() else " 🔔"
         bell = bell if entry.target in bell_targets and entry.target != current_target else ""
-        if entry.starred_section:
+        if entry.tracked:
             prefix = f"{pointer}{icon[kind] if not selected else ' '} "
             slot = f" {entry.shortcut_slot}" if entry.shortcut_slot is not None else ""
             room = max(0, width - _cell_width(prefix) - _cell_width(bell) - _cell_width(slot))
@@ -554,7 +553,7 @@ def _view_index(
     if 0 <= selected < len(entries) and entries[selected].target == current_target:
         return selected
     matches = [i for i, entry in enumerate(entries) if entry.target == current_target]
-    return next((i for i in matches if entries[i].starred_section), matches[0] if matches else selected)
+    return next((i for i in matches if entries[i].tracked), matches[0] if matches else selected)
 
 
 def _draw_entries(
@@ -677,7 +676,7 @@ def run(stdscr: curses.window) -> None:
     curses.curs_set(0)
     _mouse_mask()
     status_timeout = load_status_timeout()
-    state = SidebarState(favorites=load_stars(), selected_target=_current_target())
+    state = SidebarState(favorites=load_sessions(), selected_target=_current_target())
     poller = DiscoveryPoller(load_hosts())
     entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
     state.selected_index = _selected_index(entries, state.selected_target)
@@ -772,7 +771,7 @@ def run(stdscr: curses.window) -> None:
                         continue
                     state.selected_index = index
                     state.selected_target = entries[index].target
-                    state.selected_starred_section = entries[index].starred_section
+                    state.selected_tracked = entries[index].tracked
                     if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):
                         key = curses.KEY_ENTER
                     else:
@@ -805,15 +804,15 @@ def run(stdscr: curses.window) -> None:
             elif key in (curses.KEY_DOWN, ord("j")) and selectable:
                 state.selected_index = selectable[(selectable.index(state.selected_index) + 1) % len(selectable)]
                 state.selected_target = entries[state.selected_index].target
-                state.selected_starred_section = entries[state.selected_index].starred_section
+                state.selected_tracked = entries[state.selected_index].tracked
             elif key in (curses.KEY_UP, ord("k")) and selectable:
                 state.selected_index = selectable[(selectable.index(state.selected_index) - 1) % len(selectable)]
                 state.selected_target = entries[state.selected_index].target
-                state.selected_starred_section = entries[state.selected_index].starred_section
+                state.selected_tracked = entries[state.selected_index].tracked
             elif key == ord("K"):
-                effect = _transition(state, "move_favorite_up")
+                effect = _transition(state, "move_session_up")
             elif key == ord("J"):
-                effect = _transition(state, "move_favorite_down")
+                effect = _transition(state, "move_session_down")
             elif key == ord("a") and not state.adding:
                 state.adding = True
                 state.selected_target = None
@@ -821,7 +820,7 @@ def run(stdscr: curses.window) -> None:
             elif key == ord("r") and not state.adding:
                 entry = entries[state.selected_index]
                 if entry.target:
-                    effect = _transition(state, "toggle_favorite", entry.target)
+                    effect = _transition(state, "toggle_session", entry.target)
             elif key == ord("/"):
                 if not state.adding:
                     state.adding = True

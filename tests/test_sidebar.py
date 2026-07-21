@@ -97,12 +97,12 @@ class FakeScreen:
 
 
 class SidebarViewModeTest(unittest.TestCase):
-    def test_normal_view_contains_only_ordered_stars_and_add_action(self):
-        stars = [Target("ssh", "notes", "dev"), Target("local", "work")]
+    def test_normal_view_contains_only_ordered_sessions_and_add_action(self):
+        sessions = [Target("ssh", "notes", "dev"), Target("local", "work")]
 
-        entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), stars)
+        entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), sessions)
 
-        self.assertEqual([entry.target for entry in entries if entry.kind == "session"], stars)
+        self.assertEqual([entry.target for entry in entries if entry.kind == "session"], sessions)
         self.assertEqual([entry.kind for entry in entries[:2]], ["add", "spacer"])
         self.assertEqual(sidebar._selectable(entries)[0], 0)
 
@@ -114,12 +114,12 @@ class SidebarViewModeTest(unittest.TestCase):
             [("Add session", "add"), ("", "spacer"), ("Press enter to add a session", "hint")],
         )
 
-    def test_add_picker_groups_hosts_and_excludes_stars(self):
-        star = Target("local", "work")
+    def test_add_picker_groups_hosts_and_excludes_tracked(self):
+        tracked_target = Target("local", "work")
 
-        entries = _entries("", snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")}), [star], adding=True)
+        entries = _entries("", snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")}), [tracked_target], adding=True)
 
-        self.assertNotIn(star, [entry.target for entry in entries])
+        self.assertNotIn(tracked_target, [entry.target for entry in entries])
         self.assertEqual([entry.kind for entry in entries], ["host", "session", "host", "session"])
 
     def test_add_picker_filter_preserves_headers_and_hides_create_hosts(self):
@@ -128,12 +128,12 @@ class SidebarViewModeTest(unittest.TestCase):
         self.assertFalse(any(entry.kind == "host" for entry in entries))
         self.assertEqual([entry.kind for entry in entries], ["header", "header", "session"])
 
-    def test_bells_are_limited_to_stars(self):
-        starred = Target("local", "work")
-        unstarred = Target("local", "notes")
+    def test_bells_are_limited_to_tracked(self):
+        tracked = Target("local", "work")
+        untracked = Target("local", "notes")
         discovered = snapshot(local=("work", "notes"), local_bells=("work", "notes"))
 
-        self.assertEqual(_bell_targets(discovered, unstarred, [starred]), {starred})
+        self.assertEqual(_bell_targets(discovered, untracked, [tracked]), {tracked})
 
 
 class SidebarStateTest(unittest.TestCase):
@@ -198,21 +198,21 @@ class SidebarStateTest(unittest.TestCase):
         target = Target("local", "work")
         state = SidebarState(selected_target=target)
 
-        effect = _transition(state, "toggle_favorite")
+        effect = _transition(state, "toggle_session")
 
         self.assertEqual(state.favorites, [target])
-        self.assertEqual(effect, Effect("save_favorites", favorites=(target,), message="starred local:work"))
+        self.assertEqual(effect, Effect("save_favorites", favorites=(target,), message="added local:work"))
 
     def test_reorder_favorite_swaps_and_keeps_selection(self):
         first = Target("local", "first")
         second = Target("local", "second")
         state = SidebarState(
             selected_target=second,
-            selected_starred_section=True,
+            selected_tracked=True,
             favorites=[first, second],
         )
 
-        effect = _transition(state, "move_favorite_up")
+        effect = _transition(state, "move_session_up")
 
         self.assertEqual(state.favorites, [second, first])
         self.assertEqual(state.selected_target, second)
@@ -221,11 +221,11 @@ class SidebarStateTest(unittest.TestCase):
     def test_reorder_favorite_boundaries_skip_save(self):
         target = Target("local", "only")
         for action, message in (
-            ("move_favorite_up", "already first starred session"),
-            ("move_favorite_down", "already last starred session"),
+            ("move_session_up", "already first session"),
+            ("move_session_down", "already last session"),
         ):
             with self.subTest(action=action):
-                state = SidebarState(selected_target=target, selected_starred_section=True, favorites=[target])
+                state = SidebarState(selected_target=target, selected_tracked=True, favorites=[target])
 
                 effect = _transition(state, action)
 
@@ -235,9 +235,9 @@ class SidebarStateTest(unittest.TestCase):
     def test_regular_section_duplicate_cannot_reorder(self):
         first = Target("local", "first")
         second = Target("local", "second")
-        state = SidebarState(selected_target=second, selected_starred_section=False, favorites=[first, second])
+        state = SidebarState(selected_target=second, selected_tracked=False, favorites=[first, second])
 
-        self.assertIsNone(_transition(state, "move_favorite_up"))
+        self.assertIsNone(_transition(state, "move_session_up"))
         self.assertEqual(state.favorites, [first, second])
 
     def test_successful_create_switches_and_sets_pending_selection(self):
@@ -246,7 +246,7 @@ class SidebarStateTest(unittest.TestCase):
         poller = unittest.mock.Mock()
         with (
             patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.save_stars"),
+            patch("mtmux.sidebar.save_sessions"),
             patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
             patch("mtmux.sidebar.cockpit.switch") as switch,
         ):
@@ -268,12 +268,12 @@ class SidebarStateTest(unittest.TestCase):
         poller.assert_has_calls([unittest.mock.call.discard(target), unittest.mock.call.refresh()])
         self.assertEqual(state.selected_target, target)
 
-    def test_add_switch_stars_then_switches(self):
+    def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
         state = SidebarState(adding=True)
         poller = unittest.mock.Mock()
         with (
-            patch("mtmux.sidebar.save_stars") as save,
+            patch("mtmux.sidebar.save_sessions") as save,
             patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
             patch("mtmux.sidebar.cockpit.switch") as switch,
         ):
@@ -283,13 +283,13 @@ class SidebarStateTest(unittest.TestCase):
         save.assert_called_once_with([target])
         switch.assert_called_once_with(target, "attach")
 
-    def test_successful_create_stars_after_creation(self):
+    def test_successful_create_tracks_after_creation(self):
         target = Target("local", "new")
         state = SidebarState(adding=True)
         poller = unittest.mock.Mock()
         with (
             patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.save_stars") as save,
+            patch("mtmux.sidebar.save_sessions") as save,
             patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
             patch("mtmux.sidebar.cockpit.switch"),
         ):
@@ -885,15 +885,15 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-    def test_switching_starred_entry_keeps_focus_in_starred_section(self):
+    def test_switching_tracked_entry_keeps_focus_in_tracked_section(self):
         old = Target("local", "old")
         target = Target("local", "work")
         current = [old]
         entries = [
             Entry("STARRED", "header"),
-            Entry("work", "session", target, starred=True, starred_section=True),
+            Entry("work", "session", target, tracked=True),
             Entry("LOCAL", "header"),
-            Entry("work", "session", target, starred=True),
+            Entry("work", "session", target),
             Entry("old", "session", old),
         ]
         selected = []
@@ -918,12 +918,12 @@ class SidebarDrawTest(unittest.TestCase):
 
 
 
-    def test_only_first_nine_starred_entries_get_slots(self):
+    def test_only_first_nine_tracked_entries_get_slots(self):
         favorites = [Target("local", f"session-{slot}") for slot in range(10)]
 
-        starred = [entry for entry in _entries("", snapshot(), favorites) if entry.starred_section]
+        tracked_entries = [entry for entry in _entries("", snapshot(), favorites) if entry.tracked]
 
-        self.assertEqual([entry.shortcut_slot for entry in starred], [1, 2, 3, 4, 5, 6, 7, 8, 9, None])
+        self.assertEqual([entry.shortcut_slot for entry in tracked_entries], [1, 2, 3, 4, 5, 6, 7, 8, 9, None])
 
 
 
@@ -944,7 +944,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_sections_are_non_selectable_and_mouse_ignores_them(self):
         entries = [
             Entry("✱ STARRED", "section"),
-            Entry("work", "session", Target("local", "work"), starred_section=True),
+            Entry("work", "session", Target("local", "work"), tracked=True),
             Entry("ALL SESSIONS", "section"),
         ]
 
@@ -1023,20 +1023,20 @@ class SidebarDrawTest(unittest.TestCase):
             self.assertEqual(_entry_attr(entry, False), 123)
             self.assertEqual(_entry_attr(entry, False, True), _fade(123))
 
-    def test_title_excludes_star_duplicates_and_stale_favorites(self):
+    def test_title_excludes_tracked_duplicates_and_stale_entries(self):
         screen = FakeScreen(size=(5, 40))
         target = Target("local", "work")
-        entries = [Entry("work", "session", target, starred=True, starred_section=True), Entry("work", "session", target, starred=True), Entry("gone", "session", Target("local", "gone"), starred=True, unavailable_favorite=True, starred_section=True)]
+        entries = [Entry("work", "session", target, tracked=True), Entry("work", "session", target), Entry("gone", "session", Target("local", "gone"), unavailable_favorite=True, tracked=True)]
 
         _draw(screen, entries, 0, "ok", "")
 
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertTrue(title[3].endswith("1 session"))
 
-    def test_numbered_star_is_star_free_and_right_aligned_in_unicode_and_ascii(self):
+    def test_numbered_tracked_is_slot_free_and_right_aligned_in_unicode_and_ascii(self):
         entry = Entry(
             "work", "session", Target("local", "work"), host="laptop",
-            starred=True, starred_section=True, shortcut_slot=3,
+            tracked=True, shortcut_slot=3,
         )
 
         for ascii_mode, expected in ((False, " ● work                      3"), (True, " * work                      3")):
@@ -1045,9 +1045,9 @@ class SidebarDrawTest(unittest.TestCase):
             self.assertEqual(line, expected)
             self.assertNotIn("✱", line)
 
-    def test_starred_entries_render_session_then_source_without_raw_targets(self):
-        local = Entry("dashboard", "session", Target("local", "dashboard"), host="laptop", starred=True, starred_section=True)
-        remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", starred=True, starred_section=True)
+    def test_tracked_entries_render_session_then_source_without_raw_targets(self):
+        local = Entry("dashboard", "session", Target("local", "dashboard"), host="laptop", tracked=True)
+        remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", tracked=True)
 
         with patch("mtmux.sidebar._ascii", return_value=False):
             self.assertEqual(_entry_lines(local, True, set(), None, 30), ["›  dashboard", "  └─ 💻 laptop"])
@@ -1058,8 +1058,8 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
         self.assertNotIn("ssh:", "".join(_entry_lines(remote, False, set(), None, 30)))
 
-    def test_starred_lines_truncate_session_and_metadata_and_keep_bell(self):
-        entry = Entry("s" * 64, "session", Target("ssh", "s" * 64, "host"), host="h" * 64, starred=True, starred_section=True)
+    def test_tracked_lines_truncate_session_and_metadata_and_keep_bell(self):
+        entry = Entry("s" * 64, "session", Target("ssh", "s" * 64, "host"), host="h" * 64, tracked=True)
 
         with patch("mtmux.sidebar._ascii", return_value=False):
             lines = _entry_lines(entry, False, {entry.target}, None, 20)
@@ -1069,8 +1069,8 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(lines[1].endswith("…"))
         self.assertTrue(all(len(line) <= 20 for line in lines))
 
-    def test_ascii_starred_metadata_and_ellipsis_are_ascii_only(self):
-        entry = Entry("session-name", "session", Target("ssh", "session-name", "long-host"), host="long-host", starred=True, starred_section=True, unavailable_favorite=True)
+    def test_ascii_tracked_metadata_and_ellipsis_are_ascii_only(self):
+        entry = Entry("session-name", "session", Target("ssh", "session-name", "long-host"), host="long-host", tracked=True, unavailable_favorite=True)
 
         with patch("mtmux.sidebar._ascii", return_value=True):
             lines = _entry_lines(entry, True, set(), None, 24)
@@ -1081,11 +1081,11 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertIn("unavailable", lines[1])
         self.assertIn("...", "".join(lines))
 
-    def test_active_duplicate_is_highlighted_in_starred_and_all_sections(self):
+    def test_active_duplicate_is_highlighted_in_tracked_and_all_sections(self):
         target = Target("local", "work")
         entries = [
-            Entry("work", "session", target, starred=True, starred_section=True),
-            Entry("work", "session", target, starred=True),
+            Entry("work", "session", target, tracked=True),
+            Entry("work", "session", target),
         ]
         screen = FakeScreen(size=(7, 30))
 
@@ -1095,9 +1095,9 @@ class SidebarDrawTest(unittest.TestCase):
         rows = [call for call in screen.calls if call[0] == "addnstr" and call[3].strip().endswith("work")]
         self.assertEqual([call[5] for call in rows], [123, 123])
 
-    def test_active_starred_styles_both_rows_and_both_rows_map_to_entry(self):
+    def test_active_tracked_styles_both_rows_and_both_rows_map_to_entry(self):
         target = Target("local", "work")
-        entry = Entry("work", "session", target, host="laptop", starred=True, starred_section=True)
+        entry = Entry("work", "session", target, host="laptop", tracked=True)
         screen = FakeScreen(size=(6, 30))
 
         with patch.dict("mtmux.sidebar._COLOR", {"active": 123}, clear=True):
@@ -1108,18 +1108,18 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(_entry_at_row([entry], 0, 1, 6, 1), 0)
         self.assertEqual(_entry_at_row([entry], 0, 2, 6, 1), 0)
 
-    def test_viewport_budgets_two_rows_for_selected_starred_entry(self):
-        entries = [Entry("STARRED", "header"), Entry("work", "session", Target("local", "work"), starred_section=True), Entry("LOCAL", "header")]
+    def test_viewport_budgets_two_rows_for_selected_tracked_entry(self):
+        entries = [Entry("STARRED", "header"), Entry("work", "session", Target("local", "work"), tracked=True), Entry("LOCAL", "header")]
 
         start, end = _viewport(entries, 1, 6)
 
         self.assertLessEqual(start, 1)
         self.assertGreater(end, 1)
-        self.assertLessEqual(sum(2 if entry.starred_section else 1 for entry in entries[start:end]) + int(start > 0) + int(end < len(entries)), 4)
+        self.assertLessEqual(sum(2 if entry.tracked else 1 for entry in entries[start:end]) + int(start > 0) + int(end < len(entries)), 4)
 
-    def test_starred_rows_have_no_star_glyph(self):
+    def test_tracked_rows_have_no_tracked_glyph(self):
         target = Target("local", "work")
-        entry = Entry("work", "session", target, host="laptop", starred=True, starred_section=True)
+        entry = Entry("work", "session", target, host="laptop", tracked=True)
         for ascii_mode, pointer in ((False, "›  work"), (True, ">  work")):
             screen = FakeScreen(size=(7, 30))
             with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
@@ -1129,15 +1129,15 @@ class SidebarDrawTest(unittest.TestCase):
             self.assertNotIn("✱", "".join(rendered))
 
 
-    def test_uppercase_j_moves_selected_starred_target_down_and_persists(self):
+    def test_uppercase_j_moves_selected_tracked_target_down_and_persists(self):
         first = Target("local", "first")
         second = Target("local", "second")
         screen = FakeScreen([ord("J"), ord("q")], size=(10, 40))
         selections = []
 
         with (
-            patch("mtmux.sidebar.load_stars", return_value=[first, second]),
-            patch("mtmux.sidebar.save_stars") as save,
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar.save_sessions") as save,
             patch("mtmux.discovery.local_snapshot", return_value=source("local", ("first", "second"))),
             patch("mtmux.sidebar.load_hosts", return_value=[]),
             patch("mtmux.sidebar.curses.curs_set"),
@@ -1150,7 +1150,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         save.assert_called_once_with((second, first))
         self.assertEqual(selections[-1].target, first)
-        self.assertTrue(selections[-1].starred_section)
+        self.assertTrue(selections[-1].tracked)
 
     def test_failed_kill_shows_error_and_keeps_sidebar_open(self):
         screen = FakeScreen([ord("x"), ord("y"), ord("q")], size=(8, 60))
@@ -1158,7 +1158,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         with (
             patch("mtmux.discovery.local_snapshot", return_value=source("local", ("work",))),
-            patch("mtmux.sidebar.load_stars", return_value=[target]),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
             patch("mtmux.sidebar.load_hosts", return_value=[]),
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar._init_colors"),

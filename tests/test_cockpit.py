@@ -144,7 +144,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_call.assert_not_called()
 
-    def test_bindings_include_sidebar_focus_and_numbered_star_shortcuts(self):
+    def test_bindings_include_sidebar_focus_and_numbered_session_shortcuts(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
@@ -156,7 +156,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "s", "run-shell", cockpit.FOCUS_SIDEBAR),
                 *[
-                    ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m mtmux switch-star {slot}")
+                    ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m mtmux switch-session {slot}")
                     for slot in range(1, 10)
                 ],
             ],
@@ -181,9 +181,9 @@ class CockpitLayoutTest(unittest.TestCase):
         command = cockpit.help_command("C-x")
 
         self.assertIn("C-x s  focus/open sidebar", command)
-        self.assertIn("C-x 1-9  switch starred session", command)
-        self.assertIn("K/J    move starred session up/down", command)
-        self.assertIn("Enter  switch starred session / open Add / create on host", command)
+        self.assertIn("C-x 1-9  switch session", command)
+        self.assertIn("K/J    move session up/down", command)
+        self.assertIn("Enter  switch session / open Add / create on host", command)
         self.assertIn("a      open grouped local/SSH Add picker", command)
         self.assertIn("r      remove selected session", command)
         self.assertNotIn("f      star/unstar", command)
