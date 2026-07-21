@@ -29,3 +29,5 @@
 - [] Start designing agents status in the left bar based on julsemaan/astatus
   - julsemaan-tmp/html-plans/2026-07-19-1537-automatic-starred-agent-panes.html
 - [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
+- [] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger
+- [] Consider having 'Add session' become '+ new' in the topmost header
