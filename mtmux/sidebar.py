@@ -92,10 +92,11 @@ def _init_colors() -> None:
         curses.start_color()
         curses.use_default_colors()
         if getattr(curses, "COLORS", 0) >= 256:
-            charcoal, teal, green, mint, orange = 233, 30, 36, 79, 214
+            charcoal, teal, green, mint, orange, red = 233, 30, 36, 79, 214, 167
         else:
-            charcoal, teal, green, mint, orange = (
-                curses.COLOR_BLACK, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_CYAN, curses.COLOR_YELLOW
+            charcoal, teal, green, mint, orange, red = (
+                curses.COLOR_BLACK, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_CYAN,
+                curses.COLOR_YELLOW, curses.COLOR_RED
             )
         pairs = {
             "title": (1, mint, charcoal, curses.A_BOLD),
@@ -111,7 +112,7 @@ def _init_colors() -> None:
             "slot_active": (11, orange, -1, curses.A_BOLD | curses.A_REVERSE),
             "agent_working": (12, green, -1, 0),
             "agent_submitted": (13, teal, -1, 0),
-            "agent_input_required": (14, orange, -1, curses.A_BOLD),
+            "agent_input_required": (14, red, -1, curses.A_BOLD),
             "agent_auth_required": (15, curses.COLOR_MAGENTA, -1, curses.A_BOLD),
             "agent_failed": (16, curses.COLOR_RED, -1, curses.A_BOLD),
             "agent_rejected": (17, curses.COLOR_RED, -1, curses.A_BOLD),
