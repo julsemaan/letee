@@ -40,4 +40,5 @@
 - [x] Have agents ring bell so that it is easy to navigate to the agent that has finished
 - [x] When using mtmux and creating a new window using tmux's prefix+c, it always creates the window in the first session
 - [x] Don't use orange for input-required, use red
+- [] Have fancy spinner or something like that when an agent is working
 - [] Allow ordering the agent sessions by session order or priority
