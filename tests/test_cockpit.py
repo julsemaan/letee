@@ -168,7 +168,7 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_right_pane_reset("%1", "%2", "C-x")
 
-        command = f"if-shell -F '#{{==:#{{hook_pane}},%2}}' {{ set-option -u -t mtmux @mtmux_current_target ; set-option -u -t mtmux @mtmux_bell_target ; respawn-pane -k -t %2 {cockpit.shlex.quote(cockpit.help_command('C-x'))} ; select-pane -t %1 }}"
+        command = f"if-shell -F '#{{==:#{{hook_pane}},%2}}' {{ set-option -u -t mtmux @mtmux_current_target ; set-option -u -t mtmux @mtmux_current_agent ; set-option -u -t mtmux @mtmux_bell_target ; respawn-pane -k -t %2 {cockpit.shlex.quote(cockpit.help_command('C-x'))} ; select-pane -t %1 }}"
         self.assertEqual(
             calls,
             [
@@ -257,11 +257,26 @@ class CockpitLayoutTest(unittest.TestCase):
             calls,
             [
                 ("set-option", "-t", "mtmux", "@mtmux_current_target", "local:work"),
+                ("set-option", "-u", "-t", "mtmux", "@mtmux_current_agent"),
                 ("set-option", "-u", "-t", "mtmux", "@mtmux_bell_target"),
                 ("respawn-pane", "-k", "-t", "%2", "attach work"),
                 ("select-pane", "-t", "%2"),
             ],
         )
+
+    def test_agent_switch_persists_exact_agent_and_getter_recovers_it(self):
+        calls = []
+        target = cockpit.Target("local", "work")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)),
+        ):
+            cockpit.switch(target, "attach work", "agent-1")
+
+        self.assertIn(("set-option", "-t", "mtmux", "@mtmux_current_agent", "agent-1"), calls)
+        with patch.object(cockpit, "_option", side_effect=["agent-1", ""]):
+            self.assertEqual(cockpit.current_agent(), "agent-1")
+            self.assertIsNone(cockpit.current_agent())
 
     def test_switch_rejects_missing_cockpit(self):
         with patch.object(cockpit, "right_pane", return_value=None):

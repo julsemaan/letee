@@ -46,6 +46,12 @@ class AgentEntry:
     agent_id: str
     agent_name: str
     task_state: str | None
+    runtime_updated_at: datetime | None = None
+    task_status_timestamp: datetime | None = None
+
+    @property
+    def activity_timestamp(self) -> datetime | None:
+        return self.task_status_timestamp or self.runtime_updated_at
 
 
 @dataclass(frozen=True)
@@ -133,6 +139,13 @@ def _status_dir() -> Path:
     return Path.home() / ".local/state/agent-status"
 
 
+def _parse_timestamp(value: object) -> datetime:
+    timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        raise ValueError("timestamp must include timezone")
+    return timestamp.astimezone(timezone.utc)
+
+
 def _parse_agent(payload: object, panes: tuple[PaneTarget, ...], now: datetime) -> AgentEntry | None:
     if not isinstance(payload, dict):
         return None
@@ -142,8 +155,8 @@ def _parse_agent(payload: object, panes: tuple[PaneTarget, ...], now: datetime) 
     if not isinstance(runtime, dict) or runtime.get("lifecycle") != "running" or not isinstance(meta, dict):
         return None
     try:
-        updated = datetime.fromisoformat(str(runtime["updated_at"]).replace("Z", "+00:00"))
-        if updated.tzinfo is None or (now - updated.astimezone(timezone.utc)).total_seconds() > AGENT_STALE_SECONDS:
+        updated = _parse_timestamp(runtime["updated_at"])
+        if (now - updated).total_seconds() > AGENT_STALE_SECONDS:
             return None
     except (KeyError, TypeError, ValueError):
         return None
@@ -156,7 +169,11 @@ def _parse_agent(payload: object, panes: tuple[PaneTarget, ...], now: datetime) 
     state = task.get("state") if isinstance(task, dict) else None
     if state is not None and state not in SUPPORTED_TASK_STATES:
         state = "unknown"
-    return AgentEntry(pane, agent_id, agent_name, state)
+    try:
+        task_timestamp = _parse_timestamp(task["status_timestamp"]) if isinstance(task, dict) and "status_timestamp" in task else None
+    except (TypeError, ValueError):
+        task_timestamp = None
+    return AgentEntry(pane, agent_id, agent_name, state, updated, task_timestamp)
 
 
 def _read_agents(panes: tuple[PaneTarget, ...], records: Iterable[object], now: datetime | None = None) -> tuple[AgentEntry, ...]:

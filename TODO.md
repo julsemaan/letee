@@ -33,6 +33,7 @@
 - [] Consider having 'Add session' become '+ new' in the topmost header
 - [] Drag and drop sessions to reorder them
 
-- [] Make active agent pane colored
-- [] Show last reported status of agent
+- [x] Make active agent pane colored
+- [x] Show last reported status of agent
 - [] Find way to get rid of stale agents
+- [] Only list agents that are part of currently tracked sessions

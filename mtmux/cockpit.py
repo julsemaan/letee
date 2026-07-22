@@ -52,6 +52,7 @@ COCKPIT_OPTION = "@mtmux_cockpit"
 SIDEBAR_PANE_OPTION = "@mtmux_sidebar_pane"
 RIGHT_PANE_OPTION = "@mtmux_right_pane"
 CURRENT_TARGET_OPTION = "@mtmux_current_target"
+CURRENT_AGENT_OPTION = "@mtmux_current_agent"
 BELL_TARGET_OPTION = "@mtmux_bell_target"
 NO_COCKPIT = "No valid mtmux cockpit. Run: mtmux cockpit"
 
@@ -125,7 +126,7 @@ def _install_bell_hook() -> None:
 
 def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
-    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @mtmux_current_target ; set-option -u -t {tmux.SESSION} @mtmux_bell_target ; respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left} }}"
+    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @mtmux_current_target ; set-option -u -t {tmux.SESSION} @mtmux_current_agent ; set-option -u -t {tmux.SESSION} @mtmux_bell_target ; respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left} }}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
@@ -224,9 +225,13 @@ def _require_right_pane() -> str:
     return pane
 
 
-def switch(target: Target, attach_command: str) -> None:
+def switch(target: Target, attach_command: str, agent_id: str | None = None) -> None:
     pane = _require_right_pane()
     tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
+    if agent_id:
+        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_AGENT_OPTION, agent_id)
+    else:
+        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION)
     tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
     tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command)
     tmux.tmux("select-pane", "-t", pane)
@@ -269,6 +274,10 @@ def current_target() -> Target | None:
     except SystemExit:
         pass
     return None
+
+
+def current_agent() -> str | None:
+    return _option(CURRENT_AGENT_OPTION) or None
 
 
 def bell_target() -> Target | None:

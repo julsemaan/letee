@@ -1,4 +1,5 @@
 import curses
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import call, patch
 
@@ -164,12 +165,41 @@ class AgentSidebarTest(unittest.TestCase):
 
         self.assertEqual(_entry_at_row(entries, 0, 4, 8, 0, top=4), 0)
 
-    def test_switch_pane_uses_exact_attach_command(self):
+    def test_switch_pane_uses_exact_attach_command_and_agent_id(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         with patch("mtmux.sidebar.cockpit.switch") as switch:
             _execute(Effect("switch_pane", pane, message="id"), SidebarState(), unittest.mock.Mock(), 5)
 
-        switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work")
+        switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work", "id")
+
+    def test_agent_duration_uses_task_timestamp_then_runtime_fallback(self):
+        now = datetime(2026, 6, 20, 16, 45, 30, tzinfo=timezone.utc)
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        agents = (
+            AgentEntry(pane, "working", "pi", "working", now - timedelta(minutes=9), now - timedelta(seconds=12)),
+            AgentEntry(pane, "idle", "pi", None, now - timedelta(minutes=3)),
+            AgentEntry(pane, "future", "pi", "input-required", now + timedelta(seconds=5)),
+        )
+        entries = _agent_entries(SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=agents), {}))
+
+        with patch("mtmux.sidebar._ascii", return_value=False):
+            lines = {entry.agent_id: _entry_lines(entry, False, set(), None, 40, now=now)[0] for entry in entries}
+
+        self.assertEqual(lines, {
+            "working": "  pi · working · for 12s",
+            "idle": "  pi · idle",
+            "future": "  pi · input-required",
+        })
+
+    def test_duration_formatter_covers_seconds_minutes_hours_and_days(self):
+        self.assertEqual([sidebar._format_duration(seconds) for seconds in (12, 180, 7200, 345600)], ["12s", "3m", "2h", "4d"])
+
+    def test_missing_timestamp_omits_duration_and_narrow_ascii_truncates_safely(self):
+        entry = Entry("pi", "agent", Target("local", "work"), host="laptop", status="working")
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            lines = _entry_lines(entry, False, set(), None, 14)
+        self.assertEqual(lines[0], "  pi · working")
+        self.assertTrue(all(sidebar._cell_width(line) <= 14 for line in lines))
 
 
 class SidebarStateTest(unittest.TestCase):
@@ -348,6 +378,22 @@ class SidebarStateTest(unittest.TestCase):
         switch.assert_not_called()
         self.assertIsNone(state.pending_selection)
         self.assertEqual(state.status, "create failed")
+
+
+    def test_exact_active_agent_color_is_independent_from_selection(self):
+        target = Target("local", "work")
+        entries = [
+            Entry("pi", "agent", target, host="laptop", agent_id="one", status="working"),
+            Entry("pi", "agent", target, host="laptop", agent_id="two", status="working"),
+        ]
+        screen = FakeScreen(size=(8, 40))
+        with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
+            sidebar._draw_entries(screen, entries, 1, 7, 40, set(), None, active_agent_id="one")
+
+        first_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "laptop" in call[3])
+        second_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 4 and "laptop" in call[3])
+        self.assertEqual(first_location[5], 123)
+        self.assertNotEqual(second_location[5], 123)
 
 
 class SidebarColorTest(unittest.TestCase):
@@ -782,6 +828,30 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertIn(("timeout", 50), screen.calls)
         self.assertEqual(calls, [""])
+
+    def test_agent_duration_redraws_each_second_and_restart_reads_active_agent(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        poller = unittest.mock.Mock()
+        poller.snapshot = SessionSnapshot(
+            SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([-1, ord("q")], size=(10, 40))
+        with (
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar.cockpit.current_agent", return_value="id"),
+            patch("mtmux.sidebar.time.time", side_effect=[100, 101]),
+            patch("mtmux.sidebar._draw", return_value=2) as draw,
+        ):
+            run(screen)
+
+        self.assertEqual(draw.call_count, 2)
+        self.assertTrue(all(call.args[-1] == "id" for call in draw.call_args_list))
 
     def test_idle_ui_ticks_do_not_redraw_sidebar(self):
         screen = FakeScreen([-1, -1, ord("q")])

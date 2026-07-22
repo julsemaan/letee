@@ -108,10 +108,39 @@ class DiscoverySnapshotTest(unittest.TestCase):
             now,
         )
 
+        self.assertEqual([agent.agent_id for agent in agents], ["a", "b"])
+        self.assertEqual([agent.task_state for agent in agents], [None, "unknown"])
         self.assertEqual(
-            agents,
-            (AgentEntry(pane, "a", "pi", None), AgentEntry(pane, "b", "pi", "unknown")),
+            [agent.runtime_updated_at for agent in agents],
+            [datetime(2026, 6, 20, 16, 45, tzinfo=timezone.utc)] * 2,
         )
+
+    def test_agent_reader_prefers_valid_task_timestamp_and_ignores_malformed_optional_timestamp(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%1", "/tmp/a")
+        now = datetime(2026, 6, 20, 16, 45, 30, tzinfo=timezone.utc)
+
+        def record(agent_id, timestamp):
+            return {
+                "schema_version": "agent-status/v1alpha1",
+                "agent_id": agent_id,
+                "agent_name": "pi",
+                "runtime": {"lifecycle": "running", "updated_at": "2026-06-20T16:45:00Z"},
+                "task": {"state": "working", "status_timestamp": timestamp},
+                "x_meta": {"tmux_socket": "/tmp/a", "tmux_pane": "%1"},
+            }
+
+        agents = {
+            agent.agent_id: agent
+            for agent in _read_agents(
+                (pane,),
+                [record("valid", "2026-06-20T16:45:12Z"), record("malformed", "not-a-date")],
+                now,
+            )
+        }
+
+        self.assertEqual(agents["valid"].task_status_timestamp, datetime(2026, 6, 20, 16, 45, 12, tzinfo=timezone.utc))
+        self.assertEqual(agents["malformed"].task_status_timestamp, None)
+        self.assertEqual(agents["malformed"].activity_timestamp, agents["malformed"].runtime_updated_at)
 
     def test_ssh_command_preserves_discovery_options_with_optional_persistence(self):
         base = (

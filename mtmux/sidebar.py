@@ -8,6 +8,7 @@ import textwrap
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 
 from . import cockpit, sessions
@@ -62,6 +63,8 @@ class Entry:
     pane_target: PaneTarget | None = None
     agent_id: str | None = None
     status: str | None = None
+    runtime_updated_at: datetime | None = None
+    task_status_timestamp: datetime | None = None
 
 
 _COLOR: dict[str, int] = {}
@@ -196,6 +199,8 @@ def _agent_entries(snapshot: SessionSnapshot) -> list[Entry]:
             pane_target=agent.pane_target,
             agent_id=agent.agent_id,
             status=agent.task_state or "idle",
+            runtime_updated_at=agent.runtime_updated_at,
+            task_status_timestamp=agent.task_status_timestamp,
         )
         for agent in snapshot.agents
     ]
@@ -322,7 +327,7 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             state.selected_target = effect.target
             _set_status(state, f"switched {effect.target.format()}", status_timeout)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target))
+            cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
             state.selected_agent_key = (effect.target, effect.message)
             _set_status(state, f"switched {effect.target.target.format()}", status_timeout)
         elif effect.kind == "create" and isinstance(effect.target, Target):
@@ -537,6 +542,17 @@ def _truncate_cells(text: str, width: int) -> str:
     return kept + ellipsis if kept else _truncate(ellipsis, width)
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 60 * 60:
+        return f"{seconds // 60}m"
+    if seconds < 24 * 60 * 60:
+        return f"{seconds // (60 * 60)}h"
+    return f"{seconds // (24 * 60 * 60)}d"
+
+
 def _entry_lines(
     entry: Entry,
     selected: bool,
@@ -545,6 +561,7 @@ def _entry_lines(
     width: int,
     creation_host: str | None = None,
     creation_text: str = "",
+    now: datetime | None = None,
 ) -> list[str]:
     icon = _icons()
     pointer = icon["selected"] if selected else " "
@@ -578,8 +595,14 @@ def _entry_lines(
         separator = " · "
         prefix = f"{pointer} "
         status = entry.status or "unknown"
-        name = _truncate_cells(entry.label, max(0, width - _cell_width(prefix + separator + status)))
-        first = prefix + name + separator + status
+        timestamp = entry.task_status_timestamp or entry.runtime_updated_at
+        detail = ""
+        if status == "working" and timestamp:
+            duration = _format_duration(((now or datetime.now(timezone.utc)) - timestamp).total_seconds())
+            detail = f" · for {duration}"
+        suffix = separator + status + detail
+        name = _truncate_cells(entry.label, max(0, width - _cell_width(prefix + suffix)))
+        first = _truncate_cells(prefix + name + suffix, width)
         branch = "`-" if _ascii() else "└─"
         location_prefix = f"  {branch} "
         location = f"{entry.host} · {entry.target.session if entry.target else ''}"
@@ -669,6 +692,8 @@ def _draw_entries(
     creation_text: str = "",
     top: int = 1,
     scroll_offset: int | None = None,
+    active_agent_id: str | None = None,
+    now: datetime | None = None,
 ) -> tuple[int, int] | None:
     cursor = None
     view_index = _view_index(entries, selected, current_target, dimmed)
@@ -684,12 +709,13 @@ def _draw_entries(
         entry = entries[idx]
         selected_entry = idx == selected
         active_entry = entry.target is not None and entry.target == current_target
+        active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
         lines = _entry_lines(
             entry, selected_entry and not dimmed, bell_targets, current_target, w,
-            creation_host, creation_text,
+            creation_host, creation_text, now,
         )
         host_selected = selected_entry and entry.kind == "host" and not dimmed
-        base_attr = _entry_attr(entry, active_entry or host_selected, dimmed)
+        base_attr = _entry_attr(entry, active_entry or active_agent or host_selected, dimmed)
         slot_badge = ""
         slot_width = 0
         if entry.tracked and entry.shortcut_slot is not None:
@@ -698,7 +724,7 @@ def _draw_entries(
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
-            attr = _fade(base_attr) if line_number and not active_entry else base_attr
+            attr = _fade(base_attr) if line_number and not (active_entry or active_agent) else base_attr
             if line_number == 0 and slot_width:
                 if selected_entry and not dimmed:
                     slot_badge = f" {ico['selected']} "
@@ -768,6 +794,8 @@ def _draw(
     agent_selected: int = 0,
     focused_region: str = "sessions",
     agent_rows: int | None = None,
+    active_agent_id: str | None = None,
+    now: datetime | None = None,
 ) -> int:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -809,6 +837,7 @@ def _draw(
         _draw_entries(
             stdscr, agents, agent_selected, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
+            active_agent_id=active_agent_id, now=now,
         )
     else:
         stdscr.addnstr(separator + 1, 0, "  No active agents", max(0, w - 1), curses.A_DIM)
@@ -832,6 +861,7 @@ def run(stdscr: curses.window) -> None:
     state.selected_index = _selected_index(entries, state.selected_target)
     _sync_selection(state, entries)
     cockpit_bell_target: Target | None = None
+    active_agent_id: str | None = None
     next_cockpit_bell_poll = 0.0
     rendered: tuple[object, ...] | None = None
     footer_height = 0
@@ -861,6 +891,7 @@ def run(stdscr: curses.window) -> None:
                 state.selected_index = selectable[0]
             if now >= next_cockpit_bell_poll:
                 cockpit_bell_target = cockpit.bell_target()
+                active_agent_id = cockpit.current_agent()
                 next_cockpit_bell_poll = now + COCKPIT_BELL_POLL_INTERVAL
             bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
             current_target = _current_target()
@@ -874,7 +905,8 @@ def run(stdscr: curses.window) -> None:
                 state.filtering, state.adding, state.creation_host, state.creation_text,
                 frozenset(bell_targets), current_target, dimmed, stdscr.getmaxyx(),
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
-                state.focused_region, state.agent_rows,
+                state.focused_region, state.agent_rows, active_agent_id,
+                int(time.time()) if agent_entries else None,
             )
             if render_state != rendered:
                 footer_height = _draw(
@@ -882,6 +914,7 @@ def run(stdscr: curses.window) -> None:
                     state.filtering, bell_targets, current_target, dimmed,
                     state.creation_host, state.creation_text, state.adding, state.scroll_offset,
                     agent_entries, state.agent_selected_index, state.focused_region, state.agent_rows,
+                    active_agent_id,
                 )
                 rendered = render_state
             try:
