@@ -47,3 +47,4 @@
 - [x] There seems to be some idle timeouts happening with the SSH sessions and they are not kept alive if I'm not active within mtmux
 - [x] When dealing with SSH reconnection or initial connection, show that instead of "unavailable"
 - [] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
+- [] Allow having multiple mtmux cockpit
