@@ -1091,7 +1091,7 @@ def run(stdscr: curses.window) -> None:
                 continue
             if key == curses.KEY_MOUSE:
                 try:
-                    _, _, row, _, mouse_state = curses.getmouse()
+                    _, mouse_col, row, _, mouse_state = curses.getmouse()
                 except (curses.error, TypeError, ValueError):
                     continue
                 if not isinstance(row, int) or not isinstance(mouse_state, int):
@@ -1140,19 +1140,19 @@ def run(stdscr: curses.window) -> None:
                         entry = agent_entries[index]
                         state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
                         if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0) and entry.kind == "order":
-                            _, mouse_col, _, _, _ = curses.getmouse()
                             # ponytail: column math on rendered string; fixed offsets per word position
                             prefix = "> Order:  " if _ascii() else "› Order:  "
                             pri_word = "PRIORITY" if _ascii() else "Priority"
                             ses_word = "SESSION" if _ascii() else "Session"
                             pri_start = _cell_width(prefix)
                             ses_start = pri_start + _cell_width(pri_word) + 2
-                            if pri_start <= mouse_col < pri_start + _cell_width(pri_word):
-                                state.agent_ordering = "priority"
-                                rebuild()
-                            elif ses_start <= mouse_col < ses_start + _cell_width(ses_word):
-                                state.agent_ordering = "session"
-                                rebuild()
+                            if isinstance(mouse_col, int):
+                                if pri_start <= mouse_col < pri_start + _cell_width(pri_word):
+                                    state.agent_ordering = "priority"
+                                    rebuild()
+                                elif ses_start <= mouse_col < ses_start + _cell_width(ses_word):
+                                    state.agent_ordering = "session"
+                                    rebuild()
                             continue
                         if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0) and entry.pane_target:
                             _execute(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""), state, poller, status_timeout)
