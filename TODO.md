@@ -42,7 +42,7 @@
 - [x] Don't use orange for input-required, use red
 - [] Have fancy spinner or something like that when an agent is working
 - [] Allow ordering the agent sessions by session order or priority
-- [] The agents pane doesn't show @host like the sessions do
+- [x] The agents pane doesn't show @host like the sessions do
 - [] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
 - [x] There seems to be some idle timeouts happening with the SSH sessions and they are not kept alive if I'm not active within mtmux
 - [x] When dealing with SSH reconnection or initial connection, show that instead of "unavailable"

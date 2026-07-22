@@ -172,7 +172,7 @@ def _entries(
                 target.session,
                 "session",
                 target,
-                target.host or hostname,
+                target.host or "localhost",
                 unavailable_favorite=status is not None,
                 tracked=True,
                 shortcut_slot=slots.get(target),
@@ -220,7 +220,7 @@ def _agent_entries(snapshot: SessionSnapshot, favorites: list[Target]) -> list[E
             agent.agent_name,
             "agent",
             agent.pane_target.target,
-            agent.pane_target.target.host or socket.gethostname(),
+            agent.pane_target.target.host or "localhost",
             pane_target=agent.pane_target,
             agent_id=agent.agent_id,
             status=agent.task_state or "idle",
@@ -668,7 +668,7 @@ def _entry_lines(
         first = _truncate_cells(prefix + name + suffix, width)
         branch = "`-" if _ascii() else "└─"
         location_prefix = f"  {branch} "
-        location = f"{entry.host} · {entry.target.session if entry.target else ''}"
+        location = f"@{entry.host} · {entry.target.session if entry.target else ''}"
         return [_truncate_cells(first, width), location_prefix + _truncate_cells(location, max(0, width - _cell_width(location_prefix)))]
     if entry.kind == "session":
         kind = "unavailable" if entry.unavailable_favorite else ("remote" if entry.target and entry.target.kind == "ssh" else "local")
@@ -679,7 +679,7 @@ def _entry_lines(
             room = max(0, width - _cell_width(prefix) - _cell_width(bell))
             label = _truncate_cells(entry.label, room)
             first = prefix + label + bell
-            host_prefix = "@" if entry.target and entry.target.kind == "ssh" else ""
+            host_prefix = "@"
             status = (entry.status or "unavailable").replace("…", "...") if _ascii() else (entry.status or "unavailable")
             suffix = f" {status}" if entry.unavailable_favorite else ""
             branch = "`-" if _ascii() else "└─"

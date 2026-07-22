@@ -202,7 +202,19 @@ class AgentSidebarTest(unittest.TestCase):
 
         self.assertEqual(entry.pane_target, pane)
         with patch("mtmux.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ dev · work"])
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ @dev · work"])
+
+    def test_local_agent_location_uses_localhost(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (pane.target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", None),)),
+            {},
+        )
+
+        entry = _agent_entries(data, [pane.target])[0]
+
+        with patch("mtmux.sidebar._ascii", return_value=False):
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ @localhost · work")
 
     def test_draw_shows_agent_divider_and_empty_state(self):
         screen = FakeScreen(size=(10, 40))
@@ -1383,14 +1395,16 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(line_call[5], 123)
 
     def test_tracked_entries_render_session_then_source_without_raw_targets(self):
-        local = Entry("dashboard", "session", Target("local", "dashboard"), host="laptop", tracked=True)
+        with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"):
+            local = next(entry for entry in _entries("", snapshot(local=("dashboard",)), [Target("local", "dashboard")]) if entry.kind == "session")
         remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", tracked=True)
 
+        self.assertEqual(local.host, "localhost")
         with patch("mtmux.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["› dashboard", "  └─ laptop"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["dashboard", "  └─ @localhost"])
             self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["  auth", "  └─ @dev"])
         with patch("mtmux.sidebar._ascii", return_value=True):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["> dashboard", "  `- laptop"])
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["dashboard", "  `- @localhost"])
 
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
         self.assertNotIn("ssh:", "".join(_entry_lines(remote, False, set(), None, 30)))
