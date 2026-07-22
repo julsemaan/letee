@@ -127,6 +127,8 @@ Normal sidebar puts `Add session` first, followed by sessions in persisted order
 
 Agent records are read from `$AGENT_STATUS_DIR`, `$XDG_STATE_HOME/agent-status`, or `~/.local/state/agent-status`, in that order. Local and remote running agents updated within 60 seconds are correlated by exact tmux socket and pane ID. Selecting agent navigates to exact server, window, and pane; active agent name and location remain orange independently of keyboard selection. Working agents show `for <duration>`; other states show no duration. Working durations prefer `task.status_timestamp` and fall back to `runtime.updated_at`; unusable optional timestamps omit duration. Task state keeps its semantic color; attention states remain bold and idle/canceled remain dim without color. Agents are discovered automatically, but only agents in tracked sessions appear. Agents cannot be added, removed, reordered, or killed as favorites.
 
+When a tracked agent changes from `working` to `idle`, `completed`, `input-required`, `auth-required`, `failed`, `rejected`, or `canceled`, sidebar beeps once and marks that exact pane/agent with `🔔` (`BELL` in ASCII mode). Initial discovery does not alert. Marker survives later state changes until exact pane opens, is already active during discovery, disappears from discovery, or sidebar restarts.
+
 ## Mouse controls
 
 - click session row: select and switch

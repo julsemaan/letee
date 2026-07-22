@@ -48,6 +48,8 @@ class SidebarState:
     focused_region: Literal["sessions", "agents"] = "sessions"
     agent_selected_index: int = 0
     selected_agent_key: tuple[PaneTarget, str] | None = None
+    agent_states: dict[tuple[PaneTarget, str], str] = field(default_factory=dict)
+    agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_rows: int | None = None
 
 
@@ -215,6 +217,32 @@ def _focused_agent_id(snapshot: SessionSnapshot, current_target: Target | None, 
     return next((agent.agent_id for agent in snapshot.agents if agent.pane_target in focused), None)
 
 
+def _update_agent_alerts(
+    state: SidebarState, snapshot: SessionSnapshot, current_target: Target | None
+) -> bool:
+    attention_states = {"idle", "completed", "input-required", "auth-required", "failed", "rejected", "canceled"}
+    tracked = set(state.favorites)
+    agents = {
+        (agent.pane_target, agent.agent_id): agent.task_state or "idle"
+        for agent in snapshot.agents
+        if agent.pane_target.target in tracked
+    }
+    active = {
+        key
+        for key in agents
+        if key[0] in snapshot.focused_panes and key[0].target == current_target
+    }
+    new_alerts = {
+        key for key, status in agents.items()
+        if state.agent_states.get(key) == "working" and status in attention_states and key not in active
+    }
+    state.agent_alerts.intersection_update(agents)
+    state.agent_alerts.difference_update(active)
+    state.agent_alerts.update(new_alerts)
+    state.agent_states = agents
+    return bool(new_alerts)
+
+
 def _selectable(entries: list[Entry]) -> list[int]:
     return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "add")]
 
@@ -338,6 +366,7 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
             state.selected_agent_key = (effect.target, effect.message)
+            state.agent_alerts.discard(state.selected_agent_key)
             _set_status(state, f"switched {effect.target.target.format()}", status_timeout)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
@@ -571,6 +600,7 @@ def _entry_lines(
     creation_host: str | None = None,
     creation_text: str = "",
     now: datetime | None = None,
+    agent_alerts: set[tuple[PaneTarget, str]] | None = None,
 ) -> list[str]:
     icon = _icons()
     pointer = icon["selected"] if selected else " "
@@ -602,6 +632,8 @@ def _entry_lines(
         return [_truncate(label + suffix, width)]
     if entry.kind == "agent":
         separator = " · "
+        alert = " BELL" if _ascii() else " 🔔"
+        alert = alert if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else ""
         prefix = f"{pointer} "
         status = entry.status or "unknown"
         timestamp = entry.task_status_timestamp or entry.runtime_updated_at
@@ -609,7 +641,7 @@ def _entry_lines(
         if status == "working" and timestamp:
             duration = _format_duration(((now or datetime.now(timezone.utc)) - timestamp).total_seconds())
             detail = f" · for {duration}"
-        suffix = separator + status + detail
+        suffix = separator + status + detail + alert
         name = _truncate_cells(entry.label, max(0, width - _cell_width(prefix + suffix)))
         first = _truncate_cells(prefix + name + suffix, width)
         branch = "`-" if _ascii() else "└─"
@@ -703,6 +735,7 @@ def _draw_entries(
     scroll_offset: int | None = None,
     active_agent_id: str | None = None,
     now: datetime | None = None,
+    agent_alerts: set[tuple[PaneTarget, str]] | None = None,
 ) -> tuple[int, int] | None:
     cursor = None
     view_index = _view_index(entries, selected, current_target, dimmed)
@@ -721,7 +754,7 @@ def _draw_entries(
         active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
         lines = _entry_lines(
             entry, selected_entry and not dimmed, bell_targets, current_target, w,
-            creation_host, creation_text, now,
+            creation_host, creation_text, now, agent_alerts,
         )
         focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
         base_attr = _entry_attr(entry, active_entry or active_agent or focused_entry, dimmed)
@@ -805,6 +838,7 @@ def _draw(
     agent_rows: int | None = None,
     active_agent_id: str | None = None,
     now: datetime | None = None,
+    agent_alerts: set[tuple[PaneTarget, str]] | None = None,
 ) -> int:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -846,7 +880,7 @@ def _draw(
         _draw_entries(
             stdscr, agents, agent_selected, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
-            active_agent_id=active_agent_id, now=now,
+            active_agent_id=active_agent_id, now=now, agent_alerts=agent_alerts,
         )
     else:
         stdscr.addnstr(separator + 1, 0, "  No active agents", max(0, w - 1), curses.A_DIM)
@@ -867,6 +901,7 @@ def run(stdscr: curses.window) -> None:
     poller = DiscoveryPoller(load_hosts())
     entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
     agent_entries = _agent_entries(poller.snapshot, state.favorites)
+    _update_agent_alerts(state, poller.snapshot, state.selected_target)
     state.selected_index = _selected_index(entries, state.selected_target)
     _sync_selection(state, entries)
     cockpit_bell_target: Target | None = None
@@ -895,7 +930,9 @@ def run(stdscr: curses.window) -> None:
                 state.status_deadline = None
             current_target = _current_target()
             active_remote_host = current_target.host if current_target and current_target.kind == "ssh" else None
+            agent_alert = False
             if poller.tick(active_remote_host):
+                agent_alert = _update_agent_alerts(state, poller.snapshot, current_target)
                 rebuild()
             selectable = _selectable(entries)
             if selectable and state.selected_index not in selectable:
@@ -907,7 +944,7 @@ def run(stdscr: curses.window) -> None:
             bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
             active_agent_id = _focused_agent_id(poller.snapshot, current_target, active_agent_id)
             visible_bells = bell_targets - ({current_target} if current_target else set())
-            if visible_bells - state.rang_bells:
+            if visible_bells - state.rang_bells or agent_alert:
                 curses.beep()
             state.rang_bells = bell_targets
             dimmed = not _pane_active()
@@ -917,7 +954,7 @@ def run(stdscr: curses.window) -> None:
                 frozenset(bell_targets), current_target, dimmed, stdscr.getmaxyx(),
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
-                int(time.time()) if agent_entries else None,
+                frozenset(state.agent_alerts), int(time.time()) if agent_entries else None,
             )
             if render_state != rendered:
                 footer_height = _draw(
@@ -925,7 +962,7 @@ def run(stdscr: curses.window) -> None:
                     state.filtering, bell_targets, current_target, dimmed,
                     state.creation_host, state.creation_text, state.adding, state.scroll_offset,
                     agent_entries, state.agent_selected_index, state.focused_region, state.agent_rows,
-                    active_agent_id,
+                    active_agent_id, agent_alerts=state.agent_alerts,
                 )
                 rendered = render_state
             try:

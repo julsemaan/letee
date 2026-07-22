@@ -43,6 +43,7 @@ from mtmux.sidebar import (
     _sync_selection,
     _transition,
     _execute,
+    _update_agent_alerts,
     _viewport,
     main,
     run,
@@ -213,6 +214,92 @@ class AgentSidebarTest(unittest.TestCase):
             lines = _entry_lines(entry, False, set(), None, 14)
         self.assertEqual(lines[0], "  pi · working")
         self.assertTrue(all(sidebar._cell_width(line) <= 14 for line in lines))
+
+
+class AgentAlertTest(unittest.TestCase):
+    def setUp(self):
+        self.target = Target("local", "work")
+        self.pane = PaneTarget(self.target, "@1", "%2", "/tmp/tmux")
+        self.state = SidebarState(favorites=[self.target])
+
+    def update(self, *agents, focused=(), current_target=None):
+        data = SessionSnapshot(
+            SourceSnapshot(True, (self.target,), frozenset(), agents=tuple(agents), focused_panes=frozenset(focused)),
+            {},
+        )
+        return _update_agent_alerts(self.state, data, current_target)
+
+    def agent(self, agent_id="id", status="working", pane=None):
+        return AgentEntry(pane or self.pane, agent_id, "pi", status)
+
+    def test_initial_idle_agent_does_not_alert(self):
+        self.assertFalse(self.update(self.agent(status="idle")))
+        self.assertEqual(self.state.agent_alerts, set())
+
+    def test_working_to_attention_transition_alerts_once(self):
+        self.update(self.agent())
+
+        self.assertTrue(self.update(self.agent(status="completed")))
+        self.assertFalse(self.update(self.agent(status="completed")))
+        self.assertEqual(self.state.agent_alerts, {(self.pane, "id")})
+
+    def test_alert_persists_when_agent_resumes_working(self):
+        self.update(self.agent())
+        self.update(self.agent(status="input-required"))
+
+        self.assertFalse(self.update(self.agent()))
+        self.assertEqual(self.state.agent_alerts, {(self.pane, "id")})
+
+    def test_focused_exact_pane_does_not_alert_and_clears_existing_alert(self):
+        self.update(self.agent())
+        self.assertFalse(self.update(self.agent(status="failed"), focused=(self.pane,), current_target=self.target))
+        self.assertEqual(self.state.agent_alerts, set())
+
+        self.update(self.agent())
+        self.update(self.agent(status="failed"))
+        self.assertFalse(self.update(self.agent(status="failed"), focused=(self.pane,), current_target=self.target))
+        self.assertEqual(self.state.agent_alerts, set())
+
+    def test_focused_pane_in_background_session_alerts(self):
+        self.update(self.agent(), focused=(self.pane,), current_target=self.target)
+
+        self.assertTrue(
+            self.update(
+                self.agent(status="idle"),
+                focused=(self.pane,),
+                current_target=Target("local", "other"),
+            )
+        )
+        self.assertEqual(self.state.agent_alerts, {(self.pane, "id")})
+
+    def test_same_agent_id_in_different_panes_stays_distinct(self):
+        other = PaneTarget(self.target, "@1", "%3", "/tmp/tmux")
+        self.update(self.agent(), self.agent(pane=other))
+
+        self.assertTrue(self.update(self.agent(status="completed"), self.agent(pane=other)))
+        self.assertEqual(self.state.agent_alerts, {(self.pane, "id")})
+
+    def test_missing_agent_drops_alert_and_prior_state(self):
+        self.update(self.agent())
+        self.update(self.agent(status="canceled"))
+
+        self.assertFalse(self.update())
+        self.assertEqual(self.state.agent_alerts, set())
+        self.assertEqual(self.state.agent_states, {})
+
+    def test_successful_exact_pane_switch_clears_alert(self):
+        key = (self.pane, "id")
+        self.state.agent_alerts.add(key)
+        with patch("mtmux.sidebar.cockpit.switch"):
+            _execute(Effect("switch_pane", self.pane, message="id"), self.state, unittest.mock.Mock(), 5)
+        self.assertNotIn(key, self.state.agent_alerts)
+
+    def test_agent_alert_marker_has_unicode_and_ascii_forms(self):
+        entry = Entry("pi", "agent", self.target, pane_target=self.pane, agent_id="id", status="completed")
+        for ascii_mode, marker in ((False, "🔔"), (True, "BELL")):
+            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+                line = _entry_lines(entry, False, set(), None, 40, agent_alerts={(self.pane, "id")})[0]
+            self.assertIn(marker, line)
 
 
 class SidebarStateTest(unittest.TestCase):
@@ -1005,7 +1092,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._entries", return_value=entries),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args: selected.append(index) or 1),
+            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or 1),
             patch("mtmux.sidebar.sessions.create") as create,
         ):
             run(screen)
@@ -1095,7 +1182,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._entries", return_value=entries),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", side_effect=lambda: current[0]),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args: selected.append(index) or 2),
+            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or 2),
             patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: current.__setitem__(0, target)),
         ):
             run(screen)
