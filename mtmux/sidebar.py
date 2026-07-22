@@ -524,7 +524,7 @@ def _entry_at_row(
     entries: list[Entry], selected: int, row: int, height: int, footer_height: int, top: int = 1,
     scroll_offset: int | None = None,
 ) -> int | None:
-    content_height = height - footer_height - top + 2
+    content_height = height - footer_height - top + 1
     start, end = _viewport(entries, selected, content_height, scroll_offset)
     entry_row = row - top - int(start > 0)
     if entry_row < 0 or row >= height - footer_height:
@@ -1065,7 +1065,7 @@ def run(stdscr: curses.window) -> None:
                         continue
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
                     index = _entry_at_row(
-                        entries, view_index, row, stdscr.getmaxyx()[0], footer_height,
+                        entries, view_index, row, separator + 1, 0,
                         2 if state.filtering else 1,
                         state.scroll_offset,
                     )
