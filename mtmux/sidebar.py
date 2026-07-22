@@ -206,6 +206,13 @@ def _agent_entries(snapshot: SessionSnapshot) -> list[Entry]:
     ]
 
 
+def _focused_agent_id(snapshot: SessionSnapshot, current_target: Target | None, fallback: str | None) -> str | None:
+    focused = {pane for pane in snapshot.focused_panes if pane.target == current_target}
+    if not focused:
+        return fallback
+    return next((agent.agent_id for agent in snapshot.agents if agent.pane_target in focused), None)
+
+
 def _selectable(entries: list[Entry]) -> list[int]:
     return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "add")]
 
@@ -895,6 +902,7 @@ def run(stdscr: curses.window) -> None:
                 next_cockpit_bell_poll = now + COCKPIT_BELL_POLL_INTERVAL
             bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
             current_target = _current_target()
+            active_agent_id = _focused_agent_id(poller.snapshot, current_target, active_agent_id)
             visible_bells = bell_targets - ({current_target} if current_target else set())
             if visible_bells - state.rang_bells:
                 curses.beep()

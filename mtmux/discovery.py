@@ -17,7 +17,7 @@ from .names import PaneTarget, Target, validate_host
 from .sessions import ssh_command
 
 
-PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{socket_path}"
+PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}"
 PANES_COMMAND = f'tmux list-panes -a -F "{PANES_FORMAT}"'
 REMOTE_SEPARATOR = "__MTMUX_AGENT_STATUS__"
 _REMOTE_READER = """import glob,json,os,pathlib
@@ -62,6 +62,7 @@ class SourceSnapshot:
     error: str | None = None
     panes: tuple[PaneTarget, ...] = ()
     agents: tuple[AgentEntry, ...] = ()
+    focused_panes: frozenset[PaneTarget] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,12 @@ class SessionSnapshot:
         )
         return tuple(sorted(agents, key=_agent_sort_key))
 
+    @property
+    def focused_panes(self) -> frozenset[PaneTarget]:
+        return self.local.focused_panes.union(
+            *(snapshot.focused_panes for snapshot in self.remotes.values() if snapshot and snapshot.available)
+        )
+
 
 UNAVAILABLE = SourceSnapshot(False, (), frozenset())
 
@@ -113,11 +120,17 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None) -> 
     sessions: list[Target] = []
     bells: set[Target] = set()
     panes: list[PaneTarget] = []
+    focused_panes: set[PaneTarget] = set()
     for line in text.splitlines():
-        parts = line.split(":", 5)
-        if len(parts) != 6:
-            continue
-        name, window_id, pane_id, bell_flag, window_flags, socket_path = parts
+        parts = line.split(":", 7)
+        if len(parts) == 8 and parts[5] in ("0", "1") and parts[6] in ("0", "1"):
+            name, window_id, pane_id, bell_flag, window_flags, pane_active, window_active, socket_path = parts
+        else:
+            parts = line.split(":", 5)
+            if len(parts) != 6:
+                continue
+            name, window_id, pane_id, bell_flag, window_flags, socket_path = parts
+            pane_active = window_active = "0"
         try:
             target = Target("local", name) if kind == "local" else Target("ssh", name, host)
             pane = PaneTarget(target, window_id, pane_id, socket_path)
@@ -126,9 +139,11 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None) -> 
         if target not in sessions:
             sessions.append(target)
         panes.append(pane)
+        if pane_active == "1" and window_active == "1":
+            focused_panes.add(pane)
         if bell_flag in ("1", "!") or "!" in window_flags:
             bells.add(target)
-    return SourceSnapshot(True, tuple(sessions), frozenset(bells), panes=tuple(panes))
+    return SourceSnapshot(True, tuple(sessions), frozenset(bells), panes=tuple(panes), focused_panes=frozenset(focused_panes))
 
 
 def _status_dir() -> Path:
@@ -222,7 +237,7 @@ def _source_result(
                 records.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-        return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_agents(snapshot.panes, records))
+        return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_agents(snapshot.panes, records), snapshot.focused_panes)
     return SourceSnapshot(False, (), frozenset(), stderr.strip() or f"remote command exited {returncode}")
 
 
@@ -239,7 +254,7 @@ def local_snapshot() -> SourceSnapshot:
     snapshot = _source_result(proc.returncode, proc.stdout, proc.stderr, kind="local")
     if not snapshot.available:
         return snapshot
-    return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_local_agents(snapshot.panes))
+    return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_local_agents(snapshot.panes), snapshot.focused_panes)
 
 
 def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
@@ -412,6 +427,7 @@ class DiscoveryPoller:
                 source.error,
                 tuple(item for item in source.panes if item.target != target),
                 tuple(item for item in source.agents if item.pane_target.target != target),
+                frozenset(item for item in source.focused_panes if item.target != target),
             )
             return
         if target.host not in self.remotes:
@@ -429,6 +445,7 @@ class DiscoveryPoller:
                 source.error,
                 tuple(item for item in source.panes if item.target != target),
                 tuple(item for item in source.agents if item.pane_target.target != target),
+                frozenset(item for item in source.focused_panes if item.target != target),
             )
 
     def close(self) -> None:

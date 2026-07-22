@@ -395,6 +395,15 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(first_location[5], 123)
         self.assertNotEqual(second_location[5], 123)
 
+    def test_focused_pane_selects_active_agent_without_sidebar_click(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        snapshot = SessionSnapshot(
+            SourceSnapshot(True, (pane.target,), frozenset(), agents=(AgentEntry(pane, "one", "pi", "working"),), focused_panes=frozenset({pane})),
+            {},
+        )
+
+        self.assertEqual(sidebar._focused_agent_id(snapshot, pane.target, "stale"), "one")
+
     def test_focused_agent_uses_active_session_color(self):
         entry = Entry("pi", "agent", Target("local", "work"), host="laptop", agent_id="one", status="working")
         screen = FakeScreen(size=(6, 40))

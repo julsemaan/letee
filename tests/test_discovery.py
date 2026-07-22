@@ -44,6 +44,11 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2", "%3"])
         self.assertEqual(snapshot.panes[0].socket_path, "/tmp/tmux:dev")
 
+    def test_source_parser_collects_focused_pane(self):
+        snapshot = _parse_source_snapshot("work:@1:%1:0:-:1:1:/tmp/tmux\nwork:@1:%2:0:-:0:1:/tmp/tmux\n", kind="local")
+
+        self.assertEqual(snapshot.focused_panes, frozenset({snapshot.panes[0]}))
+
     def test_source_parser_keeps_sessions_named_mtmux(self):
         for kind, host in (("local", None), ("ssh", "dev")):
             with self.subTest(kind=kind):
@@ -54,13 +59,14 @@ class DiscoverySnapshotTest(unittest.TestCase):
                 self.assertEqual(snapshot.bells, frozenset({target}))
 
     def test_local_snapshot_derives_sessions_and_bells_from_one_sample(self):
-        proc = Mock(returncode=0, stdout="work:@1:%1:1:!:/tmp/tmux\nidle:@2:%2:0:-:/tmp/tmux\n", stderr="")
+        proc = Mock(returncode=0, stdout="work:@1:%1:1:!:1:1:/tmp/tmux\nidle:@2:%2:0:-:1:0:/tmp/tmux\n", stderr="")
         with patch("mtmux.discovery.subprocess.run", return_value=proc) as run:
             snapshot = local_snapshot()
 
         self.assertEqual(snapshot.sessions, (Target("local", "work"), Target("local", "idle")))
         self.assertEqual(snapshot.bells, frozenset({Target("local", "work")}))
         self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2"])
+        self.assertEqual(snapshot.focused_panes, frozenset({snapshot.panes[0]}))
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][:3], ["tmux", "list-panes", "-a"])
 
