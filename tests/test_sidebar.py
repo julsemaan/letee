@@ -118,6 +118,46 @@ class SidebarViewModeTest(unittest.TestCase):
             [("Add session", "add"), ("", "spacer"), ("Press enter to add a session", "hint")],
         )
 
+    def test_tracked_remote_favorite_shows_connecting_during_initial_discovery(self):
+        target = Target("ssh", "work", "dev")
+
+        entry = next(entry for entry in _entries("", snapshot(remotes={"dev": None}), [target]) if entry.target == target)
+
+        self.assertTrue(entry.unavailable_favorite)
+        self.assertEqual(entry.status, "connecting…")
+        self.assertIn("connecting…", _entry_lines(entry, False, set(), None, 40)[1])
+
+    def test_tracked_remote_favorite_shows_reconnecting_after_failure(self):
+        target = Target("ssh", "work", "dev")
+        failed = source("ssh", host="dev", available=False, error="connection refused")
+
+        entry = next(entry for entry in _entries("", snapshot(remotes={"dev": failed}), [target]) if entry.target == target)
+
+        self.assertTrue(entry.unavailable_favorite)
+        self.assertEqual(entry.status, "reconnecting…")
+        self.assertIn("reconnecting…", _entry_lines(entry, False, set(), None, 40)[1])
+
+    def test_tracked_remote_favorite_stays_unavailable_when_session_is_missing(self):
+        target = Target("ssh", "work", "dev")
+
+        entry = next(entry for entry in _entries("", snapshot(remotes={"dev": source("ssh", ("other",), host="dev")}), [target]) if entry.target == target)
+
+        self.assertTrue(entry.unavailable_favorite)
+        self.assertEqual(entry.status, "unavailable")
+        self.assertIn("unavailable", _entry_lines(entry, False, set(), None, 40)[1])
+
+    def test_add_picker_shows_reconnecting_with_connection_error(self):
+        failed = source("ssh", host="dev", available=False, error="connection refused")
+
+        entries = _entries("", snapshot(remotes={"dev": failed}), [], adding=True)
+
+        reconnecting = next(entry for entry in entries if entry.kind == "unavailable")
+        self.assertEqual(reconnecting.label, "reconnecting…: connection refused")
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            line = _entry_lines(reconnecting, False, set(), None, 24)[0]
+        self.assertTrue(line.isascii())
+        self.assertLessEqual(sidebar._cell_width(line), 24)
+
     def test_add_picker_groups_hosts_and_excludes_tracked(self):
         tracked_target = Target("local", "work")
 
@@ -1367,7 +1407,10 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(all(len(line) <= 20 for line in lines))
 
     def test_ascii_tracked_metadata_and_ellipsis_are_ascii_only(self):
-        entry = Entry("session-name", "session", Target("ssh", "session-name", "long-host"), host="long-host", tracked=True, unavailable_favorite=True)
+        entry = Entry(
+            "session-name", "session", Target("ssh", "session-name", "long-host"),
+            host="long-host", tracked=True, unavailable_favorite=True, status="reconnecting…",
+        )
 
         with patch("mtmux.sidebar._ascii", return_value=True):
             lines = _entry_lines(entry, True, set(), None, 24)
@@ -1375,7 +1418,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(lines[0].isascii())
         self.assertTrue(lines[1].isascii())
         self.assertIn("@", lines[1])
-        self.assertIn("unavailable", lines[1])
+        self.assertIn("reconnecting...", lines[1])
         self.assertIn("...", "".join(lines))
 
     def test_active_duplicate_is_highlighted_in_tracked_and_all_sections(self):

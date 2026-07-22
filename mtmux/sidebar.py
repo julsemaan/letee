@@ -139,6 +139,20 @@ def _pane_active() -> bool:
     return cockpit.sidebar_active()
 
 
+def _target_status(target: Target, snapshot: SessionSnapshot) -> str | None:
+    if target in snapshot.sessions:
+        return None
+    if target.kind == "ssh":
+        if target.host not in snapshot.remotes:
+            return "unavailable"
+        source = snapshot.remotes[target.host]
+        if source is None:
+            return "connecting…"
+        if not source.available:
+            return "reconnecting…"
+    return "unavailable"
+
+
 def _entries(
     filter_text: str,
     snapshot: SessionSnapshot,
@@ -148,15 +162,22 @@ def _entries(
     needle = filter_text.lower()
     adding = adding or favorites is None
     favorites = favorites or []
-    available = set(snapshot.sessions)
     hostname = socket.gethostname()
     if not adding:
         slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
         out = [Entry("Add session", "add"), Entry("", "spacer")]
-        out.extend(
-            Entry(target.session, "session", target, target.host or hostname, target not in available, True, slots.get(target))
-            for target in favorites
-        )
+        for target in favorites:
+            status = _target_status(target, snapshot)
+            out.append(Entry(
+                target.session,
+                "session",
+                target,
+                target.host or hostname,
+                unavailable_favorite=status is not None,
+                tracked=True,
+                shortcut_slot=slots.get(target),
+                status=status,
+            ))
         if len(out) == 2:
             out.append(Entry("Press enter to add a session", "hint"))
         return out
@@ -183,7 +204,7 @@ def _entries(
             out.append(Entry("connecting…", "unavailable", host=host))
             continue
         if not source.available:
-            label = f"unavailable: {source.error}" if source.error else "unavailable"
+            label = f"reconnecting…: {source.error}" if source.error else "reconnecting…"
             out.append(Entry(label, "unavailable", host=host))
             continue
         for target in source.sessions:
@@ -659,7 +680,8 @@ def _entry_lines(
             label = _truncate_cells(entry.label, room)
             first = prefix + label + bell
             host_prefix = "@" if entry.target and entry.target.kind == "ssh" else ""
-            suffix = " unavailable" if entry.unavailable_favorite else ""
+            status = (entry.status or "unavailable").replace("…", "...") if _ascii() else (entry.status or "unavailable")
+            suffix = f" {status}" if entry.unavailable_favorite else ""
             branch = "`-" if _ascii() else "└─"
             meta_prefix = f"  {branch} "
             host = _truncate_cells(entry.host or "", max(0, width - _cell_width(meta_prefix) - _cell_width(host_prefix) - _cell_width(suffix)))
@@ -669,7 +691,8 @@ def _entry_lines(
         return [first]
     if entry.kind == "hint":
         return [_truncate_cells(f"  {icon['enter']} {entry.label}", width)]
-    return [_truncate(f"  {icon['unavailable']} {entry.label}", width)]
+    label = entry.label.replace("…", "...") if _ascii() else entry.label
+    return [_truncate(f"  {icon['unavailable']} {label}", width)]
 
 
 def _status_attr(status: str) -> int:
