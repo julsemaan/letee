@@ -727,23 +727,19 @@ def _draw_footer(
     stdscr: curses.window,
     h: int,
     w: int,
-    status: str,
     filtering: bool = False,
     dimmed: bool = False,
     creating: bool = False,
     adding: bool = False,
-    focused_region: str = "sessions",
 ) -> int:
     if creating:
         logical_rows = ["Esc cancel · Enter create" if not _ascii() else "Esc cancel  Enter create"]
     elif filtering:
         logical_rows = ["type to filter  backspace edit", f"esc clear  {'Enter' if _ascii() else '↵'} switch"]
     elif adding:
-        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} add  x kill", "/ filter  Esc back  ? help  q quit"]
-    elif focused_region == "agents":
-        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} activate  Tab sessions", "[ / ] resize  ? help  q quit"]
+        logical_rows = [f"{'Enter' if _ascii() else '↵'} add  x kill", "/ filter  Esc back  ? help  q quit"]
     else:
-        logical_rows = [status or f"{'Enter' if _ascii() else '↵'} activate  a add  r remove", "x kill  K/J reorder  ? help  q quit"]
+        logical_rows = [f"{'Enter' if _ascii() else '↵'} activate  ? help  q quit"]
     width = max(1, w - 1)
     lines = [line for logical_row in logical_rows for line in (textwrap.wrap(logical_row, width=width) or [""])]
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
@@ -778,7 +774,7 @@ def _draw(
     cursor = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed, adding)
     if filtering:
         cursor = _draw_filter(stdscr, w, filter_text, dimmed)
-    footer_height = _draw_footer(stdscr, h, w, status, filtering, dimmed, creation_host is not None, adding, focused_region)
+    footer_height = _draw_footer(stdscr, h, w, filtering, dimmed, creation_host is not None, adding)
     if agent_entries is None:
         creation_cursor = _draw_entries(
             stdscr, entries, selected, h - footer_height + 1, w, bell_targets or set(), current_target,

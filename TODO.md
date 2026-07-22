@@ -32,3 +32,7 @@
 - [] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger
 - [] Consider having 'Add session' become '+ new' in the topmost header
 - [] Drag and drop sessions to reorder them
+
+- [] Make active agent pane colored
+- [] Show last reported status of agent
+- [] Find way to get rid of stale agents

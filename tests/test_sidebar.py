@@ -507,9 +507,34 @@ class SidebarDrawTest(unittest.TestCase):
         _draw(screen, [], 0, "", "")
 
         footer_last_columns = [call for call in screen.calls if call[0] == "chgat" and call[1] >= 5]
-        self.assertEqual(footer_last_columns, [("chgat", 5, 59, 1, curses.A_BOLD | curses.A_REVERSE), ("chgat", 6, 59, 1, curses.A_BOLD | curses.A_REVERSE)])
+        self.assertEqual(footer_last_columns, [("chgat", 6, 59, 1, curses.A_BOLD | curses.A_REVERSE)])
 
 
+
+    def test_sessions_and_agents_share_minimal_footer_with_ascii_fallback(self):
+        removed_hints = ("Tab", "resize", "add", "remove", "kill", "reorder", "K/J", "[ / ]")
+        for ascii_mode, expected in (
+            (False, ["↵ activate  ? help  q quit"]),
+            (True, ["Enter activate  ? help  q quit"]),
+        ):
+            footers = []
+            for focused_region in ("sessions", "agents"):
+                screen = FakeScreen(size=(10, 60))
+                with self.subTest(ascii=ascii_mode, focused_region=focused_region), patch(
+                    "mtmux.sidebar._ascii", return_value=ascii_mode
+                ):
+                    _draw(
+                        screen, [], 0, "hidden status", "", agent_entries=[], focused_region=focused_region
+                    )
+                footer = [
+                    call[3].rstrip()
+                    for call in screen.calls
+                    if call[0] == "addnstr" and call[1] >= 9
+                ]
+                self.assertEqual(footer, expected)
+                self.assertFalse(any(hint in " ".join(footer) for hint in removed_hints))
+                footers.append(footer)
+            self.assertEqual(footers[0], footers[1])
 
     def test_filtering_uses_two_instruction_rows_with_ascii_fallback(self):
         for ascii_mode, expected in (
@@ -1235,7 +1260,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(selections[-1].target, first)
         self.assertTrue(selections[-1].tracked)
 
-    def test_failed_kill_shows_error_and_keeps_sidebar_open(self):
+    def test_failed_kill_keeps_sidebar_open_without_replacing_footer(self):
         screen = FakeScreen([ord("x"), ord("y"), ord("q")], size=(8, 60))
         target = Target("local", "work")
 
@@ -1251,7 +1276,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        self.assertTrue(any(call[0] == "addnstr" and "kill local:work failed: denied" in call[3] for call in screen.calls))
+        self.assertFalse(any(call[0] == "addnstr" and "kill local:work failed: denied" in call[3] for call in screen.calls))
 
 
 
