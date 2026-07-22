@@ -308,6 +308,62 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertIsNone(poller.snapshot.remotes["dev"])
         poller.close()
 
+    def test_active_remote_host_polls_every_half_second(self):
+        now = [0.0]
+        popen = Mock(side_effect=[FakeProcess(0), FakeProcess(0)])
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+
+        poller.tick("dev")
+        now[0] = 0.49
+        poller.tick("dev")
+        now[0] = 0.5
+        poller.tick("dev")
+
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(poller._next["dev"], 1.0)
+
+    def test_inactive_remote_host_keeps_ten_second_interval(self):
+        now = [0.0]
+        popen = Mock(side_effect=[FakeProcess(0), FakeProcess(0)])
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+
+        poller.tick()
+        now[0] = 9.99
+        poller.tick()
+        now[0] = 10
+        poller.tick()
+
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(poller._next["dev"], 20)
+
+    def test_switching_active_host_refreshes_new_host_immediately(self):
+        now = [0.0]
+        popen = Mock(side_effect=[FakeProcess(0), FakeProcess(0), FakeProcess(0)])
+        poller = self.make_poller(["dev", "prod"], popen=popen, clock=lambda: now[0])
+
+        poller.tick("dev")
+        now[0] = 0.1
+        poller.tick("prod")
+
+        self.assertEqual(popen.call_count, 3)
+        self.assertEqual(poller._next["dev"], 10.1)
+        self.assertEqual(poller._next["prod"], 0.6)
+
+    def test_active_host_does_not_duplicate_in_flight_request(self):
+        now = [0.0]
+        process = FakeProcess()
+        popen = Mock(return_value=process)
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+
+        poller.tick()
+        now[0] = 1
+        poller.tick("dev")
+        now[0] = 2
+        poller.tick("dev")
+
+        self.assertEqual(popen.call_count, 1)
+        poller.close()
+
     def test_completed_and_failed_processes_update_snapshots(self):
         healthy = FakeProcess(0, "work:@1:%1:1:!:/tmp/tmux\n")
         failed = FakeProcess(255)

@@ -893,7 +893,9 @@ def run(stdscr: curses.window) -> None:
             if state.status_deadline is not None and now >= state.status_deadline:
                 state.status = ""
                 state.status_deadline = None
-            if poller.tick():
+            current_target = _current_target()
+            active_remote_host = current_target.host if current_target and current_target.kind == "ssh" else None
+            if poller.tick(active_remote_host):
                 rebuild()
             selectable = _selectable(entries)
             if selectable and state.selected_index not in selectable:
@@ -903,7 +905,6 @@ def run(stdscr: curses.window) -> None:
                 active_agent_id = cockpit.current_agent()
                 next_cockpit_bell_poll = now + COCKPIT_BELL_POLL_INTERVAL
             bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
-            current_target = _current_target()
             active_agent_id = _focused_agent_id(poller.snapshot, current_target, active_agent_id)
             visible_bells = bell_targets - ({current_target} if current_target else set())
             if visible_bells - state.rang_bells:

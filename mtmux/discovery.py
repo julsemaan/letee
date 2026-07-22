@@ -333,6 +333,7 @@ class DiscoveryPoller:
         self._random = random
         self._next_local_poll = self._clock() + LOCAL_POLL_INTERVAL
         self._active: dict[str, _Request] = {}
+        self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
         self._failures = dict.fromkeys(self.hosts, 0)
 
@@ -343,7 +344,8 @@ class DiscoveryPoller:
     def _schedule(self, host: str, now: float, available: bool) -> None:
         if available:
             self._failures[host] = 0
-            self._next[host] = now + SUCCESS_POLL_INTERVAL
+            interval = LOCAL_POLL_INTERVAL if host == self._active_remote_host else SUCCESS_POLL_INTERVAL
+            self._next[host] = now + interval
             return
         self._failures[host] += 1
         delay = min(2 ** self._failures[host], MAX_FAILURE_POLL_INTERVAL)
@@ -378,8 +380,16 @@ class DiscoveryPoller:
         self._active[host] = _Request(process, now, output, errors)
         return False
 
-    def tick(self) -> bool:
+    def tick(self, active_remote_host: str | None = None) -> bool:
         now = self._clock()
+        active_remote_host = active_remote_host if active_remote_host in self.remotes else None
+        if active_remote_host != self._active_remote_host:
+            previous = self._active_remote_host
+            self._active_remote_host = active_remote_host
+            if previous and self.remotes[previous] and self.remotes[previous].available:
+                self._next[previous] = now + SUCCESS_POLL_INTERVAL
+            if active_remote_host and active_remote_host not in self._active:
+                self._next[active_remote_host] = now
         changed = False
         if now >= self._next_local_poll:
             snapshot = self._local_snapshot()
