@@ -380,7 +380,7 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.status, "create failed")
 
 
-    def test_exact_active_agent_color_is_independent_from_selection(self):
+    def test_exact_active_agent_uses_active_session_color(self):
         target = Target("local", "work")
         entries = [
             Entry("pi", "agent", target, host="laptop", agent_id="one", status="working"),
@@ -388,12 +388,21 @@ class SidebarStateTest(unittest.TestCase):
         ]
         screen = FakeScreen(size=(8, 40))
         with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
-            sidebar._draw_entries(screen, entries, 1, 7, 40, set(), None, active_agent_id="one")
+            sidebar._draw_entries(screen, entries, 0, 7, 40, set(), None, active_agent_id="one")
 
         first_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "laptop" in call[3])
         second_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 4 and "laptop" in call[3])
         self.assertEqual(first_location[5], 123)
         self.assertNotEqual(second_location[5], 123)
+
+    def test_focused_agent_uses_active_session_color(self):
+        entry = Entry("pi", "agent", Target("local", "work"), host="laptop", agent_id="one", status="working")
+        screen = FakeScreen(size=(6, 40))
+        with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
+            sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None)
+
+        location = next(call for call in screen.calls if call[0] == "addnstr" and "laptop" in call[3])
+        self.assertEqual(location[5], 123)
 
 
 class SidebarColorTest(unittest.TestCase):

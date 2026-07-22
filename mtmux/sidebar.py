@@ -714,8 +714,8 @@ def _draw_entries(
             entry, selected_entry and not dimmed, bell_targets, current_target, w,
             creation_host, creation_text, now,
         )
-        host_selected = selected_entry and entry.kind == "host" and not dimmed
-        base_attr = _entry_attr(entry, active_entry or active_agent or host_selected, dimmed)
+        focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
+        base_attr = _entry_attr(entry, active_entry or active_agent or focused_entry, dimmed)
         slot_badge = ""
         slot_width = 0
         if entry.tracked and entry.shortcut_slot is not None:
@@ -724,7 +724,7 @@ def _draw_entries(
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
-            attr = _fade(base_attr) if line_number and not (active_entry or active_agent) else base_attr
+            attr = _fade(base_attr) if line_number and not (active_entry or active_agent or focused_entry) else base_attr
             if line_number == 0 and slot_width:
                 if selected_entry and not dimmed:
                     slot_badge = f" {ico['selected']} "
