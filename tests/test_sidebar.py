@@ -181,6 +181,41 @@ class SidebarViewModeTest(unittest.TestCase):
 
 
 class AgentSidebarTest(unittest.TestCase):
+    def test_status_icons_cover_every_state_in_unicode_and_ascii(self):
+        expected = {
+            False: {"working": "⠋", "submitted": "◷", "idle": "○", "completed": "✓", "input-required": "?", "auth-required": "⚿", "failed": "✕", "rejected": "⊘", "canceled": "−", "unknown": "?"},
+            True: {"working": "|", "submitted": ".", "idle": "o", "completed": "+", "input-required": "?", "auth-required": "@", "failed": "x", "rejected": "!", "canceled": "-", "unknown": "?"},
+        }
+        for ascii_mode, icons in expected.items():
+            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+                self.assertEqual({status: sidebar._status_icon(status, 0) for status in icons}, icons)
+
+    def test_agent_cursor_replaces_icon_only_while_focused(self):
+        entry = Entry("pi", "agent", Target("local", "work"), status="completed")
+        with patch("mtmux.sidebar._ascii", return_value=False):
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40)[0], "› pi · completed")
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[0], "✓ pi · completed")
+
+    def test_spinner_frames_progress_and_wrap(self):
+        with patch("mtmux.sidebar._ascii", return_value=False):
+            self.assertEqual([sidebar._spinner_frame(t) for t in (0, 0.1, 0.9, 1.0)], ["⠋", "⠙", "⠏", "⠋"])
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            self.assertEqual([sidebar._spinner_frame(t) for t in (0, 0.1, 0.2, 0.3, 0.4)], ["|", "/", "-", "\\", "|"])
+
+    def test_agent_icon_and_status_share_semantic_attr_but_cursor_stays_active(self):
+        entry = Entry("pi", "agent", Target("local", "work"), status="completed")
+        with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_completed": 456}, clear=True):
+            screen = FakeScreen(size=(6, 40))
+            sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None, dimmed=True)
+            semantic = [call for call in screen.calls if call[0] == "addnstr" and call[3] in ("✓", "completed")]
+            self.assertEqual([call[5] for call in semantic], [_fade(456), _fade(456)])
+
+            screen = FakeScreen(size=(6, 40))
+            sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None)
+            cursor = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "›")
+            status = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "completed")
+            self.assertEqual((cursor[5], status[5]), (123, 456))
+
     def test_agent_entries_only_include_exact_tracked_targets(self):
         local = Target("local", "work")
         tracked_remote = Target("ssh", "work", "dev")
@@ -251,11 +286,9 @@ class AgentSidebarTest(unittest.TestCase):
         with patch("mtmux.sidebar._ascii", return_value=False):
             lines = {entry.agent_id: _entry_lines(entry, False, set(), None, 40, now=now)[0] for entry in entries}
 
-        self.assertEqual(lines, {
-            "working": "  pi · working · for 12s",
-            "idle": "  pi · idle",
-            "future": "  pi · input-required",
-        })
+        self.assertEqual(lines["working"][2:], "pi · working · for 12s")
+        self.assertEqual(lines["idle"], "○ pi · idle")
+        self.assertEqual(lines["future"], "? pi · input-required")
 
     def test_duration_formatter_covers_seconds_minutes_hours_and_days(self):
         self.assertEqual([sidebar._format_duration(seconds) for seconds in (12, 180, 7200, 345600)], ["12s", "3m", "2h", "4d"])
@@ -264,7 +297,8 @@ class AgentSidebarTest(unittest.TestCase):
         entry = Entry("pi", "agent", Target("local", "work"), host="laptop", status="working")
         with patch("mtmux.sidebar._ascii", return_value=True):
             lines = _entry_lines(entry, False, set(), None, 14)
-        self.assertEqual(lines[0], "  pi · working")
+        self.assertIn(lines[0][0], "|/-\\")
+        self.assertEqual(lines[0][1:], " pi · working")
         self.assertTrue(all(sidebar._cell_width(line) <= 14 for line in lines))
 
 
@@ -1016,13 +1050,30 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._current_target", return_value=None),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar.cockpit.current_agent", return_value="id"),
-            patch("mtmux.sidebar.time.time", side_effect=[100, 101]),
+            patch("mtmux.sidebar.time.monotonic", side_effect=[100, 100.1]),
             patch("mtmux.sidebar._draw", return_value=2) as draw,
         ):
             run(screen)
 
         self.assertEqual(draw.call_count, 2)
         self.assertTrue(all(call.args[-1] == "id" for call in draw.call_args_list))
+
+    def test_working_agent_redraws_at_spinner_rate(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        poller = unittest.mock.Mock()
+        poller.snapshot = SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)), {})
+        poller.tick.return_value = False
+        screen = FakeScreen([-1, -1, ord("q")], size=(10, 40))
+        with (
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"), patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[pane.target]),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0.05, 0.1]),
+            patch("mtmux.sidebar._draw", return_value=2) as draw,
+        ):
+            run(screen)
+        self.assertEqual(draw.call_count, 2)
 
     def test_idle_ui_ticks_do_not_redraw_sidebar(self):
         screen = FakeScreen([-1, -1, ord("q")])
