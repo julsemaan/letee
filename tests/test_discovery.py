@@ -148,18 +148,15 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(agents["malformed"].task_status_timestamp, None)
         self.assertEqual(agents["malformed"].activity_timestamp, agents["malformed"].runtime_updated_at)
 
-    def test_ssh_command_preserves_discovery_options_with_optional_persistence(self):
-        base = (
-            "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-            "-o", "ServerAliveInterval=1", "-o", "ServerAliveCountMax=1",
-            "dev", REMOTE_COMMAND,
-        )
+    def test_ssh_command_uses_shared_keepalive_with_optional_persistence(self):
+        keepalive = ("-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3")
+        discovery = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "dev", REMOTE_COMMAND)
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
             "-o", "ControlPath=~/.ssh/mtmux-%C",
         )
-        self.assertEqual(_ssh_command("dev", True), ("ssh", *persistence, *base))
-        self.assertEqual(_ssh_command("dev", False), ("ssh", *base))
+        self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
+        self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
 
     def test_remote_result_keeps_panes_when_agent_reader_is_missing(self):
         pane_line = "work:@1:%2:0:-:/tmp/tmux"

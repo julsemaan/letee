@@ -260,7 +260,6 @@ def local_snapshot() -> SourceSnapshot:
 def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
     return ssh_command(
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-        "-o", "ServerAliveInterval=1", "-o", "ServerAliveCountMax=1",
         validate_host(host), REMOTE_COMMAND,
         persistent_ssh=persistent_ssh,
     )

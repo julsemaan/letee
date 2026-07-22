@@ -8,6 +8,10 @@ from .config import load_persistent_ssh
 from .names import PaneTarget, Target
 
 
+SSH_OPTIONS = (
+    "-o", "ServerAliveInterval=60",
+    "-o", "ServerAliveCountMax=3",
+)
 PERSISTENT_SSH_OPTIONS = (
     "-o", "ControlMaster=auto",
     "-o", "ControlPersist=10m",
@@ -18,7 +22,7 @@ PERSISTENT_SSH_OPTIONS = (
 def ssh_command(*args: str, persistent_ssh: bool | None = None) -> tuple[str, ...]:
     if persistent_ssh is None:
         persistent_ssh = load_persistent_ssh()
-    return ("ssh", *(PERSISTENT_SSH_OPTIONS if persistent_ssh else ()), *args)
+    return ("ssh", *SSH_OPTIONS, *(PERSISTENT_SSH_OPTIONS if persistent_ssh else ()), *args)
 
 
 def _default_server_env() -> dict[str, str]:

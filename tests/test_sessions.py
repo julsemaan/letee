@@ -7,17 +7,19 @@ from mtmux.sessions import attach_command, create, kill, pane_attach_command, ss
 
 
 class SessionOperationsTest(unittest.TestCase):
-    def test_ssh_command_adds_persistence_options_when_enabled(self):
+    def test_ssh_command_always_adds_keepalive_and_optionally_adds_persistence(self):
+        keepalive = ("-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3")
         self.assertEqual(
             ssh_command("-t", "dev", "remote command", persistent_ssh=True),
             (
-                "ssh", "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
+                "ssh", *keepalive,
+                "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
                 "-o", "ControlPath=~/.ssh/mtmux-%C", "-t", "dev", "remote command",
             ),
         )
         self.assertEqual(
             ssh_command("-t", "dev", "remote command", persistent_ssh=False),
-            ("ssh", "-t", "dev", "remote command"),
+            ("ssh", *keepalive, "-t", "dev", "remote command"),
         )
 
     def test_attach_commands_quote_local_and_remote_targets(self):
@@ -28,7 +30,7 @@ class SessionOperationsTest(unittest.TestCase):
         with patch("mtmux.sessions.load_persistent_ssh", return_value=True):
             self.assertEqual(
                 attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/mtmux-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/mtmux-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
             )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
@@ -41,7 +43,7 @@ class SessionOperationsTest(unittest.TestCase):
         with patch("mtmux.sessions.load_persistent_ssh", return_value=False):
             self.assertEqual(
                 pane_attach_command(remote),
-                "ssh -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
             )
 
     def test_kill_local_session_uses_default_server(self):
@@ -88,10 +90,14 @@ class SessionOperationsTest(unittest.TestCase):
             [call.args[0] for call in run.call_args_list],
             [
                 (
-                    "ssh", "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
+                    "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                    "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
                     "-o", "ControlPath=~/.ssh/mtmux-%C", "dev", "tmux new-session -Ad -s work.one",
                 ),
-                ("ssh", "dev", "tmux kill-session -t work.one"),
+                (
+                    "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                    "dev", "tmux kill-session -t work.one",
+                ),
             ],
         )
 

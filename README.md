@@ -76,6 +76,8 @@ Hosts are SSH aliases only. Keep host-specific users, ports, keys, proxies, IPv6
 
 By default, mtmux makes OpenSSH reuse one authenticated transport per host with `ControlMaster=auto`, `ControlPersist=10m`, and `ControlPath=~/.ssh/mtmux-%C`. Later discovery polls, switches, creates, and kills avoid repeating TCP setup, key exchange, and authentication. Control sockets remain for 10 minutes after last use.
 
+Every mtmux SSH connection also uses `ServerAliveInterval=60` and `ServerAliveCountMax=3` to detect dead connections and keep idle sessions active through network and NAT timeouts. Keepalive remains enabled when `persistent_ssh` is disabled.
+
 To omit mtmux's persistence options, set:
 
 ```toml
