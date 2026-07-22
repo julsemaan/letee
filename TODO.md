@@ -42,3 +42,4 @@
 - [x] Don't use orange for input-required, use red
 - [] Have fancy spinner or something like that when an agent is working
 - [] Allow ordering the agent sessions by session order or priority
+- [] The agents pane doesn't show @host like the sessions do
