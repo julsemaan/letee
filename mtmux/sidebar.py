@@ -19,6 +19,16 @@ from .names import PaneTarget, Target, validate_name
 
 UI_POLL_INTERVAL_MS = 50
 COCKPIT_BELL_POLL_INTERVAL = 0.5
+UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+ASCII_SPINNER = "|/-\\"
+UNICODE_STATUS_ICONS = {
+    "submitted": "◷", "idle": "○", "completed": "✓", "input-required": "?",
+    "auth-required": "⚿", "failed": "✕", "rejected": "⊘", "canceled": "−", "unknown": "?",
+}
+ASCII_STATUS_ICONS = {
+    "submitted": ".", "idle": "o", "completed": "+", "input-required": "?",
+    "auth-required": "@", "failed": "x", "rejected": "!", "canceled": "-", "unknown": "?",
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +91,18 @@ def _icons() -> dict[str, str]:
     if _ascii():
         return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ">", "enter": "<-"}
     return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": "›", "enter": "↵"}
+
+
+def _spinner_frame(now: float) -> str:
+    frames = ASCII_SPINNER if _ascii() else UNICODE_SPINNER
+    return frames[int(now * 10) % len(frames)]
+
+
+def _status_icon(status: str, now: float) -> str:
+    if status == "working":
+        return _spinner_frame(now)
+    icons = ASCII_STATUS_ICONS if _ascii() else UNICODE_STATUS_ICONS
+    return icons.get(status, icons["unknown"])
 
 
 def _init_colors() -> None:
@@ -623,6 +645,7 @@ def _entry_lines(
     creation_text: str = "",
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    spinner_frame: str | None = None,
 ) -> list[str]:
     icon = _icons()
     pointer = icon["selected"] if selected else " "
@@ -656,8 +679,9 @@ def _entry_lines(
         separator = " · "
         alert = " BELL" if _ascii() else " 🔔"
         alert = alert if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else ""
-        prefix = f"{pointer} "
         status = entry.status or "unknown"
+        indicator = pointer if selected else (spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic()))
+        prefix = f"{indicator} "
         timestamp = entry.task_status_timestamp or entry.runtime_updated_at
         detail = ""
         if status == "working" and timestamp:
@@ -760,6 +784,7 @@ def _draw_entries(
     active_agent_id: str | None = None,
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    spinner_frame: str | None = None,
 ) -> tuple[int, int] | None:
     cursor = None
     view_index = _view_index(entries, selected, current_target, dimmed)
@@ -778,7 +803,7 @@ def _draw_entries(
         active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
         lines = _entry_lines(
             entry, selected_entry and not dimmed, bell_targets, current_target, w,
-            creation_host, creation_text, now, agent_alerts,
+            creation_host, creation_text, now, agent_alerts, spinner_frame,
         )
         focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
         base_attr = _entry_attr(entry, active_entry or active_agent or focused_entry, dimmed)
@@ -802,10 +827,13 @@ def _draw_entries(
             else:
                 stdscr.addnstr(row, 0, line, w, attr)
                 if entry.kind == "agent" and line_number == 0 and entry.status:
+                    status_attr = _status_attr(entry.status)
+                    semantic_attr = _fade(status_attr) if dimmed else status_attr
+                    icon_attr = (_color("active") or curses.A_REVERSE) if selected_entry and not dimmed else semantic_attr
+                    stdscr.addnstr(row, 0, line[0], min(1, w), icon_attr)
                     column = line.rfind(entry.status)
                     if column >= 0:
-                        status_attr = _status_attr(entry.status)
-                        stdscr.addnstr(row, column, entry.status, max(0, w - column), _fade(status_attr) if dimmed else status_attr)
+                        stdscr.addnstr(row, column, entry.status, max(0, w - column), semantic_attr)
             if entry.kind == "host" and entry.host == creation_host:
                 cursor = (row, min(w - 1, _cell_width(line)))
             row += 1
@@ -863,6 +891,7 @@ def _draw(
     active_agent_id: str | None = None,
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    spinner_frame: str | None = None,
 ) -> int:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -905,6 +934,7 @@ def _draw(
             stdscr, agents, agent_selected, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
             active_agent_id=active_agent_id, now=now, agent_alerts=agent_alerts,
+            spinner_frame=spinner_frame,
         )
     else:
         stdscr.addnstr(separator + 1, 0, "  No active agents", max(0, w - 1), curses.A_DIM)
@@ -972,13 +1002,15 @@ def run(stdscr: curses.window) -> None:
                 curses.beep()
             state.rang_bells = bell_targets
             dimmed = not _pane_active()
+            working_agents = any(entry.status == "working" for entry in agent_entries)
+            spinner_frame = _spinner_frame(now) if working_agents else None
             render_state = (
                 tuple(entries), state.selected_index, state.status, state.filter_text,
                 state.filtering, state.adding, state.creation_host, state.creation_text,
                 frozenset(bell_targets), current_target, dimmed, stdscr.getmaxyx(),
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
-                frozenset(state.agent_alerts), int(time.time()) if agent_entries else None,
+                frozenset(state.agent_alerts), spinner_frame,
             )
             if render_state != rendered:
                 footer_height = _draw(
@@ -986,7 +1018,7 @@ def run(stdscr: curses.window) -> None:
                     state.filtering, bell_targets, current_target, dimmed,
                     state.creation_host, state.creation_text, state.adding, state.scroll_offset,
                     agent_entries, state.agent_selected_index, state.focused_region, state.agent_rows,
-                    active_agent_id, agent_alerts=state.agent_alerts,
+                    active_agent_id, agent_alerts=state.agent_alerts, spinner_frame=spinner_frame,
                 )
                 rendered = render_state
             try:
