@@ -140,11 +140,24 @@ class SidebarViewModeTest(unittest.TestCase):
 
 
 class AgentSidebarTest(unittest.TestCase):
+    def test_agent_entries_only_include_exact_tracked_targets(self):
+        local = Target("local", "work")
+        tracked_remote = Target("ssh", "work", "dev")
+        other_remote = Target("ssh", "work", "prod")
+        agents = tuple(
+            AgentEntry(PaneTarget(target, "@1", pane_id, "/tmp/tmux"), pane_id, "pi", None)
+            for target, pane_id in ((local, "%1"), (tracked_remote, "%2"), (other_remote, "%3"))
+        )
+        data = SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=agents), {})
+
+        self.assertEqual([entry.agent_id for entry in _agent_entries(data, [local, tracked_remote])], ["%1", "%2"])
+        self.assertEqual(_agent_entries(data, []), [])
+
     def test_agent_entries_are_compact_and_keep_exact_pane(self):
         pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/tmux")
         data = SessionSnapshot(SourceSnapshot(True, (), frozenset()), {"dev": SourceSnapshot(True, (pane.target,), frozenset(), panes=(pane,), agents=(AgentEntry(pane, "id", "pi", None),))})
 
-        entry = _agent_entries(data)[0]
+        entry = _agent_entries(data, [pane.target])[0]
 
         self.assertEqual(entry.pane_target, pane)
         with patch("mtmux.sidebar._ascii", return_value=False):
@@ -180,7 +193,7 @@ class AgentSidebarTest(unittest.TestCase):
             AgentEntry(pane, "idle", "pi", None, now - timedelta(minutes=3)),
             AgentEntry(pane, "future", "pi", "input-required", now + timedelta(seconds=5)),
         )
-        entries = _agent_entries(SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=agents), {}))
+        entries = _agent_entries(SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=agents), {}), [pane.target])
 
         with patch("mtmux.sidebar._ascii", return_value=False):
             lines = {entry.agent_id: _entry_lines(entry, False, set(), None, 40, now=now)[0] for entry in entries}
@@ -860,6 +873,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[pane.target]),
             patch("mtmux.sidebar._current_target", return_value=None),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar.cockpit.current_agent", return_value="id"),

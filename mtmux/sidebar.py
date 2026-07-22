@@ -189,7 +189,8 @@ def _entries(
     return out
 
 
-def _agent_entries(snapshot: SessionSnapshot) -> list[Entry]:
+def _agent_entries(snapshot: SessionSnapshot, favorites: list[Target]) -> list[Entry]:
+    tracked = set(favorites)
     return [
         Entry(
             agent.agent_name,
@@ -203,6 +204,7 @@ def _agent_entries(snapshot: SessionSnapshot) -> list[Entry]:
             task_status_timestamp=agent.task_status_timestamp,
         )
         for agent in snapshot.agents
+        if agent.pane_target.target in tracked
     ]
 
 
@@ -864,7 +866,7 @@ def run(stdscr: curses.window) -> None:
     state = SidebarState(favorites=load_sessions(), selected_target=_current_target())
     poller = DiscoveryPoller(load_hosts())
     entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
-    agent_entries = _agent_entries(poller.snapshot)
+    agent_entries = _agent_entries(poller.snapshot, state.favorites)
     state.selected_index = _selected_index(entries, state.selected_target)
     _sync_selection(state, entries)
     cockpit_bell_target: Target | None = None
@@ -880,7 +882,7 @@ def run(stdscr: curses.window) -> None:
     def rebuild() -> None:
         nonlocal entries, agent_entries
         entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
-        agent_entries = _agent_entries(poller.snapshot)
+        agent_entries = _agent_entries(poller.snapshot, state.favorites)
         _sync_selection(state, entries)
         _sync_agent_selection(state, agent_entries)
         state.scroll_offset = None

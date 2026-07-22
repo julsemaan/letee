@@ -36,4 +36,5 @@
 - [x] Make active agent pane colored
 - [x] Show last reported status of agent
 - [] Find way to get rid of stale agents
-- [] Only list agents that are part of currently tracked sessions
+- [x] Only list agents that are part of currently tracked sessions
+- [] Have agents ring bell so that it is easy to navigate to the agent that has finished
