@@ -17,6 +17,7 @@
   - [ ] When creating a new session, reusing the same row for the name leaves little place
   - [ ] It isn't clear you need to pick somewhere to create the session
   - [ ] When there is a single place to create the session, just skip selecting it and show the session name, and skip the selection menu as a whole
+- [ ] When reconnecting, if the active session is not available, it should show some message about it in the right pane instead of showing it frozen
 
 ## Done
 
