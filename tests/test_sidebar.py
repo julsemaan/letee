@@ -217,7 +217,7 @@ class AgentSidebarTest(unittest.TestCase):
             sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None)
             cursor = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "›")
             status = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "completed")
-            self.assertEqual((cursor[5], status[5]), (123, 456))
+            self.assertEqual((cursor[5], status[5]), (456, 456))
 
     def test_agent_entries_only_include_exact_tracked_targets(self):
         local = Target("local", "work")
@@ -593,11 +593,11 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(sidebar._focused_agent_id(snapshot, pane.target, "stale"), "one")
 
-    def test_focused_agent_uses_active_session_color(self):
+    def test_active_agent_uses_active_session_color(self):
         entry = Entry("pi", "agent", Target("local", "work"), host="laptop", agent_id="one", status="working")
         screen = FakeScreen(size=(6, 40))
         with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
-            sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None)
+            sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None, active_agent_id="one")
 
         location = next(call for call in screen.calls if call[0] == "addnstr" and "laptop" in call[3])
         self.assertEqual(location[5], 123)

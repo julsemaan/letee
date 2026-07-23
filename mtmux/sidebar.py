@@ -855,14 +855,15 @@ def _draw_entries(
             break
         entry = entries[idx]
         selected_entry = idx == selected
-        active_entry = entry.target is not None and entry.target == current_target
+        active_entry = entry.target is not None and entry.target == current_target and entry.kind != "agent"
         active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
         lines = _entry_lines(
             entry, selected_entry and not dimmed, bell_targets, current_target, w,
             creation_host, creation_text, now, agent_alerts, spinner_frame, agent_ordering,
         )
         focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
-        base_attr = _entry_attr(entry, active_entry or active_agent or focused_entry, dimmed)
+        # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
+        base_attr = _entry_attr(entry, active_entry or active_agent, dimmed)
         slot_badge = ""
         slot_width = 0
         if entry.tracked and entry.shortcut_slot is not None:
@@ -871,7 +872,7 @@ def _draw_entries(
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
-            attr = _fade(base_attr) if line_number and not (active_entry or active_agent or focused_entry) else base_attr
+            attr = _fade(base_attr) if line_number and not (active_entry or active_agent) else base_attr
             if line_number == 0 and slot_width:
                 if selected_entry and not dimmed:
                     slot_badge = f" {ico['selected']} "
@@ -885,7 +886,7 @@ def _draw_entries(
                 if entry.kind == "agent" and line_number == 0 and entry.status:
                     status_attr = _status_attr(entry.status)
                     semantic_attr = _fade(status_attr) if dimmed else status_attr
-                    icon_attr = (_color("active") or curses.A_REVERSE) if selected_entry and not dimmed else semantic_attr
+                    icon_attr = semantic_attr
                     stdscr.addnstr(row, 0, line[0], min(1, w), icon_attr)
                     column = line.rfind(entry.status)
                     if column >= 0:
