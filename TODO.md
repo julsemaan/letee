@@ -11,6 +11,7 @@
   - [ ] prefix+q to quit mtmux cockpit
   - [ ] prefix+a to get to agents
   - [ ] prefix+s always gets to sessions instead of wherever you were last in the left pane
+  - [ ] Get rid of 'tab' to move around between agents/sessions and use prefix
 
 ## Done
 
