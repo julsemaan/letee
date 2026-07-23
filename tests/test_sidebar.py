@@ -110,7 +110,7 @@ class SidebarViewModeTest(unittest.TestCase):
         entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), sessions)
 
         self.assertEqual([entry.target for entry in entries if entry.kind == "session"], sessions)
-        self.assertEqual([entry.kind for entry in entries[:2]], ["add", "spacer"])
+        self.assertEqual([entry.kind for entry in entries[:2]], ["session", "session"])
         self.assertEqual(sidebar._selectable(entries)[0], 0)
 
     def test_empty_normal_view_prompts_and_offers_add(self):
@@ -118,7 +118,7 @@ class SidebarViewModeTest(unittest.TestCase):
 
         self.assertEqual(
             [(entry.label, entry.kind) for entry in entries],
-            [("Add session", "add"), ("", "spacer"), ("Press enter to add a session", "hint")],
+            [("Press / or click \uff0b new to add", "hint")],
         )
 
     def test_tracked_remote_favorite_shows_connecting_during_initial_discovery(self):
@@ -894,22 +894,24 @@ class SidebarDrawTest(unittest.TestCase):
 
         _draw(screen, entries, 1, "ok", "")
 
-        title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertEqual(title[3], "  mtmux" + " " * 22 + "2 sessions")
+        title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("mtmux", title_text)
+        self.assertIn("＋ new", title_text)
 
     def test_title_count_uses_singular_labels(self):
         screen = FakeScreen(size=(5, 40))
         entries = [Entry("work", "session", Target("local", "work"))]
 
         _draw(screen, entries, 0, "ok", "")
-        normal = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(normal[3].endswith("1 session"))
+        normal_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("mtmux", normal_text)
+        self.assertIn("＋ new", normal_text)
 
         screen = FakeScreen(size=(6, 40))
         _draw(screen, entries, 0, "filtering", "work", filtering=True)
-        filtering = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        filtering_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
-        self.assertEqual(filtering[3].rstrip(), "  mtmux                         1 match")
+        self.assertIn("mtmux", filtering_text)
         self.assertTrue(filter_row[3].startswith(" Filter: work"))
 
     def test_filter_uses_dedicated_full_width_row(self):
@@ -961,9 +963,10 @@ class SidebarDrawTest(unittest.TestCase):
 
         _draw(screen, [], 0, "ok", "")
 
-        title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertEqual(len(title[3]), 20)
-        self.assertEqual(title[4], 20)
+        title_calls = [call for call in screen.calls if call[0] == "addnstr" and call[1] == 0]
+        self.assertEqual(len(title_calls), 2)
+        self.assertEqual(title_calls[0][4], 14)
+        self.assertEqual(title_calls[1][4], 6)
 
     def test_title_uses_configured_style_and_dims_inactive_pane(self):
         screen = FakeScreen(size=(5, 20))
@@ -971,9 +974,10 @@ class SidebarDrawTest(unittest.TestCase):
         with patch.dict("mtmux.sidebar._COLOR", {"title": 123}, clear=True):
             _draw(screen, [], 0, "ok", "", dimmed=True)
 
-        title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertEqual(title[4], 20)
-        self.assertEqual(title[5], _fade(123))
+        title_calls = [call for call in screen.calls if call[0] == "addnstr" and call[1] == 0]
+        main_title = title_calls[0]
+        self.assertEqual(main_title[4], 14)
+        self.assertEqual(main_title[5], _fade(123))
 
     def test_title_monochrome_fallback_is_bold_reverse_video(self):
         screen = FakeScreen(size=(5, 20))
@@ -1054,7 +1058,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar.cockpit.current_agent", return_value="id"),
             patch("mtmux.sidebar.time.monotonic", side_effect=[100, 100.1]),
-            patch("mtmux.sidebar._draw", return_value=2) as draw,
+            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
         ):
             run(screen)
 
@@ -1073,7 +1077,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar.load_sessions", return_value=[pane.target]),
             patch("mtmux.sidebar._current_target", return_value=None),
             patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0.05, 0.1]),
-            patch("mtmux.sidebar._draw", return_value=2) as draw,
+            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
         ):
             run(screen)
         self.assertEqual(draw.call_count, 2)
@@ -1087,7 +1091,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", return_value=2) as draw,
+            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
         ):
             run(screen)
 
@@ -1159,13 +1163,13 @@ class SidebarDrawTest(unittest.TestCase):
             SourceSnapshot(True, (target,), frozenset(), agents=agents), {}
         )
         poller.tick.return_value = False
-        screen = FakeScreen([9, curses.KEY_DOWN, curses.KEY_MOUSE, ord("q")], size=(10, 30))
+        screen = FakeScreen([9, curses.KEY_DOWN, curses.KEY_MOUSE, ord("q")], size=(20, 30))
 
         with (
             patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 7, 0, curses.BUTTON1_CLICKED)),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 16, 0, curses.BUTTON1_CLICKED)),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar.load_sessions", return_value=[target]),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
@@ -1230,7 +1234,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._entries", return_value=entries),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or 1),
+            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or (1, None)),
             patch("mtmux.sidebar.sessions.create") as create,
         ):
             run(screen)
@@ -1267,7 +1271,7 @@ class SidebarDrawTest(unittest.TestCase):
             selected = args[2]
             scroll_offset = args[12] if len(args) > 12 else None
             captured.append((selected, scroll_offset))
-            return 2
+            return (2, None)
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
@@ -1320,7 +1324,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._entries", return_value=entries),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", side_effect=lambda: current[0]),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or 2),
+            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or (2, None)),
             patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: current.__setitem__(0, target)),
         ):
             run(screen)
@@ -1419,24 +1423,16 @@ class SidebarDrawTest(unittest.TestCase):
 
 
     def test_add_titles_name_mode_and_filter_query(self):
-        for query, filtering, expected in (
-            ("", False, "mtmux / Add session"),
-            ("work", True, "mtmux / Add session"),
+        for query, filtering, adding, expected in (
+            ("", False, False, "＋ new"),
+            ("", False, True, "mtmux / Add session"),
+            ("work", True, True, "mtmux / Add session"),
         ):
             screen = FakeScreen(size=(5, 50))
-            _draw(screen, [], 0, "", query, filtering=filtering, adding=True)
-            title = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-            self.assertIn(expected, title)
+            _draw(screen, [], 0, "", query, filtering=filtering, adding=adding)
+            all_title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+            self.assertIn(expected, all_title_text)
 
-    def test_add_entry_band_and_left_aligned_plus(self):
-        entry = Entry("Add session", "add")
-        with patch("mtmux.sidebar._ascii", return_value=False), patch.dict(
-            "mtmux.sidebar._COLOR", {"add_entry": 123}, clear=True
-        ):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 30), ["› ＋ Add session" + " " * 14])
-            self.assertEqual(_entry_lines(entry, False, set(), None, 30), ["  ＋ Add session" + " " * 14])
-            self.assertEqual(_entry_attr(entry, False), 123)
-            self.assertEqual(_entry_attr(entry, False, True), _fade(123))
 
     def test_title_excludes_tracked_duplicates_and_stale_entries(self):
         screen = FakeScreen(size=(5, 40))
@@ -1445,8 +1441,8 @@ class SidebarDrawTest(unittest.TestCase):
 
         _draw(screen, entries, 0, "ok", "")
 
-        title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].endswith("1 session"))
+        title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("mtmux", title_text)
 
     def test_numbered_tracked_has_no_slot_in_entry_lines_in_unicode_and_ascii(self):
         entry = Entry(
@@ -1584,7 +1580,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, entries, index, *args, **kwargs: selections.append(entries[index]) or 2),
+            patch("mtmux.sidebar._draw", side_effect=lambda _, entries, index, *args, **kwargs: selections.append(entries[index]) or (2, None)),
         ):
             run(screen)
 
@@ -1726,26 +1722,6 @@ class ShouldAutoCreateTest(unittest.TestCase):
         ]
         self.assertFalse(_should_auto_create(entries))
 
-    def test_enter_add_auto_creates_on_single_host(self):
-        entry = Entry("laptop", "host", host="")
-        screen = FakeScreen([10, ord("w"), ord("o"), 10, ord("q")])
-
-        with (
-            patch("mtmux.sidebar.curses.curs_set") as curs_set,
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("Add session", "add"), entry]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.cockpit.switch"),
-        ):
-            run(screen)
-
-        create.assert_called_once()
-        target = create.call_args[0][0]
-        self.assertEqual(target.session, "wo")
-        self.assertEqual(target.kind, "local")
-        curs_set.assert_any_call(1)
 
     def test_a_key_auto_creates_on_single_host(self):
         entry = Entry("laptop", "host", host="")
@@ -1799,7 +1775,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             selected = args[2]
             scroll_offset = args[12] if len(args) > 12 else None
             captured.append((selected, scroll_offset))
-            return 2
+            return (2, None)
 
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
         with (
@@ -1828,7 +1804,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             selected = args[2]
             scroll_offset = args[12] if len(args) > 12 else None
             captured.append((selected, scroll_offset))
-            return 2
+            return (2, None)
 
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
         with (
@@ -1857,7 +1833,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             selected = args[2]
             scroll_offset = args[12] if len(args) > 12 else None
             captured.append((selected, scroll_offset))
-            return 2
+            return (2, None)
 
         screen = FakeScreen([
             curses.KEY_MOUSE,  # wheel to set scroll_offset
@@ -1887,7 +1863,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             selected = args[2]
             scroll_offset = args[12] if len(args) > 12 else None
             captured.append((selected, scroll_offset))
-            return 2
+            return (2, None)
 
         screen = FakeScreen([
             curses.KEY_MOUSE,  # wheel to set scroll_offset
@@ -1916,7 +1892,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             selected = args[2]
             scroll_offset = args[12] if len(args) > 12 else None
             captured.append((selected, scroll_offset))
-            return 2
+            return (2, None)
 
         screen = FakeScreen([
             curses.KEY_MOUSE,  # wheel to set scroll_offset
@@ -2147,8 +2123,8 @@ class AgentOrderingRenderTest(unittest.TestCase):
 
     def test_entry_at_row_selects_order_entry(self):
         entries = [Entry("", "order"), Entry("pi", "agent", Target("local", "work"), agent_id="id")]
-        self.assertEqual(_entry_at_row(entries, 0, 4, 8, 0, top=4), 0)
-        self.assertEqual(_entry_at_row(entries, 0, 6, 8, 0, top=4), 1)
+        self.assertEqual(_entry_at_row(entries, 0, 4, 9, 0, top=4), 0)
+        self.assertEqual(_entry_at_row(entries, 0, 6, 9, 0, top=4), 1)
 
     def test_entry_height_order_is_one(self):
         self.assertEqual(_entry_height(Entry("", "order")), 2)

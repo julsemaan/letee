@@ -62,6 +62,7 @@ class SidebarState:
     agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_rows: int | None = None
     agent_ordering: Literal["priority", "session"] = "priority"
+    add_button_selected: bool = False
 
 
 @dataclass(frozen=True)
@@ -188,7 +189,7 @@ def _entries(
     hostname = socket.gethostname()
     if not adding:
         slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
-        out = [Entry("Add session", "add"), Entry("", "spacer")]
+        out: list[Entry] = []
         for target in favorites:
             status = _target_status(target, snapshot)
             out.append(Entry(
@@ -201,8 +202,8 @@ def _entries(
                 shortcut_slot=slots.get(target),
                 status=status,
             ))
-        if len(out) == 2:
-            out.append(Entry("Press enter to add a session", "hint"))
+        if not out:
+            out.append(Entry("Press / or click ＋ new to add", "hint"))
         return out
 
     icons = _icons()
@@ -322,7 +323,7 @@ def _update_agent_alerts(
 
 
 def _selectable(entries: list[Entry]) -> list[int]:
-    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "add")]
+    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host")]
 
 
 def _should_auto_create(entries: list[Entry]) -> bool:
@@ -337,7 +338,7 @@ def _selected_index(entries: list[Entry], target: Target | None) -> int:
         for i, entry in enumerate(entries):
             if entry.target == target:
                 return i
-    for kind in ("session", "host", "add"):
+    for kind in ("session", "host"):
         for i, entry in enumerate(entries):
             if entry.kind == kind:
                 return i
@@ -589,7 +590,7 @@ def _entry_at_row(
         return None
     for index in range(start, end):
         if entry_row < _entry_height(entries[index]):
-            return index if entries[index].kind in ("session", "host", "add", "agent", "order") else None
+            return index if entries[index].kind in ("session", "host", "agent", "order") else None
         entry_row -= _entry_height(entries[index])
     return None
 
@@ -614,18 +615,29 @@ def _draw_title(
     filtering: bool = False,
     dimmed: bool = False,
     adding: bool = False,
-) -> int:
+    add_button_selected: bool = False,
+) -> tuple[int, int | None]:
     width = max(1, w)
     count = len({entry.target for entry in entries if entry.kind == "session" and not entry.unavailable_favorite})
     brand = " mtmux" if _ascii() else "  mtmux"
     left = f"{brand} / Add session" if adding else brand
-    noun = ("match" if count == 1 else "matches") if filtering else ("session" if count == 1 else "sessions")
-    right = f"{count} {noun}"
-    title = f"{left}{right.rjust(width - len(left))}" if len(left) + len(right) < width else left
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
-    stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
+    if not adding:
+        label = f"{_icons()['selected']} new" if add_button_selected else "＋ new"
+        add_col = width - _cell_width(label)
+        main_width = max(0, add_col)
+        stdscr.addnstr(0, 0, left[:main_width].ljust(main_width), main_width, _fade(attr) if dimmed else attr)
+        if add_col > 0:
+            button_attr = _color("active") if add_button_selected and not dimmed else attr
+            stdscr.addnstr(0, add_col, label, _cell_width(label), _fade(button_attr) if dimmed else button_attr)
+    else:
+        add_col = None
+        noun = ("match" if count == 1 else "matches") if filtering else ("session" if count == 1 else "sessions")
+        right = f"{count} {noun}"
+        title = f"{left}{right.rjust(width - len(left))}" if len(left) + len(right) < width else left
+        stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
     stdscr.redrawln(0, 1)
-    return min(width - 1, len(left))
+    return (min(width - 1, len(left)), add_col)
 
 
 def _draw_filter(stdscr: curses.window, w: int, filter_text: str, dimmed: bool) -> tuple[int, int]:
@@ -957,11 +969,12 @@ def _draw(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
-    agent_ordering: str = "priority"
-) -> int:
+    agent_ordering: str = "priority",
+    add_button_selected: bool = False,
+) -> tuple[int, int | None]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
-    cursor = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed, adding)
+    cursor, add_col = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed, adding, add_button_selected)
     if filtering:
         cursor = _draw_filter(stdscr, w, filter_text, dimmed)
     footer_height = _draw_footer(stdscr, h, w, filtering, dimmed, creation_host is not None, adding)
@@ -975,7 +988,7 @@ def _draw(
         elif filtering:
             stdscr.move(*cursor)
         stdscr.refresh()
-        return footer_height
+        return footer_height, add_col
     footer_top = h - footer_height
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
@@ -984,7 +997,7 @@ def _draw(
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "terminal too short", max(0, w - 1), curses.A_BOLD)
         stdscr.refresh()
-        return footer_height
+        return footer_height, add_col
     available = footer_top - session_top - 1
     wanted = agent_rows if agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
     agent_body = min(max(minimum_agent_rows, wanted), available - 1)
@@ -1016,7 +1029,7 @@ def _draw(
     elif filtering:
         stdscr.move(*cursor)
     stdscr.refresh()
-    return footer_height
+    return footer_height, add_col
 
 
 def run(stdscr: curses.window) -> None:
@@ -1037,6 +1050,7 @@ def run(stdscr: curses.window) -> None:
     next_cockpit_bell_poll = 0.0
     rendered: tuple[object, ...] | None = None
     footer_height = 0
+    add_col: int | None = None
     stdscr.timeout(UI_POLL_INTERVAL_MS)
 
     def show_status(message: str) -> None:
@@ -1088,15 +1102,17 @@ def run(stdscr: curses.window) -> None:
                 state.focused_region, state.agent_rows, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
                 int(time.time()) if agent_entries else None, state.agent_ordering,
+                state.add_button_selected,
             )
             if render_state != rendered:
-                footer_height = _draw(
+                footer_height, add_col = _draw(
                     stdscr, entries, state.selected_index, state.status, state.filter_text,
                     state.filtering, bell_targets, current_target, dimmed,
                     state.creation_host, state.creation_text, state.adding, state.scroll_offset,
                     agent_entries, state.agent_selected_index, state.focused_region, state.agent_rows,
                     active_agent_id, agent_alerts=state.agent_alerts,
                     spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
+                    add_button_selected=state.add_button_selected,
                 )
                 rendered = render_state
             try:
@@ -1153,6 +1169,16 @@ def run(stdscr: curses.window) -> None:
                             break
                     state.scroll_offset = min(max_offset, state.scroll_offset + 1)
                     continue
+                if row == 0 and add_col is not None and isinstance(mouse_col, int) and mouse_col >= add_col:
+                    if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):
+                        state.adding = True
+                        state.selected_target = None
+                        rebuild()
+                        if _should_auto_create(entries):
+                            state.creation_host = next(e for e in entries if e.kind == "host").host
+                            state.creation_text = ""
+                            curses.curs_set(1)
+                    continue
                 else:
                     h = stdscr.getmaxyx()[0]
                     footer_top = h - footer_height
@@ -1198,6 +1224,7 @@ def run(stdscr: curses.window) -> None:
                     if index is None:
                         continue
                     state.focused_region = "sessions"
+                    state.add_button_selected = False
                     state.selected_index = index
                     state.selected_target = entries[index].target
                     state.selected_tracked = entries[index].tracked
@@ -1232,6 +1259,7 @@ def run(stdscr: curses.window) -> None:
                 effect = _transition(state, "quit")
             elif key == 9 and not state.adding:
                 state.focused_region = "agents" if state.focused_region == "sessions" else "sessions"
+                state.add_button_selected = False
             elif key == ord("["):
                 state.agent_rows = (state.agent_rows or max(2, round(stdscr.getmaxyx()[0] * 0.4))) + 1
             elif key == ord("]"):
@@ -1259,14 +1287,28 @@ def run(stdscr: curses.window) -> None:
                 effect = Effect("status", message="agent panes are automatic")
             elif key in (curses.KEY_DOWN, ord("j")) and selectable:
                 state.scroll_offset = None
-                state.selected_index = selectable[(selectable.index(state.selected_index) + 1) % len(selectable)]
-                state.selected_target = entries[state.selected_index].target
-                state.selected_tracked = entries[state.selected_index].tracked
+                if state.add_button_selected:
+                    state.add_button_selected = False
+                    state.selected_index = selectable[0]
+                    state.selected_target = entries[state.selected_index].target
+                    state.selected_tracked = entries[state.selected_index].tracked
+                else:
+                    state.selected_index = selectable[(selectable.index(state.selected_index) + 1) % len(selectable)]
+                    state.selected_target = entries[state.selected_index].target
+                    state.selected_tracked = entries[state.selected_index].tracked
             elif key in (curses.KEY_UP, ord("k")) and selectable:
                 state.scroll_offset = None
-                state.selected_index = selectable[(selectable.index(state.selected_index) - 1) % len(selectable)]
-                state.selected_target = entries[state.selected_index].target
-                state.selected_tracked = entries[state.selected_index].tracked
+                if state.selected_index == selectable[0] and not state.add_button_selected:
+                    state.add_button_selected = True
+                elif state.add_button_selected:
+                    state.add_button_selected = False
+                    state.selected_index = selectable[-1]
+                    state.selected_target = entries[state.selected_index].target
+                    state.selected_tracked = entries[state.selected_index].tracked
+                else:
+                    state.selected_index = selectable[(selectable.index(state.selected_index) - 1) % len(selectable)]
+                    state.selected_target = entries[state.selected_index].target
+                    state.selected_tracked = entries[state.selected_index].tracked
             elif key == ord("K"):
                 effect = _transition(state, "move_session_up")
             elif key == ord("J"):
@@ -1294,8 +1336,8 @@ def run(stdscr: curses.window) -> None:
                 effect = _transition(state, "help")
             elif key in (10, 13, curses.KEY_ENTER):
                 state.scroll_offset = None
-                entry = entries[state.selected_index]
-                if entry.kind == "add":
+                if state.add_button_selected:
+                    state.add_button_selected = False
                     state.adding = True
                     state.selected_target = None
                     rebuild()
@@ -1304,6 +1346,7 @@ def run(stdscr: curses.window) -> None:
                         state.creation_text = ""
                         curses.curs_set(1)
                     continue
+                entry = entries[state.selected_index]
                 if entry.target:
                     effect = _transition(state, "add_switch" if state.adding else "switch", entry.target)
                     if state.adding:
