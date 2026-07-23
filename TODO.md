@@ -12,6 +12,10 @@
   - [ ] prefix+a to get to agents
   - [ ] prefix+s always gets to sessions instead of wherever you were last in the left pane
   - [ ] Get rid of 'tab' to move around between agents/sessions and use prefix
+- [ ] The new menu is overdue for polishing
+  - [ ] When creating a new session, reusing the same row for the name leaves little place
+  - [ ] It isn't clear you need to pick somewhere to create the session
+  - [ ] When there is a single place to create the session, just skip selecting it and show the session name, and skip the selection menu as a whole
 
 ## Done
 
