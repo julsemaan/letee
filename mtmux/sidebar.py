@@ -1220,7 +1220,7 @@ def run(stdscr: curses.window) -> None:
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
                 footer_top = h - footer_height
-                session_top = 2 if state.filtering else 1
+                session_top = 3 if state.filtering else 2
                 has_agents = any(e.kind == "agent" for e in agent_entries)
                 minimum_agent_rows = 1 + (2 if has_agents else 1)
                 available = footer_top - session_top - 1
@@ -1236,7 +1236,7 @@ def run(stdscr: curses.window) -> None:
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
                     idx = _entry_at_row(
                         entries, view_index, row, separator + 1, 0,
-                        2 if state.filtering else 1,
+                        3 if state.filtering else 2,
                         state.scroll_offset,
                     )
                     if idx is not None and entries[idx].tracked:
@@ -1323,7 +1323,7 @@ def run(stdscr: curses.window) -> None:
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
                     index = _entry_at_row(
                         entries, view_index, row, separator + 1, 0,
-                        2 if state.filtering else 1,
+                        3 if state.filtering else 2,
                         state.scroll_offset,
                     )
                     if index is None:

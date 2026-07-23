@@ -1193,14 +1193,15 @@ class SidebarDrawTest(unittest.TestCase):
             Entry("one", "session", Target("local", "one")),
             Entry("two", "session", Target("local", "two")),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 3, 0, curses.BUTTON1_CLICKED)),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 4, 0, curses.BUTTON1_CLICKED)),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
             patch("mtmux.sidebar.cockpit.switch") as switch,
@@ -1211,14 +1212,15 @@ class SidebarDrawTest(unittest.TestCase):
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s two")
 
     def test_single_click_host_starts_inline_editor_and_creates_local_target(self):
-        screen = FakeScreen([curses.KEY_MOUSE, ord("n"), ord("e"), ord("w"), 10, ord("q")], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, ord("n"), ord("e"), ord("w"), 10, ord("q")], size=(12, 30))
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 1, 0, curses.BUTTON1_CLICKED)),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON1_CLICKED)),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar._entries", return_value=[Entry("laptop", "host", host="")]),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
             patch("mtmux.sidebar.sessions.create") as create,
