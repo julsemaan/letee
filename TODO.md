@@ -30,7 +30,7 @@
   - julsemaan-tmp/html-plans/2026-07-19-1537-automatic-starred-agent-panes.html
 - [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
 - [] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger
-- [] Consider having 'Add session' become '+ new' in the topmost header
+- [x] Consider having 'Add session' become '+ new' in the topmost header
 - [] Drag and drop sessions to reorder them
 
 - [x] Make active agent pane colored
@@ -43,13 +43,13 @@
 - [] Have fancy spinner or something like that when an agent is working
 - [x] Allow ordering the agent sessions by session order or priority
 - [x] The agents pane doesn't show @host like the sessions do
-- [] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
 - [x] There seems to be some idle timeouts happening with the SSH sessions and they are not kept alive if I'm not active within mtmux
 - [x] When dealing with SSH reconnection or initial connection, show that instead of "unavailable"
-- [] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
+- [] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
+  - [] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [] Allow having multiple mtmux cockpit
-- [] Agents highlight in orange when navigating with keyboard
-- [] Add session + sign should be in cursor row. Also consider the same style as the order row
+- [x] Agents highlight in orange when navigating with keyboard
+- [x] Add session + sign should be in cursor row. Also consider the same style as the order row
 - [] Some prefix based shortcuts like 
   - [] prefix+h to hide 
   - [] prefix+q to quit mtmux cockpit
