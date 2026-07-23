@@ -766,7 +766,7 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
     if active:
         attr = _color("active") or curses.A_REVERSE
     elif entry.kind == "order":
-        attr = 0
+        attr = _color("section") or curses.A_BOLD
     elif entry.kind == "section":
         attr = _color("section") or curses.A_BOLD
     elif entry.kind == "add":
