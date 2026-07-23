@@ -1,3 +1,19 @@
+- [ ] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
+- [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger
+- [ ] Drag and drop sessions to reorder them
+- [ ] Find way to get rid of stale agents
+- [ ] Have fancy spinner or something like that when an agent is working
+- [ ] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
+  - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
+- [ ] Allow having multiple mtmux cockpit
+- [ ] Some prefix based shortcuts like 
+  - [ ] prefix+h to hide 
+  - [ ] prefix+q to quit mtmux cockpit
+  - [ ] prefix+a to get to agents
+  - [ ] prefix+s always gets to sessions instead of wherever you were last in the left pane
+
+## Done
+
 - [x] The STARRED section at the top lacks polishing visually
 - [x] Use the color palette of the logo in the sidebar
 - [x] Have some shortcuts to switch through starred sessions (prefix + number)
@@ -23,35 +39,20 @@
   - [x] Sessions section shows "No starred sessions" but sessions are not starred anymore, they are just "sessions". Change the text for now, a larger refactor will follow
 - [x] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
 - [x] Rethink the second row with the hostname. Emojis look off
-- [X] Not overly satisfied of the placement of the session number at the end of the row. Rethink that, maybe like tmux where it is in a differently colored box left of the name
+- [x] Not overly satisfied of the placement of the session number at the end of the row. Rethink that, maybe like tmux where it is in a differently colored box left of the name
 - [x] When on a fresh one, you press enter to add a session, then are presented with a menu to create a session on the current host and it's the only option and it isn't clear you have to press enter again. Could be implicit if there is a single host and it has no existing sessions. Also having the cursor be there could be useful. This has to be rethought and polished.
-
 - [x] Start designing agents status in the left bar based on julsemaan/astatus
   - julsemaan-tmp/html-plans/2026-07-19-1537-automatic-starred-agent-panes.html
-- [] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
-- [] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger
 - [x] Consider having 'Add session' become '+ new' in the topmost header
-- [] Drag and drop sessions to reorder them
-
 - [x] Make active agent pane colored
 - [x] Show last reported status of agent
-- [] Find way to get rid of stale agents
 - [x] Only list agents that are part of currently tracked sessions
 - [x] Have agents ring bell so that it is easy to navigate to the agent that has finished
 - [x] When using mtmux and creating a new window using tmux's prefix+c, it always creates the window in the first session
 - [x] Don't use orange for input-required, use red
-- [] Have fancy spinner or something like that when an agent is working
 - [x] Allow ordering the agent sessions by session order or priority
 - [x] The agents pane doesn't show @host like the sessions do
 - [x] There seems to be some idle timeouts happening with the SSH sessions and they are not kept alive if I'm not active within mtmux
 - [x] When dealing with SSH reconnection or initial connection, show that instead of "unavailable"
-- [] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
-  - [] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
-- [] Allow having multiple mtmux cockpit
 - [x] Agents highlight in orange when navigating with keyboard
 - [x] Add session + sign should be in cursor row. Also consider the same style as the order row
-- [] Some prefix based shortcuts like 
-  - [] prefix+h to hide 
-  - [] prefix+q to quit mtmux cockpit
-  - [] prefix+a to get to agents
-  - [] prefix+s always gets to sessions instead of wherever you were last in the left pane
