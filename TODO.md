@@ -48,3 +48,5 @@
 - [x] When dealing with SSH reconnection or initial connection, show that instead of "unavailable"
 - [] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [] Allow having multiple mtmux cockpit
+- [] Agents highlight in orange when navigating with keyboard
+- [] Add session + sign should be in cursor row. Also consider the same style as the order row
