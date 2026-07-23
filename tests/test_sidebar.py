@@ -638,6 +638,7 @@ class SidebarColorTest(unittest.TestCase):
                 call(15, curses.COLOR_MAGENTA, -1), call(16, curses.COLOR_RED, -1),
                 call(17, curses.COLOR_RED, -1), call(18, 79, -1),
                 call(19, curses.COLOR_YELLOW, -1),
+                call(20, 30, -1),
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
@@ -676,6 +677,7 @@ class SidebarColorTest(unittest.TestCase):
                 call(14, curses.COLOR_RED, -1), call(15, curses.COLOR_MAGENTA, -1),
                 call(16, curses.COLOR_RED, -1), call(17, curses.COLOR_RED, -1),
                 call(18, curses.COLOR_CYAN, -1), call(19, curses.COLOR_YELLOW, -1),
+                call(20, curses.COLOR_CYAN, -1),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
@@ -716,6 +718,9 @@ class SidebarDrawTest(unittest.TestCase):
     def test_mouse_mask_registers_only_supported_events(self):
         expected = (
             curses.BUTTON1_CLICKED
+            | curses.BUTTON1_PRESSED
+            | curses.BUTTON1_RELEASED
+            | curses.REPORT_MOUSE_POSITION
             | curses.BUTTON4_PRESSED
             | getattr(curses, "BUTTON5_PRESSED", 0)
         )

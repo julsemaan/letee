@@ -63,6 +63,8 @@ class SidebarState:
     agent_rows: int | None = None
     agent_ordering: Literal["priority", "session"] = "priority"
     add_button_selected: bool = False
+    drag_source_index: int | None = None
+    drag_target_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,7 @@ def _init_colors() -> None:
             "agent_rejected": (17, curses.COLOR_RED, -1, curses.A_BOLD),
             "agent_completed": (18, mint, -1, 0),
             "agent_unknown": (19, curses.COLOR_YELLOW, -1, 0),
+            "drag": (20, teal, -1, curses.A_BOLD),
         }
         for name, (pair, fg, bg, attr) in pairs.items():
             curses.init_pair(pair, fg, bg)
@@ -595,15 +598,54 @@ def _entry_at_row(
     return None
 
 
+def _fav_to_entry_index(entries: list[Entry], fav_index: int) -> int | None:
+    """Map favorites index to entry index. Returns None if not found."""
+    tracked_count = 0
+    for i, entry in enumerate(entries):
+        if entry.tracked:
+            if tracked_count == fav_index:
+                return i
+            tracked_count += 1
+    return None
+
+
+def _entry_to_fav_index(entries: list[Entry], entry_index: int) -> int | None:
+    """Map entry index to favorites index. Returns None if entry is not tracked."""
+    if entry_index < 0 or entry_index >= len(entries):
+        return None
+    if not entries[entry_index].tracked:
+        return None
+    return sum(1 for e in entries[:entry_index] if e.tracked)
+
+
 def _mouse_mask() -> None:
     events = (
         getattr(curses, "BUTTON1_CLICKED", 0),
+        getattr(curses, "BUTTON1_PRESSED", 0),
+        getattr(curses, "BUTTON1_RELEASED", 0),
+        getattr(curses, "REPORT_MOUSE_POSITION", 0),
         getattr(curses, "BUTTON4_PRESSED", 0),
         getattr(curses, "BUTTON5_PRESSED", 0),
     )
     try:
         curses.mousemask(sum(event for event in events if isinstance(event, int)))
     except curses.error:
+        pass
+    # ponytail: force SGR any-event tracking (mode 1003) on terminal fd.
+    # Some terminals need this raw escape in addition to REPORT_MOUSE_POSITION.
+    try:
+        import os as _os, sys as _sys
+        _os.write(_sys.stdout.fileno(), b"\033[?1003h")
+    except Exception:
+        pass
+
+
+def _mouse_cleanup() -> None:
+    """Disable SGR any-event tracking (mode 1003) set by _mouse_mask."""
+    try:
+        import os as _os, sys as _sys
+        _os.write(_sys.stdout.fileno(), b"\033[?1003l")
+    except Exception:
         pass
 
 
@@ -798,7 +840,9 @@ def _status_attr(status: str) -> int:
     return _color("agent_unknown") or 0
 
 
-def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
+def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, drag_source: bool = False, drag_target: bool = False) -> int:
+    if drag_source:
+        return (_color("drag") or curses.A_REVERSE) | curses.A_DIM
     if active:
         attr = _color("active") or curses.A_REVERSE
     elif entry.kind == "order":
@@ -852,7 +896,9 @@ def _draw_entries(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
-    agent_ordering: str = "priority"
+    agent_ordering: str = "priority",
+    drag_source_entry: int | None = None,
+    drag_target_entry: int | None = None,
 ) -> tuple[int, int] | None:
     cursor = None
     view_index = _view_index(entries, selected, current_target, dimmed)
@@ -875,7 +921,13 @@ def _draw_entries(
         )
         focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
         # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
-        base_attr = _entry_attr(entry, active_entry or active_agent, dimmed)
+        is_drag_source = drag_source_entry is not None and idx == drag_source_entry
+        is_drag_target = drag_target_entry is not None and idx == drag_target_entry
+        if is_drag_target:
+            line_c = "-" if _ascii() else "─"
+            stdscr.addnstr(row, 0, line_c * w, w, _color("drag") or curses.A_REVERSE)
+            row += 1
+        base_attr = _entry_attr(entry, active_entry or active_agent, dimmed, drag_source=is_drag_source, drag_target=is_drag_target)
         slot_badge = ""
         slot_width = 0
         if entry.tracked and entry.shortcut_slot is not None:
@@ -972,6 +1024,8 @@ def _draw(
     spinner_frame: str | None = None,
     agent_ordering: str = "priority",
     add_button_selected: bool = False,
+    drag_source_entry: int | None = None,
+    drag_target_entry: int | None = None,
 ) -> tuple[int, int | None]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -983,6 +1037,7 @@ def _draw(
         creation_cursor = _draw_entries(
             stdscr, entries, selected, h - footer_height + 1, w, bell_targets or set(), current_target,
             dimmed, creation_host, creation_text, 3 if filtering else 2, scroll_offset,
+            drag_source_entry=drag_source_entry, drag_target_entry=drag_target_entry,
         )
         if creation_cursor:
             stdscr.move(*creation_cursor)
@@ -1006,6 +1061,7 @@ def _draw(
     creation_cursor = _draw_entries(
         stdscr, entries, selected, separator + 1, w, bell_targets or set(), current_target,
         dimmed or focused_region != "sessions", creation_host, creation_text, session_top, scroll_offset,
+        drag_source_entry=drag_source_entry, drag_target_entry=drag_target_entry,
     )
     rule = "-" if _ascii() else "─"
     label = "AGENTS "
@@ -1104,8 +1160,11 @@ def run(stdscr: curses.window) -> None:
                 frozenset(state.agent_alerts), spinner_frame,
                 int(time.time()) if agent_entries else None, state.agent_ordering,
                 state.add_button_selected,
+                state.drag_source_index, state.drag_target_index,
             )
             if render_state != rendered:
+                drag_src_entry = _fav_to_entry_index(entries, state.drag_source_index) if state.drag_source_index is not None else None
+                drag_tgt_entry = _fav_to_entry_index(entries, state.drag_target_index) if state.drag_target_index is not None else None
                 footer_height, add_col = _draw(
                     stdscr, entries, state.selected_index, state.status, state.filter_text,
                     state.filtering, bell_targets, current_target, dimmed,
@@ -1114,6 +1173,7 @@ def run(stdscr: curses.window) -> None:
                     active_agent_id, agent_alerts=state.agent_alerts,
                     spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
                     add_button_selected=state.add_button_selected,
+                    drag_source_entry=drag_src_entry, drag_target_entry=drag_tgt_entry,
                 )
                 rendered = render_state
             try:
@@ -1144,6 +1204,59 @@ def run(stdscr: curses.window) -> None:
                 except (curses.error, TypeError, ValueError):
                     continue
                 if not isinstance(row, int) or not isinstance(mouse_state, int):
+                    continue
+                # Skip pure motion events when not dragging (mode 1003 sends
+                # position on all moves, would change selection otherwise).
+                _b1_motion = getattr(curses, "REPORT_MOUSE_POSITION", 0) or 0
+                _button_bits = (
+                    getattr(curses, "BUTTON1_PRESSED", 0) or 0
+                    | getattr(curses, "BUTTON1_RELEASED", 0) or 0
+                    | getattr(curses, "BUTTON1_CLICKED", 0) or 0
+                    | getattr(curses, "BUTTON4_PRESSED", 0) or 0
+                    | getattr(curses, "BUTTON5_PRESSED", 0) or 0
+                )
+                if state.drag_source_index is None and mouse_state & _b1_motion and not mouse_state & _button_bits:
+                    continue
+                # Compute layout once for this mouse event
+                h = stdscr.getmaxyx()[0]
+                footer_top = h - footer_height
+                session_top = 2 if state.filtering else 1
+                has_agents = any(e.kind == "agent" for e in agent_entries)
+                minimum_agent_rows = 1 + (2 if has_agents else 1)
+                available = footer_top - session_top - 1
+                wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
+                agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
+                separator = footer_top - agent_body - 1
+                # Drag: update target from mouse position on any event during drag
+                _b1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
+                _b1_clicked = getattr(curses, "BUTTON1_CLICKED", 0) or 0
+                if state.drag_source_index is not None:
+                    with open("/tmp/mtmux_debug.log", "a") as _dbg:
+                        _dbg.write(f"DRAG_EVENT state={mouse_state:#x} row={row} src={state.drag_source_index} tgt_before={state.drag_target_index}\n")
+                    view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                    idx = _entry_at_row(
+                        entries, view_index, row, separator + 1, 0,
+                        2 if state.filtering else 1,
+                        state.scroll_offset,
+                    )
+                    if idx is not None and entries[idx].tracked:
+                        fav_idx = _entry_to_fav_index(entries, idx)
+                        if fav_idx is not None:
+                            state.drag_target_index = fav_idx
+                    with open("/tmp/mtmux_debug.log", "a") as _dbg:
+                        _dbg.write(f"DRAG_EVENT idx={idx} fav_idx={state.drag_target_index} is_release={bool(mouse_state & (_b1_released or _b1_clicked))}\n")
+                    if mouse_state & (_b1_released or _b1_clicked):
+                        if state.drag_target_index is not None and state.drag_source_index != state.drag_target_index:
+                            src = state.drag_source_index
+                            tgt = state.drag_target_index
+                            if 0 <= src < len(state.favorites) and 0 <= tgt < len(state.favorites):
+                                target = state.favorites.pop(src)
+                                state.favorites.insert(tgt, target)
+                                effect = Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()}")
+                                _execute(effect, state, poller, status_timeout)
+                                rebuild()
+                        state.drag_source_index = None
+                        state.drag_target_index = None
                     continue
                 if mouse_state & (getattr(curses, "BUTTON4_PRESSED", 0) or 0):
                     if state.scroll_offset is None:
@@ -1181,15 +1294,6 @@ def run(stdscr: curses.window) -> None:
                             curses.curs_set(1)
                     continue
                 else:
-                    h = stdscr.getmaxyx()[0]
-                    footer_top = h - footer_height
-                    session_top = 3 if state.filtering else 2
-                    has_agents = any(e.kind == "agent" for e in agent_entries)
-                    minimum_agent_rows = 1 + (2 if has_agents else 1)
-                    available = footer_top - session_top - 1
-                    wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-                    agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
-                    separator = footer_top - agent_body - 1
                     if separator < row < footer_top and not state.adding and agent_entries:
                         index = _entry_at_row(agent_entries, state.agent_selected_index, row, footer_top + 1, 0, separator + 1)
                         if index is None:
@@ -1229,6 +1333,16 @@ def run(stdscr: curses.window) -> None:
                     state.selected_index = index
                     state.selected_target = entries[index].target
                     state.selected_tracked = entries[index].tracked
+                    # Drag: press on tracked session starts drag
+                    _b1_pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
+                    if mouse_state & _b1_pressed and entries[index].tracked:
+                        fav_idx = _entry_to_fav_index(entries, index)
+                        if fav_idx is not None:
+                            state.drag_source_index = fav_idx
+                            state.drag_target_index = fav_idx
+                            with open("/tmp/mtmux_debug.log", "a") as _dbg:
+                                _dbg.write(f"DRAG_START state={mouse_state:#x} row={row} fav_idx={fav_idx}\n")
+                        continue
                     if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):
                         key = curses.KEY_ENTER
                     else:
@@ -1376,6 +1490,7 @@ def run(stdscr: curses.window) -> None:
                 rebuild()
     finally:
         poller.close()
+        _mouse_cleanup()
 
 
 def main() -> int:
