@@ -822,11 +822,11 @@ class SidebarDrawTest(unittest.TestCase):
             with self.subTest(host=host), patch("mtmux.sidebar._ascii", return_value=False):
                 _draw(screen, entries, 0, "", "", creation_host=host, creation_text="work")
 
-            row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+            row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2)
             self.assertIn("＋ " + label + " / new: work", row[3])
             footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
             self.assertEqual(footer, ["Esc cancel · Enter create"])
-            self.assertTrue(any(call[0] == "move" and call[1] == 1 for call in screen.calls))
+            self.assertTrue(any(call[0] == "move" and call[1] == 2 for call in screen.calls))
 
     def test_inline_creation_ascii_and_narrow_long_text_keep_cursor_visible(self):
         screen = FakeScreen(size=(5, 16))
@@ -837,7 +837,7 @@ class SidebarDrawTest(unittest.TestCase):
                 creation_host="long-host", creation_text="abcdefghijklmnop",
             )
 
-        row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2)
         self.assertTrue(row[3].startswith("+ "))
         cursor = next(call for call in screen.calls if call[0] == "move")
         self.assertLess(cursor[2], 16)
@@ -933,7 +933,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         _draw(screen, [entry], 0, "", "")
 
-        row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2)
         self.assertEqual(row[4], 20)
         self.assertEqual(sidebar._cell_width(row[3]), 20)
 
@@ -1169,7 +1169,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 16, 0, curses.BUTTON1_CLICKED)),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 17, 0, curses.BUTTON1_CLICKED)),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar.load_sessions", return_value=[target]),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
@@ -1539,10 +1539,10 @@ class SidebarDrawTest(unittest.TestCase):
         with patch.dict("mtmux.sidebar._COLOR", {"active": 123}, clear=True):
             _draw(screen, [entry], 0, "ok", "", current_target=target)
 
-        rows = [call for call in screen.calls if call[0] == "addnstr" and call[1] in (1, 2)]
+        rows = [call for call in screen.calls if call[0] == "addnstr" and call[1] in (2, 3)]
         self.assertEqual([call[5] for call in rows], [123, 123])
-        self.assertEqual(_entry_at_row([entry], 0, 1, 6, 1), 0)
-        self.assertEqual(_entry_at_row([entry], 0, 2, 6, 1), 0)
+        self.assertEqual(_entry_at_row([entry], 0, 2, 6, 1, top=2), 0)
+        self.assertEqual(_entry_at_row([entry], 0, 3, 6, 1, top=2), 0)
 
     def test_viewport_budgets_two_rows_for_selected_tracked_entry(self):
         entries = [Entry("STARRED", "header"), Entry("work", "session", Target("local", "work"), tracked=True), Entry("LOCAL", "header")]

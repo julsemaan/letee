@@ -982,7 +982,7 @@ def _draw(
     if agent_entries is None:
         creation_cursor = _draw_entries(
             stdscr, entries, selected, h - footer_height + 1, w, bell_targets or set(), current_target,
-            dimmed, creation_host, creation_text, 2 if filtering else 1, scroll_offset,
+            dimmed, creation_host, creation_text, 3 if filtering else 2, scroll_offset,
         )
         if creation_cursor:
             stdscr.move(*creation_cursor)
@@ -994,7 +994,7 @@ def _draw(
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
     minimum_agent_rows = 1 + (2 if has_real_agents else 1)
-    session_top = 2 if filtering else 1
+    session_top = 3 if filtering else 2
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "terminal too short", max(0, w - 1), curses.A_BOLD)
         stdscr.refresh()
@@ -1183,7 +1183,7 @@ def run(stdscr: curses.window) -> None:
                 else:
                     h = stdscr.getmaxyx()[0]
                     footer_top = h - footer_height
-                    session_top = 2 if state.filtering else 1
+                    session_top = 3 if state.filtering else 2
                     has_agents = any(e.kind == "agent" for e in agent_entries)
                     minimum_agent_rows = 1 + (2 if has_agents else 1)
                     available = footer_top - session_top - 1
