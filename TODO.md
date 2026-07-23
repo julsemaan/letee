@@ -50,3 +50,8 @@
 - [] Allow having multiple mtmux cockpit
 - [] Agents highlight in orange when navigating with keyboard
 - [] Add session + sign should be in cursor row. Also consider the same style as the order row
+- [] Some prefix based shortcuts like 
+  - [] prefix+h to hide 
+  - [] prefix+q to quit mtmux cockpit
+  - [] prefix+a to get to agents
+  - [] prefix+s always gets to sessions instead of wherever you were last in the left pane
