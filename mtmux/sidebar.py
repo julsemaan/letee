@@ -691,19 +691,19 @@ def _entry_lines(
         return [_truncate(label + suffix, width)]
     if entry.kind == "order":
         ico = _icons()
-        pointer = ico["selected"] if selected else " "
         if _ascii():
+            pointer = ico["selected"] if selected else " "
             prefix = f"{pointer} Order:  "
             if agent_ordering == "priority":
                 line = prefix + "PRIORITY  SESSION"
             else:
                 line = prefix + "PRIORITY  SESSION"
         else:
-            prefix = f"{pointer} Order:  "
+            pointer = ico["selected"] if selected else "⇅"
             if agent_ordering == "priority":
-                line = prefix + "Priority  Session"
+                line = f"{pointer}  Priority  Session"
             else:
-                line = prefix + "Priority  Session"
+                line = f"{pointer}  Priority  Session"
         return [_truncate_cells(line, width)]
     if entry.kind == "agent":
         separator = " · "
@@ -1141,7 +1141,7 @@ def run(stdscr: curses.window) -> None:
                         state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
                         if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0) and entry.kind == "order":
                             # ponytail: column math on rendered string; fixed offsets per word position
-                            prefix = "> Order:  " if _ascii() else "› Order:  "
+                            prefix = "> Order:  " if _ascii() else "›  "
                             pri_word = "PRIORITY" if _ascii() else "Priority"
                             ses_word = "SESSION" if _ascii() else "Session"
                             pri_start = _cell_width(prefix)

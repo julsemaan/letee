@@ -1997,7 +1997,7 @@ class AgentOrderingRenderTest(unittest.TestCase):
         screen = FakeScreen(size=(10, 40))
         _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], agent_ordering="priority")
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        order_line = next(line for line in text if "Order:" in line)
+        order_line = next(line for line in text if "⇅" in line)
         self.assertIn("Priority", order_line)
         self.assertIn("Session", order_line)
 
@@ -2005,7 +2005,7 @@ class AgentOrderingRenderTest(unittest.TestCase):
         screen = FakeScreen(size=(10, 40))
         _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], agent_ordering="session")
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        order_line = next(line for line in text if "Order:" in line)
+        order_line = next(line for line in text if "⇅" in line)
         self.assertIn("Priority", order_line)
         self.assertIn("Session", order_line)
 
@@ -2025,13 +2025,13 @@ class AgentOrderingRenderTest(unittest.TestCase):
             _draw(screen, [], 0, "", "", dimmed=True, agent_entries=[Entry("", "order")], agent_ordering="priority")
         # Order line still rendered; dimming applies via _fade
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        self.assertTrue(any("Order:" in line for line in text))
+        self.assertTrue(any("⇅" in line for line in text))
 
     def test_ordering_row_visible_with_empty_agents(self):
         screen = FakeScreen(size=(10, 40))
         _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")])
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        self.assertTrue(any("Order:" in line for line in text))
+        self.assertTrue(any("⇅" in line for line in text))
         self.assertIn("  No active agents", text)
 
     def test_entry_lines_order_kind_unicode_and_ascii(self):
@@ -2040,6 +2040,8 @@ class AgentOrderingRenderTest(unittest.TestCase):
             unicode_line = _entry_lines(order_entry, False, set(), None, 40, agent_ordering="priority")[0]
         with patch("mtmux.sidebar._ascii", return_value=True):
             ascii_line = _entry_lines(order_entry, False, set(), None, 40, agent_ordering="session")[0]
+        self.assertIn("⇅", unicode_line)
+        self.assertNotIn("Order:", unicode_line)
         self.assertIn("Priority", unicode_line)
         self.assertIn("Session", unicode_line)
         self.assertIn("PRIORITY", ascii_line)
