@@ -2,7 +2,6 @@
 - [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger
 - [ ] Drag and drop sessions to reorder them
 - [ ] Find way to get rid of stale agents
-- [ ] Have fancy spinner or something like that when an agent is working
 - [ ] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
   - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
@@ -14,6 +13,7 @@
 
 ## Done
 
+- [x] Have fancy spinner or something like that when an agent is working
 - [x] The STARRED section at the top lacks polishing visually
 - [x] Use the color palette of the logo in the sidebar
 - [x] Have some shortcuts to switch through starred sessions (prefix + number)
