@@ -54,6 +54,7 @@ class CockpitLayoutTest(unittest.TestCase):
             [
                 unittest.mock.call("set-option", "-t", "mtmux", "prefix", "C-x"),
                 unittest.mock.call("set-option", "-t", "mtmux", "status", "off"),
+                unittest.mock.call("set-option", "-s", "escape-time", "0"),
             ],
         )
 
@@ -90,6 +91,7 @@ class CockpitLayoutTest(unittest.TestCase):
             [
                 unittest.mock.call("set-option", "-t", "mtmux", "prefix", "C-x"),
                 unittest.mock.call("set-option", "-t", "mtmux", "status", "off"),
+                unittest.mock.call("set-option", "-s", "escape-time", "0"),
             ],
         )
 
@@ -217,6 +219,7 @@ class CockpitLayoutTest(unittest.TestCase):
         enable_clipboard.assert_called_once_with()
         self.assertIn((("set-option", "-t", "mtmux", "prefix", "C-x"), {}), calls)
         self.assertIn((("set-option", "-t", "mtmux", "mouse", "on"), {}), calls)
+        self.assertIn((("set-option", "-s", "escape-time", "0"), {}), calls)
         new_session = next(args for args, _ in calls if args[0] == "new-session")
         self.assertIn("C-x s  focus/open sidebar", new_session[-1])
         split = tmux_out.call_args_list[1].args

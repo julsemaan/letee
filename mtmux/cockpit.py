@@ -144,6 +144,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     _install_right_pane_reset(left, right, prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "prefix", prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "status", "off")
+    tmux.tmux("set-option", "-s", "escape-time", "0")
     _enable_mouse()
     _enable_clipboard()
     _enable_truecolor()
