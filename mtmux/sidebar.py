@@ -61,6 +61,7 @@ class SidebarState:
     agent_states: dict[tuple[PaneTarget, str], str] = field(default_factory=dict)
     agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_rows: int | None = None
+    agent_ordering: Literal["priority", "session"] = "priority"
 
 
 @dataclass(frozen=True)
@@ -235,9 +236,40 @@ def _entries(
     return out
 
 
-def _agent_entries(snapshot: SessionSnapshot, favorites: list[Target]) -> list[Entry]:
+_STATUS_RANK: dict[str, int] = {
+    "input-required": 0, "auth-required": 0,
+    "failed": 1, "rejected": 1,
+    "completed": 2, "canceled": 2,
+    "working": 3, "submitted": 3,
+    "idle": 4,
+}
+
+
+def _agent_sort_key(
+    entry: Entry,
+    favorites: list[Target],
+    agent_ordering: str,
+    agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+) -> tuple:
+    target = entry.target
+    session_index = favorites.index(target) if target and target in favorites else len(favorites)
+    if agent_ordering == "session":
+        return (0, session_index, 0, 0, entry.agent_id or "")
+    status_rank = _STATUS_RANK.get(entry.status, 5)
+    bell_rank = 0 if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else 1
+    window = int(entry.pane_target.window_id[1:]) if entry.pane_target and entry.pane_target.window_id else 0
+    pane = int(entry.pane_target.pane_id[1:]) if entry.pane_target and entry.pane_target.pane_id else 0
+    return (bell_rank, status_rank, session_index, window, pane, entry.agent_id or "")
+
+
+def _agent_entries(
+    snapshot: SessionSnapshot,
+    favorites: list[Target],
+    agent_ordering: str = "priority",
+    agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+) -> list[Entry]:
     tracked = set(favorites)
-    return [
+    entries = [
         Entry(
             agent.agent_name,
             "agent",
@@ -252,6 +284,8 @@ def _agent_entries(snapshot: SessionSnapshot, favorites: list[Target]) -> list[E
         for agent in snapshot.agents
         if agent.pane_target.target in tracked
     ]
+    entries.sort(key=lambda e: _agent_sort_key(e, favorites, agent_ordering, agent_alerts))
+    return entries
 
 
 def _focused_agent_id(snapshot: SessionSnapshot, current_target: Target | None, fallback: str | None) -> str | None:
@@ -499,6 +533,8 @@ def _bell_targets(
 
 
 def _entry_height(entry: Entry) -> int:
+    if entry.kind == "order":
+        return 2
     return 2 if entry.tracked or entry.kind == "agent" else 1
 
 
@@ -553,7 +589,7 @@ def _entry_at_row(
         return None
     for index in range(start, end):
         if entry_row < _entry_height(entries[index]):
-            return index if entries[index].kind in ("session", "host", "add", "agent") else None
+            return index if entries[index].kind in ("session", "host", "add", "agent", "order") else None
         entry_row -= _entry_height(entries[index])
     return None
 
@@ -646,6 +682,7 @@ def _entry_lines(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
+    agent_ordering: str = "priority"
 ) -> list[str]:
     icon = _icons()
     pointer = icon["selected"] if selected else " "
@@ -675,6 +712,22 @@ def _entry_lines(
             host_icon = icon["local_header"] if entry.host == "" else icon["remote_header"]
             label = _truncate_cells(f"{host_icon} {entry.label}", max(0, width - _cell_width(suffix) - 1))
         return [_truncate(label + suffix, width)]
+    if entry.kind == "order":
+        ico = _icons()
+        if _ascii():
+            pointer = ico["selected"] if selected else " "
+            prefix = f"{pointer} Order:  "
+            if agent_ordering == "priority":
+                line = prefix + "PRIORITY  SESSION"
+            else:
+                line = prefix + "PRIORITY  SESSION"
+        else:
+            pointer = ico["selected"] if selected else "⇅"
+            if agent_ordering == "priority":
+                line = f"{pointer}  Priority  Session"
+            else:
+                line = f"{pointer}  Priority  Session"
+        return [_truncate_cells(line, width), ""]
     if entry.kind == "agent":
         separator = " · "
         alert = " BELL" if _ascii() else " 🔔"
@@ -736,6 +789,8 @@ def _status_attr(status: str) -> int:
 def _entry_attr(entry: Entry, active: bool, dimmed: bool = False) -> int:
     if active:
         attr = _color("active") or curses.A_REVERSE
+    elif entry.kind == "order":
+        attr = _color("section") or curses.A_BOLD
     elif entry.kind == "section":
         attr = _color("section") or curses.A_BOLD
     elif entry.kind == "add":
@@ -785,6 +840,7 @@ def _draw_entries(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
+    agent_ordering: str = "priority"
 ) -> tuple[int, int] | None:
     cursor = None
     view_index = _view_index(entries, selected, current_target, dimmed)
@@ -803,7 +859,7 @@ def _draw_entries(
         active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
         lines = _entry_lines(
             entry, selected_entry and not dimmed, bell_targets, current_target, w,
-            creation_host, creation_text, now, agent_alerts, spinner_frame,
+            creation_host, creation_text, now, agent_alerts, spinner_frame, agent_ordering,
         )
         focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
         base_attr = _entry_attr(entry, active_entry or active_agent or focused_entry, dimmed)
@@ -834,6 +890,15 @@ def _draw_entries(
                     column = line.rfind(entry.status)
                     if column >= 0:
                         stdscr.addnstr(row, column, entry.status, max(0, w - column), semantic_attr)
+            if entry.kind == "order" and line_number == 0:
+                active_word = "PRIORITY" if _ascii() else "Priority"
+                inactive_word = "SESSION" if _ascii() else "Session"
+                if agent_ordering == "session":
+                    active_word, inactive_word = inactive_word, active_word
+                active_attr = _color("active") or curses.A_REVERSE
+                col = line.find(active_word)
+                if col >= 0:
+                    stdscr.addnstr(row, col, active_word, max(0, w - col), _fade(active_attr) if dimmed else active_attr)
             if entry.kind == "host" and entry.host == creation_host:
                 cursor = (row, min(w - 1, _cell_width(line)))
             row += 1
@@ -892,6 +957,7 @@ def _draw(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
+    agent_ordering: str = "priority"
 ) -> int:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -912,7 +978,8 @@ def _draw(
         return footer_height
     footer_top = h - footer_height
     agents = agent_entries
-    minimum_agent_rows = 2 if agents else 1
+    has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
+    minimum_agent_rows = 1 + (2 if has_real_agents else 1)
     session_top = 2 if filtering else 1
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "terminal too short", max(0, w - 1), curses.A_BOLD)
@@ -929,15 +996,21 @@ def _draw(
     rule = "-" if _ascii() else "─"
     label = "AGENTS "
     stdscr.addnstr(separator, 0, label + rule * max(0, w - len(label)), w, _color("section") or curses.A_BOLD)
-    if agents:
+    if has_real_agents:
         _draw_entries(
             stdscr, agents, agent_selected, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
             active_agent_id=active_agent_id, now=now, agent_alerts=agent_alerts,
-            spinner_frame=spinner_frame,
+            spinner_frame=spinner_frame, agent_ordering=agent_ordering,
         )
     else:
-        stdscr.addnstr(separator + 1, 0, "  No active agents", max(0, w - 1), curses.A_DIM)
+        # Render order row then "No active agents"
+        _draw_entries(
+            stdscr, agents, 0, footer_top + 1, w, set(), None,
+            dimmed or focused_region != "agents", top=separator + 1,
+            spinner_frame=None, agent_ordering=agent_ordering,
+        )
+        stdscr.addnstr(separator + 2, 0, "  No active agents", max(0, w - 1), curses.A_DIM)
     if creation_cursor:
         stdscr.move(*creation_cursor)
     elif filtering:
@@ -955,6 +1028,7 @@ def run(stdscr: curses.window) -> None:
     poller = DiscoveryPoller(load_hosts())
     entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
     agent_entries = _agent_entries(poller.snapshot, state.favorites)
+    agent_entries = [Entry("", "order")] + agent_entries
     _update_agent_alerts(state, poller.snapshot, state.selected_target)
     state.selected_index = _selected_index(entries, state.selected_target)
     _sync_selection(state, entries)
@@ -971,7 +1045,9 @@ def run(stdscr: curses.window) -> None:
     def rebuild() -> None:
         nonlocal entries, agent_entries
         entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
-        agent_entries = _agent_entries(poller.snapshot, state.favorites)
+        raw_agents = _agent_entries(poller.snapshot, state.favorites, state.agent_ordering, state.agent_alerts)
+        # ponytail: order row is always index 0; rebuild prepends it so draw and navigation see same list
+        agent_entries = [Entry("", "order")] + raw_agents
         _sync_selection(state, entries)
         _sync_agent_selection(state, agent_entries)
         state.scroll_offset = None
@@ -1011,6 +1087,7 @@ def run(stdscr: curses.window) -> None:
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
+                int(time.time()) if agent_entries else None, state.agent_ordering,
             )
             if render_state != rendered:
                 footer_height = _draw(
@@ -1018,7 +1095,8 @@ def run(stdscr: curses.window) -> None:
                     state.filtering, bell_targets, current_target, dimmed,
                     state.creation_host, state.creation_text, state.adding, state.scroll_offset,
                     agent_entries, state.agent_selected_index, state.focused_region, state.agent_rows,
-                    active_agent_id, agent_alerts=state.agent_alerts, spinner_frame=spinner_frame,
+                    active_agent_id, agent_alerts=state.agent_alerts,
+                    spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
                 )
                 rendered = render_state
             try:
@@ -1045,7 +1123,7 @@ def run(stdscr: curses.window) -> None:
                 continue
             if key == curses.KEY_MOUSE:
                 try:
-                    _, _, row, _, mouse_state = curses.getmouse()
+                    _, mouse_col, row, _, mouse_state = curses.getmouse()
                 except (curses.error, TypeError, ValueError):
                     continue
                 if not isinstance(row, int) or not isinstance(mouse_state, int):
@@ -1079,7 +1157,8 @@ def run(stdscr: curses.window) -> None:
                     h = stdscr.getmaxyx()[0]
                     footer_top = h - footer_height
                     session_top = 2 if state.filtering else 1
-                    minimum_agent_rows = 2 if agent_entries else 1
+                    has_agents = any(e.kind == "agent" for e in agent_entries)
+                    minimum_agent_rows = 1 + (2 if has_agents else 1)
                     available = footer_top - session_top - 1
                     wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
                     agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
@@ -1092,6 +1171,21 @@ def run(stdscr: curses.window) -> None:
                         state.agent_selected_index = index
                         entry = agent_entries[index]
                         state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
+                        if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0) and entry.kind == "order":
+                            # ponytail: column math on rendered string; fixed offsets per word position
+                            prefix = "> Order:  " if _ascii() else "›  "
+                            pri_word = "PRIORITY" if _ascii() else "Priority"
+                            ses_word = "SESSION" if _ascii() else "Session"
+                            pri_start = _cell_width(prefix)
+                            ses_start = pri_start + _cell_width(pri_word) + 2
+                            if isinstance(mouse_col, int):
+                                if pri_start <= mouse_col < pri_start + _cell_width(pri_word):
+                                    state.agent_ordering = "priority"
+                                    rebuild()
+                                elif ses_start <= mouse_col < ses_start + _cell_width(ses_word):
+                                    state.agent_ordering = "session"
+                                    rebuild()
+                            continue
                         if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0) and entry.pane_target:
                             _execute(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""), state, poller, status_timeout)
                         continue
@@ -1142,6 +1236,12 @@ def run(stdscr: curses.window) -> None:
                 state.agent_rows = (state.agent_rows or max(2, round(stdscr.getmaxyx()[0] * 0.4))) + 1
             elif key == ord("]"):
                 state.agent_rows = max(1, (state.agent_rows or max(2, round(stdscr.getmaxyx()[0] * 0.4))) - 1)
+            elif state.focused_region == "agents" and key in map(ord, "hl") and state.agent_selected_index == 0:
+                state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
+                rebuild()
+            elif state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
+                state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
+                rebuild()
             elif state.focused_region == "agents" and key in (curses.KEY_DOWN, ord("j")) and agent_entries:
                 state.agent_selected_index = (state.agent_selected_index + 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]

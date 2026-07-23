@@ -114,6 +114,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
 - `Tab`: switch focus between Sessions and Agents
 - `[` / `]`: give Agents/Sessions region more rows for current run
+- `h` / `l`: cycle agent ordering mode (Priority / Session) when ordering row is selected
 - `Enter`: switch selected session or exact agent pane, open Add, or create on selected host line
 - `a`: open grouped local/SSH Add picker
 - `r`: remove selected target without killing it

@@ -33,6 +33,12 @@ Session actions
   x      kill selected session (session keeps running)
   /      open Add picker and filter available sessions
 
+Agent actions
+  j/k    navigate agents
+  Enter  switch to agent pane
+  h/l    cycle agent ordering (Priority / Session)
+  [ / ]  resize agent panel
+
 Recovery
   {prefix} d  detach cockpit
   {prefix} s  restart/focus sidebar

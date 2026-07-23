@@ -183,6 +183,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x s  focus/open sidebar", command)
         self.assertIn("C-x 1-9  switch session", command)
         self.assertIn("K/J    move session up/down", command)
+        self.assertIn("Agent actions", command)
+        self.assertIn("h/l    cycle agent ordering", command)
         self.assertIn("Enter  switch session / open Add / create on host", command)
         self.assertIn("a      open grouped local/SSH Add picker", command)
         self.assertIn("r      remove selected session", command)
