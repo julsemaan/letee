@@ -512,7 +512,7 @@ def _bell_targets(
 
 def _entry_height(entry: Entry) -> int:
     if entry.kind == "order":
-        return 1
+        return 2
     return 2 if entry.tracked or entry.kind == "agent" else 1
 
 
@@ -704,7 +704,7 @@ def _entry_lines(
                 line = f"{pointer}  Priority  Session"
             else:
                 line = f"{pointer}  Priority  Session"
-        return [_truncate_cells(line, width)]
+        return [_truncate_cells(line, width), ""]
     if entry.kind == "agent":
         separator = " · "
         alert = " BELL" if _ascii() else " 🔔"

@@ -2051,10 +2051,10 @@ class AgentOrderingRenderTest(unittest.TestCase):
     def test_entry_at_row_selects_order_entry(self):
         entries = [Entry("", "order"), Entry("pi", "agent", Target("local", "work"), agent_id="id")]
         self.assertEqual(_entry_at_row(entries, 0, 4, 8, 0, top=4), 0)
-        self.assertEqual(_entry_at_row(entries, 0, 5, 8, 0, top=4), 1)
+        self.assertEqual(_entry_at_row(entries, 0, 6, 8, 0, top=4), 1)
 
     def test_entry_height_order_is_one(self):
-        self.assertEqual(_entry_height(Entry("", "order")), 1)
+        self.assertEqual(_entry_height(Entry("", "order")), 2)
 
 
 if __name__ == "__main__":
