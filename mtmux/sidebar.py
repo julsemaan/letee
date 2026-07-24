@@ -93,8 +93,8 @@ def _ascii() -> bool:
 
 def _icons() -> dict[str, str]:
     if _ascii():
-        return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ")", "enter": "<-"}
-    return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": ")", "enter": "↵"}
+        return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ">", "enter": "<-"}
+    return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": "›", "enter": "↵"}
 
 
 def _spinner_frame(now: float) -> str:
