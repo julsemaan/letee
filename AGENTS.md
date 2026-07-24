@@ -9,3 +9,4 @@ Mtmux is short for "Multiple tmux" and it allows to manage multiple local and re
 - Follow Python best practices
 - Introduce 3rd party dependencies if this results in better maintainability
 - Run the tests (`make test`) as part of the definition of done
+- When working on the e2e tests (tests/e2e), always run them using `make test-e2e-docker` and always work in a docker container to iterate on them to prevent tampering with the host tmux session
