@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("cockpit", help="launch or attach cockpit")
     focus_sidebar = sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
-    focus_sidebar.add_argument("region", nargs="?", choices=("sessions", "agents"), default="sessions")
+    focus_sidebar.add_argument("region", nargs="?", choices=("sessions", "agents", "new"), default="sessions")
     sub.add_parser("init", help="create missing config files")
     sub.add_parser("list", help="list discovered targets")
 

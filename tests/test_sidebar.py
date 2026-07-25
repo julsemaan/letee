@@ -1763,9 +1763,9 @@ class ShouldAutoCreateTest(unittest.TestCase):
         self.assertFalse(_should_auto_create(entries))
 
 
-    def test_a_key_auto_creates_on_single_host(self):
+    def test_n_key_auto_creates_on_single_host(self):
         entry = Entry("laptop", "host", host="")
-        screen = FakeScreen([ord("a"), ord("x"), 10, ord("q")])
+        screen = FakeScreen([ord("n"), ord("x"), 10, ord("q")])
 
         with (
             patch("mtmux.sidebar.curses.curs_set") as curs_set,
