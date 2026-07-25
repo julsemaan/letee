@@ -44,7 +44,7 @@ class CockpitLayoutTest(unittest.TestCase):
         fix_layout.assert_called_once_with("%1", 52)
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
-        install_right_pane_reset.assert_called_once_with("%1", "%2", "C-x")
+        install_right_pane_reset.assert_called_once_with("%1", "%2")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
@@ -81,7 +81,7 @@ class CockpitLayoutTest(unittest.TestCase):
         fix_layout.assert_called_once_with("%1", 52)
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
-        install_right_pane_reset.assert_called_once_with("%1", "%1", "C-x")
+        install_right_pane_reset.assert_called_once_with("%1", "%1")
         install_bindings.assert_called_once_with("C-x", "%1")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
@@ -202,20 +202,18 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
-    def test_right_pane_reset_restores_startup_help_and_focuses_sidebar(self):
+    def test_right_pane_reset_shows_unavailable_message_and_preserves_target(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
-            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+            cockpit._install_right_pane_reset("%1", "%2")
 
-        command = f"if-shell -F '#{{==:#{{hook_pane}},%2}}' {{ set-option -u -t mtmux @mtmux_current_target ; set-option -u -t mtmux @mtmux_current_agent ; set-option -u -t mtmux @mtmux_bell_target ; respawn-pane -k -t %2 {cockpit.shlex.quote(cockpit.help_command('C-x'))} ; select-pane -t %1 }}"
-        self.assertEqual(
-            calls,
-            [
-                ("set-option", "-p", "-t", "%2", "remain-on-exit", "on"),
-                ("set-hook", "-t", "mtmux", "pane-died", command),
-            ],
-        )
+        command = calls[1][4]
+        self.assertEqual(calls[0], ("set-option", "-p", "-t", "%2", "remain-on-exit", "on"))
+        self.assertEqual(calls[1][:4], ("set-hook", "-t", "mtmux", "pane-died"))
+        self.assertIn("Active session is unavailable.", command)
+        self.assertNotIn("set-option -u -t mtmux @mtmux_current_target", command)
+        self.assertIn("select-pane -t %1", command)
 
     def test_help_uses_configured_prefix(self):
         command = cockpit.help_command("C-x")
@@ -330,6 +328,18 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit, "right_pane", return_value=None):
             with self.assertRaisesRegex(SystemExit, "No valid mtmux cockpit"):
                 cockpit.switch(cockpit.Target("local", "work"), "attach work")
+
+    def test_show_unavailable_replaces_frozen_session_with_message(self):
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_unavailable(cockpit.Target("ssh", "work", "dev"))
+
+        command = tmux_call.call_args.args
+        self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
+        self.assertIn("Session ssh:dev:work is unavailable.", command[4])
+        self.assertIn("Select another session", command[4])
 
     def test_show_help_respawns_right_pane(self):
         with (

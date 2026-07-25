@@ -180,6 +180,10 @@ def _target_status(target: Target, snapshot: SessionSnapshot) -> str | None:
     return "unavailable"
 
 
+def _should_show_unavailable(target: Target, snapshot: SessionSnapshot) -> bool:
+    return _target_status(target, snapshot) not in (None, "connecting…")
+
+
 def _entries(
     filter_text: str,
     snapshot: SessionSnapshot,
@@ -1108,6 +1112,7 @@ def run(stdscr: curses.window) -> None:
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
     next_cockpit_bell_poll = 0.0
+    unavailable_target_shown: Target | None = None
     rendered: tuple[object, ...] | None = None
     footer_height = 0
     add_col: int | None = None
@@ -1136,6 +1141,12 @@ def run(stdscr: curses.window) -> None:
             active_remote_host = current_target.host if current_target and current_target.kind == "ssh" else None
             agent_alert = False
             if poller.tick(active_remote_host):
+                unavailable = current_target is not None and _should_show_unavailable(current_target, poller.snapshot)
+                if unavailable and current_target != unavailable_target_shown:
+                    cockpit.show_unavailable(current_target)
+                    unavailable_target_shown = current_target
+                elif current_target != unavailable_target_shown:
+                    unavailable_target_shown = None
                 agent_alert = _update_agent_alerts(state, poller.snapshot, current_target)
                 rebuild()
             selectable = _selectable(entries)

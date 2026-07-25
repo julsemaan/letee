@@ -138,9 +138,15 @@ def _install_bell_hook() -> None:
     tmux.tmux("set-hook", "-t", tmux.SESSION, "alert-bell", "set-option -F -t mtmux @mtmux_bell_target '#{@mtmux_current_target}'")
 
 
-def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
+def _unavailable_command(target: Target | None = None) -> str:
+    name = f"Session {target.format()}" if target else "Active session"
+    text = f"{name} is unavailable.\n\nSelect another session from the sidebar.\n"
+    return f"printf %s {shlex.quote(text)}; exec sh"
+
+
+def _install_right_pane_reset(left: str, right: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
-    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @mtmux_current_target ; set-option -u -t {tmux.SESSION} @mtmux_current_agent ; set-option -u -t {tmux.SESSION} @mtmux_bell_target ; respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left} }}"
+    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @mtmux_current_agent ; set-option -u -t {tmux.SESSION} @mtmux_bell_target ; respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left} }}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
@@ -149,7 +155,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     _fix_layout(left, sidebar_width)
     _install_layout_hooks(left, sidebar_width)
     _install_bell_hook()
-    _install_right_pane_reset(left, right, prefix)
+    _install_right_pane_reset(left, right)
     tmux.tmux("set-option", "-t", tmux.SESSION, "prefix", prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "status", "off")
     tmux.tmux("set-option", "-s", "escape-time", "0")
@@ -258,6 +264,10 @@ def switch(target: Target, attach_command: str, agent_id: str | None = None) -> 
 
 def show_help() -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), help_command(load_prefix()))
+
+
+def show_unavailable(target: Target) -> None:
+    tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _unavailable_command(target))
 
 
 def _target_option(name: str) -> Target | None:
