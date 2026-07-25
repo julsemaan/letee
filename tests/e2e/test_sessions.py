@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from .conftest import TmuxTestClient
-from .helpers import assert_cursor_on_row
 
 
 # -- Helpers --
@@ -173,10 +172,8 @@ def test_cli_invalid_target(client: TmuxTestClient) -> None:
 
 
 # ============================================================
-# TUI tests — use send_keys + behavioral assertions
-# instead of capture-pane visual checks.
-# tmux send-keys to sidebar pane works reliably;
-# capture-pane strips curses attributes unpredictably.
+# TUI tests — use send_keys + behavioral assertions.
+# Plain capture remains stable for text; sidebar_ansi() is available for focused style checks.
 # ============================================================
 
 

@@ -49,6 +49,26 @@ class TmuxTestClient:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
         return result.returncode == 0
 
+    def exec(self, *args: str, check: bool = True) -> str:
+        """Run command inside test container."""
+        result = subprocess.run(
+            ["docker", "exec", self.container, *args],
+            capture_output=True, text=True, timeout=15, check=check,
+        )
+        return result.stdout.strip()
+
+    def default_tmux(self, *args: str, check: bool = True) -> str:
+        """Run tmux against default server where managed sessions live."""
+        return self.exec("tmux", *args, check=check)
+
+    def write_file(self, path: str, content: str) -> None:
+        """Write UTF-8 text inside test container."""
+        code = (
+            "from pathlib import Path; import sys; p=Path(sys.argv[1]); "
+            "p.parent.mkdir(parents=True, exist_ok=True); p.write_text(sys.argv[2])"
+        )
+        self.exec("python", "-c", code, path, content)
+
     # -- Cockpit (pexpect) --
 
     def start_cockpit(
@@ -115,9 +135,12 @@ class TmuxTestClient:
 
     # -- Pane inspection --
 
-    def _capture_pane(self, pane_spec: str) -> str:
+    def _capture_pane(self, pane_spec: str, preserve_styles: bool = False) -> str:
         """Capture pane content. Returns empty string on error."""
-        cmd = self._tmux_cmd("capture-pane", "-t", pane_spec, "-p")
+        args = ["capture-pane"]
+        if preserve_styles:
+            args.append("-e")
+        cmd = self._tmux_cmd(*args, "-t", pane_spec, "-p")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
         if result.returncode != 0:
             return ""
@@ -126,6 +149,10 @@ class TmuxTestClient:
     def sidebar_text(self) -> str:
         """capture-pane of left pane (sidebar). Returns empty string if server not ready."""
         return self._capture_pane("mtmux:cockpit.0")
+
+    def sidebar_ansi(self) -> str:
+        """Capture sidebar while preserving ANSI SGR styles."""
+        return self._capture_pane("mtmux:cockpit.0", preserve_styles=True)
 
     def right_pane_text(self) -> str:
         """capture-pane of right pane. Returns empty string if server not ready."""
