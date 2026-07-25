@@ -1,7 +1,6 @@
 - [ ] When navigating to new, the cursor is both on new and the first session
 - [ ] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
 - [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
-- [ ] Drag and drop sessions to reorder them
 - [ ] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
 - [ ] Find way to get rid of stale agents
 - [ ] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
@@ -21,6 +20,7 @@
 
 ## Done
 
+- [x] Drag and drop sessions to reorder them
 - [x] Have fancy spinner or something like that when an agent is working
 - [x] The STARRED section at the top lacks polishing visually
 - [x] Use the color palette of the logo in the sidebar
