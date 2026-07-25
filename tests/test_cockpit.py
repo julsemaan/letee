@@ -48,7 +48,7 @@ class CockpitLayoutTest(unittest.TestCase):
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
-        install_bindings.assert_called_once_with("C-x")
+        install_bindings.assert_called_once_with("C-x", "%1")
         self.assertEqual(
             tmux_call.call_args_list,
             [
@@ -82,7 +82,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
         install_right_pane_reset.assert_called_once_with("%1", "%1", "C-x")
-        install_bindings.assert_called_once_with("C-x")
+        install_bindings.assert_called_once_with("C-x", "%1")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
@@ -146,21 +146,41 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_call.assert_not_called()
 
-    def test_bindings_include_sidebar_focus_and_numbered_session_shortcuts(self):
+    def test_bindings_include_sidebar_actions_and_numbered_session_shortcuts(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
-            cockpit._install_bindings("C-x")
+            cockpit._install_bindings("C-x", "%1")
 
         self.assertEqual(
             calls,
             [
                 ("bind-key", "C-x", "send-prefix"),
-                ("bind-key", "s", "run-shell", cockpit.FOCUS_SIDEBAR),
+                ("bind-key", "h", "kill-pane", "-t", "%1"),
+                ("bind-key", "q", "kill-session", "-t", "mtmux"),
+                ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
+                ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
                 *[
                     ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m mtmux switch-session {slot}")
                     for slot in range(1, 10)
                 ],
+            ],
+        )
+
+    def test_focus_sidebar_recreates_selects_and_injects_region_key(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit, "ensure_cockpit"),
+            patch.object(cockpit, "_option", return_value="%7"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.focus_sidebar("agents")
+
+        self.assertEqual(
+            tmux_call.call_args_list,
+            [
+                unittest.mock.call("select-pane", "-t", "%7"),
+                unittest.mock.call("send-keys", "-t", "%7", "F7"),
             ],
         )
 
@@ -182,7 +202,10 @@ class CockpitLayoutTest(unittest.TestCase):
     def test_help_uses_configured_prefix(self):
         command = cockpit.help_command("C-x")
 
-        self.assertIn("C-x s  focus/open sidebar", command)
+        self.assertIn("C-x a  focus/open Agents", command)
+        self.assertIn("C-x s  focus/open Sessions", command)
+        self.assertIn("C-x h  hide sidebar", command)
+        self.assertIn("C-x q  quit cockpit", command)
         self.assertIn("C-x 1-9  switch session", command)
         self.assertIn("K/J    move session up/down", command)
         self.assertIn("Agent actions", command)
@@ -221,7 +244,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn((("set-option", "-t", "mtmux", "mouse", "on"), {}), calls)
         self.assertIn((("set-option", "-s", "escape-time", "0"), {}), calls)
         new_session = next(args for args, _ in calls if args[0] == "new-session")
-        self.assertIn("C-x s  focus/open sidebar", new_session[-1])
+        self.assertIn("C-x s  focus/open Sessions", new_session[-1])
         split = tmux_out.call_args_list[1].args
         self.assertEqual(split[split.index("-l") + 1], "52")
 
@@ -298,7 +321,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         command = tmux_call.call_args.args
         self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
-        self.assertIn("C-x s  focus/open sidebar", command[4])
+        self.assertIn("C-x s  focus/open Sessions", command[4])
 
     def test_current_target_recovers_from_right_pane_command(self):
         with (

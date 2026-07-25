@@ -116,7 +116,8 @@ def test_agent_alert_clears_on_select(client: TmuxTestClient) -> None:
         _wait_for_line(client, "pi", "working")
         _write_agent(client, statuses, "dev", "pi-clear", "completed")
         _wait_for_line(client, "pi", "completed", "BELL")
-        client.tmux("send-keys", "-t", "mtmux:cockpit.0", "Tab", "j", "Enter")
+        client.tmux("run-shell", "mtmux focus-sidebar agents")
+        client.tmux("send-keys", "-t", "mtmux:cockpit.0", "j", "Enter")
         _wait_for_line(client, "pi", "completed")
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -140,7 +141,8 @@ def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
         sidebar = client.sidebar_text()
         assert sidebar.index("beta-agent") < sidebar.index("alpha-agent")
 
-        client.tmux("send-keys", "-t", "mtmux:cockpit.0", "Tab", "l")
+        client.tmux("run-shell", "mtmux focus-sidebar agents")
+        client.tmux("send-keys", "-t", "mtmux:cockpit.0", "l")
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             sidebar = client.sidebar_text()

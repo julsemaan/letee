@@ -5,12 +5,12 @@
 - [ ] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
   - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
-- [ ] Some prefix based shortcuts like 
-  - [ ] prefix+h to hide 
-  - [ ] prefix+q to quit mtmux cockpit
-  - [ ] prefix+a to get to agents
-  - [ ] prefix+s always gets to sessions instead of wherever you were last in the left pane
-  - [ ] Get rid of 'tab' to move around between agents/sessions and use prefix
+- [x] Some prefix based shortcuts like
+  - [x] prefix+h to hide
+  - [x] prefix+q to quit mtmux cockpit
+  - [x] prefix+a to get to agents
+  - [x] prefix+s always gets to sessions instead of wherever you were last in the left pane
+  - [x] Get rid of 'tab' to move around between agents/sessions and use prefix
 - [ ] The new menu is overdue for polishing
   - [ ] When creating a new session, reusing the same row for the name leaves little place
   - [ ] It isn't clear you need to pick somewhere to create the session
