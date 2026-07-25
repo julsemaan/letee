@@ -29,7 +29,7 @@ pip install -e .
 mtmux cockpit
 ```
 
-That opens an outer tmux workspace with the mtmux sidebar on the left and your selected session on the right. Press `Enter` on a session to step into it; press `q` to close the sidebar, press `C-s s` whenever you want it back.
+That opens an outer tmux workspace with the mtmux sidebar on the left and your selected session on the right. Press `Enter` on a session to step into it; press `q` to close the sidebar, then `C-s s` to reopen it on Sessions.
 
 ## Development
 
@@ -43,7 +43,10 @@ make test
 `mtmux cockpit` creates or attaches to a dedicated outer tmux server. That outer layer owns only the layout:
 
 - outer prefix: `C-s`
-- focus/open sidebar: `C-s s`
+- focus/open Sessions: `C-s s`
+- focus/open Agents: `C-s a`
+- hide sidebar: `C-s h`
+- quit cockpit: `C-s q`
 - outer status: off
 - left pane: `mtmux` sidebar, 40 columns by default
 - right pane: selected local/remote tmux attach client
@@ -109,10 +112,12 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 
 ## Sidebar keys
 
-- `C-s s`: focus sidebar; recreates it if quit
+- `C-s s`: focus Sessions; recreates sidebar if quit
+- `C-s a`: focus Agents; recreates sidebar if quit
+- `C-s h`: hide sidebar
+- `C-s q`: quit outer mtmux cockpit
 - `C-s 1`–`C-s 9`: switch directly to numbered starred target
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
-- `Tab`: switch focus between Sessions and Agents
 - `[` / `]`: give Agents/Sessions region more rows for current run
 - `h` / `l`: cycle agent ordering mode (Priority / Session) when ordering row is selected
 - `Enter`: switch selected session or exact agent pane, open Add, or create on selected host line
@@ -150,7 +155,7 @@ Native tmux copy mode forwards copied text through nested sessions using OSC 52.
 
 ## Recovery
 
-Press `C-s s` or rerun:
+Press `C-s s` to reopen Sessions, `C-s a` to reopen Agents, or rerun:
 
 ```sh
 mtmux cockpit

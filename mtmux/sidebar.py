@@ -1187,6 +1187,10 @@ def run(stdscr: curses.window) -> None:
                 key = 3
             if key == -1:
                 continue
+            if key in (curses.KEY_F6, curses.KEY_F7):
+                state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
+                state.add_button_selected = False
+                continue
             if state.creation_host is not None:
                 try:
                     effect = _creation_key(state, key)
@@ -1375,9 +1379,6 @@ def run(stdscr: curses.window) -> None:
             effect: Effect | None = None
             if key == ord("q"):
                 effect = _transition(state, "quit")
-            elif key == 9 and not state.adding:
-                state.focused_region = "agents" if state.focused_region == "sessions" else "sessions"
-                state.add_button_selected = False
             elif key == ord("["):
                 state.agent_rows = (state.agent_rows or max(2, round(stdscr.getmaxyx()[0] * 0.4))) + 1
             elif key == ord("]"):

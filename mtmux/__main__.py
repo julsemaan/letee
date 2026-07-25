@@ -16,7 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("cockpit", help="launch or attach cockpit")
-    sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
+    focus_sidebar = sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
+    focus_sidebar.add_argument("region", nargs="?", choices=("sessions", "agents"), default="sessions")
     sub.add_parser("init", help="create missing config files")
     sub.add_parser("list", help="list discovered targets")
 
@@ -53,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "cockpit":
         return cockpit.cockpit()
     if args.command == "focus-sidebar":
-        return cockpit.focus_sidebar()
+        return cockpit.focus_sidebar(args.region)
     if args.command == "list":
         snapshot = discover()
         if not snapshot.local.available:

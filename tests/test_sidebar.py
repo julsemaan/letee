@@ -1042,6 +1042,26 @@ class SidebarDrawTest(unittest.TestCase):
 
 
 
+    def test_injected_region_keys_select_exact_region_and_tab_does_nothing(self):
+        for keys, expected in (
+            ([curses.KEY_F7, ord("q")], "agents"),
+            ([curses.KEY_F7, curses.KEY_F6, ord("q")], "sessions"),
+            ([9, ord("q")], "sessions"),
+        ):
+            screen = FakeScreen(keys, size=(10, 40))
+            with (
+                self.subTest(keys=keys),
+                patch("mtmux.sidebar.curses.curs_set"),
+                patch("mtmux.sidebar._init_colors"),
+                patch("mtmux.sidebar._entries", return_value=[]),
+                patch("mtmux.sidebar._bell_targets", return_value=set()),
+                patch("mtmux.sidebar._current_target", return_value=None),
+                patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
+            ):
+                run(screen)
+
+            self.assertEqual(draw.call_args_list[-1].args[15], expected)
+
     def test_run_sets_timeout_and_refreshes_on_timeout(self):
         screen = FakeScreen([-1, ord("q")])
         calls = []

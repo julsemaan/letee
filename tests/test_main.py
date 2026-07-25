@@ -7,6 +7,16 @@ from mtmux.names import Target
 
 
 class MainTest(unittest.TestCase):
+    def test_focus_sidebar_defaults_to_sessions_and_accepts_agents(self):
+        with patch("mtmux.__main__.cockpit.focus_sidebar") as focus_sidebar:
+            main(["focus-sidebar"])
+            main(["focus-sidebar", "agents"])
+
+        self.assertEqual(
+            focus_sidebar.call_args_list,
+            [unittest.mock.call("sessions"), unittest.mock.call("agents")],
+        )
+
     def test_switch_session_uses_persisted_favorite_order(self):
         favorites = [
             Target("ssh", "alpha", "dev"),

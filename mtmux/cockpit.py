@@ -20,7 +20,10 @@ def help_command(prefix: str) -> str:
     text = f"""mtmux cockpit
 
 Navigation
-  {prefix} s  focus/open sidebar
+  {prefix} a  focus/open Agents
+  {prefix} s  focus/open Sessions
+  {prefix} h  hide sidebar
+  {prefix} q  quit cockpit
   {prefix} 1-9  switch session
   ?      open help
   q      quit sidebar only
@@ -41,7 +44,7 @@ Agent actions
 
 Recovery
   {prefix} d  detach cockpit
-  {prefix} s  restart/focus sidebar
+  {prefix} s  restart/focus Sessions
   Esc    cancel prompts/filter
 
 Examples
@@ -102,9 +105,12 @@ def _install_layout_hooks(left: str, sidebar_width: int) -> None:
     tmux.tmux("set-hook", "-t", tmux.SESSION, "client-resized", command)
 
 
-def _install_bindings(prefix: str) -> None:
+def _install_bindings(prefix: str, sidebar_pane: str) -> None:
     tmux.tmux("bind-key", prefix, "send-prefix")
-    tmux.tmux("bind-key", "s", "run-shell", FOCUS_SIDEBAR)
+    tmux.tmux("bind-key", "h", "kill-pane", "-t", sidebar_pane)
+    tmux.tmux("bind-key", "q", "kill-session", "-t", tmux.SESSION)
+    tmux.tmux("bind-key", "a", "run-shell", f"{FOCUS_SIDEBAR} agents")
+    tmux.tmux("bind-key", "s", "run-shell", f"{FOCUS_SIDEBAR} sessions")
     for slot in range(1, 10):
         tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m mtmux switch-session {slot}")
 
@@ -148,7 +154,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     _enable_mouse()
     _enable_clipboard()
     _enable_truecolor()
-    _install_bindings(prefix)
+    _install_bindings(prefix, left)
 
 
 def _build(prefix: str, sidebar_width: int) -> None:
@@ -212,9 +218,12 @@ def cockpit() -> int:
     return _attach()
 
 
-def focus_sidebar() -> int:
+def focus_sidebar(region: str = "sessions") -> int:
     ensure_config()
     ensure_cockpit()
+    pane = _option(SIDEBAR_PANE_OPTION)
+    tmux.tmux("select-pane", "-t", pane)
+    tmux.tmux("send-keys", "-t", pane, {"sessions": "F6", "agents": "F7"}[region])
     return 0
 
 
