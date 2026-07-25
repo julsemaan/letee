@@ -14,7 +14,8 @@ from .helpers import (
 
 def _start(client: TmuxTestClient, config_dir: str) -> None:
     for name in ("alpha", "beta"):
-        client.default_tmux("new-session", "-Ad", "-s", name)
+        client.default_tmux("kill-session", "-t", name, check=False)
+        client.default_tmux("new-session", "-d", "-s", name)
     client.write_file(f"{config_dir}/sessions", "local:alpha\nlocal:beta\n")
     client.start_cockpit(env={
         "MTMUX_CONFIG_DIR": config_dir,
@@ -22,11 +23,18 @@ def _start(client: TmuxTestClient, config_dir: str) -> None:
         "TERM": "xterm-256color",
     })
     assert client.wait_for_sidebar_text("alpha", timeout=10)
+    client.tmux("select-pane", "-t", "mtmux:cockpit.0")
+    time.sleep(0.3)
 
 
 def _send(client: TmuxTestClient, key: str) -> None:
     client.tmux("send-keys", "-t", "mtmux:cockpit.0", key)
     time.sleep(0.2)
+
+
+def _focus_sidebar(client: TmuxTestClient) -> None:
+    client.tmux("select-pane", "-t", "mtmux:cockpit.0")
+    time.sleep(0.3)
 
 
 def _cleanup(client: TmuxTestClient) -> None:
@@ -55,6 +63,7 @@ def test_cursor_and_active_session_move_independently(client: TmuxTestClient) ->
     _start(client, "/tmp/mtmux-e2e-sidebar-active")
     try:
         _send(client, "Enter")
+        _focus_sidebar(client)
         assert_active_session_highlighted(client, "alpha", "beta")
         _send(client, "j")
         assert_cursor_on_row(client, "beta")
@@ -69,6 +78,7 @@ def test_unfocused_sidebar_hides_cursor_and_dims_rows(client: TmuxTestClient) ->
     _start(client, "/tmp/mtmux-e2e-sidebar-focus")
     try:
         _send(client, "Enter")
+        _focus_sidebar(client)
         client.tmux("select-pane", "-t", "mtmux:cockpit.1")
         time.sleep(0.3)
         assert ">" not in client.sidebar_text()
