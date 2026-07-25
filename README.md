@@ -44,6 +44,7 @@ make test
 
 - outer prefix: `C-s`
 - focus/open Sessions: `C-s s`
+- create new session: `C-s n`
 - focus/open Agents: `C-s a`
 - hide sidebar: `C-s h`
 - quit cockpit: `C-s q`
@@ -113,6 +114,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 ## Sidebar keys
 
 - `C-s s`: focus Sessions; recreates sidebar if quit
+- `C-s n`: focus Sessions and open new-session picker
 - `C-s a`: focus Agents; recreates sidebar if quit
 - `C-s h`: hide sidebar
 - `C-s q`: quit outer mtmux cockpit

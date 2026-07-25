@@ -1432,7 +1432,7 @@ def run(stdscr: curses.window) -> None:
                 effect = _transition(state, "move_session_up")
             elif key == ord("J"):
                 effect = _transition(state, "move_session_down")
-            elif key == ord("a") and not state.adding:
+            elif key == ord("n") and not state.adding:
                 state.adding = True
                 state.selected_target = None
                 rebuild()

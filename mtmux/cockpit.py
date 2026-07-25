@@ -22,6 +22,7 @@ def help_command(prefix: str) -> str:
 Navigation
   {prefix} a  focus/open Agents
   {prefix} s  focus/open Sessions
+  {prefix} n  new session
   {prefix} h  hide sidebar
   {prefix} q  quit cockpit
   {prefix} 1-9  switch session
@@ -30,7 +31,7 @@ Navigation
 
 Session actions
   Enter  switch session / open Add / create on host
-  a      open grouped local/SSH Add picker
+  n      open grouped local/SSH Add picker
   r      remove selected session (session keeps running)
   K/J    move session up/down
   x      kill selected session (session keeps running)
@@ -111,6 +112,7 @@ def _install_bindings(prefix: str, sidebar_pane: str) -> None:
     tmux.tmux("bind-key", "q", "kill-session", "-t", tmux.SESSION)
     tmux.tmux("bind-key", "a", "run-shell", f"{FOCUS_SIDEBAR} agents")
     tmux.tmux("bind-key", "s", "run-shell", f"{FOCUS_SIDEBAR} sessions")
+    tmux.tmux("bind-key", "n", "run-shell", f"{FOCUS_SIDEBAR} new")
     for slot in range(1, 10):
         tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m mtmux switch-session {slot}")
 
@@ -223,7 +225,8 @@ def focus_sidebar(region: str = "sessions") -> int:
     ensure_cockpit()
     pane = _option(SIDEBAR_PANE_OPTION)
     tmux.tmux("select-pane", "-t", pane)
-    tmux.tmux("send-keys", "-t", pane, {"sessions": "F6", "agents": "F7"}[region])
+    keys = {"sessions": ("F6",), "agents": ("F7",), "new": ("F6", "n")}[region]
+    tmux.tmux("send-keys", "-t", pane, *keys)
     return 0
 
 
