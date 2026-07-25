@@ -21,6 +21,15 @@ def snapshot(local=(), remotes=None, local_bells=(), local_available=True, local
     )
 
 
+class ActiveSessionAvailabilityTest(unittest.TestCase):
+    def test_missing_active_session_replaces_frozen_pane_after_discovery(self):
+        target = Target("ssh", "work", "dev")
+
+        self.assertFalse(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": None})))
+        self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev")})))
+        self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev", available=False)})))
+
+
 from mtmux.sidebar import (
     Effect,
     Entry,
