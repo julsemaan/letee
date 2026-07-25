@@ -34,7 +34,7 @@ Session actions
   n      open grouped local/SSH Add picker
   r      remove selected session (session keeps running)
   K/J    move session up/down
-  x      kill selected session (session keeps running)
+  x      kill selected session
   /      open Add picker and filter available sessions
 
 Agent actions
