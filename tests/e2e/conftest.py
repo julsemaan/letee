@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import time
 
 import pexpect
@@ -10,13 +9,9 @@ import pytest
 
 
 class TmuxTestClient:
-    """Drives mtmux via pexpect + subprocess.
+    """Drives mtmux inside a Docker container."""
 
-    Direct mode (default): runs mtmux/tmux on the host.
-    Docker mode (--docker): runs inside a Docker container.
-    """
-
-    def __init__(self, container_name: str | None = None):
+    def __init__(self, container_name: str):
         self.container = container_name
         self._pexpect: pexpect.spawn | None = None
         self._config_dir: str | None = None
@@ -25,14 +20,11 @@ class TmuxTestClient:
 
     def cli(self, *args: str, env: dict[str, str] | None = None) -> str:
         """Run mtmux CLI command, return stdout+stderr."""
-        if self.container:
-            cmd = ["docker", "exec"]
-            if env:
-                for k, v in env.items():
-                    cmd += ["-e", f"{k}={v}"]
-            cmd += [self.container, "mtmux"] + list(args)
-        else:
-            cmd = [sys.executable, "-m", "mtmux"] + list(args)
+        cmd = ["docker", "exec"]
+        if env:
+            for k, v in env.items():
+                cmd += ["-e", f"{k}={v}"]
+        cmd += [self.container, "mtmux"] + list(args)
         merged_env = dict(os.environ)
         if env:
             merged_env.update(env)
@@ -41,9 +33,7 @@ class TmuxTestClient:
 
     def _tmux_cmd(self, *args: str) -> list[str]:
         """Build the tmux command list."""
-        if self.container:
-            return ["docker", "exec", self.container, "tmux", "-L", "mtmux"] + list(args)
-        return ["tmux", "-L", "mtmux"] + list(args)
+        return ["docker", "exec", self.container, "tmux", "-L", "mtmux"] + list(args)
 
     def tmux(self, *args: str) -> str:
         """Run tmux command, return stdout (or stderr on failure)."""
@@ -84,17 +74,13 @@ class TmuxTestClient:
         merged_env["COLUMNS"] = str(cols)
         merged_env["LINES"] = str(rows)
 
-        if self.container:
-            cmd = ["docker", "exec"]
-            for k, v in env_vars.items():
-                cmd += ["-e", f"{k}={v}"]
-            cmd += ["-e", f"COLUMNS={cols}", "-e", f"LINES={rows}"]
-            cmd += ["-it", self.container, "mtmux", "cockpit"]
-            spawn_cmd = cmd[0]
-            spawn_args = cmd[1:]
-        else:
-            spawn_cmd = sys.executable
-            spawn_args = ["-m", "mtmux", "cockpit"]
+        cmd = ["docker", "exec"]
+        for k, v in env_vars.items():
+            cmd += ["-e", f"{k}={v}"]
+        cmd += ["-e", f"COLUMNS={cols}", "-e", f"LINES={rows}"]
+        cmd += ["-it", self.container, "mtmux", "cockpit"]
+        spawn_cmd = cmd[0]
+        spawn_args = cmd[1:]
 
         self._pexpect = pexpect.spawn(
             spawn_cmd, spawn_args,
@@ -204,20 +190,21 @@ def pytest_addoption(parser):
         "--docker",
         action="store_true",
         default=False,
-        help="Run e2e tests inside Docker containers (default: direct on host)",
+        help="Run e2e tests inside Docker containers (required)",
     )
 
 
+def pytest_sessionstart(session):
+    if not session.config.getoption("--docker"):
+        raise pytest.UsageError(
+            "E2e tests are Docker-only. Run `make test-e2e-docker`; "
+            "do not run them against host tmux."
+        )
+
+
 @pytest.fixture(scope="module")
-def container(request):
-    """Build and start Docker container for the test module. Cleans up after.
-
-    Only active when --docker flag is passed.
-    """
-    if not request.config.getoption("--docker"):
-        yield None
-        return
-
+def container():
+    """Build and start Docker container for test module, then clean it up."""
     name = f"mtmux-e2e-{os.urandom(4).hex()}"
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     subprocess.run(

@@ -9,4 +9,5 @@ Mtmux is short for "Multiple tmux" and it allows to manage multiple local and re
 - Follow Python best practices
 - Introduce 3rd party dependencies if this results in better maintainability
 - Run the tests (`make test`) as part of the definition of done
-- When working on the e2e tests (tests/e2e), always run them using `make test-e2e-docker` and always work in a docker container to iterate on them to prevent tampering with the host tmux session
+- E2e tests (`tests/e2e`) are Docker-only. Run them with `make test-e2e-docker`; never invoke pytest directly or run them against host tmux.
+- Docker is a hard requirement for e2e work. If Docker is missing or unavailable, stop and report that requirement. Do not install host test dependencies, alter test guards, mock Docker, or devise a non-Docker workaround.

@@ -6,13 +6,10 @@ PEXPECT_DIR ?= /tmp/pexpect-pkg
 test:
 	$(PYTHON) -m unittest discover -s tests
 
-# Default: run e2e tests directly on host (no isolation).
-# Requires: tmux and mtmux on host, pexpect + pytest in $(PEXPECT_DIR).
-test-e2e:
-	PYTHONPATH=$(PEXPECT_DIR) $(PYTHON) -m pytest tests/e2e/ -v
+# E2e tests must run in Docker to avoid tampering with host tmux sessions.
+test-e2e: test-e2e-docker
 
-# Run e2e tests inside Docker containers (full isolation).
-# Requires: docker, pexpect + pytest in $(PEXPECT_DIR).
+# Docker is mandatory. If unavailable, stop; never run tests directly on host.
 test-e2e-docker:
 	PYTHONPATH=$(PEXPECT_DIR) $(PYTHON) -m pytest tests/e2e/ -v --docker
 
