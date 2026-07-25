@@ -899,6 +899,7 @@ def _draw_entries(
     agent_ordering: str = "priority",
     drag_source_entry: int | None = None,
     drag_target_entry: int | None = None,
+    selection_pointer_visible: bool = True,
 ) -> tuple[int, int] | None:
     cursor = None
     view_index = _view_index(entries, selected, current_target, dimmed)
@@ -916,7 +917,7 @@ def _draw_entries(
         active_entry = entry.target is not None and entry.target == current_target and entry.kind != "agent"
         active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
         lines = _entry_lines(
-            entry, selected_entry and not dimmed, bell_targets, current_target, w,
+            entry, selected_entry and not dimmed and selection_pointer_visible, bell_targets, current_target, w,
             creation_host, creation_text, now, agent_alerts, spinner_frame, agent_ordering,
         )
         focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
@@ -938,7 +939,7 @@ def _draw_entries(
                 break
             attr = _fade(base_attr) if line_number and not (active_entry or active_agent) else base_attr
             if line_number == 0 and slot_width:
-                if selected_entry and not dimmed:
+                if selected_entry and not dimmed and selection_pointer_visible:
                     slot_badge = f" {ico['selected']} "
                 else:
                     slot_badge = f"[{entry.shortcut_slot}]"
@@ -1038,6 +1039,7 @@ def _draw(
             stdscr, entries, selected, h - footer_height + 1, w, bell_targets or set(), current_target,
             dimmed, creation_host, creation_text, 3 if filtering else 2, scroll_offset,
             drag_source_entry=drag_source_entry, drag_target_entry=drag_target_entry,
+            selection_pointer_visible=not add_button_selected,
         )
         if creation_cursor:
             stdscr.move(*creation_cursor)
@@ -1062,6 +1064,7 @@ def _draw(
         stdscr, entries, selected, separator + 1, w, bell_targets or set(), current_target,
         dimmed or focused_region != "sessions", creation_host, creation_text, session_top, scroll_offset,
         drag_source_entry=drag_source_entry, drag_target_entry=drag_target_entry,
+        selection_pointer_visible=not add_button_selected,
     )
     rule = "-" if _ascii() else "─"
     label = "AGENTS "
