@@ -23,18 +23,40 @@ def _start(client: TmuxTestClient, config_dir: str) -> None:
         "TERM": "xterm-256color",
     })
     assert client.wait_for_sidebar_text("alpha", timeout=10)
-    client.tmux("select-pane", "-t", "mtmux:cockpit.0")
-    time.sleep(0.3)
+    _focus_sidebar(client)
 
 
 def _send(client: TmuxTestClient, key: str) -> None:
-    client.tmux("send-keys", "-t", "mtmux:cockpit.0", key)
+    if key in ("Enter", "Up", "Down"):
+        client.send_special(key)
+    else:
+        client.send_keys(key)
     time.sleep(0.2)
 
 
+def _wait_for_active_pane(
+    client: TmuxTestClient,
+    pane: int,
+    timeout: float = 5.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    active = ""
+    while time.monotonic() < deadline:
+        active = client.tmux(
+            "display-message", "-p", "-t", f"mtmux:cockpit.{pane}", "#{pane_active}",
+        )
+        if active == "1":
+            return
+        time.sleep(0.1)
+    raise AssertionError(
+        f"Expected mtmux:cockpit.{pane} to be active, got pane_active={active!r}"
+    )
+
+
 def _focus_sidebar(client: TmuxTestClient) -> None:
-    client.tmux("select-pane", "-t", "mtmux:cockpit.0")
-    time.sleep(0.3)
+    client.send_special("C-s")
+    client.send_keys("s")
+    _wait_for_active_pane(client, 0)
 
 
 def _cleanup(client: TmuxTestClient) -> None:
@@ -63,6 +85,7 @@ def test_cursor_and_active_session_move_independently(client: TmuxTestClient) ->
     _start(client, "/tmp/mtmux-e2e-sidebar-active")
     try:
         _send(client, "Enter")
+        _wait_for_active_pane(client, 1)
         _focus_sidebar(client)
         assert_active_session_highlighted(client, "alpha", "beta")
         _send(client, "j")
@@ -78,15 +101,12 @@ def test_unfocused_sidebar_hides_cursor_and_dims_rows(client: TmuxTestClient) ->
     _start(client, "/tmp/mtmux-e2e-sidebar-focus")
     try:
         _send(client, "Enter")
-        _focus_sidebar(client)
-        client.tmux("select-pane", "-t", "mtmux:cockpit.1")
-        time.sleep(0.3)
+        _wait_for_active_pane(client, 1)
         assert ">" not in client.sidebar_text()
         assert_row_dimmed(client, "alpha")
         assert_active_session_highlighted(client, "alpha", "beta")
 
-        client.tmux("select-pane", "-t", "mtmux:cockpit.0")
-        time.sleep(0.3)
+        _focus_sidebar(client)
         assert_cursor_on_row(client, "alpha")
     finally:
         _cleanup(client)
