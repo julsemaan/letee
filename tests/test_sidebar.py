@@ -857,6 +857,19 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(screen.calls[0], ("timeout", -1))
         self.assertEqual(screen.calls[-1], ("timeout", 50))
 
+    def test_add_button_cursor_does_not_replace_selected_session_slot(self):
+        screen = FakeScreen(size=(7, 40))
+        target = Target("local", "work")
+        entries = [Entry("work", "session", target, host="localhost", tracked=True, shortcut_slot=1)]
+
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            _draw(screen, entries, 0, "", "", add_button_selected=True)
+
+        title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        session_badge = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[2] == 0)
+        self.assertIn("> new", title)
+        self.assertEqual(session_badge, "[1]")
+
     def test_title_adds_terminal_icon_with_ascii_fallback(self):
         screen = FakeScreen(size=(5, 40))
 
