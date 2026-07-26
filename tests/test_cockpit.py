@@ -234,6 +234,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("f      star/unstar", command)
         self.assertNotIn("r      refresh", command)
         self.assertIn("C-x d  detach cockpit", command)
+        self.assertTrue(command.endswith("; exec tail -f /dev/null"))
+        self.assertNotIn("exec sh", command)
 
     def test_new_cockpit_sets_configured_prefix_and_startup_help(self):
         calls = []
@@ -339,6 +341,8 @@ class CockpitLayoutTest(unittest.TestCase):
         command = tmux_call.call_args.args
         self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
         self.assertIn("Reconnecting to ssh:dev:work", command[4])
+        self.assertTrue(command[4].endswith("; exec tail -f /dev/null"))
+        self.assertNotIn("exec sh", command[4])
 
     def test_show_unavailable_replaces_frozen_session_with_message(self):
         with (

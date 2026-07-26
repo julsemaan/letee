@@ -52,7 +52,7 @@ Examples
   /work  find available sessions matching work
   Enter  recreate a missing session or create on selected host line
 """
-    return f"printf %s {shlex.quote(text)}; exec sh"
+    return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
 
 
 SIDEBAR = f"{shlex.quote(sys.executable)} -m mtmux sidebar"
@@ -146,7 +146,7 @@ def _unavailable_command(target: Target | None = None) -> str:
 
 def _reconnecting_command(target: Target) -> str:
     text = f"Reconnecting to {target.format()}…\n"
-    return f"printf %s {shlex.quote(text)}; exec sh"
+    return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
 
 
 def _install_right_pane_reset(left: str, right: str) -> None:
