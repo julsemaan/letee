@@ -1137,17 +1137,24 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     h, w = stdscr.getmaxyx()
     width = max(1, w)
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
-    title = " mtmux / New session"
+    ascii_mode = _ascii()
+    title = " + New session" if ascii_mode else " ＋ New session"
     stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
     host = socket.gethostname() if state.creation_host == "" else (state.creation_host or "")
-    stdscr.addnstr(2, 0, _truncate_cells(f" On:   {host}", width), width)
-    prefix = " Name: "
+    host_icon = "*" if ascii_mode else ("●" if state.creation_host == "" else "◆")
+    host_attr = _color("local" if state.creation_host == "" else "remote") or curses.A_BOLD
+    stdscr.addnstr(2, 0, _truncate_cells(f" {host_icon} {host}", width), width, _fade(host_attr) if dimmed else host_attr)
+    prefix = " > " if ascii_mode else " ❯ "
     room = max(0, width - _cell_width(prefix) - 1)
     visible = state.creation_text[-room:] if room else ""
-    stdscr.addnstr(3, 0, (prefix + visible).ljust(width), width)
-    if state.status and h > 5:
-        stdscr.addnstr(4, 0, _truncate_cells(f" {state.status}", width), width, _color("danger") or curses.A_BOLD)
-    footer = "Esc back  Enter add" if _ascii() else "Esc back · Enter add"
+    field = prefix + (visible or "session-name")
+    field_attr = _color("add_entry") or curses.A_REVERSE
+    stdscr.addnstr(3, 0, _truncate_cells(field, width).ljust(width), width, _fade(field_attr) if dimmed else field_attr)
+    if h > 5:
+        message = f" ! {state.status}" if ascii_mode and state.status else f" ✕ {state.status}" if state.status else " Letters, numbers, . _ -"
+        message_attr = (_color("danger") or curses.A_BOLD) if state.status else (_color("hints") or curses.A_DIM)
+        stdscr.addnstr(4, 0, _truncate_cells(message, width), width, _fade(message_attr) if dimmed else message_attr)
+    footer = "Esc cancel  Enter create" if ascii_mode else "Esc cancel · ↵ create"
     footer_width = max(0, width - 1)
     stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
     if width > 1:
