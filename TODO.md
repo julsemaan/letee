@@ -4,11 +4,11 @@
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
-- [ ] Agent sessions in priority ordering should have latest activity at the top for idle sessions
-
 ## Done
 
 - [x] When killing a session, show confirmation near the top without replacing footer shortcuts
+- [x] Agent sessions in priority ordering should have latest activity at the top for idle sessions
+
 - [x] In the add menu, don't show any session counts in the header
 - [x] When adding an existing session, if a host has no sessions, show some greyed message under it that says there are no sessions
 - [x] When adding an existing session, use localhost instead of the hostname for local sessions
