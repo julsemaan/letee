@@ -1044,7 +1044,7 @@ class SidebarDrawTest(unittest.TestCase):
         redraw = screen.calls.index(("redrawln", 0, 1))
         self.assertLess(title, redraw)
 
-    def test_normal_title_shows_brand_and_session_count(self):
+    def test_normal_title_shows_brand_without_session_count(self):
         screen = FakeScreen(size=(5, 40))
         entries = [
             Entry("LOCAL", "header"),
@@ -1058,8 +1058,9 @@ class SidebarDrawTest(unittest.TestCase):
         title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertIn("mtmux", title_text)
         self.assertIn("＋ add", title_text)
+        self.assertNotIn("2 sessions", title_text)
 
-    def test_title_count_uses_singular_labels(self):
+    def test_titles_never_show_session_or_match_counts(self):
         screen = FakeScreen(size=(5, 40))
         entries = [Entry("work", "session", Target("local", "work"))]
 
@@ -1067,13 +1068,20 @@ class SidebarDrawTest(unittest.TestCase):
         normal_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertIn("mtmux", normal_text)
         self.assertIn("＋ add", normal_text)
+        self.assertNotIn("1 session", normal_text)
 
         screen = FakeScreen(size=(6, 40))
         _draw(screen, entries, 0, "filtering", "work", filtering=True)
         filtering_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
         self.assertIn("mtmux", filtering_text)
+        self.assertNotIn("1 match", filtering_text)
         self.assertTrue(filter_row[3].startswith(" Filter: work"))
+
+        screen = FakeScreen(size=(6, 40))
+        _draw(screen, entries, 0, "filtering", "work", filtering=True, adding=True)
+        add_text = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertNotIn("1 match", add_text)
 
     def test_filter_uses_dedicated_full_width_row(self):
         screen = FakeScreen(size=(6, 40))
