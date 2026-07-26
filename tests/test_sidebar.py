@@ -432,6 +432,21 @@ class AddFlowTest(unittest.TestCase):
             ("Existing session", "choice_existing"),
         ])
 
+    def test_choices_have_icons_descriptions_and_distinct_colors(self):
+        new = Entry("New session", "choice_new")
+        existing = Entry("Existing session", "choice_existing")
+
+        with patch("mtmux.sidebar._ascii", return_value=False), patch.dict(
+            "mtmux.sidebar._COLOR", {"create": 11, "remote": 22}, clear=True
+        ):
+            self.assertEqual(_entry_lines(new, True, set(), None, 40), ["› + New session", "    Create a fresh tmux session"])
+            self.assertEqual(_entry_lines(existing, False, set(), None, 40), ["  ≡ Existing session", "    Add a running tmux session"])
+            self.assertEqual(_entry_attr(new, False), 11 | curses.A_BOLD)
+            self.assertEqual(_entry_attr(existing, False), 22 | curses.A_BOLD)
+
+        self.assertEqual(_entry_height(new), 2)
+        self.assertEqual(_entry_height(existing), 2)
+
     def test_locations_count_availability_not_sessions(self):
         data = snapshot(local=("work",), remotes={"dev": source("ssh", ("chat",), host="dev")})
         entries = sidebar._add_entries("location", "", data, [])

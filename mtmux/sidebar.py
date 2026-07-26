@@ -675,7 +675,7 @@ def _bell_targets(
 
 
 def _entry_height(entry: Entry) -> int:
-    if entry.kind == "order":
+    if entry.kind in ("order", "choice_new", "choice_existing"):
         return 2
     return 2 if entry.tracked or entry.kind == "agent" else 1
 
@@ -888,7 +888,12 @@ def _entry_lines(
     if entry.kind == "header":
         return [_truncate(entry.label, width)]
     if entry.kind in ("choice_new", "choice_existing"):
-        return [_truncate_cells(f"{pointer} {entry.label}", width)]
+        symbol = "+" if entry.kind == "choice_new" else "=" if _ascii() else "≡"
+        detail = "Create a fresh tmux session" if entry.kind == "choice_new" else "Add a running tmux session"
+        return [
+            _truncate_cells(f"{pointer} {symbol} {entry.label}", width),
+            _truncate_cells(f"    {detail}", width),
+        ]
     if entry.kind == "location":
         location_icon = icon["local"] if entry.host == "" else icon["remote"]
         return [_truncate_cells(f"{pointer} {location_icon} {entry.label}", width)]
@@ -993,6 +998,10 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, drag_source
         attr = _color("section") or curses.A_BOLD
     elif entry.kind == "add":
         attr = _color("add_entry") or (curses.A_BOLD | curses.A_REVERSE)
+    elif entry.kind == "choice_new":
+        attr = (_color("create") or 0) | curses.A_BOLD
+    elif entry.kind == "choice_existing":
+        attr = (_color("remote") or 0) | curses.A_BOLD
     elif entry.kind in ("header", "host"):
         attr = curses.A_BOLD
     elif entry.unavailable_favorite:
