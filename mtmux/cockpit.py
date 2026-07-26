@@ -96,12 +96,12 @@ def _fix_layout(left: str, sidebar_width: int) -> None:
     tmux.tmux("set-window-option", "-t", TARGET, "pane-border-style", "fg=terminal")
     tmux.tmux("set-window-option", "-t", TARGET, "pane-active-border-style", "fg=terminal")
     tmux.tmux("set-window-option", "-t", TARGET, "pane-border-lines", "single")
-    tmux.tmux("select-pane", "-t", left)
-    tmux.tmux("select-layout", "-t", TARGET, "main-vertical")
+    tmux.tmux("resize-pane", "-t", left, "-x", str(sidebar_width), check=False)
 
 
 def _install_layout_hooks(left: str, sidebar_width: int) -> None:
-    command = f"set-window-option -t {TARGET} main-pane-width {sidebar_width} ; select-pane -t {left} ; select-layout -t {TARGET} main-vertical"
+    resize = f"sleep 0.1; tmux -L {tmux.SOCKET} resize-pane -t {left} -x {sidebar_width}"
+    command = f"run-shell -b {shlex.quote(resize)}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "client-attached", command)
     tmux.tmux("set-hook", "-t", tmux.SESSION, "client-resized", command)
 
