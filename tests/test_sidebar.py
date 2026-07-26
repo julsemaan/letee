@@ -146,7 +146,7 @@ class SidebarViewModeTest(unittest.TestCase):
 
         self.assertEqual(
             [(entry.label, entry.kind) for entry in entries],
-            [("Press / or click \uff0b new to add", "hint")],
+            [("Press a or click ＋ add", "hint")],
         )
 
     def test_tracked_remote_favorite_shows_connecting_during_initial_discovery(self):
@@ -419,6 +419,69 @@ class AgentAlertTest(unittest.TestCase):
             self.assertIn(marker, line)
 
 
+class AddFlowTest(unittest.TestCase):
+    def test_choice_has_new_and_existing_rows(self):
+        entries = sidebar._add_entries("choice", "", snapshot(), [])
+        self.assertEqual([(entry.label, entry.kind) for entry in entries], [
+            ("New session", "choice_new"),
+            ("Existing session", "choice_existing"),
+        ])
+
+    def test_locations_count_availability_not_sessions(self):
+        data = snapshot(local=("work",), remotes={"dev": source("ssh", ("chat",), host="dev")})
+        entries = sidebar._add_entries("location", "", data, [])
+        self.assertEqual([(entry.label, entry.host) for entry in entries], [(sidebar.socket.gethostname(), ""), ("dev", "dev")])
+
+    def test_unavailable_locations_are_disabled_and_empty_state_is_useful(self):
+        data = snapshot(local_available=False, remotes={"dev": source("ssh", host="dev", available=False)})
+        entries = sidebar._add_entries("location", "", data, [])
+        self.assertFalse(sidebar._selectable(entries))
+        self.assertTrue(any("No available locations" in entry.label for entry in entries))
+
+    def test_existing_lists_only_untracked_sessions(self):
+        tracked = Target("local", "work")
+        data = snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")})
+        entries = sidebar._add_entries("existing", "", data, [tracked])
+        self.assertEqual([entry.target for entry in entries if entry.kind == "session"], [Target("local", "notes"), Target("ssh", "chat", "dev")])
+        self.assertFalse(any(entry.kind == "host" for entry in entries))
+
+    def test_add_transitions_and_back_hierarchy(self):
+        state = SidebarState()
+        sidebar._open_add(state)
+        self.assertEqual(state.add_view, "choice")
+        sidebar._start_new(state, snapshot(local=("work",)))
+        self.assertEqual((state.add_view, state.creation_host), ("name", ""))
+        sidebar._add_back(state, snapshot(local=("work",)))
+        self.assertEqual(state.add_view, "choice")
+
+        sidebar._start_new(state, snapshot(remotes={"dev": source("ssh", host="dev")}))
+        self.assertEqual(state.add_view, "location")
+        sidebar._select_location(state, "dev")
+        sidebar._add_back(state, snapshot(remotes={"dev": source("ssh", host="dev")}))
+        self.assertEqual(state.add_view, "location")
+
+    def test_name_screen_uses_dedicated_row_and_cursor_at_narrow_width(self):
+        screen = FakeScreen(size=(6, 16))
+        state = SidebarState(add_view="name", creation_host="", creation_text="x" * 64)
+        with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"):
+            sidebar._draw_name(screen, state)
+        lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
+        self.assertTrue(any(line.startswith(" On:") and "laptop" in line for line in lines))
+        self.assertTrue(any(line.startswith(" Name:") for line in lines))
+        cursor = next(call for call in screen.calls if call[0] == "move")
+        self.assertLess(cursor[2], 16)
+        footer = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 5)
+        self.assertEqual(footer[4], 15)
+
+    def test_name_screen_shows_validation_feedback(self):
+        screen = FakeScreen(size=(7, 30))
+        state = SidebarState(add_view="name", creation_host="", creation_text="bad name", status="Invalid session name")
+
+        sidebar._draw_name(screen, state)
+
+        self.assertTrue(any(call[0] == "addnstr" and "Invalid session name" in call[3] for call in screen.calls))
+
+
 class SidebarStateTest(unittest.TestCase):
     def test_creation_key_edits_submits_and_cancels(self):
         state = SidebarState(creation_host="dev")
@@ -553,7 +616,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
-        state = SidebarState(adding=True)
+        state = SidebarState(add_view="existing")
         poller = unittest.mock.Mock()
         with (
             patch("mtmux.sidebar.save_sessions") as save,
@@ -568,7 +631,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_successful_create_tracks_after_creation(self):
         target = Target("local", "new")
-        state = SidebarState(adding=True)
+        state = SidebarState(add_view="name", creation_host="")
         poller = unittest.mock.Mock()
         with (
             patch("mtmux.sidebar.sessions.create") as create,
@@ -580,7 +643,7 @@ class SidebarStateTest(unittest.TestCase):
 
         create.assert_called_once_with(target)
         save.assert_called_once_with([target])
-        self.assertFalse(state.adding)
+        self.assertIsNone(state.add_view)
 
     def test_failed_create_neither_switches_nor_sets_pending_selection(self):
         target = Target("ssh", "new", "dev")
@@ -847,33 +910,11 @@ class SidebarDrawTest(unittest.TestCase):
         footer = [call for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
         self.assertTrue(all(call[5] & curses.A_BOLD and call[5] & curses.A_REVERSE for call in footer))
 
-    def test_inline_creation_renders_host_text_footer_and_cursor(self):
-        for host, label in (("", "laptop"), ("dev", "dev")):
-            screen = FakeScreen(size=(7, 40))
-            entries = [Entry(label, "host", host=host)]
+    def test_host_row_never_contains_inline_name_editor(self):
+        line = _entry_lines(Entry("laptop", "host", host=""), True, set(), None, 40, "", "work")[0]
 
-            with self.subTest(host=host), patch("mtmux.sidebar._ascii", return_value=False):
-                _draw(screen, entries, 0, "", "", creation_host=host, creation_text="work")
-
-            row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2)
-            self.assertIn("＋ " + label + " / new: work", row[3])
-            footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
-            self.assertEqual(footer, ["Esc cancel · Enter create"])
-            self.assertTrue(any(call[0] == "move" and call[1] == 2 for call in screen.calls))
-
-    def test_inline_creation_ascii_and_narrow_long_text_keep_cursor_visible(self):
-        screen = FakeScreen(size=(5, 16))
-
-        with patch("mtmux.sidebar._ascii", return_value=True):
-            _draw(
-                screen, [Entry("long-host", "host", host="long-host")], 0, "", "",
-                creation_host="long-host", creation_text="abcdefghijklmnop",
-            )
-
-        row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2)
-        self.assertTrue(row[3].startswith("+ "))
-        cursor = next(call for call in screen.calls if call[0] == "move")
-        self.assertLess(cursor[2], 16)
+        self.assertNotIn("work", line)
+        self.assertNotIn("new:", line)
 
     def test_read_key_gets_one_char_without_enter(self):
         screen = FakeScreen()
@@ -895,7 +936,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         session_badge = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[2] == 0)
-        self.assertIn("> new", title)
+        self.assertIn("> add", title)
         self.assertEqual(session_badge, "[1]")
 
     def test_title_adds_terminal_icon_with_ascii_fallback(self):
@@ -942,7 +983,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertIn("mtmux", title_text)
-        self.assertIn("＋ new", title_text)
+        self.assertIn("＋ add", title_text)
 
     def test_title_count_uses_singular_labels(self):
         screen = FakeScreen(size=(5, 40))
@@ -951,7 +992,7 @@ class SidebarDrawTest(unittest.TestCase):
         _draw(screen, entries, 0, "ok", "")
         normal_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertIn("mtmux", normal_text)
-        self.assertIn("＋ new", normal_text)
+        self.assertIn("＋ add", normal_text)
 
         screen = FakeScreen(size=(6, 40))
         _draw(screen, entries, 0, "filtering", "work", filtering=True)
@@ -1330,58 +1371,28 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "two")
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s two")
 
-    def test_single_click_host_starts_inline_editor_and_creates_local_target(self):
-        screen = FakeScreen([curses.KEY_MOUSE, ord("n"), ord("e"), ord("w"), 10, ord("q")], size=(12, 30))
+    def test_location_click_target_enters_dedicated_name_view(self):
+        state = SidebarState(add_view="location")
+        sidebar._select_location(state, "")
 
-        with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON1_CLICKED)),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("laptop", "host", host="")]),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.cockpit.switch"),
-        ):
-            run(screen)
+        self.assertEqual((state.add_view, state.creation_host), ("name", ""))
 
-        create.assert_called_once_with(Target("local", "new"))
-        self.assertTrue(any(call[0] == "addnstr" and "new: new" in call[3] for call in screen.calls))
+    def test_name_back_returns_to_location_for_multiple_locations(self):
+        state = SidebarState(add_view="name", creation_host="dev", creation_text="draft")
+        data = snapshot(remotes={"dev": source("ssh", host="dev")})
 
-    def test_editor_pauses_navigation_and_esc_cancels(self):
-        entries = [Entry("laptop", "host", host=""), Entry("dev", "host", host="dev")]
-        selected = []
-        screen = FakeScreen([10, curses.KEY_DOWN, 27, ord("q")])
-        with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or (1, None)),
-            patch("mtmux.sidebar.sessions.create") as create,
-        ):
-            run(screen)
+        sidebar._add_back(state, data)
 
-        self.assertEqual(set(selected), {0})
-        create.assert_not_called()
+        self.assertEqual(state.add_view, "location")
+        self.assertIsNone(state.creation_host)
 
-    def test_invalid_inline_name_stays_open_until_corrected(self):
-        screen = FakeScreen([10, ord("bad name"[0]), ord(" "), 10, 127, 127, ord("x"), 10, ord("q")])
-        with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("dev", "host", host="dev")]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.cockpit.switch"),
-        ):
-            run(screen)
+    def test_invalid_name_keeps_dedicated_name_state(self):
+        state = SidebarState(add_view="name", creation_host="dev", creation_text="bad name")
 
-        create.assert_called_once_with(Target("ssh", "x", "dev"))
+        with self.assertRaisesRegex(SystemExit, "Invalid session"):
+            _creation_key(state, 10)
+
+        self.assertEqual((state.add_view, state.creation_host, state.creation_text), ("name", "dev", "bad name"))
 
     def test_wheel_scrolls_viewport_without_changing_selection(self):
         entries = [
@@ -1550,9 +1561,9 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_add_titles_name_mode_and_filter_query(self):
         for query, filtering, adding, expected in (
-            ("", False, False, "＋ new"),
+            ("", False, False, "＋ add"),
             ("", False, True, "mtmux / Add session"),
-            ("work", True, True, "mtmux / Add session"),
+            ("work", True, True, "mtmux / Add existing"),
         ):
             screen = FakeScreen(size=(5, 50))
             _draw(screen, [], 0, "", query, filtering=filtering, adding=adding)
@@ -1849,26 +1860,12 @@ class ShouldAutoCreateTest(unittest.TestCase):
         self.assertFalse(_should_auto_create(entries))
 
 
-    def test_n_key_auto_creates_on_single_host(self):
-        entry = Entry("laptop", "host", host="")
-        screen = FakeScreen([ord("n"), ord("x"), 10, ord("q")])
+    def test_start_new_auto_creates_on_single_location(self):
+        state = SidebarState(add_view="choice")
+        sidebar._start_new(state, snapshot(local=("existing",)))
 
-        with (
-            patch("mtmux.sidebar.curses.curs_set") as curs_set,
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[entry]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.cockpit.switch"),
-        ):
-            run(screen)
-
-        create.assert_called_once()
-        target = create.call_args[0][0]
-        self.assertEqual(target.session, "x")
-        self.assertEqual(target.kind, "local")
-        curs_set.assert_any_call(1)
+        self.assertEqual(state.add_view, "name")
+        self.assertEqual(state.creation_host, "")
 
 
 class SidebarScrollOffsetTest(unittest.TestCase):

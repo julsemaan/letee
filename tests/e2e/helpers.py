@@ -84,8 +84,8 @@ def assert_row_dimmed(client: TmuxTestClient, row_text: str) -> None:
 
 def assert_add_button_selected(client: TmuxTestClient) -> None:
     ansi = client.sidebar_ansi()
-    plain = _ANSI.sub("", _row_with_text(ansi, "new"))
-    if "> new" not in plain or _style_at(ansi, "new") == _style_at(ansi, "mtmux"):
+    plain = _ANSI.sub("", _row_with_text(ansi, "add"))
+    if "> add" not in plain or _style_at(ansi, "add") == _style_at(ansi, "mtmux"):
         raise AssertionError(f"Add button is not selected\nSidebar:\n{ansi}")
 
 

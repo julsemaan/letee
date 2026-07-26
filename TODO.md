@@ -3,14 +3,14 @@
 - [ ] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
-- [ ] The new menu is overdue for polishing
-  - [ ] When creating a new session, reusing the same row for the name leaves little place
-  - [ ] It isn't clear you need to pick somewhere to create the session
-  - [ ] When there is a single place to create the session, just skip selecting it and show the session name, and skip the selection menu as a whole
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
 
 ## Done
 
+- [x] Polish Add session menu
+  - [x] Use dedicated full-width session name input
+  - [x] Separate new and existing session paths
+  - [x] Skip location picker when one location is available
 - [x] Polish the screen about the reconnection
 - [x] Disable tmux shortcuts from the outer session
 - [x] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.

@@ -22,7 +22,7 @@ def help_command(prefix: str) -> str:
 Navigation
   {prefix} a  focus/open Agents
   {prefix} s  focus/open Sessions
-  {prefix} n  new session
+  {prefix} +  add session
   {prefix} h  hide sidebar
   {prefix} q  quit cockpit
   {prefix} 1-9  switch session
@@ -31,12 +31,12 @@ Navigation
   q      quit sidebar only
 
 Session actions
-  Enter  switch session / open Add / create on host
-  n      open grouped local/SSH Add picker
+  Enter  switch session / select Add choice
+  a      open Add session menu
   r      remove selected session (session keeps running)
   K/J    move session up/down
   x      kill selected session
-  /      open Add picker and filter available sessions
+  /      search untracked existing sessions
 
 Agent actions
   j/k    navigate agents
@@ -51,7 +51,7 @@ Recovery
 
 Examples
   /work  find available sessions matching work
-  Enter  recreate a missing session or create on selected host line
+  Enter  recreate missing session or activate selected Add row
 """
     return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
 
@@ -115,7 +115,7 @@ def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("bind-key", "q", "kill-session", "-t", tmux.SESSION)
     tmux.tmux("bind-key", "a", "run-shell", f"{FOCUS_SIDEBAR} agents")
     tmux.tmux("bind-key", "s", "run-shell", f"{FOCUS_SIDEBAR} sessions")
-    tmux.tmux("bind-key", "n", "run-shell", f"{FOCUS_SIDEBAR} new")
+    tmux.tmux("bind-key", "+", "run-shell", f"{FOCUS_SIDEBAR} add")
     tmux.tmux("bind-key", "?", "respawn-pane", "-k", "-t", right_pane, help_command(prefix))
     for slot in range(1, 10):
         tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m mtmux switch-session {slot}")
@@ -252,7 +252,7 @@ def focus_sidebar(region: str = "sessions") -> int:
     ensure_cockpit()
     pane = _option(SIDEBAR_PANE_OPTION)
     tmux.tmux("select-pane", "-t", pane)
-    keys = {"sessions": ("F6",), "agents": ("F7",), "new": ("F6", "n")}[region]
+    keys = {"sessions": ("F6",), "agents": ("F7",), "add": ("F6", "a")}[region]
     tmux.tmux("send-keys", "-t", pane, *keys)
     return 0
 

@@ -43,7 +43,7 @@ class Effect:
 class SidebarState:
     filter_text: str = ""
     filtering: bool = False
-    adding: bool = False
+    add_view: Literal["choice", "existing", "location", "name"] | None = None
     creation_host: str | None = None
     creation_text: str = ""
     selected_target: Target | None = None
@@ -229,7 +229,7 @@ def _entries(
                 status=status,
             ))
         if not out:
-            out.append(Entry("Press / or click ＋ new to add", "hint"))
+            out.append(Entry("Press a or click ＋ add", "hint"))
         return out
 
     icons = _icons()
@@ -261,6 +261,90 @@ def _entries(
             if target not in favorites and needle in target.session.lower():
                 out.append(Entry(target.session, "session", target, host))
     return out
+
+
+def _available_locations(snapshot: SessionSnapshot) -> list[tuple[str, str]]:
+    locations = [(socket.gethostname(), "")] if snapshot.local.available else []
+    locations.extend(
+        (host, host) for host, source in snapshot.remotes.items()
+        if source is not None and source.available
+    )
+    return locations
+
+
+def _add_entries(
+    view: Literal["choice", "existing", "location"],
+    filter_text: str,
+    snapshot: SessionSnapshot,
+    favorites: list[Target],
+) -> list[Entry]:
+    if view == "choice":
+        return [Entry("New session", "choice_new"), Entry("Existing session", "choice_existing")]
+    if view == "existing":
+        entries = _entries(filter_text, snapshot, favorites, adding=True)
+        for index, entry in enumerate(entries):
+            if entry.kind == "host":
+                entries[index] = Entry(entry.label, "header", host=entry.host)
+        if not any(entry.kind == "session" for entry in entries):
+            entries.append(Entry("No existing sessions to add", "hint"))
+        return entries
+    entries = [Entry(label, "location", host=host) for label, host in _available_locations(snapshot)]
+    if not snapshot.local.available:
+        entries.append(Entry(f"{socket.gethostname()}: unavailable", "unavailable", host=""))
+    for host, source in snapshot.remotes.items():
+        if source is None or not source.available:
+            entries.append(Entry(f"{host}: unavailable", "unavailable", host=host))
+    if not entries or not any(entry.kind == "location" for entry in entries):
+        entries.append(Entry("No available locations", "hint"))
+    return entries
+
+
+def _open_add(state: SidebarState, view: Literal["choice", "existing"] = "choice") -> None:
+    state.add_view = view
+    state.filtering = view == "existing"
+    state.filter_text = ""
+    state.creation_host = None
+    state.creation_text = ""
+    state.selected_index = 0
+    state.selected_target = None
+
+
+def _start_new(state: SidebarState, snapshot: SessionSnapshot) -> None:
+    locations = _available_locations(snapshot)
+    if len(locations) == 1:
+        _select_location(state, locations[0][1])
+    else:
+        state.add_view = "location"
+        state.filtering = False
+        state.selected_index = 0
+
+
+def _select_location(state: SidebarState, host: str) -> None:
+    state.creation_host = host
+    state.creation_text = ""
+    state.add_view = "name"
+    state.filtering = False
+
+
+def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
+    if state.add_view == "name":
+        state.add_view = "location" if len(_available_locations(snapshot)) > 1 else "choice"
+        state.creation_host = None
+        state.creation_text = ""
+    elif state.add_view in ("location", "existing"):
+        state.add_view = "choice"
+        state.filtering = False
+        state.filter_text = ""
+    elif state.add_view == "choice":
+        state.add_view = None
+
+
+def _reset_add(state: SidebarState) -> None:
+    state.add_view = None
+    state.filtering = False
+    state.filter_text = ""
+    state.creation_host = None
+    state.creation_text = ""
 
 
 _STATUS_RANK: dict[str, int] = {
@@ -349,7 +433,7 @@ def _update_agent_alerts(
 
 
 def _selectable(entries: list[Entry]) -> list[int]:
-    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host")]
+    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "location", "choice_new", "choice_existing")]
 
 
 def _should_auto_create(entries: list[Entry]) -> bool:
@@ -467,6 +551,8 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             state.filter_text = ""
             state.filtering = False
             state.selected_target = effect.target
+            if effect.kind == "add_switch":
+                _reset_add(state)
             _set_status(state, f"switched {effect.target.format()}", status_timeout)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
@@ -479,10 +565,10 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
                 state.favorites.append(effect.target)
                 save_sessions(state.favorites)
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
-            state.adding = False
+            _reset_add(state)
             state.pending_selection = effect.target
             poller.refresh()
-            _set_status(state, f"created {effect.target.session}", status_timeout)
+            _set_status(state, f"added {effect.target.session}", status_timeout)
         elif effect.kind == "kill" and effect.target:
             sessions.kill(effect.target)
             poller.discard(effect.target)
@@ -685,10 +771,14 @@ def _draw_title(
     width = max(1, w)
     count = len({entry.target for entry in entries if entry.kind == "session" and not entry.unavailable_favorite})
     brand = " mtmux" if _ascii() else "  mtmux"
-    left = f"{brand} / Add session" if adding else brand
+    if adding:
+        section = "Add existing" if filtering else "New session" if any(entry.kind == "location" for entry in entries) else "Add session"
+        left = f"{brand} / {section}"
+    else:
+        left = brand
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     if not adding:
-        label = f"{_icons()['selected']} new" if add_button_selected else "＋ new"
+        label = f"{_icons()['selected']} add" if add_button_selected else "＋ add"
         add_col = width - _cell_width(label)
         main_width = max(0, add_col)
         stdscr.addnstr(0, 0, left[:main_width].ljust(main_width), main_width, _fade(attr) if dimmed else attr)
@@ -770,6 +860,8 @@ def _entry_lines(
         return [entry.label + " " + rule * (width - len(entry.label) - 1)]
     if entry.kind == "header":
         return [_truncate(entry.label, width)]
+    if entry.kind in ("choice_new", "choice_existing", "location"):
+        return [_truncate_cells(f"{pointer} {entry.label}", width)]
     if entry.kind == "add":
         label = f"{pointer} {icon['create']} {entry.label}"
         truncated = _truncate_cells(label, width)
@@ -777,11 +869,6 @@ def _entry_lines(
     if entry.kind == "spacer":
         return [""]
     if entry.kind == "host":
-        if creation_host is not None and entry.host == creation_host:
-            prefix = f"{icon['create']} {entry.label} / new: "
-            room = max(0, width - _cell_width(prefix))
-            text = creation_text[-room:] if room else ""
-            return [_truncate_cells(prefix, width - _cell_width(text)) + text]
         suffix = f" {icon['create']}"
         if selected:
             label = _truncate_cells(f"{pointer} {entry.label}", max(0, width - _cell_width(suffix) - 1))
@@ -1007,11 +1094,11 @@ def _draw_footer(
     adding: bool = False,
 ) -> int:
     if creating:
-        logical_rows = ["Esc cancel · Enter create" if not _ascii() else "Esc cancel  Enter create"]
+        logical_rows = ["Esc back · Enter add" if not _ascii() else "Esc back  Enter add"]
     elif filtering:
         logical_rows = ["type to filter  backspace edit", f"esc clear  {'Enter' if _ascii() else '↵'} switch"]
     elif adding:
-        logical_rows = [f"{'Enter' if _ascii() else '↵'} add  x kill", "/ filter  Esc back  ? help  q quit"]
+        logical_rows = [f"{'Enter' if _ascii() else '↵'} select · Esc back" if not _ascii() else "Enter select  Esc back"]
     else:
         logical_rows = [f"{'Enter' if _ascii() else '↵'} activate  ? help  q quit"]
     width = max(1, w - 1)
@@ -1022,6 +1109,30 @@ def _draw_footer(
         stdscr.addnstr(row, 0, line.ljust(w - 1), w - 1, row_attr)
         stdscr.chgat(row, w - 1, 1, row_attr)
     return len(lines)
+
+
+def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False) -> None:
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    width = max(1, w)
+    attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
+    title = " mtmux / New session"
+    stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
+    host = socket.gethostname() if state.creation_host == "" else (state.creation_host or "")
+    stdscr.addnstr(2, 0, _truncate_cells(f" On:   {host}", width), width)
+    prefix = " Name: "
+    room = max(0, width - _cell_width(prefix) - 1)
+    visible = state.creation_text[-room:] if room else ""
+    stdscr.addnstr(3, 0, (prefix + visible).ljust(width), width)
+    if state.status and h > 5:
+        stdscr.addnstr(h - 2, 0, _truncate_cells(f" {state.status}", width), width, _color("danger") or curses.A_BOLD)
+    footer = "Esc back  Enter add" if _ascii() else "Esc back · Enter add"
+    footer_width = max(0, width - 1)
+    stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
+    if width > 1:
+        stdscr.chgat(h - 1, width - 1, 1, _fade(attr) if dimmed else attr)
+    stdscr.move(3, min(width - 1, _cell_width(prefix + visible)))
+    stdscr.refresh()
 
 
 def _draw(
@@ -1122,7 +1233,7 @@ def run(stdscr: curses.window) -> None:
     status_timeout = load_status_timeout()
     state = SidebarState(favorites=load_sessions(), selected_target=_current_target())
     poller = DiscoveryPoller(load_hosts())
-    entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
+    entries = _entries(state.filter_text, poller.snapshot, state.favorites)
     agent_entries = _agent_entries(poller.snapshot, state.favorites)
     agent_entries = [Entry("", "order")] + agent_entries
     _update_agent_alerts(state, poller.snapshot, state.selected_target)
@@ -1142,7 +1253,11 @@ def run(stdscr: curses.window) -> None:
 
     def rebuild() -> None:
         nonlocal entries, agent_entries
-        entries = _entries(state.filter_text, poller.snapshot, state.favorites, state.adding)
+        entries = (
+            _add_entries(state.add_view, state.filter_text, poller.snapshot, state.favorites)
+            if state.add_view in ("choice", "existing", "location")
+            else _entries(state.filter_text, poller.snapshot, state.favorites)
+        )
         raw_agents = _agent_entries(poller.snapshot, state.favorites, state.agent_ordering, state.agent_alerts)
         # ponytail: order row is always index 0; rebuild prepends it so draw and navigation see same list
         agent_entries = [Entry("", "order")] + raw_agents
@@ -1183,7 +1298,7 @@ def run(stdscr: curses.window) -> None:
             spinner_frame = _spinner_frame(now) if working_agents else None
             render_state = (
                 tuple(entries), state.selected_index, state.status, state.filter_text,
-                state.filtering, state.adding, state.creation_host, state.creation_text,
+                state.filtering, state.add_view, state.creation_host, state.creation_text,
                 frozenset(bell_targets), current_target, dimmed, stdscr.getmaxyx(),
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
@@ -1193,23 +1308,27 @@ def run(stdscr: curses.window) -> None:
                 state.drag_source_index, state.drag_target_index,
             )
             if render_state != rendered:
-                drag_src_entry = _fav_to_entry_index(entries, state.drag_source_index) if state.drag_source_index is not None else None
-                drag_tgt_entry = _fav_to_entry_index(entries, state.drag_target_index) if state.drag_target_index is not None else None
-                footer_height, add_col = _draw(
-                    stdscr, entries, state.selected_index, state.status, state.filter_text,
-                    state.filtering, bell_targets, current_target, dimmed,
-                    state.creation_host, state.creation_text, state.adding, state.scroll_offset,
-                    agent_entries, state.agent_selected_index, state.focused_region, state.agent_rows,
-                    active_agent_id, agent_alerts=state.agent_alerts,
-                    spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
-                    add_button_selected=state.add_button_selected,
-                    drag_source_entry=drag_src_entry, drag_target_entry=drag_tgt_entry,
-                )
+                if state.add_view == "name":
+                    _draw_name(stdscr, state, dimmed)
+                    footer_height, add_col = 1, None
+                else:
+                    drag_src_entry = _fav_to_entry_index(entries, state.drag_source_index) if state.drag_source_index is not None else None
+                    drag_tgt_entry = _fav_to_entry_index(entries, state.drag_target_index) if state.drag_target_index is not None else None
+                    footer_height, add_col = _draw(
+                        stdscr, entries, state.selected_index, state.status, state.filter_text,
+                        state.filtering, bell_targets, current_target, dimmed,
+                        state.creation_host, state.creation_text, state.add_view is not None, state.scroll_offset,
+                        agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_rows,
+                        active_agent_id, agent_alerts=state.agent_alerts,
+                        spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
+                        add_button_selected=state.add_button_selected,
+                        drag_source_entry=drag_src_entry, drag_target_entry=drag_tgt_entry,
+                    )
                 rendered = render_state
             try:
                 key = stdscr.getch()
             except KeyboardInterrupt:
-                if not state.filtering and not state.adding and state.creation_host is None:
+                if state.add_view is None:
                     raise
                 key = 3
             if key == -1:
@@ -1218,19 +1337,21 @@ def run(stdscr: curses.window) -> None:
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 state.add_button_selected = False
                 continue
-            if state.creation_host is not None:
+            if state.add_view == "name":
+                if key in (27, 3):
+                    _add_back(state, poller.snapshot)
+                    curses.curs_set(0)
+                    rebuild()
+                    continue
                 try:
                     effect = _creation_key(state, key)
                 except SystemExit as error:
                     show_status(str(error))
                     continue
-                if state.creation_host is None:
+                if effect:
                     curses.curs_set(0)
-                    if effect:
-                        _execute(effect, state, poller, status_timeout)
-                        rebuild()
-                    else:
-                        show_status("cancelled")
+                    _execute(effect, state, poller, status_timeout)
+                    rebuild()
                 continue
             if key == curses.KEY_MOUSE:
                 try:
@@ -1260,7 +1381,7 @@ def run(stdscr: curses.window) -> None:
                 available = footer_top - session_top - 1
                 wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
                 agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
-                separator = footer_top - agent_body - 1
+                separator = footer_top if state.add_view is not None else footer_top - agent_body - 1
                 # Drag: update target from mouse position on any event during drag
                 _b1_pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
                 _b1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
@@ -1322,16 +1443,11 @@ def run(stdscr: curses.window) -> None:
                     continue
                 if row == 0 and add_col is not None and isinstance(mouse_col, int) and mouse_col >= add_col:
                     if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):
-                        state.adding = True
-                        state.selected_target = None
+                        _open_add(state)
                         rebuild()
-                        if _should_auto_create(entries):
-                            state.creation_host = next(e for e in entries if e.kind == "host").host
-                            state.creation_text = ""
-                            curses.curs_set(1)
                     continue
                 else:
-                    if separator < row < footer_top and not state.adding and agent_entries:
+                    if separator < row < footer_top and state.add_view is None and agent_entries:
                         index = _entry_at_row(agent_entries, state.agent_selected_index, row, footer_top + 1, 0, separator + 1)
                         if index is None:
                             continue
@@ -1383,11 +1499,13 @@ def run(stdscr: curses.window) -> None:
                         continue
             if state.filtering:
                 if key in (27, 3):
-                    state.filter_text = ""
-                    state.filtering = False
+                    if state.add_view == "existing":
+                        _add_back(state, poller.snapshot)
+                    else:
+                        state.filter_text = ""
+                        state.filtering = False
                     curses.curs_set(0)
                     rebuild()
-                    show_status("cancelled" if key == 3 else "filter cleared")
                     continue
                 new_filter = _filter_key(state.filter_text, key)
                 if new_filter is not None:
@@ -1396,11 +1514,9 @@ def run(stdscr: curses.window) -> None:
                     if not state.filter_text:
                         show_status("filter cleared")
                     continue
-            if key in (27, 3) and state.adding:
-                state.adding = False
-                state.filter_text = ""
+            if key in (27, 3) and state.add_view is not None:
+                _add_back(state, poller.snapshot)
                 rebuild()
-                show_status("cancelled")
                 continue
             selectable = _selectable(entries)
             effect: Effect | None = None
@@ -1429,7 +1545,7 @@ def run(stdscr: curses.window) -> None:
                     entry = agent_entries[state.agent_selected_index]
                     if entry.pane_target:
                         effect = Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
-            elif state.focused_region == "agents" and key in map(ord, "arxKJ/"):
+            elif state.focused_region == "agents" and key in map(ord, "rxKJ"):
                 effect = Effect("status", message="agent panes are automatic")
             elif key in (curses.KEY_DOWN, ord("j")) and selectable:
                 state.scroll_offset = None
@@ -1459,24 +1575,18 @@ def run(stdscr: curses.window) -> None:
                 effect = _transition(state, "move_session_up")
             elif key == ord("J"):
                 effect = _transition(state, "move_session_down")
-            elif key == ord("n") and not state.adding:
-                state.adding = True
-                state.selected_target = None
+            elif key == ord("a"):
+                _open_add(state)
+                state.focused_region = "sessions"
                 rebuild()
-                if _should_auto_create(entries):
-                    state.creation_host = next(e for e in entries if e.kind == "host").host
-                    state.creation_text = ""
-                    curses.curs_set(1)
-            elif key == ord("r") and not state.adding:
+            elif key == ord("r") and state.add_view is None:
                 entry = entries[state.selected_index]
                 if entry.target:
                     effect = _transition(state, "toggle_session", entry.target)
             elif key == ord("/"):
-                if not state.adding:
-                    state.adding = True
-                    state.selected_target = None
-                    rebuild()
-                state.filtering = True
+                _open_add(state, "existing")
+                state.focused_region = "sessions"
+                rebuild()
                 curses.curs_set(1)
             elif key == ord("?"):
                 effect = _transition(state, "help")
@@ -1484,23 +1594,29 @@ def run(stdscr: curses.window) -> None:
                 state.scroll_offset = None
                 if state.add_button_selected:
                     state.add_button_selected = False
-                    state.adding = True
-                    state.selected_target = None
+                    _open_add(state)
                     rebuild()
-                    if _should_auto_create(entries):
-                        state.creation_host = next(e for e in entries if e.kind == "host").host
-                        state.creation_text = ""
-                        curses.curs_set(1)
                     continue
                 entry = entries[state.selected_index]
-                if entry.target:
-                    effect = _transition(state, "add_switch" if state.adding else "switch", entry.target)
-                    if state.adding:
-                        state.adding = False
-                elif entry.kind == "host":
-                    state.creation_host = entry.host
-                    state.creation_text = ""
+                if entry.kind == "choice_new":
+                    _start_new(state, poller.snapshot)
+                    rebuild()
+                    if state.add_view == "name":
+                        curses.curs_set(1)
+                    continue
+                if entry.kind == "choice_existing":
+                    _open_add(state, "existing")
+                    rebuild()
                     curses.curs_set(1)
+                    continue
+                if entry.kind == "location":
+                    _select_location(state, entry.host or "")
+                    curses.curs_set(1)
+                    continue
+                if entry.target:
+                    effect = _transition(state, "add_switch" if state.add_view == "existing" else "switch", entry.target)
+                    if state.add_view == "existing":
+                        _reset_add(state)
             elif key == ord("x"):
                 entry = entries[state.selected_index]
                 if not entry.target:
