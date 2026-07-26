@@ -2209,6 +2209,49 @@ class AgentOrderingTest(unittest.TestCase):
         ids = [e.agent_id for e in entries]
         self.assertEqual(ids, ["input", "failed", "working", "idle"])
 
+    def test_priority_mode_sorts_idle_agents_by_latest_activity_with_missing_last(self):
+        target = Target("local", "work")
+        favorites = [target]
+        older = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        newer = older + timedelta(minutes=1)
+        entries = [
+            self._make_agent(target, "@1", "%1", "missing", "idle"),
+            Entry(
+                "pi", "agent", target, "laptop",
+                pane_target=PaneTarget(target, "@1", "%2", "/tmp/tmux"),
+                agent_id="older", status="idle", task_status_timestamp=older,
+            ),
+            Entry(
+                "pi", "agent", target, "laptop",
+                pane_target=PaneTarget(target, "@1", "%3", "/tmp/tmux"),
+                agent_id="newer", status="idle", task_status_timestamp=newer,
+            ),
+        ]
+
+        entries.sort(key=lambda entry: _agent_sort_key(entry, favorites, "priority"))
+
+        self.assertEqual([entry.agent_id for entry in entries], ["newer", "older", "missing"])
+
+    def test_idle_runtime_heartbeats_do_not_reorder_agents_without_activity_timestamps(self):
+        target = Target("local", "work")
+        older = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        entries = [
+            Entry(
+                "pi", "agent", target, "laptop",
+                pane_target=PaneTarget(target, "@1", "%1", "/tmp/tmux"),
+                agent_id="first", status="idle", runtime_updated_at=older,
+            ),
+            Entry(
+                "pi", "agent", target, "laptop",
+                pane_target=PaneTarget(target, "@1", "%2", "/tmp/tmux"),
+                agent_id="second", status="idle", runtime_updated_at=older + timedelta(seconds=1),
+            ),
+        ]
+
+        entries.sort(key=lambda entry: _agent_sort_key(entry, [target], "priority"))
+
+        self.assertEqual([entry.agent_id for entry in entries], ["first", "second"])
+
     def test_bell_agents_sort_first_in_priority_mode(self):
         target = Target("local", "work")
         favorites = [target]

@@ -376,9 +376,11 @@ def _agent_sort_key(
         return (0, session_index, 0, 0, entry.agent_id or "")
     status_rank = _STATUS_RANK.get(entry.status, 5)
     bell_rank = 0 if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else 1
+    activity = entry.task_status_timestamp if entry.status == "idle" else None
+    activity_rank = (0, -activity.timestamp()) if activity else (1, 0)
     window = int(entry.pane_target.window_id[1:]) if entry.pane_target and entry.pane_target.window_id else 0
     pane = int(entry.pane_target.pane_id[1:]) if entry.pane_target and entry.pane_target.pane_id else 0
-    return (bell_rank, status_rank, session_index, window, pane, entry.agent_id or "")
+    return (bell_rank, status_rank, *activity_rank, session_index, window, pane, entry.agent_id or "")
 
 
 def _agent_entries(
