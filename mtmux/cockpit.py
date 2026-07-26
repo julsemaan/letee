@@ -144,6 +144,11 @@ def _unavailable_command(target: Target | None = None) -> str:
     return f"printf %s {shlex.quote(text)}; exec sh"
 
 
+def _reconnecting_command(target: Target) -> str:
+    text = f"Reconnecting to {target.format()}…\n"
+    return f"printf %s {shlex.quote(text)}; exec sh"
+
+
 def _install_right_pane_reset(left: str, right: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
     command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @mtmux_current_agent ; set-option -u -t {tmux.SESSION} @mtmux_bell_target ; respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left} }}"
@@ -268,6 +273,10 @@ def show_help() -> None:
 
 def show_unavailable(target: Target) -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _unavailable_command(target))
+
+
+def show_reconnecting(target: Target) -> None:
+    tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _reconnecting_command(target))
 
 
 def _target_option(name: str) -> Target | None:

@@ -184,6 +184,25 @@ def _should_show_unavailable(target: Target, snapshot: SessionSnapshot) -> bool:
     return _target_status(target, snapshot) not in (None, "connecting…")
 
 
+def _sync_active_session(
+    target: Target | None, snapshot: SessionSnapshot, interrupted: Target | None
+) -> Target | None:
+    if target is None:
+        return None
+    status = _target_status(target, snapshot)
+    if status in ("connecting…", "reconnecting…"):
+        if interrupted != target:
+            cockpit.show_reconnecting(target)
+        return target
+    if status is None and interrupted == target:
+        cockpit.switch(target, sessions.attach_command(target))
+        return None
+    if status == "unavailable" and interrupted != target:
+        cockpit.show_unavailable(target)
+        return target
+    return interrupted if interrupted == target else None
+
+
 def _entries(
     filter_text: str,
     snapshot: SessionSnapshot,
@@ -1141,12 +1160,9 @@ def run(stdscr: curses.window) -> None:
             active_remote_host = current_target.host if current_target and current_target.kind == "ssh" else None
             agent_alert = False
             if poller.tick(active_remote_host):
-                unavailable = current_target is not None and _should_show_unavailable(current_target, poller.snapshot)
-                if unavailable and current_target != unavailable_target_shown:
-                    cockpit.show_unavailable(current_target)
-                    unavailable_target_shown = current_target
-                elif current_target != unavailable_target_shown:
-                    unavailable_target_shown = None
+                unavailable_target_shown = _sync_active_session(
+                    current_target, poller.snapshot, unavailable_target_shown
+                )
                 agent_alert = _update_agent_alerts(state, poller.snapshot, current_target)
                 rebuild()
             selectable = _selectable(entries)

@@ -329,6 +329,17 @@ class CockpitLayoutTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "No valid mtmux cockpit"):
                 cockpit.switch(cockpit.Target("local", "work"), "attach work")
 
+    def test_show_reconnecting_replaces_frozen_session_with_feedback(self):
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_reconnecting(cockpit.Target("ssh", "work", "dev"))
+
+        command = tmux_call.call_args.args
+        self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
+        self.assertIn("Reconnecting to ssh:dev:work", command[4])
+
     def test_show_unavailable_replaces_frozen_session_with_message(self):
         with (
             patch.object(cockpit, "right_pane", return_value="%2"),

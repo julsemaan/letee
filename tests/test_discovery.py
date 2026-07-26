@@ -319,6 +319,20 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(popen.call_count, 2)
         self.assertEqual(poller._next["dev"], 1.0)
 
+    def test_failed_remote_retries_continuously_when_inactive(self):
+        now = [0.0]
+        popen = Mock(side_effect=[FakeProcess(255), FakeProcess(255), FakeProcess(255)])
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+
+        poller.tick()
+        now[0] = 2
+        poller.tick()
+        now[0] = 4
+        poller.tick()
+
+        self.assertEqual(popen.call_count, 3)
+        self.assertEqual(poller._next["dev"], 6)
+
     def test_inactive_remote_host_keeps_ten_second_interval(self):
         now = [0.0]
         popen = Mock(side_effect=[FakeProcess(0), FakeProcess(0)])
@@ -384,7 +398,7 @@ class DiscoveryPollerTest(unittest.TestCase):
         popen = Mock(side_effect=[FakeProcess(255), FakeProcess(0)])
         local = SourceSnapshot(True, (Target("local", "new"),), frozenset())
         poller = self.make_poller(
-            ["dev"], popen=popen, clock=clock, random=Mock(return_value=1),
+            ["dev"], popen=popen, clock=clock,
             local=Mock(side_effect=[EMPTY_LOCAL, local]),
         )
 
@@ -435,33 +449,15 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(poller.snapshot.remotes["empty"], SourceSnapshot(True, (), frozenset()))
         self.assertEqual(poller.snapshot.remotes["broken"].error, "tmux: permission denied")
 
-    def test_failures_use_capped_exponential_backoff_with_jitter(self):
-        clock = Mock(side_effect=[0, 0, 2, 6, 14, 30, 62, 122, 182])
-        popen = Mock(side_effect=[FakeProcess(255) for _ in range(8)])
-        poller = self.make_poller(["dev"], popen=popen, clock=clock, random=Mock(return_value=1))
-
-        for _ in range(8):
-            poller.tick()
-
-        self.assertEqual(poller._next["dev"], 242)
-
-    def test_success_and_failure_backoff_with_jitter(self):
+    def test_success_after_failure_uses_normal_interval(self):
         clock = Mock(side_effect=[0, 0, 2])
         popen = Mock(side_effect=[FakeProcess(255), FakeProcess(0)])
-        poller = self.make_poller(["dev"], popen=popen, clock=clock, random=Mock(return_value=1))
+        poller = self.make_poller(["dev"], popen=popen, clock=clock)
 
         poller.tick()
         poller.tick()
 
         self.assertEqual(poller._next["dev"], 12)
-        self.assertEqual(poller._failures["dev"], 0)
-
-        poller = self.make_poller(
-            ["dev"], popen=Mock(return_value=FakeProcess(255)),
-            clock=Mock(return_value=0), random=Mock(return_value=0),
-        )
-        poller.tick()
-        self.assertEqual(poller._next["dev"], 1)
 
     def test_timeout_kills_and_reaps_process_that_ignores_terminate(self):
         process = TerminateIgnoringProcess()
