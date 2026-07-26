@@ -61,9 +61,9 @@ def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: obj
 
 def create(target: Target) -> None:
     if target.kind == "local":
-        _run("create", target, ("tmux", "new-session", "-Ad", "-s", target.session), env=_default_server_env())
+        _run("create", target, ("tmux", "new-session", "-d", "-s", target.session), env=_default_server_env())
     else:
-        _run("create", target, ssh_command(target.host or "", f"tmux new-session -Ad -s {shlex.quote(target.session)}"))
+        _run("create", target, ssh_command(target.host or "", f"tmux new-session -d -s {shlex.quote(target.session)}"))
 
 
 def kill(target: Target) -> None:
