@@ -70,7 +70,7 @@ class SessionOperationsTest(unittest.TestCase):
             create(target)
 
         run.assert_called_once_with(
-            ("tmux", "new-session", "-Ad", "-s", "work"),
+            ("tmux", "new-session", "-d", "-s", "work"),
             check=True,
             capture_output=True,
             text=True,
@@ -92,7 +92,7 @@ class SessionOperationsTest(unittest.TestCase):
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
                     "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
-                    "-o", "ControlPath=~/.ssh/mtmux-%C", "dev", "tmux new-session -Ad -s work.one",
+                    "-o", "ControlPath=~/.ssh/mtmux-%C", "dev", "tmux new-session -d -s work.one",
                 ),
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",

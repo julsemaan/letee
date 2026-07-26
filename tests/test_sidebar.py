@@ -473,13 +473,14 @@ class AddFlowTest(unittest.TestCase):
         footer = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 5)
         self.assertEqual(footer[4], 15)
 
-    def test_name_screen_shows_validation_feedback(self):
+    def test_name_screen_shows_validation_feedback_below_name(self):
         screen = FakeScreen(size=(7, 30))
         state = SidebarState(add_view="name", creation_host="", creation_text="bad name", status="Invalid session name")
 
         sidebar._draw_name(screen, state)
 
-        self.assertTrue(any(call[0] == "addnstr" and "Invalid session name" in call[3] for call in screen.calls))
+        feedback = next(call for call in screen.calls if call[0] == "addnstr" and "Invalid session name" in call[3])
+        self.assertEqual(feedback[1], 4)
 
 
 class SidebarStateTest(unittest.TestCase):
@@ -508,6 +509,24 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(state.creation_host, "")
         self.assertEqual(state.creation_text, "bad name")
+
+    def test_creation_key_reports_same_host_conflict_while_typing(self):
+        state = SidebarState(creation_host="dev", creation_text="wor")
+        existing = (Target("ssh", "work", "dev"), Target("local", "work"))
+
+        self.assertIsNone(_creation_key(state, ord("k"), existing))
+
+        self.assertEqual(state.status, "Session already exists on this host")
+        with self.assertRaisesRegex(SystemExit, "already exists"):
+            _creation_key(state, 10, existing)
+        self.assertEqual((state.creation_host, state.creation_text), ("dev", "work"))
+
+    def test_creation_key_allows_same_name_on_different_host(self):
+        state = SidebarState(creation_host="dev", creation_text="work")
+
+        effect = _creation_key(state, 10, (Target("local", "work"),))
+
+        self.assertEqual(effect, Effect("create", Target("ssh", "work", "dev")))
 
     def test_pending_selection_waits_for_discovery_then_selects_target(self):
         target = Target("ssh", "new", "dev")
@@ -658,6 +677,7 @@ class SidebarStateTest(unittest.TestCase):
         switch.assert_not_called()
         self.assertIsNone(state.pending_selection)
         self.assertEqual(state.status, "create failed")
+        self.assertEqual((state.creation_host, state.creation_text), ("dev", "new"))
 
 
     def test_exact_active_agent_uses_active_session_color(self):

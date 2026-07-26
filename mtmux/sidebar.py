@@ -586,6 +586,9 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
         elif effect.kind == "quit":
             return True
     except SystemExit as error:
+        if effect.kind == "create" and isinstance(effect.target, Target):
+            state.creation_host = "" if effect.target.kind == "local" else effect.target.host
+            state.creation_text = effect.target.session
         _set_status(state, str(error), status_timeout)
     return False
 
@@ -594,7 +597,21 @@ def _current_target() -> Target | None:
     return cockpit.current_target()
 
 
-def _creation_key(state: SidebarState, key: int) -> Effect | None:
+def _creation_conflicts(state: SidebarState, existing_sessions: tuple[Target, ...]) -> bool:
+    kind = "local" if state.creation_host == "" else "ssh"
+    return any(
+        target.kind == kind
+        and target.host == (None if kind == "local" else state.creation_host)
+        and target.session == state.creation_text
+        for target in existing_sessions
+    )
+
+
+def _creation_key(
+    state: SidebarState,
+    key: int,
+    existing_sessions: tuple[Target, ...] = (),
+) -> Effect | None:
     if key in (27, 3):
         state.creation_host = None
         state.creation_text = ""
@@ -604,11 +621,15 @@ def _creation_key(state: SidebarState, key: int) -> Effect | None:
         name = validate_name(state.creation_text, "session")
         host = state.creation_host
         target = Target("local", name) if host == "" else Target("ssh", name, host)
+        if _creation_conflicts(state, existing_sessions):
+            raise SystemExit("Session already exists on this host")
         state.creation_host = None
         state.creation_text = ""
         return Effect("create", target)
     elif 32 <= key <= 126 and len(state.creation_text) < 64:
         state.creation_text += chr(key)
+
+    state.status = "Session already exists on this host" if _creation_conflicts(state, existing_sessions) else ""
     return None
 
 
@@ -1125,7 +1146,7 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     visible = state.creation_text[-room:] if room else ""
     stdscr.addnstr(3, 0, (prefix + visible).ljust(width), width)
     if state.status and h > 5:
-        stdscr.addnstr(h - 2, 0, _truncate_cells(f" {state.status}", width), width, _color("danger") or curses.A_BOLD)
+        stdscr.addnstr(4, 0, _truncate_cells(f" {state.status}", width), width, _color("danger") or curses.A_BOLD)
     footer = "Esc back  Enter add" if _ascii() else "Esc back · Enter add"
     footer_width = max(0, width - 1)
     stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
@@ -1344,7 +1365,7 @@ def run(stdscr: curses.window) -> None:
                     rebuild()
                     continue
                 try:
-                    effect = _creation_key(state, key)
+                    effect = _creation_key(state, key, poller.snapshot.sessions)
                 except SystemExit as error:
                     show_status(str(error))
                     continue
