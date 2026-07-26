@@ -334,8 +334,9 @@ class CockpitLayoutTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "No valid mtmux cockpit"):
                 cockpit.switch(cockpit.Target("local", "work"), "attach work")
 
-    def test_show_reconnecting_replaces_frozen_session_with_feedback(self):
+    def test_show_reconnecting_displays_remote_session_details_and_unicode_spinner(self):
         with (
+            patch.dict(cockpit.os.environ, {}, clear=True),
             patch.object(cockpit, "right_pane", return_value="%2"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
@@ -343,9 +344,30 @@ class CockpitLayoutTest(unittest.TestCase):
 
         command = tmux_call.call_args.args
         self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
-        self.assertIn("Reconnecting to ssh:dev:work", command[4])
-        self.assertTrue(command[4].endswith("; exec tail -f /dev/null"))
-        self.assertNotIn("exec sh", command[4])
+        self.assertIn("\n    \x1b[38;5;81m╭─ Connection interrupted ─╮\n    ╰──────────────────────────╯", command[4])
+        self.assertIn("    \x1b[2mSession\x1b[0m  work", command[4])
+        self.assertIn("    \x1b[2mHost\x1b[0m     dev", command[4])
+        self.assertIn("\x1b7", command[4])
+        self.assertIn("\x1b8\x1b[2K    ", command[4])
+        self.assertIn("⠋", command[4])
+        self.assertEqual(command[4].count("Reconnecting"), 1)
+        self.assertIn("Reconnecting%s", command[4])
+        self.assertIn("38;5;%sm", command[4])
+        self.assertIn("·  ", command[4])
+        self.assertNotIn("Trying again automatically", command[4])
+        self.assertIn("while :", command[4])
+        self.assertNotIn("mtmux", command[4])
+        self.assertNotIn("ssh:dev:work", command[4])
+        self.assertNotIn("tail -f", command[4])
+
+    def test_reconnecting_uses_ascii_spinner_when_requested(self):
+        with patch.dict(cockpit.os.environ, {"MTMUX_ASCII": "1"}):
+            command = cockpit._reconnecting_command(cockpit.Target("ssh", "work", "dev"))
+
+        self.assertIn("+-- Connection interrupted --+", command)
+        self.assertIn("45:|:.  ", command)
+        self.assertNotIn("⠋", command)
+        self.assertNotIn("╭", command)
 
     def test_show_unavailable_replaces_frozen_session_with_message(self):
         with (
