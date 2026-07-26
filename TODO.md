@@ -5,6 +5,7 @@
 - [ ] Allow having multiple mtmux cockpit
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
 - [ ] When killing a session, it puts the confirm at the bottom of the pane. Ensure it is easier to see and go through any other message that is in the footer and relocate it
+- [ ] Agent sessions in priority ordering should have latest activity at the top for idle sessions
 
 ## Done
 
