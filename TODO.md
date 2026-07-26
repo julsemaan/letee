@@ -8,6 +8,7 @@
   - [ ] It isn't clear you need to pick somewhere to create the session
   - [ ] When there is a single place to create the session, just skip selecting it and show the session name, and skip the selection menu as a whole
 - [ ] Polish the screen about the reconnection
+- [ ] Disable tmux shortcuts from the outer session
 
 ## Done
 
