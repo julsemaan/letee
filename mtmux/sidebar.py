@@ -643,16 +643,19 @@ def _creation_key(
     return None
 
 
-def _read_key(stdscr: curses.window, prompt: str) -> int:
-    h, w = stdscr.getmaxyx()
+def _read_key(stdscr: curses.window, prompt: str, filtering: bool = False) -> int:
+    _, w = stdscr.getmaxyx()
+    row = 2 if filtering else 1
+    width = max(1, w)
+    attr = (_color("danger") or 0) | curses.A_BOLD
     stdscr.timeout(-1)
     try:
-        stdscr.addnstr(h - 1, 0, " " * (w - 1), w - 1)
-        stdscr.addnstr(h - 1, 0, prompt, w - 1)
+        stdscr.addnstr(row, 0, " " * width, width)
+        stdscr.addnstr(row, 0, _truncate_cells(prompt, width), width, attr)
         stdscr.refresh()
         return stdscr.getch()
     finally:
-        stdscr.addnstr(h - 1, 0, " " * (w - 1), w - 1)
+        stdscr.addnstr(row, 0, " " * width, width)
         stdscr.refresh()
         stdscr.timeout(UI_POLL_INTERVAL_MS)
 
@@ -1219,6 +1222,13 @@ def _draw(
     cursor, add_col = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed, adding, add_button_selected)
     if filtering:
         cursor = _draw_filter(stdscr, w, filter_text, dimmed)
+    message_row = 2 if filtering else 1
+    message_attr = _color("hints") or curses.A_DIM
+    message = _truncate_cells(status, max(1, w))
+    stdscr.addnstr(
+        message_row, 0, message, max(1, w),
+        _fade(message_attr) if dimmed else message_attr,
+    )
     footer_height = _draw_footer(stdscr, h, w, filtering, dimmed, creation_host is not None, adding)
     if agent_entries is None:
         creation_cursor = _draw_entries(
@@ -1677,7 +1687,7 @@ def run(stdscr: curses.window) -> None:
                 if entry.unavailable_favorite:
                     show_status(f"missing {entry.target.format()}")
                     continue
-                if _read_key(stdscr, f"kill {entry.target.format()}? y/N") != ord("y"):
+                if _read_key(stdscr, f"kill {entry.target.format()}? y/N", state.filtering) != ord("y"):
                     show_status("cancelled")
                     continue
                 effect = _transition(state, "kill", entry.target)
