@@ -61,6 +61,7 @@ FOCUS_SIDEBAR = f"{shlex.quote(sys.executable)} -m mtmux focus-sidebar"
 TARGET = f"{tmux.SESSION}:{tmux.WINDOW}"
 COCKPIT_OPTION = "@mtmux_cockpit"
 SIDEBAR_PANE_OPTION = "@mtmux_sidebar_pane"
+SIDEBAR_WIDTH_OPTION = "@mtmux_sidebar_width"
 RIGHT_PANE_OPTION = "@mtmux_right_pane"
 CURRENT_TARGET_OPTION = "@mtmux_current_target"
 CURRENT_AGENT_OPTION = "@mtmux_current_agent"
@@ -91,6 +92,7 @@ def _set_markers(left: str, right: str) -> None:
 
 
 def _fix_layout(left: str, sidebar_width: int) -> None:
+    tmux.tmux("set-window-option", "-t", TARGET, SIDEBAR_WIDTH_OPTION, str(sidebar_width))
     tmux.tmux("set-window-option", "-t", TARGET, "main-pane-width", str(sidebar_width))
     tmux.tmux("set-window-option", "-u", "-t", TARGET, "window-style")
     tmux.tmux("set-window-option", "-u", "-t", TARGET, "window-active-style")
@@ -100,11 +102,22 @@ def _fix_layout(left: str, sidebar_width: int) -> None:
     tmux.tmux("resize-pane", "-t", left, "-x", str(sidebar_width), check=False)
 
 
+def repair_layout(left: str) -> None:
+    state = tmux.out(
+        "display-message", "-p", "-t", left,
+        f"#{{pane_width}}:#{{{SIDEBAR_WIDTH_OPTION}}}:#{{window_width}}:#{{client_width}}:#{{window_offset_x}}",
+        check=False,
+    ).split(":")
+    if len(state) == 5 and state[0] == state[1] and state[2] == state[3] and state[4] in ("", "0"):
+        return
+    command = f"resize-window -a -t {TARGET} ; resize-pane -t {left} -x '#{{{SIDEBAR_WIDTH_OPTION}}}'"
+    tmux.tmux("run-shell", "-C", "-t", left, command, check=False)
+
+
 def _install_layout_hooks(left: str, sidebar_width: int) -> None:
-    resize = f'for delay in 0.1 0.2 0.4; do sleep "$delay"; tmux -L {tmux.SOCKET} resize-pane -t {left} -x {sidebar_width} 2>/dev/null && break; done; true'
-    command = f"run-shell -b {shlex.quote(resize)}"
-    tmux.tmux("set-hook", "-t", tmux.SESSION, "client-attached", command)
-    tmux.tmux("set-hook", "-t", tmux.SESSION, "client-resized", command)
+    tmux.tmux("set-hook", "-u", "-t", tmux.SESSION, "client-attached")
+    tmux.tmux("set-hook", "-u", "-t", tmux.SESSION, "client-resized")
+    tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x {sidebar_width}")
 
 
 def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:

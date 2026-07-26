@@ -5,6 +5,7 @@ import locale
 import os
 import socket
 import textwrap
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from .names import PaneTarget, Target, validate_name
 
 UI_POLL_INTERVAL_MS = 50
 COCKPIT_BELL_POLL_INTERVAL = 0.5
+LAYOUT_REPAIR_INTERVAL = 0.5
 UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 ASCII_SPINNER = "|/-\\"
 UNICODE_STATUS_ICONS = {
@@ -1690,10 +1692,27 @@ def run(stdscr: curses.window) -> None:
         _mouse_cleanup()
 
 
+def _maintain_sidebar(stop: threading.Event, pane: str) -> None:
+    while not stop.is_set():
+        cockpit.repair_layout(pane)
+        stop.wait(LAYOUT_REPAIR_INTERVAL)
+
+
 def main() -> int:
-    while True:
-        try:
-            curses.wrapper(run)
-            return 0
-        except KeyboardInterrupt:
-            pass
+    stop = threading.Event()
+    pane = os.environ.get("TMUX_PANE")
+    if pane:
+        threading.Thread(
+            target=_maintain_sidebar,
+            args=(stop, pane),
+            daemon=True,
+        ).start()
+    try:
+        while True:
+            try:
+                curses.wrapper(run)
+                return 0
+            except KeyboardInterrupt:
+                pass
+    finally:
+        stop.set()
