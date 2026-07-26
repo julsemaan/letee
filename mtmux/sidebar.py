@@ -1262,25 +1262,23 @@ def run(stdscr: curses.window) -> None:
                 agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
                 separator = footer_top - agent_body - 1
                 # Drag: update target from mouse position on any event during drag
+                _b1_pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
                 _b1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
                 _b1_clicked = getattr(curses, "BUTTON1_CLICKED", 0) or 0
                 if state.drag_source_index is not None:
-                    with open("/tmp/mtmux_debug.log", "a") as _dbg:
-                        _dbg.write(f"DRAG_EVENT state={mouse_state:#x} row={row} src={state.drag_source_index} tgt_before={state.drag_target_index}\n")
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
                     idx = _entry_at_row(
                         entries, view_index, row, separator + 1, 0,
                         3 if state.filtering else 2,
                         state.scroll_offset,
                     )
-                    if idx is not None and entries[idx].tracked:
+                    if (state.drag_target_index is not None or mouse_state & _b1_pressed) and idx is not None and entries[idx].tracked:
                         fav_idx = _entry_to_fav_index(entries, idx)
                         if fav_idx is not None:
                             state.drag_target_index = fav_idx
-                    with open("/tmp/mtmux_debug.log", "a") as _dbg:
-                        _dbg.write(f"DRAG_EVENT idx={idx} fav_idx={state.drag_target_index} is_release={bool(mouse_state & (_b1_released or _b1_clicked))}\n")
-                    if mouse_state & (_b1_released or _b1_clicked):
-                        if state.drag_target_index is not None and state.drag_source_index != state.drag_target_index:
+                    if mouse_state & (_b1_released | _b1_clicked):
+                        activate = state.drag_target_index is None or state.drag_source_index == state.drag_target_index
+                        if state.drag_target_index is not None and not activate:
                             src = state.drag_source_index
                             tgt = state.drag_target_index
                             if 0 <= src < len(state.favorites) and 0 <= tgt < len(state.favorites):
@@ -1291,7 +1289,12 @@ def run(stdscr: curses.window) -> None:
                                 rebuild()
                         state.drag_source_index = None
                         state.drag_target_index = None
-                    continue
+                        if activate:
+                            mouse_state = _b1_clicked
+                        else:
+                            continue
+                    else:
+                        continue
                 if mouse_state & (getattr(curses, "BUTTON4_PRESSED", 0) or 0):
                     if state.scroll_offset is None:
                         view_index = _view_index(entries, state.selected_index, current_target, dimmed)
@@ -1368,14 +1371,11 @@ def run(stdscr: curses.window) -> None:
                     state.selected_target = entries[index].target
                     state.selected_tracked = entries[index].tracked
                     # Drag: press on tracked session starts drag
-                    _b1_pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
                     if mouse_state & _b1_pressed and entries[index].tracked:
                         fav_idx = _entry_to_fav_index(entries, index)
                         if fav_idx is not None:
                             state.drag_source_index = fav_idx
-                            state.drag_target_index = fav_idx
-                            with open("/tmp/mtmux_debug.log", "a") as _dbg:
-                                _dbg.write(f"DRAG_START state={mouse_state:#x} row={row} fav_idx={fav_idx}\n")
+                            state.drag_target_index = None
                         continue
                     if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):
                         key = curses.KEY_ENTER

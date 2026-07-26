@@ -1248,6 +1248,64 @@ class SidebarDrawTest(unittest.TestCase):
         switch.assert_called_once_with(target, sidebar.sessions.pane_attach_command(second), "second")
         self.assertEqual(execute.call_args.args[1].selected_agent_key, (second, "second"))
 
+    def test_click_then_hover_does_not_show_drag_target(self):
+        target = Target("local", "one")
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        drag_targets = []
+
+        def draw_spy(*args, **kwargs):
+            drag_targets.append(kwargs.get("drag_target_entry"))
+            return (2, None)
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 1, 0, curses.REPORT_MOUSE_POSITION),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch("mtmux.sidebar._entries", return_value=[Entry("one", "session", target, tracked=True)]),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+        ):
+            run(screen)
+
+        self.assertEqual(drag_targets, [None, None])
+
+    def test_single_click_switches_tracked_session_after_press_release_events(self):
+        target = Target("local", "one")
+        entries = [Entry("one", "session", target, tracked=True)]
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 2, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one")
+
     def test_single_click_selects_and_switches_session(self):
         entries = [
             Entry("LOCAL", "header"),
