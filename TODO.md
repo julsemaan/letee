@@ -4,6 +4,8 @@
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
+- [ ] In the add menu, don't show any session counts in the header
+- [ ] When adding an existing session, if a host has no sessions, show some greyed message under it that says there are no sessions
 
 ## Done
 
