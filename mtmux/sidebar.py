@@ -800,7 +800,6 @@ def _draw_title(
     add_button_selected: bool = False,
 ) -> tuple[int, int | None]:
     width = max(1, w)
-    count = len({entry.target for entry in entries if entry.kind == "session" and not entry.unavailable_favorite})
     brand = " mtmux" if _ascii() else "  mtmux"
     if adding:
         section = "Add existing" if filtering else "New session" if any(entry.kind == "location" for entry in entries) else "Add session"
@@ -818,10 +817,7 @@ def _draw_title(
             stdscr.addnstr(0, add_col, label, _cell_width(label), _fade(button_attr) if dimmed else button_attr)
     else:
         add_col = None
-        noun = ("match" if count == 1 else "matches") if filtering else ("session" if count == 1 else "sessions")
-        right = f"{count} {noun}"
-        title = f"{left}{right.rjust(width - len(left))}" if len(left) + len(right) < width else left
-        stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
+        stdscr.addnstr(0, 0, left[:width].ljust(width), width, _fade(attr) if dimmed else attr)
     stdscr.redrawln(0, 1)
     return (min(width - 1, len(left)), add_col)
 
