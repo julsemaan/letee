@@ -4,6 +4,7 @@
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
+- [ ] When killing a session, it puts the confirm at the bottom of the pane. Ensure it is easier to see and go through any other message that is in the footer and relocate it
 
 ## Done
 
