@@ -297,6 +297,11 @@ class AgentSidebarTest(unittest.TestCase):
 
         self.assertEqual(_entry_at_row(entries, 0, 4, 8, 0, top=4), 0)
 
+    def test_add_menu_entries_can_be_selected_with_mouse(self):
+        for kind in ("choice_new", "choice_existing", "location"):
+            with self.subTest(kind=kind):
+                self.assertEqual(_entry_at_row([Entry("Add", kind)], 0, 2, 4, 0, top=2), 0)
+
     def test_switch_pane_uses_exact_attach_command_and_agent_id(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         with patch("mtmux.sidebar.cockpit.switch") as switch:

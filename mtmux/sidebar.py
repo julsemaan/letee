@@ -723,7 +723,9 @@ def _entry_at_row(
         return None
     for index in range(start, end):
         if entry_row < _entry_height(entries[index]):
-            return index if entries[index].kind in ("session", "host", "agent", "order") else None
+            return index if entries[index].kind in (
+                "session", "host", "agent", "order", "choice_new", "choice_existing", "location"
+            ) else None
         entry_row -= _entry_height(entries[index])
     return None
 
