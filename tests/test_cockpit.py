@@ -161,7 +161,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "q", "kill-session", "-t", "mtmux"),
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
-                ("bind-key", "n", "run-shell", f"{cockpit.FOCUS_SIDEBAR} new"),
+                ("bind-key", "+", "run-shell", f"{cockpit.FOCUS_SIDEBAR} add"),
                 ("bind-key", "?", "respawn-pane", "-k", "-t", "%2", cockpit.help_command("C-x")),
                 *[
                     ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m mtmux switch-session {slot}")
@@ -187,20 +187,20 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
-    def test_focus_sidebar_new_opens_session_creator(self):
+    def test_focus_sidebar_add_opens_session_menu(self):
         with (
             patch.object(cockpit, "ensure_config"),
             patch.object(cockpit, "ensure_cockpit"),
             patch.object(cockpit, "_option", return_value="%7"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
-            cockpit.focus_sidebar("new")
+            cockpit.focus_sidebar("add")
 
         self.assertEqual(
             tmux_call.call_args_list,
             [
                 unittest.mock.call("select-pane", "-t", "%7"),
-                unittest.mock.call("send-keys", "-t", "%7", "F6", "n"),
+                unittest.mock.call("send-keys", "-t", "%7", "F6", "a"),
             ],
         )
 
@@ -222,7 +222,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         self.assertIn("C-x a  focus/open Agents", command)
         self.assertIn("C-x s  focus/open Sessions", command)
-        self.assertIn("C-x n  new session", command)
+        self.assertIn("C-x +  add session", command)
         self.assertIn("C-x h  hide sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)
         self.assertIn("C-x 1-9  switch session", command)
@@ -230,9 +230,9 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("K/J    move session up/down", command)
         self.assertIn("Agent actions", command)
         self.assertIn("h/l    cycle agent ordering", command)
-        self.assertIn("Enter  switch session / open Add / create on host", command)
-        self.assertIn("n      open grouped local/SSH Add picker", command)
-        self.assertNotIn("a      open grouped local/SSH Add picker", command)
+        self.assertIn("Enter  switch session / select Add choice", command)
+        self.assertIn("a      open Add session menu", command)
+        self.assertNotIn("n      open grouped local/SSH Add picker", command)
         self.assertIn("r      remove selected session", command)
         self.assertNotIn("f      star/unstar", command)
         self.assertNotIn("r      refresh", command)

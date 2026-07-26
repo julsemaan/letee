@@ -44,7 +44,7 @@ make test
 
 - outer prefix: `C-s`
 - focus/open Sessions: `C-s s`
-- create new session: `C-s n`
+- add session: `C-s +`
 - focus/open Agents: `C-s a`
 - hide sidebar: `C-s h`
 - quit cockpit: `C-s q`
@@ -118,7 +118,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 ## Sidebar keys
 
 - `C-s s`: focus Sessions; recreates sidebar if quit
-- `C-s n`: focus Sessions and open new-session picker
+- `C-s +`: focus Sessions and open Add session menu
 - `C-s a`: focus Agents; recreates sidebar if quit
 - `C-s h`: hide sidebar
 - `C-s q`: quit outer mtmux cockpit
@@ -129,18 +129,18 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
 - `[` / `]`: give Agents/Sessions region more rows for current run
 - `h` / `l`: cycle agent ordering mode (Priority / Session) when ordering row is selected
-- `Enter`: switch selected session or exact agent pane, open Add, or create on selected host line
-- `a`: open grouped local/SSH Add picker
+- `Enter`: switch selected session or exact agent pane, or activate selected Add row
+- `a`: open Add session menu from Sessions or Agents
 - `r`: remove selected target without killing it
 - `K` / `J`: move selected starred target up/down without wrapping
 - `x`: kill selected session but retain its star (asks first)
-- `/`: open Add picker and filter unstarred sessions
+- `/`: open existing-session search directly
 - `?`: open help in right pane
 - `q`: quit sidebar only
 
 `›` marks keyboard selection; mint reverse highlight marks active cockpit session. Both appear independently while sidebar is focused. Unfocused sidebar hides pointer and keeps active session highlighted and visible.
 
-Normal sidebar puts `Add session` first, followed by sessions in persisted order; no full-inventory duplicates or star glyphs. Independently navigable Agents region remains visible below `AGENTS` divider, including when empty. Add picker groups unstarred sessions under local and SSH hosts. Selecting or creating one stars it and switches immediately. First nine stars receive stable, right-aligned shortcut numbers; `K`/`J` updates order, while later stars remain sidebar-only. Prefix-number shortcuts load stars on every use, so changes apply without restart. Each star uses two rows: session name, then local hostname or SSH host. Missing stars remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Favorites persist in `~/.config/mtmux/stars`. Only starred sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only source labels and ellipses.
+Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/mtmux/stars`. Only tracked sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only labels and ellipses.
 
 Agent records are read from `$AGENT_STATUS_DIR`, `$XDG_STATE_HOME/agent-status`, or `~/.local/state/agent-status`, in that order. Local and remote running agents updated within 60 seconds are correlated by exact tmux socket and pane ID. Selecting agent navigates to exact server, window, and pane; active agent name and location remain orange independently of keyboard selection. Working agents show `for <duration>`; other states show no duration. Working durations prefer `task.status_timestamp` and fall back to `runtime.updated_at`; unusable optional timestamps omit duration. Each agent row starts with a semantic status icon; working agents use an animated Braille spinner. Focused selection replaces that icon with `›`, and moving focus away restores it. Status icon and text share semantic color; selection cursor stays orange. `MTMUX_ASCII=1` uses ASCII icons, spinner frames, and `>` cursor. Attention states remain bold and idle/canceled remain dim without color. Agents are discovered automatically, but only agents in tracked sessions appear. Agents cannot be added, removed, reordered, or killed as favorites.
 
@@ -149,7 +149,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 ## Mouse controls
 
 - click session row: select and switch
-- click available host row: select and open creation prompt
+- click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - wheel over sidebar: navigate selectable session and host rows
 - right-pane mouse events: forwarded by outer tmux to mouse-aware applications
 - live border dragging: disabled so text selection can cross the sidebar divider without resizing it
