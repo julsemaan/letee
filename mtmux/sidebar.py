@@ -1443,9 +1443,9 @@ def run(stdscr: curses.window) -> None:
                         3 if state.filtering else 2,
                         state.scroll_offset,
                     )
-                    if (state.drag_target_index is not None or mouse_state & _b1_pressed) and idx is not None and entries[idx].tracked:
+                    if idx is not None and entries[idx].tracked:
                         fav_idx = _entry_to_fav_index(entries, idx)
-                        if fav_idx is not None:
+                        if fav_idx is not None and (state.drag_target_index is not None or fav_idx != state.drag_source_index):
                             state.drag_target_index = fav_idx
                     if mouse_state & (_b1_released | _b1_clicked):
                         activate = state.drag_target_index is None or state.drag_source_index == state.drag_target_index

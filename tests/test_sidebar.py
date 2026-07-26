@@ -1434,6 +1434,38 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual(drag_targets, [None, None])
 
+    def test_drag_motion_reorders_tracked_sessions(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        entries = [
+            Entry("one", "session", first, tracked=True),
+            Entry("two", "session", second, tracked=True),
+        ]
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 4, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            run(screen)
+
+        save_sessions.assert_called_once_with((second, first))
+
     def test_single_click_switches_tracked_session_after_press_release_events(self):
         target = Target("local", "one")
         entries = [Entry("one", "session", target, tracked=True)]
