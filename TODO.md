@@ -1,7 +1,7 @@
 - [ ] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
 - [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [ ] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
-  - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
+- [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
 - [ ] The new menu is overdue for polishing
   - [ ] When creating a new session, reusing the same row for the name leaves little place
