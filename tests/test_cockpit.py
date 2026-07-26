@@ -5,6 +5,21 @@ from mtmux import cockpit
 
 
 class CockpitLayoutTest(unittest.TestCase):
+    def test_attach_detaches_existing_cockpit_client(self):
+        with (
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
+            patch.object(cockpit.shutil, "which", return_value=None),
+            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            self.assertRaises(RuntimeError),
+        ):
+            cockpit._attach()
+
+        execvp.assert_called_once_with(
+            "tmux", ["tmux", "-L", "mtmux", "attach-session", "-d", "-t", "mtmux:cockpit"]
+        )
+
     def test_fix_layout_pins_sidebar_to_configured_width(self):
         calls = []
 
