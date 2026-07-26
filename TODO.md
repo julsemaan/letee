@@ -7,6 +7,7 @@
   - [ ] When creating a new session, reusing the same row for the name leaves little place
   - [ ] It isn't clear you need to pick somewhere to create the session
   - [ ] When there is a single place to create the session, just skip selecting it and show the session name, and skip the selection menu as a whole
+- [ ] Mark sessions as something else than unavailable when they are not present on the target host
 
 ## Done
 
