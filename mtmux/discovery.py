@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-from random import random
 import shlex
 import subprocess
 import tempfile
@@ -37,7 +36,7 @@ SUPPORTED_TASK_STATES = {
 MAX_REMOTE_OUTPUT = 1024 * 1024
 LOCAL_POLL_INTERVAL = 0.5
 SUCCESS_POLL_INTERVAL = 10
-MAX_FAILURE_POLL_INTERVAL = 60
+FAILURE_POLL_INTERVAL = 2
 
 
 @dataclass(frozen=True)
@@ -319,7 +318,6 @@ class DiscoveryPoller:
         *,
         popen: Callable[..., object] = subprocess.Popen,
         clock: Callable[[], float] = time.monotonic,
-        random: Callable[[], float] = random,
         local: Callable[[], SourceSnapshot] | None = None,
     ) -> None:
         self.hosts = tuple(validate_host(host) for host in hosts)
@@ -329,12 +327,10 @@ class DiscoveryPoller:
         self.remotes: dict[str, SourceSnapshot | None] = dict.fromkeys(self.hosts)
         self._popen = popen
         self._clock = clock
-        self._random = random
         self._next_local_poll = self._clock() + LOCAL_POLL_INTERVAL
         self._active: dict[str, _Request] = {}
         self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
-        self._failures = dict.fromkeys(self.hosts, 0)
 
     @property
     def snapshot(self) -> SessionSnapshot:
@@ -342,13 +338,10 @@ class DiscoveryPoller:
 
     def _schedule(self, host: str, now: float, available: bool) -> None:
         if available:
-            self._failures[host] = 0
             interval = LOCAL_POLL_INTERVAL if host == self._active_remote_host else SUCCESS_POLL_INTERVAL
             self._next[host] = now + interval
             return
-        self._failures[host] += 1
-        delay = min(2 ** self._failures[host], MAX_FAILURE_POLL_INTERVAL)
-        self._next[host] = now + delay * (0.5 + self._random() / 2)
+        self._next[host] = now + FAILURE_POLL_INTERVAL
 
     def _finish_request(self, host: str, request: _Request, now: float, returncode: int) -> bool:
         stdout, _ = request.process.communicate()

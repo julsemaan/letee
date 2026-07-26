@@ -29,6 +29,25 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev")})))
         self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev", available=False)})))
 
+    def test_active_session_shows_reconnecting_then_restores_session(self):
+        target = Target("ssh", "work", "dev")
+
+        with (
+            patch.object(sidebar.cockpit, "show_reconnecting") as show_reconnecting,
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            pending = sidebar._sync_active_session(
+                target, snapshot(remotes={"dev": source("ssh", host="dev", available=False)}), None
+            )
+            restored = sidebar._sync_active_session(
+                target, snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")}), pending
+            )
+
+        show_reconnecting.assert_called_once_with(target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        self.assertEqual(pending, target)
+        self.assertIsNone(restored)
+
 
 from mtmux.sidebar import (
     Effect,
