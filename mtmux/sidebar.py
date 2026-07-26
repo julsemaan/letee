@@ -264,7 +264,7 @@ def _entries(
 
 
 def _available_locations(snapshot: SessionSnapshot) -> list[tuple[str, str]]:
-    locations = [(socket.gethostname(), "")] if snapshot.local.available else []
+    locations = [("localhost", "")] if snapshot.local.available else []
     locations.extend(
         (host, host) for host, source in snapshot.remotes.items()
         if source is not None and source.available
@@ -281,16 +281,23 @@ def _add_entries(
     if view == "choice":
         return [Entry("New session", "choice_new"), Entry("Existing session", "choice_existing")]
     if view == "existing":
+        grouped: list[Entry] = []
         entries = _entries(filter_text, snapshot, favorites, adding=True)
         for index, entry in enumerate(entries):
-            if entry.kind == "host":
-                entries[index] = Entry(entry.label, "header", host=entry.host)
-        if not any(entry.kind == "session" for entry in entries):
-            entries.append(Entry("No existing sessions to add", "hint"))
-        return entries
-    entries = [Entry(label, "location", host=host) for label, host in _available_locations(snapshot)]
+            if entry.kind in ("host", "header"):
+                label = "localhost" if entry.host == "" else entry.label
+                grouped.append(Entry(label, "header", host=entry.host))
+                if index + 1 == len(entries) or entries[index + 1].kind in ("host", "header"):
+                    grouped.append(Entry("No sessions", "empty", host=entry.host))
+            else:
+                grouped.append(entry)
+        if not any(entry.kind == "session" for entry in grouped):
+            grouped.append(Entry("No existing sessions to add", "hint"))
+        return grouped
+    entries = [Entry("Select where to create", "section")]
+    entries.extend(Entry(label, "location", host=host) for label, host in _available_locations(snapshot))
     if not snapshot.local.available:
-        entries.append(Entry(f"{socket.gethostname()}: unavailable", "unavailable", host=""))
+        entries.append(Entry("localhost: unavailable", "unavailable", host=""))
     for host, source in snapshot.remotes.items():
         if source is None or not source.available:
             entries.append(Entry(f"{host}: unavailable", "unavailable", host=host))
@@ -883,8 +890,11 @@ def _entry_lines(
         return [entry.label + " " + rule * (width - len(entry.label) - 1)]
     if entry.kind == "header":
         return [_truncate(entry.label, width)]
-    if entry.kind in ("choice_new", "choice_existing", "location"):
+    if entry.kind in ("choice_new", "choice_existing"):
         return [_truncate_cells(f"{pointer} {entry.label}", width)]
+    if entry.kind == "location":
+        location_icon = icon["local"] if entry.host == "" else icon["remote"]
+        return [_truncate_cells(f"{pointer} {location_icon} {entry.label}", width)]
     if entry.kind == "add":
         label = f"{pointer} {icon['create']} {entry.label}"
         truncated = _truncate_cells(label, width)
@@ -955,6 +965,8 @@ def _entry_lines(
         return [first]
     if entry.kind == "hint":
         return [_truncate_cells(f"  {icon['enter']} {entry.label}", width)]
+    if entry.kind == "empty":
+        return [_truncate_cells(f"    {entry.label}", width)]
     label = entry.label.replace("…", "...") if _ascii() else entry.label
     return [_truncate(f"  {icon['unavailable']} {label}", width)]
 
@@ -990,9 +1002,11 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, drag_source
         attr = _color("unavailable") or curses.A_DIM
     elif entry.kind == "session":
         attr = _color("local")
+    elif entry.kind == "location":
+        attr = _color("local" if entry.host == "" else "remote") or curses.A_BOLD
     elif entry.kind == "agent":
         attr = 0
-    elif entry.kind == "hint":
+    elif entry.kind in ("hint", "empty"):
         attr = _color("hints") or curses.A_DIM
     elif entry.kind == "unavailable":
         attr = _color("unavailable") or curses.A_DIM
@@ -1142,7 +1156,7 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     ascii_mode = _ascii()
     title = " + New session" if ascii_mode else " ＋ New session"
     stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
-    host = socket.gethostname() if state.creation_host == "" else (state.creation_host or "")
+    host = "localhost" if state.creation_host == "" else (state.creation_host or "")
     host_icon = "*" if ascii_mode else ("●" if state.creation_host == "" else "◆")
     host_attr = _color("local" if state.creation_host == "" else "remote") or curses.A_BOLD
     stdscr.addnstr(2, 0, _truncate_cells(f" {host_icon} {host}", width), width, _fade(host_attr) if dimmed else host_attr)
