@@ -701,6 +701,7 @@ class SidebarStateTest(unittest.TestCase):
 
         poller.assert_has_calls([unittest.mock.call.discard(target), unittest.mock.call.refresh()])
         self.assertEqual(state.selected_target, target)
+        self.assertEqual(state.status, "killed ssh:dev:work")
 
     def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
@@ -949,6 +950,32 @@ class SidebarDrawTest(unittest.TestCase):
 
 
 
+    def test_status_renders_below_title_without_replacing_footer(self):
+        screen = FakeScreen(size=(7, 30))
+
+        _draw(screen, [], 0, "killed local:work", "", agent_entries=[])
+
+        status = next(call for call in screen.calls if call[0] == "addnstr" and "killed local:work" in call[3])
+        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 6]
+        self.assertEqual(status[1], 1)
+        self.assertEqual(footer, ["↵ activate  ? help  q quit"])
+
+    def test_filter_status_renders_below_filter_input(self):
+        screen = FakeScreen(size=(7, 30))
+
+        _draw(screen, [], 0, "filter cleared", "work", filtering=True)
+
+        status = next(call for call in screen.calls if call[0] == "addnstr" and "filter cleared" in call[3])
+        self.assertEqual(status[1], 2)
+
+    def test_long_status_truncates_without_exceeding_terminal_width(self):
+        screen = FakeScreen(size=(7, 12))
+
+        _draw(screen, [], 0, "failed: " + "界" * 20, "")
+
+        status = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
+        self.assertLessEqual(sidebar._cell_width(status[3]), 12)
+
     def test_sessions_and_agents_share_minimal_footer_with_ascii_fallback(self):
         removed_hints = ("Tab", "resize", "add", "remove", "kill", "reorder", "K/J", "[ / ]")
         for ascii_mode, expected in (
@@ -1005,15 +1032,29 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertNotIn("work", line)
         self.assertNotIn("new:", line)
 
-    def test_read_key_gets_one_char_without_enter(self):
-        screen = FakeScreen()
+    def test_read_key_shows_confirmation_below_title_and_preserves_footer(self):
+        screen = FakeScreen(size=(5, 20))
+        footer = "footer shortcuts"
+        screen.addnstr(4, 0, footer, 19)
+        screen.calls.clear()
 
         self.assertEqual(_read_key(screen, "kill work? y/N"), ord("y"))
 
-        self.assertEqual(screen.calls[2], ("addnstr", 4, 0, "kill work? y/N", 19))
-        self.assertEqual(screen.calls[4], ("getch",))
+        prompt = next(call for call in screen.calls if call[0] == "addnstr" and "kill work" in call[3])
+        self.assertEqual(prompt[1], 1)
+        self.assertFalse(any(call[0] == "addnstr" and call[1] == 4 for call in screen.calls))
         self.assertEqual(screen.calls[0], ("timeout", -1))
         self.assertEqual(screen.calls[-1], ("timeout", 50))
+
+    def test_read_key_places_confirmation_below_filter_and_truncates_safely(self):
+        screen = FakeScreen(size=(6, 12))
+
+        with patch("mtmux.sidebar._ascii", return_value=False):
+            _read_key(screen, "kill session-with-a-long-name? y/N", filtering=True)
+
+        prompt = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[3].strip())
+        self.assertLessEqual(sidebar._cell_width(prompt[3]), 12)
+        self.assertTrue(prompt[5] & curses.A_BOLD)
 
     def test_add_button_cursor_does_not_replace_selected_session_slot(self):
         screen = FakeScreen(size=(7, 40))
@@ -1871,7 +1912,30 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(selections[-1].target, first)
         self.assertTrue(selections[-1].tracked)
 
-    def test_failed_kill_keeps_sidebar_open_without_replacing_footer(self):
+    def test_cancelled_kill_shows_status_above_unchanged_footer(self):
+        screen = FakeScreen([ord("x"), ord("n"), ord("q")], size=(8, 60))
+        target = Target("local", "work")
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", target, tracked=True)]),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=target),
+            patch("mtmux.sidebar.sessions.kill") as kill,
+        ):
+            run(screen)
+
+        kill.assert_not_called()
+        cancelled = next(call for call in screen.calls if call[0] == "addnstr" and "cancelled" in call[3])
+        self.assertEqual(cancelled[1], 1)
+        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
+        self.assertTrue(footer)
+        self.assertTrue(all(line == "↵ activate  ? help  q quit" for line in footer))
+
+    def test_failed_kill_keeps_sidebar_open_and_shows_error_above_footer(self):
         screen = FakeScreen([ord("x"), ord("y"), ord("q")], size=(8, 60))
         target = Target("local", "work")
 
@@ -1887,7 +1951,11 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        self.assertFalse(any(call[0] == "addnstr" and "kill local:work failed: denied" in call[3] for call in screen.calls))
+        error = next(call for call in screen.calls if call[0] == "addnstr" and "kill local:work failed: denied" in call[3])
+        self.assertEqual(error[1], 1)
+        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
+        self.assertTrue(footer)
+        self.assertTrue(all(line == "↵ activate  ? help  q quit" for line in footer))
 
 
 
