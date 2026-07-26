@@ -47,7 +47,7 @@ class CockpitLayoutTest(unittest.TestCase):
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
-        install_bindings.assert_called_once_with("C-x", "%1")
+        install_bindings.assert_called_once_with("C-x", "%1", "%2")
         self.assertEqual(
             tmux_call.call_args_list,
             [
@@ -81,7 +81,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
         install_right_pane_reset.assert_called_once_with("%1", "%1")
-        install_bindings.assert_called_once_with("C-x", "%1")
+        install_bindings.assert_called_once_with("C-x", "%1", "%1")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
@@ -145,21 +145,24 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_call.assert_not_called()
 
-    def test_bindings_include_sidebar_actions_and_numbered_session_shortcuts(self):
+    def test_bindings_replace_outer_prefix_table_with_mtmux_shortcuts(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
-            cockpit._install_bindings("C-x", "%1")
+            cockpit._install_bindings("C-x", "%1", "%2")
 
         self.assertEqual(
             calls,
             [
+                ("unbind-key", "-a", "-T", "prefix"),
                 ("bind-key", "C-x", "send-prefix"),
+                ("bind-key", "d", "detach-client"),
                 ("bind-key", "h", "kill-pane", "-t", "%1"),
                 ("bind-key", "q", "kill-session", "-t", "mtmux"),
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
                 ("bind-key", "n", "run-shell", f"{cockpit.FOCUS_SIDEBAR} new"),
+                ("bind-key", "?", "respawn-pane", "-k", "-t", "%2", cockpit.help_command("C-x")),
                 *[
                     ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m mtmux switch-session {slot}")
                     for slot in range(1, 10)
@@ -223,6 +226,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x h  hide sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)
         self.assertIn("C-x 1-9  switch session", command)
+        self.assertIn("C-x ?  open help", command)
         self.assertIn("K/J    move session up/down", command)
         self.assertIn("Agent actions", command)
         self.assertIn("h/l    cycle agent ordering", command)

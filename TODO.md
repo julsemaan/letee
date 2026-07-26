@@ -8,10 +8,10 @@
   - [ ] It isn't clear you need to pick somewhere to create the session
   - [ ] When there is a single place to create the session, just skip selecting it and show the session name, and skip the selection menu as a whole
 - [ ] Polish the screen about the reconnection
-- [ ] Disable tmux shortcuts from the outer session
 
 ## Done
 
+- [x] Disable tmux shortcuts from the outer session
 - [x] There are some cases where it takes many clicks on an agent to get it to navigate to the session pane. Either the agent doesn't show as selected or even if selected, it doesn't navigate to the session pane. Need to investigate and fix, maybe there is a single thread and it is blocked on slow connections.
 - [x] When reconnecting, if the active session is not available, it should show some message about it in the right pane instead of showing it frozen
 - [x] Find way to get rid of stale agents

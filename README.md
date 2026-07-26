@@ -48,11 +48,15 @@ make test
 - focus/open Agents: `C-s a`
 - hide sidebar: `C-s h`
 - quit cockpit: `C-s q`
+- show help: `C-s ?`
+- detach cockpit: `C-s d`
+- forward outer prefix to inner session: `C-s C-s`
+- standard outer tmux prefix bindings: disabled
 - outer status: off
 - left pane: `mtmux` sidebar, 40 columns by default
 - right pane: selected local/remote tmux attach client
 
-Inner local and remote sessions keep their normal tmux prefix and remain alive when you switch away.
+Inner local and remote sessions keep their normal tmux prefix and bindings, and remain alive when you switch away. Only mtmux's outer `prefix` key table is restricted.
 
 ## Configuration
 
@@ -118,6 +122,9 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `C-s a`: focus Agents; recreates sidebar if quit
 - `C-s h`: hide sidebar
 - `C-s q`: quit outer mtmux cockpit
+- `C-s ?`: show help in right pane
+- `C-s d`: detach outer mtmux cockpit
+- `C-s C-s`: forward `C-s` to inner session
 - `C-s 1`–`C-s 9`: switch directly to numbered starred target
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
 - `[` / `]`: give Agents/Sessions region more rows for current run
@@ -147,7 +154,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 - right-pane mouse events: forwarded by outer tmux to mouse-aware applications
 - live border dragging: disabled so text selection can cross the sidebar divider without resizing it
 
-Resize the sidebar with standard tmux `C-s C-Left` / `C-s C-Right` bindings. Tmux mouse capture may require holding `Shift` for terminal-native text selection.
+Tmux mouse capture may require holding `Shift` for terminal-native text selection.
 
 ## Clipboard
 
