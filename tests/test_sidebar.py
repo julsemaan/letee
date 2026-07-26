@@ -435,7 +435,22 @@ class AddFlowTest(unittest.TestCase):
     def test_locations_count_availability_not_sessions(self):
         data = snapshot(local=("work",), remotes={"dev": source("ssh", ("chat",), host="dev")})
         entries = sidebar._add_entries("location", "", data, [])
-        self.assertEqual([(entry.label, entry.host) for entry in entries], [(sidebar.socket.gethostname(), ""), ("dev", "dev")])
+        self.assertEqual(
+            [(entry.label, entry.host) for entry in entries],
+            [("Select where to create", None), ("localhost", ""), ("dev", "dev")],
+        )
+
+    def test_location_picker_uses_icons_and_location_colors(self):
+        local = Entry("localhost", "location", host="")
+        remote = Entry("dev", "location", host="dev")
+
+        with patch("mtmux.sidebar._ascii", return_value=False), patch.dict(
+            "mtmux.sidebar._COLOR", {"local": 11, "remote": 22, "add_entry": 33}, clear=True
+        ):
+            self.assertEqual(_entry_lines(local, False, set(), None, 40), ["  ● localhost"])
+            self.assertEqual(_entry_lines(remote, True, set(), None, 40), ["› ◆ dev"])
+            self.assertEqual(_entry_attr(local, False), 11)
+            self.assertEqual(_entry_attr(remote, False), 22)
 
     def test_unavailable_locations_are_disabled_and_empty_state_is_useful(self):
         data = snapshot(local_available=False, remotes={"dev": source("ssh", host="dev", available=False)})
@@ -449,6 +464,27 @@ class AddFlowTest(unittest.TestCase):
         entries = sidebar._add_entries("existing", "", data, [tracked])
         self.assertEqual([entry.target for entry in entries if entry.kind == "session"], [Target("local", "notes"), Target("ssh", "chat", "dev")])
         self.assertFalse(any(entry.kind == "host" for entry in entries))
+
+    def test_existing_uses_localhost_and_marks_each_host_without_untracked_sessions(self):
+        tracked = Target("local", "work")
+        data = snapshot(local=("work",), remotes={"empty": source("ssh", host="empty")})
+
+        entries = sidebar._add_entries("existing", "", data, [tracked])
+
+        self.assertEqual(
+            [(entry.label, entry.kind) for entry in entries],
+            [
+                ("localhost", "header"),
+                ("No sessions", "empty"),
+                ("empty", "header"),
+                ("No sessions", "empty"),
+                ("No existing sessions to add", "hint"),
+            ],
+        )
+        self.assertFalse(sidebar._selectable(entries))
+        empty = next(entry for entry in entries if entry.kind == "empty")
+        self.assertTrue(_entry_attr(empty, False) & curses.A_DIM)
+        self.assertEqual(_entry_lines(empty, False, set(), None, 40), ["    No sessions"])
 
     def test_add_transitions_and_back_hierarchy(self):
         state = SidebarState()
@@ -471,7 +507,7 @@ class AddFlowTest(unittest.TestCase):
         with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"):
             sidebar._draw_name(screen, state)
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
-        self.assertTrue(any("● laptop" in line for line in lines))
+        self.assertTrue(any("● localhost" in line for line in lines))
         self.assertTrue(any(line.startswith(" ❯ ") for line in lines))
         self.assertTrue(any("Letters" in line for line in lines))
         cursor = next(call for call in screen.calls if call[0] == "move")
