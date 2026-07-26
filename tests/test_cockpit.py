@@ -20,8 +20,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("set-window-option", "-t", cockpit.TARGET, "pane-border-style", "fg=terminal"),
                 ("set-window-option", "-t", cockpit.TARGET, "pane-active-border-style", "fg=terminal"),
                 ("set-window-option", "-t", cockpit.TARGET, "pane-border-lines", "single"),
-                ("select-pane", "-t", "%1"),
-                ("select-layout", "-t", cockpit.TARGET, "main-vertical"),
+                ("resize-pane", "-t", "%1", "-x", "52"),
             ],
         )
 
@@ -101,7 +100,7 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_layout_hooks("%1", 52)
 
-        command = "set-window-option -t mtmux:cockpit main-pane-width 52 ; select-pane -t %1 ; select-layout -t mtmux:cockpit main-vertical"
+        command = "run-shell -b 'sleep 0.1; tmux -L mtmux resize-pane -t %1 -x 52'"
         self.assertEqual(
             calls,
             [
