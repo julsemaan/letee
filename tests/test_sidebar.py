@@ -1205,6 +1205,23 @@ class SidebarDrawTest(unittest.TestCase):
 
             self.assertEqual(draw.call_args_list[-1].args[15], expected)
 
+    def test_up_at_top_of_add_menu_does_not_select_hidden_add_button(self):
+        screen = FakeScreen([ord("a"), curses.KEY_UP, ord("q")])
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
+        ):
+            run(screen)
+
+        add_draws = [call for call in draw.call_args_list if call.args[11]]
+        self.assertTrue(add_draws)
+        self.assertFalse(any(call.kwargs["add_button_selected"] for call in add_draws))
+
     def test_run_sets_timeout_and_refreshes_on_timeout(self):
         screen = FakeScreen([-1, ord("q")])
         calls = []

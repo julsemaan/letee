@@ -314,6 +314,7 @@ def _open_add(state: SidebarState, view: Literal["choice", "existing"] = "choice
     state.creation_text = ""
     state.selected_index = 0
     state.selected_target = None
+    state.add_button_selected = False
 
 
 def _start_new(state: SidebarState, snapshot: SessionSnapshot) -> None:
@@ -1604,7 +1605,7 @@ def run(stdscr: curses.window) -> None:
                     state.selected_tracked = entries[state.selected_index].tracked
             elif key in (curses.KEY_UP, ord("k")) and selectable:
                 state.scroll_offset = None
-                if state.selected_index == selectable[0] and not state.add_button_selected:
+                if state.add_view is None and state.selected_index == selectable[0] and not state.add_button_selected:
                     state.add_button_selected = True
                 elif state.add_button_selected:
                     state.add_button_selected = False
