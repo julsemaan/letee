@@ -149,8 +149,20 @@ def _unavailable_command(target: Target | None = None) -> str:
 
 
 def _reconnecting_command(target: Target) -> str:
-    text = f"Reconnecting to {target.format()}…\n"
-    return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
+    reset, cyan, dim = "\033[0m", "\033[38;5;81m", "\033[2m"
+    ascii_mode = os.environ.get("MTMUX_ASCII") == "1"
+    banner = "+-- Connection interrupted --+" if ascii_mode else "╭─ Connection interrupted ─╮"
+    underline = "+----------------------------+" if ascii_mode else "╰──────────────────────────╯"
+    indent = "    "
+    text = f"\n{indent}{cyan}{banner}\n{indent}{underline}{reset}\n\n{indent}{dim}Session{reset}  {target.session}\n{indent}{dim}Host{reset}     {target.host or 'local'}\n\n"
+    frames = ("|", "/", "-", "\\") if ascii_mode else ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    dots = (".  ", ".. ", "...") if ascii_mode else ("·  ", "·· ", "···", " ··", "  ·")
+    colors = (45, 51, 87, 123, 159, 123, 87, 51)
+    states = " ".join(shlex.quote(f"{color}:{frame}:{dots[index % len(dots)]}") for index, (color, frame) in enumerate(zip(colors, frames)))
+    save_cursor = shlex.quote("\0337")
+    spinner = shlex.quote(f"\0338\033[2K{indent}\033[38;5;%sm%s\033[0m Reconnecting%s")
+    animate = 'color=${state%%:*}; rest=${state#*:}; frame=${rest%%:*}; dots=${rest#*:}'
+    return f"printf %s {shlex.quote(text)}; printf %s {save_cursor}; while :; do for state in {states}; do {animate}; printf {spinner} \"$color\" \"$frame\" \"$dots\"; sleep 0.1; done; done"
 
 
 def _install_right_pane_reset(left: str, right: str) -> None:
