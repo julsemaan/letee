@@ -466,8 +466,9 @@ class AddFlowTest(unittest.TestCase):
         with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"):
             sidebar._draw_name(screen, state)
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
-        self.assertTrue(any(line.startswith(" On:") and "laptop" in line for line in lines))
-        self.assertTrue(any(line.startswith(" Name:") for line in lines))
+        self.assertTrue(any("● laptop" in line for line in lines))
+        self.assertTrue(any(line.startswith(" ❯ ") for line in lines))
+        self.assertTrue(any("Letters" in line for line in lines))
         cursor = next(call for call in screen.calls if call[0] == "move")
         self.assertLess(cursor[2], 16)
         footer = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 5)
@@ -479,8 +480,20 @@ class AddFlowTest(unittest.TestCase):
 
         sidebar._draw_name(screen, state)
 
-        feedback = next(call for call in screen.calls if call[0] == "addnstr" and "Invalid session name" in call[3])
+        feedback = next(call for call in screen.calls if call[0] == "addnstr" and "✕ Invalid session name" in call[3])
         self.assertEqual(feedback[1], 4)
+
+    def test_name_screen_has_ascii_fallback(self):
+        screen = FakeScreen(size=(6, 30))
+        state = SidebarState(add_view="name", creation_host="dev")
+
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            sidebar._draw_name(screen, state)
+
+        lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
+        self.assertTrue(any("* dev" in line for line in lines))
+        self.assertTrue(any(line.startswith(" > ") for line in lines))
+        self.assertTrue(any("Enter create" in line for line in lines))
 
 
 class SidebarStateTest(unittest.TestCase):
