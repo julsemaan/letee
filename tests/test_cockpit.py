@@ -100,7 +100,7 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_layout_hooks("%1", 52)
 
-        command = "run-shell -b 'sleep 0.1; tmux -L mtmux resize-pane -t %1 -x 52'"
+        command = "run-shell -b 'for delay in 0.1 0.2 0.4; do sleep \"$delay\"; tmux -L mtmux resize-pane -t %1 -x 52 2>/dev/null && break; done; true'"
         self.assertEqual(
             calls,
             [

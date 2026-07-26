@@ -100,7 +100,7 @@ def _fix_layout(left: str, sidebar_width: int) -> None:
 
 
 def _install_layout_hooks(left: str, sidebar_width: int) -> None:
-    resize = f"sleep 0.1; tmux -L {tmux.SOCKET} resize-pane -t {left} -x {sidebar_width}"
+    resize = f'for delay in 0.1 0.2 0.4; do sleep "$delay"; tmux -L {tmux.SOCKET} resize-pane -t {left} -x {sidebar_width} 2>/dev/null && break; done; true'
     command = f"run-shell -b {shlex.quote(resize)}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "client-attached", command)
     tmux.tmux("set-hook", "-t", tmux.SESSION, "client-resized", command)
