@@ -6,6 +6,7 @@
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
 - [ ] In the add menu, don't show any session counts in the header
 - [ ] When adding an existing session, if a host has no sessions, show some greyed message under it that says there are no sessions
+- [ ] When adding an existing session, use localhost instead of the hostname for local sessions
 
 ## Done
 
