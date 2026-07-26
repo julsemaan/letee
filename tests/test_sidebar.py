@@ -889,8 +889,30 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(faded & curses.A_DIM)
         self.assertTrue(faded & curses.A_BOLD)
 
+    def test_layout_maintainer_repairs_until_stopped(self):
+        waits = []
+
+        class StopAfterOneRepair:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, timeout):
+                waits.append(timeout)
+                self.stopped = True
+
+        with patch.object(sidebar.cockpit, "repair_layout") as repair_layout:
+            sidebar._maintain_sidebar(StopAfterOneRepair(), "%1")
+
+        repair_layout.assert_called_once_with("%1")
+        self.assertEqual(waits, [sidebar.LAYOUT_REPAIR_INTERVAL])
+
     def test_main_restarts_after_keyboard_interrupt(self):
-        with patch("mtmux.sidebar.curses.wrapper", side_effect=[KeyboardInterrupt, None]) as wrapper:
+        with (
+            patch.dict(sidebar.os.environ, {}, clear=True),
+            patch("mtmux.sidebar.curses.wrapper", side_effect=[KeyboardInterrupt, None]) as wrapper,
+        ):
             self.assertEqual(main(), 0)
 
         self.assertEqual(wrapper.call_count, 2)

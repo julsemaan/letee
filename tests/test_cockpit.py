@@ -29,6 +29,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                ("set-window-option", "-t", cockpit.TARGET, cockpit.SIDEBAR_WIDTH_OPTION, "52"),
                 ("set-window-option", "-t", cockpit.TARGET, "main-pane-width", "52"),
                 ("set-window-option", "-u", "-t", cockpit.TARGET, "window-style"),
                 ("set-window-option", "-u", "-t", cockpit.TARGET, "window-active-style"),
@@ -109,19 +110,46 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
-    def test_layout_hooks_repin_sidebar_after_attach_or_resize(self):
+    def test_layout_hook_repins_sidebar_after_window_resize(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_layout_hooks("%1", 52)
 
-        command = "run-shell -b 'for delay in 0.1 0.2 0.4; do sleep \"$delay\"; tmux -L mtmux resize-pane -t %1 -x 52 2>/dev/null && break; done; true'"
         self.assertEqual(
             calls,
             [
-                ("set-hook", "-t", "mtmux", "client-attached", command),
-                ("set-hook", "-t", "mtmux", "client-resized", command),
+                ("set-hook", "-u", "-t", "mtmux", "client-attached"),
+                ("set-hook", "-u", "-t", "mtmux", "client-resized"),
+                ("set-hook", "-w", "-t", cockpit.TARGET, "window-resized", "resize-pane -t %1 -x 52"),
             ],
+        )
+
+    def test_repair_layout_skips_healthy_layout(self):
+        with (
+            patch.object(cockpit.tmux, "out", return_value="52:52:100:100:") as tmux_out,
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.repair_layout("%1")
+
+        tmux_out.assert_called_once_with(
+            "display-message", "-p", "-t", "%1",
+            "#{pane_width}:#{@mtmux_sidebar_width}:#{window_width}:#{client_width}:#{window_offset_x}",
+            check=False,
+        )
+        tmux_call.assert_not_called()
+
+    def test_repair_layout_matches_window_to_client_and_repins_sidebar(self):
+        with (
+            patch.object(cockpit.tmux, "out", return_value="10:52:160:100:60"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.repair_layout("%1")
+
+        tmux_call.assert_called_once_with(
+            "run-shell", "-C", "-t", "%1",
+            "resize-window -a -t mtmux:cockpit ; resize-pane -t %1 -x '#{@mtmux_sidebar_width}'",
+            check=False,
         )
 
     def test_enable_mouse_sets_runtime_option_without_live_border_dragging(self):
