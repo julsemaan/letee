@@ -583,6 +583,9 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             _set_status(state, f"added {effect.target.session}", status_timeout)
         elif effect.kind == "kill" and effect.target:
             sessions.kill(effect.target)
+            if effect.target in state.favorites:
+                state.favorites.remove(effect.target)
+                save_sessions(state.favorites)
             poller.discard(effect.target)
             poller.refresh()
             state.selected_target = effect.target

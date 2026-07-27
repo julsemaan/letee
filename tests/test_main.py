@@ -56,6 +56,19 @@ class MainTest(unittest.TestCase):
                     main(["switch-session", slot])
                 switch.assert_not_called()
 
+    def test_kill_removes_target_from_persisted_sessions(self):
+        target = Target("local", "work")
+        other = Target("ssh", "other", "dev")
+        with (
+            patch("mtmux.__main__.sessions.kill") as kill,
+            patch("mtmux.__main__.load_sessions", return_value=[target, other]),
+            patch("mtmux.__main__.save_sessions") as save,
+        ):
+            main(["kill", target.format()])
+
+        kill.assert_called_once_with(target)
+        save.assert_called_once_with([other])
+
     def test_create_ssh_rejects_option_like_hosts(self):
         for host in ("-V", "-F", "--help"):
             with self.subTest(host=host):

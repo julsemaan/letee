@@ -691,14 +691,20 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.pending_selection, target)
         poller.refresh.assert_called_once_with()
 
-    def test_successful_kill_discards_target_before_refresh(self):
+    def test_successful_kill_removes_target_before_refresh(self):
         target = Target("ssh", "work", "dev")
-        state = SidebarState(selected_target=target)
+        other = Target("local", "other")
+        state = SidebarState(selected_target=target, favorites=[target, other])
         poller = unittest.mock.Mock()
 
-        with patch("mtmux.sidebar.sessions.kill"):
+        with (
+            patch("mtmux.sidebar.sessions.kill"),
+            patch("mtmux.sidebar.save_sessions") as save,
+        ):
             _execute(Effect("kill", target=target), state, poller, 5)
 
+        self.assertEqual(state.favorites, [other])
+        save.assert_called_once_with([other])
         poller.assert_has_calls([unittest.mock.call.discard(target), unittest.mock.call.refresh()])
         self.assertEqual(state.selected_target, target)
         self.assertEqual(state.status, "killed ssh:dev:work")
