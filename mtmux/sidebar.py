@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from . import cockpit, sessions
-from .discovery import AgentEntry, DiscoveryPoller, SessionSnapshot
+from .discovery import DiscoveryPoller, SessionSnapshot
 from .config import load_hosts, load_sessions, load_status_timeout, save_sessions
 from .names import PaneTarget, Target, validate_name
 
@@ -781,7 +781,9 @@ def _mouse_mask() -> None:
     # ponytail: force SGR any-event tracking (mode 1003) on terminal fd.
     # Some terminals need this raw escape in addition to REPORT_MOUSE_POSITION.
     try:
-        import os as _os, sys as _sys
+        import os as _os
+        import sys as _sys
+
         _os.write(_sys.stdout.fileno(), b"\033[?1003h")
     except Exception:
         pass
@@ -790,7 +792,9 @@ def _mouse_mask() -> None:
 def _mouse_cleanup() -> None:
     """Disable SGR any-event tracking (mode 1003) set by _mouse_mask."""
     try:
-        import os as _os, sys as _sys
+        import os as _os
+        import sys as _sys
+
         _os.write(_sys.stdout.fileno(), b"\033[?1003l")
     except Exception:
         pass
@@ -1080,7 +1084,6 @@ def _draw_entries(
             entry, selected_entry and not dimmed and selection_pointer_visible, bell_targets, current_target, w,
             creation_host, creation_text, now, agent_alerts, spinner_frame, agent_ordering,
         )
-        focused_entry = selected_entry and entry.kind in ("agent", "host") and not dimmed
         # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
         is_drag_source = drag_source_entry is not None and idx == drag_source_entry
         is_drag_target = drag_target_entry is not None and idx == drag_target_entry

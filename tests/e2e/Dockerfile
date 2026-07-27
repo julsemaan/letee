@@ -1,11 +1,11 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux \
+RUN apt-get update && apt-get install -y --no-install-recommends tmux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . /app
-RUN pip install -e . --break-system-packages
+COPY pyproject.toml README.md LICENSE ./
+COPY mtmux/ mtmux/
+RUN pip install --no-cache-dir .
 
 CMD ["sleep", "infinity"]

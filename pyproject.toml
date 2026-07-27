@@ -1,8 +1,59 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mtmux"
 version = "0.1.0"
 description = "Outer tmux cockpit for local and SSH tmux sessions"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
+authors = [{ name = "Julien Semaan" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Terminals :: Terminal Emulators/X Terminals",
+]
+
+[project.urls]
+Homepage = "https://github.com/julsemaan/mtmux"
+Repository = "https://github.com/julsemaan/mtmux"
+Issues = "https://github.com/julsemaan/mtmux/issues"
 
 [project.scripts]
 mtmux = "mtmux.__main__:run_cli"
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "coverage[toml]",
+    "ruff",
+    "twine",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["mtmux"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py311"
+exclude = ["tests/e2e"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_sidebar.py" = ["E402"]

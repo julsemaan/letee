@@ -20,10 +20,18 @@ htmlcov/
 .tox/
 .nox/
 
-# Virtual environments
+# Virtual environments and secrets
 .venv/
 venv/
 env/
+.env*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
 
 # Editors and operating systems
 .idea/
