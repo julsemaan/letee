@@ -6,6 +6,7 @@
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
 - [ ] Need Claude Code support for astatus
 - [ ] astatus needs proper tags
+- [ ] Add the ability to have a script to start the session (for tmuxifier)
 
 ## Done
 
