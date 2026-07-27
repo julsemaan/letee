@@ -35,7 +35,11 @@ That opens an outer tmux workspace with the mtmux sidebar on the left and your s
 
 ```sh
 make dev-install
-make test
+make test          # unit tests
+make lint          # Ruff
+make coverage      # branch coverage (85% minimum)
+make build-check   # build distributions and validate metadata
+make check         # all quality gates
 ```
 
 ## How it works
@@ -171,6 +175,10 @@ mtmux cockpit
 ```
 
 It reuses valid cockpit, repairs broken window, and respawns missing sidebar.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
 
 Missing cockpit for switch/create prints:
 

@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import Mock, patch
 
 from mtmux.discovery import (
-    AgentEntry,
     DiscoveryPoller,
     REMOTE_COMMAND,
     SessionSnapshot,
