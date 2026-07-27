@@ -2,7 +2,7 @@
 - [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [ ] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
-- [ ] Allow having multiple mtmux cockpit
+- [ ] Allow having multiple mtmux
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
 - [ ] Need Claude Code support for astatus
 - [ ] Need documentation on installing astatus for agent support
@@ -26,7 +26,7 @@
 - [x] Find way to get rid of stale agents
 - [x] Some prefix based shortcuts like
   - [x] prefix+h to hide
-  - [x] prefix+q to quit mtmux cockpit
+  - [x] prefix+q to quit mtmux
   - [x] prefix+a to get to agents
   - [x] prefix+s always gets to sessions instead of wherever you were last in the left pane
   - [x] Get rid of 'tab' to move around between agents/sessions and use prefix

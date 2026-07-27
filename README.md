@@ -30,7 +30,7 @@ That opens an outer tmux workspace with the mtmux sidebar on the left and your s
 
 ## How it works
 
-`mtmux cockpit` creates or attaches to a dedicated outer tmux server. That outer layer owns only the layout:
+`mtmux` creates or attaches to a dedicated outer tmux server. That outer layer owns only the layout:
 
 - outer prefix: `C-s`
 - focus/open Sessions: `C-s s`
@@ -62,11 +62,11 @@ persistent_ssh = true
 
 ### Prefix
 
-`prefix` accepts one non-empty, printable tmux key token without whitespace. `sidebar_width` sets left pane width in columns. `status_timeout` controls how many seconds sidebar feedback remains visible. Both numeric settings must be positive integers. Restart sidebar by rerunning `mtmux cockpit` after changing these values.
+`prefix` accepts one non-empty, printable tmux key token without whitespace. `sidebar_width` sets left pane width in columns. `status_timeout` controls how many seconds sidebar feedback remains visible. Both numeric settings must be positive integers. Restart sidebar by rerunning `mtmux` after changing these values.
 
 `C-s` normally sends XOFF when terminal `IXON` flow control is enabled. Attached tmux disables flow control on outer tty, so outer prefix works without global `stty` changes. Readline, Emacs, or Vim `C-s` commands require `C-s C-s` to forward literal `C-s`; inner tty may still treat it as XOFF, in which case `C-q` resumes output.
 
-To restore old prefix, set `prefix = "C-g"` and rerun `mtmux cockpit`.
+To restore old prefix, set `prefix = "C-g"` and rerun `mtmux`.
 
 ### Remote hosts
 
@@ -111,9 +111,9 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `C-s +`: focus Sessions and open Add session menu
 - `C-s a`: focus Agents; recreates sidebar if quit
 - `C-s h`: hide sidebar
-- `C-s q`: quit outer mtmux cockpit
+- `C-s q`: quit outer mtmux
 - `C-s ?`: show help in right pane
-- `C-s d`: detach outer mtmux cockpit
+- `C-s d`: detach outer mtmux
 - `C-s C-s`: forward `C-s` to inner session
 - `C-s 1`–`C-s 9`: switch directly to numbered starred target
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
@@ -179,7 +179,7 @@ Native tmux copy mode forwards copied text through nested sessions using OSC 52.
 Press `C-s s` to reopen Sessions, `C-s a` to reopen Agents, or rerun:
 
 ```sh
-mtmux cockpit
+mtmux
 ```
 
 It reuses valid cockpit, repairs broken window, and respawns missing sidebar.
@@ -202,5 +202,5 @@ Licensed under the [Apache License 2.0](LICENSE).
 Missing cockpit for switch/create prints:
 
 ```text
-No valid mtmux cockpit. Run: mtmux cockpit
+No valid mtmux. Run: mtmux
 ```

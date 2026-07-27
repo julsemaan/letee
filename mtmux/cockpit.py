@@ -17,7 +17,7 @@ def _truecolor_enabled() -> bool:
     return colorterm in ("truecolor", "24bit")
 
 def help_command(prefix: str) -> str:
-    text = f"""mtmux cockpit
+    text = f"""mtmux
 
 Navigation
   {prefix} a  focus/open Agents
@@ -66,7 +66,7 @@ RIGHT_PANE_OPTION = "@mtmux_right_pane"
 CURRENT_TARGET_OPTION = "@mtmux_current_target"
 CURRENT_AGENT_OPTION = "@mtmux_current_agent"
 BELL_TARGET_OPTION = "@mtmux_bell_target"
-NO_COCKPIT = "No valid mtmux cockpit. Run: mtmux cockpit"
+NO_COCKPIT = "No valid mtmux. Run: mtmux"
 
 
 def _option(name: str) -> str:
@@ -254,7 +254,7 @@ def cockpit() -> int:
     ensure_config()
     width = shutil.get_terminal_size((80, 24)).columns
     if width < 90:
-        print("Terminal too narrow for mtmux cockpit: need at least 90 columns.", file=sys.stderr)
+        print("Terminal too narrow for mtmux: need at least 90 columns.", file=sys.stderr)
         return 2
     ensure_cockpit()
     return _attach()

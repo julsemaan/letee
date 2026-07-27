@@ -374,7 +374,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
     def test_switch_rejects_missing_cockpit(self):
         with patch.object(cockpit, "right_pane", return_value=None):
-            with self.assertRaisesRegex(SystemExit, "No valid mtmux cockpit"):
+            with self.assertRaisesRegex(SystemExit, "No valid mtmux"):
                 cockpit.switch(cockpit.Target("local", "work"), "attach work")
 
     def test_show_reconnecting_displays_remote_session_details_and_unicode_spinner(self):

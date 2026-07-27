@@ -77,7 +77,7 @@ class TmuxTestClient:
         cols: int = 90,
         rows: int = 24,
     ) -> None:
-        """Spawn mtmux cockpit in a pseudo-terminal via pexpect."""
+        """Spawn mtmux in a pseudo-terminal via pexpect."""
         if self._pexpect is not None:
             self.stop_cockpit()
 
