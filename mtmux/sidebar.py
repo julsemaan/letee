@@ -1405,20 +1405,33 @@ def run(stdscr: curses.window) -> None:
                 state.add_button_selected = False
                 continue
             if state.add_view == "name":
-                if key in (27, 3):
-                    _add_back(state, poller.snapshot)
-                    curses.curs_set(0)
-                    rebuild()
-                    continue
-                try:
-                    effect = _creation_key(state, key, poller.snapshot.sessions)
-                except SystemExit as error:
-                    show_status(str(error))
-                    continue
-                if effect:
-                    curses.curs_set(0)
-                    _execute(effect, state, poller, status_timeout)
-                    rebuild()
+                while state.add_view == "name":
+                    if key in (curses.KEY_F6, curses.KEY_F7):
+                        state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
+                        state.add_button_selected = False
+                    elif key in (27, 3):
+                        _add_back(state, poller.snapshot)
+                        curses.curs_set(0)
+                        rebuild()
+                        break
+                    else:
+                        try:
+                            effect = _creation_key(state, key, poller.snapshot.sessions)
+                        except SystemExit as error:
+                            show_status(str(error))
+                        else:
+                            if effect:
+                                curses.curs_set(0)
+                                _execute(effect, state, poller, status_timeout)
+                                rebuild()
+                                break
+                    _draw_name(stdscr, state, dimmed)
+                    try:
+                        key = stdscr.getch()
+                    except KeyboardInterrupt:
+                        key = 3
+                    if key == -1:
+                        break
                 continue
             if key == curses.KEY_MOUSE:
                 try:

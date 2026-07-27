@@ -1308,6 +1308,25 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(add_draws)
         self.assertFalse(any(call.kwargs["add_button_selected"] for call in add_draws))
 
+    def test_session_name_typing_handles_queued_keys_without_background_polling(self):
+        screen = FakeScreen([ord("a"), curses.KEY_ENTER, *map(ord, "fast"), 27, ord("q")])
+        poller = unittest.mock.Mock()
+        poller.snapshot = snapshot()
+        poller.tick.return_value = False
+
+        with (
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._current_target", return_value=None) as current_target,
+            patch("mtmux.sidebar._pane_active", return_value=True) as pane_active,
+        ):
+            run(screen)
+
+        self.assertTrue(any(call[0] == "addnstr" and "fast" in call[3] for call in screen.calls))
+        self.assertEqual(current_target.call_count, 5)
+        self.assertEqual(pane_active.call_count, 4)
+
     def test_run_sets_timeout_and_refreshes_on_timeout(self):
         screen = FakeScreen([-1, ord("q")])
         calls = []
