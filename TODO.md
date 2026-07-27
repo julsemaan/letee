@@ -4,6 +4,9 @@
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux cockpit
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
+- [ ] Need Claude Code support for astatus
+- [ ] Need documentation on installing astatus for agent support
+
 ## Done
 
 - [x] When killing a session, show confirmation near the top without replacing footer shortcuts
