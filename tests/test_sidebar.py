@@ -29,6 +29,21 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev")})))
         self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev", available=False)})))
 
+    def test_active_missing_session_shows_missing_then_restores_session(self):
+        target = Target("local", "work")
+
+        with (
+            patch.object(sidebar.cockpit, "show_missing") as show_missing,
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            pending = sidebar._sync_active_session(target, snapshot(local=("other",)), None)
+            restored = sidebar._sync_active_session(target, snapshot(local=("work",)), pending)
+
+        show_missing.assert_called_once_with(target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        self.assertEqual(pending, target)
+        self.assertIsNone(restored)
+
     def test_active_session_shows_reconnecting_then_restores_session(self):
         target = Target("ssh", "work", "dev")
 
@@ -168,14 +183,24 @@ class SidebarViewModeTest(unittest.TestCase):
         self.assertEqual(entry.status, "reconnecting…")
         self.assertIn("reconnecting…", _entry_lines(entry, False, set(), None, 40)[1])
 
-    def test_tracked_remote_favorite_stays_unavailable_when_session_is_missing(self):
-        target = Target("ssh", "work", "dev")
+    def test_tracked_reachable_sessions_show_missing_when_absent(self):
+        targets = (Target("local", "work"), Target("ssh", "work", "dev"))
+        data = snapshot(local=("other",), remotes={"dev": source("ssh", ("other",), host="dev")})
 
-        entry = next(entry for entry in _entries("", snapshot(remotes={"dev": source("ssh", ("other",), host="dev")}), [target]) if entry.target == target)
+        entries = [next(entry for entry in _entries("", data, [target]) if entry.target == target) for target in targets]
 
-        self.assertTrue(entry.unavailable_favorite)
+        self.assertTrue(all(entry.unavailable_favorite for entry in entries))
+        self.assertEqual([entry.status for entry in entries], ["missing", "missing"])
+        self.assertTrue(all("· ⚠ missing" in _entry_lines(entry, False, set(), None, 40)[1] for entry in entries))
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            self.assertTrue(all("| missing" in _entry_lines(entry, False, set(), None, 40)[1] for entry in entries))
+
+    def test_tracked_unknown_remote_host_stays_unavailable(self):
+        target = Target("ssh", "work", "unknown")
+
+        entry = next(entry for entry in _entries("", snapshot(), [target]) if entry.target == target)
+
         self.assertEqual(entry.status, "unavailable")
-        self.assertIn("unavailable", _entry_lines(entry, False, set(), None, 40)[1])
 
     def test_add_picker_shows_reconnecting_with_connection_error(self):
         failed = source("ssh", host="dev", available=False, error="connection refused")

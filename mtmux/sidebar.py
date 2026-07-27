@@ -171,15 +171,16 @@ def _pane_active() -> bool:
 def _target_status(target: Target, snapshot: SessionSnapshot) -> str | None:
     if target in snapshot.sessions:
         return None
-    if target.kind == "ssh":
-        if target.host not in snapshot.remotes:
-            return "unavailable"
-        source = snapshot.remotes[target.host]
-        if source is None:
-            return "connecting…"
-        if not source.available:
-            return "reconnecting…"
-    return "unavailable"
+    if target.kind == "local":
+        return "missing" if snapshot.local.available else "unavailable"
+    if target.host not in snapshot.remotes:
+        return "unavailable"
+    source = snapshot.remotes[target.host]
+    if source is None:
+        return "connecting…"
+    if not source.available:
+        return "reconnecting…"
+    return "missing"
 
 
 def _should_show_unavailable(target: Target, snapshot: SessionSnapshot) -> bool:
@@ -199,6 +200,9 @@ def _sync_active_session(
     if status is None and interrupted == target:
         cockpit.switch(target, sessions.attach_command(target))
         return None
+    if status == "missing" and interrupted != target:
+        cockpit.show_missing(target)
+        return target
     if status == "unavailable" and interrupted != target:
         cockpit.show_unavailable(target)
         return target
@@ -971,7 +975,10 @@ def _entry_lines(
             first = prefix + label + bell
             host_prefix = "@"
             status = (entry.status or "unavailable").replace("…", "...") if _ascii() else (entry.status or "unavailable")
-            suffix = f" {status}" if entry.unavailable_favorite else ""
+            if status == "missing" and not _ascii():
+                status = "⚠ missing"
+            separator = " | " if _ascii() else " · "
+            suffix = f"{separator}{status}" if entry.unavailable_favorite else ""
             branch = "`-" if _ascii() else "└─"
             meta_prefix = f"  {branch} "
             host = _truncate_cells(entry.host or "", max(0, width - _cell_width(meta_prefix) - _cell_width(host_prefix) - _cell_width(suffix)))
