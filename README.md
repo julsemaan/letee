@@ -24,6 +24,7 @@ Requires Python 3.11+, tmux, and OpenSSH. Automatic coding-agent discovery addit
 
 ```sh
 pip install mtmux
+mtmux
 ```
 
 That opens an outer tmux workspace with the mtmux sidebar on the left and your selected session on the right. Press `Enter` on a session to step into it; press `q` to close the sidebar, then `C-s s` to reopen it on Sessions.
