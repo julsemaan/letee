@@ -412,6 +412,19 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("⠋", command)
         self.assertNotIn("╭", command)
 
+    def test_show_missing_guides_session_recreation(self):
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_missing(cockpit.Target("ssh", "work", "dev"))
+
+        command = tmux_call.call_args.args
+        self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
+        self.assertIn("Session ssh:dev:work is missing.", command[4])
+        self.assertIn("Press Enter", command[4])
+        self.assertIn("recreate", command[4])
+
     def test_show_unavailable_replaces_frozen_session_with_message(self):
         with (
             patch.object(cockpit, "right_pane", return_value="%2"),

@@ -161,6 +161,11 @@ def _unavailable_command(target: Target | None = None) -> str:
     return f"printf %s {shlex.quote(text)}; exec sh"
 
 
+def _missing_command(target: Target) -> str:
+    text = f"Session {target.format()} is missing.\n\nSelect it in the sidebar. Press Enter to recreate it.\n"
+    return f"printf %s {shlex.quote(text)}; exec sh"
+
+
 def _reconnecting_command(target: Target) -> str:
     reset, cyan, dim = "\033[0m", "\033[38;5;81m", "\033[2m"
     ascii_mode = os.environ.get("MTMUX_ASCII") == "1"
@@ -302,6 +307,10 @@ def show_help() -> None:
 
 def show_unavailable(target: Target) -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _unavailable_command(target))
+
+
+def show_missing(target: Target) -> None:
+    tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _missing_command(target))
 
 
 def show_reconnecting(target: Target) -> None:

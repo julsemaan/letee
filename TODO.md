@@ -3,16 +3,16 @@
 - [ ] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux
-- [ ] Mark sessions as something else than unavailable when they are not present on the target host
 - [ ] Need Claude Code support for astatus
 - [ ] astatus needs proper tags
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Typing in the new session name field is very sluggish. Have to type letters one by one slowly
 - [ ] Sometimes, I have to click multiple times to get an action to be done. Hard to reproduce consistently but I **think** it may be related to when a pane is idle and I click in it. Again, not happening every time.
-- [x] When killing a session, remove it from the list too
 
 ## Done
 
+- [x] Mark sessions as something else than unavailable when they are not present on the target host
+- [x] When killing a session, remove it from the list too
 - [x] Need documentation on installing astatus for agent support
 - [x] When killing a session, show confirmation near the top without replacing footer shortcuts
 - [x] Agent sessions in priority ordering should have latest activity at the top for idle sessions
