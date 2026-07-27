@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from . import cockpit, sessions
-from .config import ensure_config, load_sessions
+from .config import ensure_config, load_sessions, save_sessions
 from .discovery import discover
 from .names import Target, parse_target
 
@@ -81,7 +81,12 @@ def main(argv: list[str] | None = None) -> int:
         cockpit.switch(target, sessions.attach_command(target))
         return 0
     if args.command == "kill":
-        sessions.kill(parse_target(args.target))
+        target = parse_target(args.target)
+        sessions.kill(target)
+        favorites = load_sessions()
+        if target in favorites:
+            favorites.remove(target)
+            save_sessions(favorites)
         return 0
     if args.command == "create":
         target = Target("local", args.session) if args.create_kind == "local" else Target("ssh", args.session, args.host)
