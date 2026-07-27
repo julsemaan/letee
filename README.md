@@ -23,24 +23,10 @@ Star important sessions, see at a glance which ones need attention, and jump bet
 Requires Python 3.11+, tmux, and OpenSSH. Automatic coding-agent discovery additionally requires [astatus](https://github.com/julsemaan/astatus) locally and on configured remote hosts.
 
 ```sh
-git clone https://github.com/julsemaan/mtmux.git
-cd mtmux
-pip install -e .
-mtmux cockpit
+pip install mtmux
 ```
 
 That opens an outer tmux workspace with the mtmux sidebar on the left and your selected session on the right. Press `Enter` on a session to step into it; press `q` to close the sidebar, then `C-s s` to reopen it on Sessions.
-
-## Development
-
-```sh
-make dev-install
-make test          # unit tests
-make lint          # Ruff
-make coverage      # branch coverage (85% minimum)
-make build-check   # build distributions and validate metadata
-make check         # all quality gates
-```
 
 ## How it works
 
@@ -146,7 +132,29 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 
 Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/mtmux/stars`. Only tracked sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only labels and ellipses.
 
+## Agent discovery
+
+Mtmux discovers coding agents by reading [astatus](https://github.com/julsemaan/astatus) JSON status files. The astatus plugin for your coding agent is **required** for detection — install it in each agent you want mtmux to discover. See the [astatus documentation](https://github.com/julsemaan/astatus) for full setup instructions and configuration.
+
+### Getting started with coding agents
+
+Agent discovery requires the astatus plugin for your coding agent. The plugin emits JSON status files that mtmux reads to show agent state in the sidebar.
+
+#### Pi (pi-coding-agent)
+
+```bash
+pi install git:github.com/julsemaan/astatus
+```
+
+Then run `/reload` or restart pi.
+
+Run `mtmux` — agents appear automatically in the Agents sidebar (`C-s a`).
+
+### How agent discovery works
+
 Agent records are read from `$AGENT_STATUS_DIR`, `$XDG_STATE_HOME/agent-status`, or `~/.local/state/agent-status`, in that order. Local and remote running agents updated within 60 seconds are correlated by exact tmux socket and pane ID. Selecting agent navigates to exact server, window, and pane; active agent name and location remain orange independently of keyboard selection. Working agents show `for <duration>`; other states show no duration. Working durations prefer `task.status_timestamp` and fall back to `runtime.updated_at`; unusable optional timestamps omit duration. Each agent row starts with a semantic status icon; working agents use an animated Braille spinner. Focused selection replaces that icon with `›`, and moving focus away restores it. Status icon and text share semantic color; selection cursor stays orange. `MTMUX_ASCII=1` uses ASCII icons, spinner frames, and `>` cursor. Attention states remain bold and idle/canceled remain dim without color. Agents are discovered automatically, but only agents in tracked sessions appear. Agents cannot be added, removed, reordered, or killed as favorites.
+
+### Agent alerts
 
 When a tracked agent changes from `working` to `idle`, `completed`, `input-required`, `auth-required`, `failed`, `rejected`, or `canceled`, sidebar beeps once and marks that exact pane/agent with `🔔` (`BELL` in ASCII mode). Initial discovery does not alert. Marker survives later state changes until exact pane opens, is already active during discovery, disappears from discovery, or sidebar restarts.
 
@@ -175,6 +183,17 @@ mtmux cockpit
 ```
 
 It reuses valid cockpit, repairs broken window, and respawns missing sidebar.
+
+## Development
+
+```sh
+make dev-install
+make test          # unit tests
+make lint          # Ruff
+make coverage      # branch coverage (85% minimum)
+make build-check   # build distributions and validate metadata
+make check         # all quality gates
+```
 
 ## License
 
