@@ -8,7 +8,7 @@
 - [ ] astatus needs proper tags
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Typing in the new session name field is very sluggish. Have to type letters one by one slowly
-- [ ] When killing a session, remove it from the list too
+- [x] When killing a session, remove it from the list too
 
 ## Done
 
