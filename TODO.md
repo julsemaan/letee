@@ -5,10 +5,11 @@
 - [ ] Allow having multiple mtmux
 - [ ] Mark sessions as something else than unavailable when they are not present on the target host
 - [ ] Need Claude Code support for astatus
-- [ ] Need documentation on installing astatus for agent support
+- [ ] astatus needs proper tags
 
 ## Done
 
+- [x] Need documentation on installing astatus for agent support
 - [x] When killing a session, show confirmation near the top without replacing footer shortcuts
 - [x] Agent sessions in priority ordering should have latest activity at the top for idle sessions
 

@@ -140,6 +140,16 @@ Mtmux discovers coding agents by reading [astatus](https://github.com/julsemaan/
 
 Agent discovery requires the astatus plugin for your coding agent. The plugin emits JSON status files that mtmux reads to show agent state in the sidebar.
 
+#### Codex (OpenAI Codex CLI)
+
+```bash
+pip install agent-status
+codex plugin marketplace add julsemaan/astatus
+codex plugin add agent-status@astatus
+```
+
+Start Codex in any repo, open `/hooks`, and trust the agent-status hooks. First prompt starts a detached sidecar that emits 20-second heartbeats.
+
 #### Pi (pi-coding-agent)
 
 ```bash
