@@ -13,7 +13,7 @@ from .names import Target, parse_target
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mtmux")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("cockpit", help="launch or attach cockpit")
     focus_sidebar = sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
@@ -46,13 +46,13 @@ def main(argv: list[str] | None = None) -> int:
         from .sidebar import main as sidebar_main
         return sidebar_main()
     args = build_parser().parse_args(argv)
+    if args.command in (None, "cockpit"):
+        return cockpit.cockpit()
     if args.command == "init":
         cfg, wrapper = ensure_config()
         print(f"Config: {cfg}")
         print(f"Wrapper: {wrapper}")
         return 0
-    if args.command == "cockpit":
-        return cockpit.cockpit()
     if args.command == "focus-sidebar":
         return cockpit.focus_sidebar(args.region)
     if args.command == "list":
