@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -30,9 +31,13 @@ class BumpVersionTest(unittest.TestCase):
             )
 
     def test_bumps_patch_version_from_pyproject(self):
+        current = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+        major, minor, patch = map(int, current.split("."))
+        expected = f"{major}.{minor}.{patch + 1}"
+
         pyproject, package = self.run_bump()
-        self.assertIn('version = "0.1.3"', pyproject)
-        self.assertEqual(package, '__version__ = "0.1.3"\n')
+        self.assertIn(f'version = "{expected}"', pyproject)
+        self.assertEqual(package, f'__version__ = "{expected}"\n')
 
     def test_version_environment_variable_sets_version(self):
         pyproject, package = self.run_bump("2.4.6")
