@@ -1,0 +1,44 @@
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+class BumpVersionTest(unittest.TestCase):
+    def run_bump(self, version=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copy("Makefile", root / "Makefile")
+            shutil.copy("pyproject.toml", root / "pyproject.toml")
+            (root / "mtmux").mkdir()
+            shutil.copy("mtmux/__init__.py", root / "mtmux/__init__.py")
+            (root / "tools").mkdir()
+            shutil.copy("tools/bump_version.py", root / "tools/bump_version.py")
+            env = os.environ.copy()
+            env.pop("VERSION", None)
+            if version is not None:
+                env["VERSION"] = version
+            subprocess.run(
+                ["make", "bump-version"], cwd=root, env=env, check=True,
+                capture_output=True, text=True,
+            )
+            return (
+                (root / "pyproject.toml").read_text(),
+                (root / "mtmux/__init__.py").read_text(),
+            )
+
+    def test_bumps_patch_version_from_pyproject(self):
+        pyproject, package = self.run_bump()
+        self.assertIn('version = "0.1.3"', pyproject)
+        self.assertEqual(package, '__version__ = "0.1.3"\n')
+
+    def test_version_environment_variable_sets_version(self):
+        pyproject, package = self.run_bump("2.4.6")
+        self.assertIn('version = "2.4.6"', pyproject)
+        self.assertEqual(package, '__version__ = "2.4.6"\n')
+
+
+if __name__ == "__main__":
+    unittest.main()
