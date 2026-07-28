@@ -1,7 +1,7 @@
 PYTHON ?= python3
 PEXPECT_DIR ?= /tmp/pexpect-pkg
 
-.PHONY: test lint coverage build-check check dev-install test-e2e test-e2e-docker
+.PHONY: test lint coverage build-check check dev-install test-e2e test-e2e-docker bump-version
 
 test:
 	$(PYTHON) -m unittest discover -s tests
@@ -29,3 +29,6 @@ test-e2e-docker:
 
 dev-install:
 	$(PYTHON) -m pip install -e ".[dev]" --break-system-packages
+
+bump-version:
+	$(PYTHON) tools/bump_version.py
