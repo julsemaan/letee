@@ -6,10 +6,9 @@
 - [ ] Need Claude Code support for astatus
 - [ ] astatus needs proper tags
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
-- [ ] Sometimes, I have to click multiple times to get an action to be done. Hard to reproduce consistently but I **think** it may be related to when a pane is idle and I click in it. Again, not happening every time.
-
 ## Done
 
+- [x] Sometimes, I have to click multiple times to get an action to be done. Hard to reproduce consistently but I **think** it may be related to when a pane is idle and I click in it. Again, not happening every time.
 - [x] Typing in the new session name field is very sluggish. Have to type letters one by one slowly
 - [x] Mark sessions as something else than unavailable when they are not present on the target host
 - [x] When killing a session, remove it from the list too
