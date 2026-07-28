@@ -329,10 +329,13 @@ class AgentSidebarTest(unittest.TestCase):
 
     def test_switch_pane_uses_exact_attach_command_and_agent_id(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        state = SidebarState()
         with patch("mtmux.sidebar.cockpit.switch") as switch:
-            _execute(Effect("switch_pane", pane, message="id"), SidebarState(), unittest.mock.Mock(), 5)
+            _execute(Effect("switch_pane", pane, message="id"), state, unittest.mock.Mock(), 5)
 
         switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work", "id")
+        self.assertEqual(state.status, "")
+        self.assertIsNone(state.status_deadline)
 
     def test_agent_duration_uses_task_timestamp_then_runtime_fallback(self):
         now = datetime(2026, 6, 20, 16, 45, 30, tzinfo=timezone.utc)
@@ -748,6 +751,8 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.favorites, [target])
         save.assert_called_once_with([target])
         switch.assert_called_once_with(target, "attach")
+        self.assertEqual(state.status, "")
+        self.assertIsNone(state.status_deadline)
 
     def test_successful_create_tracks_after_creation(self):
         target = Target("local", "new")

@@ -569,12 +569,10 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             state.selected_target = effect.target
             if effect.kind == "add_switch":
                 _reset_add(state)
-            _set_status(state, f"switched {effect.target.format()}", status_timeout)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
             state.selected_agent_key = (effect.target, effect.message)
             state.agent_alerts.discard(state.selected_agent_key)
-            _set_status(state, f"switched {effect.target.target.format()}", status_timeout)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
             if effect.target not in state.favorites:
