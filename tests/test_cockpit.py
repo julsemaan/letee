@@ -7,7 +7,10 @@ from mtmux import cockpit
 class CockpitLayoutTest(unittest.TestCase):
     def test_self_command_uses_binary_when_frozen_and_python_module_from_source(self):
         with patch.object(cockpit.sys, "frozen", True, create=True), patch.object(cockpit.sys, "executable", "/opt/mtmux"):
-            self.assertEqual(cockpit._self_command("sidebar"), "/opt/mtmux sidebar")
+            self.assertEqual(
+                cockpit._self_command("sidebar"),
+                "env PYINSTALLER_RESET_ENVIRONMENT=1 /opt/mtmux sidebar",
+            )
         with patch.object(cockpit.sys, "frozen", False, create=True), patch.object(cockpit.sys, "executable", "/usr/bin/python3"):
             self.assertEqual(cockpit._self_command("sidebar"), "/usr/bin/python3 -m mtmux sidebar")
 
