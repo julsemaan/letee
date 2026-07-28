@@ -31,22 +31,24 @@ Navigation
   q      quit sidebar only
 
 Session actions
-  Enter  switch session / select Add choice
+  Enter  activate selected row
   a      open Add session menu
   r      remove selected session (session keeps running)
   K/J    move session up/down
-  x      kill selected session
+  x      kill and remove selected session
   /      search untracked existing sessions
 
 Agent actions
   j/k    navigate agents
   Enter  switch to agent pane
-  h/l    cycle agent ordering (Priority / Session)
+  h/l    cycle ordering on selected ordering row (Priority / Session)
   [ / ]  resize agent panel
 
 Recovery
   {prefix} d  detach cockpit
   {prefix} s  restart/focus Sessions
+  {prefix} a  restart/focus Agents
+  {prefix} +  open Add session menu
   Esc    cancel prompts/filter
 
 Examples

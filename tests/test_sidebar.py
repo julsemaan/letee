@@ -156,13 +156,8 @@ class SidebarViewModeTest(unittest.TestCase):
         self.assertEqual([entry.kind for entry in entries[:2]], ["session", "session"])
         self.assertEqual(sidebar._selectable(entries)[0], 0)
 
-    def test_empty_normal_view_prompts_and_offers_add(self):
-        entries = _entries("", snapshot(local=("work",)), [])
-
-        self.assertEqual(
-            [(entry.label, entry.kind) for entry in entries],
-            [("Press a or click ＋ add", "hint")],
-        )
+    def test_empty_normal_view_has_no_instruction_row(self):
+        self.assertEqual(_entries("", snapshot(local=("work",)), []), [])
 
     def test_tracked_remote_favorite_shows_connecting_during_initial_discovery(self):
         target = Target("ssh", "work", "dev")
@@ -521,7 +516,6 @@ class AddFlowTest(unittest.TestCase):
                 ("No sessions", "empty"),
                 ("empty", "header"),
                 ("No sessions", "empty"),
-                ("No existing sessions to add", "hint"),
             ],
         )
         self.assertFalse(sidebar._selectable(entries))
@@ -656,14 +650,16 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(effect, Effect("switch", target=target))
 
-    def test_toggle_favorite_updates_state_and_returns_save_effect(self):
+    def test_remove_session_only_removes_tracked_target(self):
         target = Target("local", "work")
-        state = SidebarState(selected_target=target)
+        state = SidebarState(selected_target=target, favorites=[target])
 
-        effect = _transition(state, "toggle_session")
+        effect = _transition(state, "remove_session")
 
-        self.assertEqual(state.favorites, [target])
-        self.assertEqual(effect, Effect("save_favorites", favorites=(target,), message="added local:work"))
+        self.assertEqual(state.favorites, [])
+        self.assertEqual(effect, Effect("save_favorites", favorites=(), message="removed local:work"))
+
+        self.assertIsNone(_transition(SidebarState(selected_target=target), "remove_session"))
 
     def test_reorder_favorite_swaps_and_keeps_selection(self):
         first = Target("local", "first")
@@ -1016,7 +1012,7 @@ class SidebarDrawTest(unittest.TestCase):
         status = next(call for call in screen.calls if call[0] == "addnstr" and "killed local:work" in call[3])
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 6]
         self.assertEqual(status[1], 1)
-        self.assertEqual(footer, ["↵ activate  ? help  q quit"])
+        self.assertEqual(footer, ["↵ activate  ? help  q close"])
 
     def test_filter_status_renders_below_filter_input(self):
         screen = FakeScreen(size=(7, 30))
@@ -1037,8 +1033,8 @@ class SidebarDrawTest(unittest.TestCase):
     def test_sessions_and_agents_share_minimal_footer_with_ascii_fallback(self):
         removed_hints = ("Tab", "resize", "add", "remove", "kill", "reorder", "K/J", "[ / ]")
         for ascii_mode, expected in (
-            (False, ["↵ activate  ? help  q quit"]),
-            (True, ["Enter activate  ? help  q quit"]),
+            (False, ["↵ activate  ? help  q close"]),
+            (True, ["Enter activate  ? help  q close"]),
         ):
             footers = []
             for focused_region in ("sessions", "agents"):
@@ -1995,7 +1991,58 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(selections[-1].target, first)
         self.assertTrue(selections[-1].tracked)
 
-    def test_cancelled_kill_shows_status_above_unchanged_footer(self):
+    def test_empty_session_list_ignores_enter_remove_and_kill(self):
+        screen = FakeScreen([curses.KEY_ENTER, ord("r"), ord("x"), ord("q")], size=(8, 60))
+
+        with (
+            patch("mtmux.discovery.local_snapshot", return_value=source("local")),
+            patch("mtmux.sidebar.load_sessions", return_value=[]),
+            patch("mtmux.sidebar.load_hosts", return_value=[]),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.sessions.kill") as kill,
+        ):
+            run(screen)
+
+        kill.assert_not_called()
+
+    def test_kill_outside_session_rows_is_ignored(self):
+        screen = FakeScreen([ord("a"), ord("x"), ord("q")], size=(8, 60))
+
+        with (
+            patch("mtmux.discovery.local_snapshot", return_value=source("local")),
+            patch("mtmux.sidebar.load_sessions", return_value=[]),
+            patch("mtmux.sidebar.load_hosts", return_value=[]),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.sessions.kill") as kill,
+        ):
+            run(screen)
+
+        kill.assert_not_called()
+        self.assertFalse(any(call[0] == "addnstr" and "select session to kill" in call[3] for call in screen.calls))
+
+    def test_missing_session_kill_guides_removal(self):
+        target = Target("local", "work")
+        screen = FakeScreen([ord("x"), ord("q")], size=(8, 60))
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", target, unavailable_favorite=True, tracked=True)]),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+        ):
+            run(screen)
+
+        self.assertTrue(any(
+            call[0] == "addnstr" and "Session already missing; press r to remove" in call[3]
+            for call in screen.calls
+        ))
+
+    def test_cancelled_kill_has_no_redundant_status(self):
         screen = FakeScreen([ord("x"), ord("n"), ord("q")], size=(8, 60))
         target = Target("local", "work")
 
@@ -2012,11 +2059,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         kill.assert_not_called()
-        cancelled = next(call for call in screen.calls if call[0] == "addnstr" and "cancelled" in call[3])
-        self.assertEqual(cancelled[1], 1)
-        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
-        self.assertTrue(footer)
-        self.assertTrue(all(line == "↵ activate  ? help  q quit" for line in footer))
+        self.assertFalse(any(call[0] == "addnstr" and "cancelled" in call[3] for call in screen.calls))
 
     def test_failed_kill_keeps_sidebar_open_and_shows_error_above_footer(self):
         screen = FakeScreen([ord("x"), ord("y"), ord("q")], size=(8, 60))
@@ -2038,7 +2081,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(error[1], 1)
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
         self.assertTrue(footer)
-        self.assertTrue(all(line == "↵ activate  ? help  q quit" for line in footer))
+        self.assertTrue(all(line == "↵ activate  ? help  q close" for line in footer))
 
 
 
