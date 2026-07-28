@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import tempfile
 import time
 
+from . import tmux
 from .config import load_hosts, load_persistent_ssh
 from .names import PaneTarget, Target, validate_host
 from .sessions import ssh_command
@@ -19,15 +19,14 @@ from .sessions import ssh_command
 PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}"
 PANES_COMMAND = f'tmux list-panes -a -F "{PANES_FORMAT}"'
 REMOTE_SEPARATOR = "__MTMUX_AGENT_STATUS__"
-_REMOTE_READER = """import glob,json,os,pathlib
-root=os.environ.get('AGENT_STATUS_DIR') or str(pathlib.Path(os.environ.get('XDG_STATE_HOME', '~/.local/state')).expanduser() / 'agent-status')
-for path in sorted(glob.glob(os.path.join(root,'*.json'))):
- try:
-  print(json.dumps(json.load(open(path))))
- except Exception:
-  pass
-"""
-REMOTE_COMMAND = f"{PANES_COMMAND}; rc=$?; printf '\\n{REMOTE_SEPARATOR}\\n'; python3 -c {shlex.quote(_REMOTE_READER)}; exit $rc"
+RECORD_SEPARATOR = "\x1e"
+_REMOTE_READER = """root=${AGENT_STATUS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-status}
+for path in "$root"/*.json; do
+ [ -f "$path" ] || continue
+ cat "$path" || continue
+ printf '\\036'
+done"""
+REMOTE_COMMAND = f"{PANES_COMMAND}; rc=$?; printf '\\n{REMOTE_SEPARATOR}\\n'; {_REMOTE_READER}; exit $rc"
 AGENT_STALE_SECONDS = 60
 SUPPORTED_TASK_STATES = {
     "working", "submitted", "input-required", "auth-required", "failed",
@@ -102,12 +101,6 @@ class SessionSnapshot:
 
 
 UNAVAILABLE = SourceSnapshot(False, (), frozenset())
-
-
-def _clean_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("TMUX", None)
-    return env
 
 
 def _agent_sort_key(agent: AgentEntry) -> tuple[str, str, int, int, str]:
@@ -231,9 +224,9 @@ def _source_result(
         if not separator:
             return snapshot
         records = []
-        for line in agent_text.splitlines():
+        for record in agent_text.split(RECORD_SEPARATOR):
             try:
-                records.append(json.loads(line))
+                records.append(json.loads(record))
             except json.JSONDecodeError:
                 continue
         return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_agents(snapshot.panes, records), snapshot.focused_panes)
@@ -246,7 +239,7 @@ def local_snapshot() -> SourceSnapshot:
             ["tmux", "list-panes", "-a", "-F", PANES_FORMAT],
             text=True,
             capture_output=True,
-            env=_clean_env(),
+            env=tmux.host_environment(without_tmux=True),
         )
     except OSError as error:
         return SourceSnapshot(False, (), frozenset(), error.strerror or str(error))
@@ -278,7 +271,7 @@ def remote_snapshot(host: str) -> SourceSnapshot:
     host = validate_host(host)
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         try:
-            proc = subprocess.run(_ssh_command(host, load_persistent_ssh()), stdout=output, stderr=errors, timeout=10)
+            proc = subprocess.run(_ssh_command(host, load_persistent_ssh()), stdout=output, stderr=errors, timeout=10, env=tmux.host_environment())
         except subprocess.TimeoutExpired:
             return SourceSnapshot(False, (), frozenset(), "timed out")
         except OSError as error:
@@ -360,7 +353,7 @@ class DiscoveryPoller:
         output = tempfile.TemporaryFile()
         errors = tempfile.TemporaryFile()
         try:
-            process = self._popen(_ssh_command(host, self._persistent_ssh), stdout=output, stderr=errors)
+            process = self._popen(_ssh_command(host, self._persistent_ssh), stdout=output, stderr=errors, env=tmux.host_environment())
         except OSError as error:
             output.close()
             errors.close()

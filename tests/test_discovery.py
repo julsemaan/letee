@@ -7,7 +7,6 @@ from mtmux.discovery import (
     REMOTE_COMMAND,
     SessionSnapshot,
     SourceSnapshot,
-    _clean_env,
     _parse_source_snapshot,
     _read_agents,
     _source_result,
@@ -25,10 +24,6 @@ EMPTY_LOCAL = SourceSnapshot(True, (), frozenset())
 
 
 class DiscoverySnapshotTest(unittest.TestCase):
-    def test_clean_env_removes_current_tmux_socket(self):
-        with patch.dict("mtmux.discovery.os.environ", {"TMUX": "/tmp/tmux,1,0", "PATH": "x"}, clear=True):
-            self.assertEqual(_clean_env(), {"PATH": "x"})
-
     def test_source_parser_deduplicates_targets_and_collects_bells(self):
         snapshot = _parse_source_snapshot(
             "work:@1:%1:0:-:/tmp/tmux:dev\nwork:@1:%2:1:-:/tmp/tmux:dev\nchat:@2:%3:!:-:/tmp/tmux:dev\nbad name:@3:%4:1:!:/tmp/tmux\n",
@@ -157,6 +152,24 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
         self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
 
+    def test_remote_command_needs_no_python_or_jq(self):
+        self.assertNotIn("python", REMOTE_COMMAND)
+        self.assertNotIn("jq", REMOTE_COMMAND)
+        self.assertIn("cat", REMOTE_COMMAND)
+
+    def test_remote_result_accepts_multiline_record_separator_json_and_ignores_malformed(self):
+        pane = "work:@1:%2:0:-:1:1:/tmp/tmux"
+        valid = '''{
+          "schema_version": "agent-status/v1alpha1",
+          "agent_id": "agent-1",
+          "agent_name": "pi",
+          "runtime": {"lifecycle": "running", "updated_at": "2026-06-20T16:45:00Z"},
+          "x_meta": {"tmux_socket": "/tmp/tmux", "tmux_pane": "%2"}
+        }'''
+        with patch("mtmux.discovery.AGENT_STALE_SECONDS", float("inf")):
+            snapshot = _source_result(0, pane + "\n__MTMUX_AGENT_STATUS__\n" + valid + "\x1e{bad\x1e", "", kind="ssh", host="dev")
+        self.assertEqual([agent.agent_id for agent in snapshot.agents], ["agent-1"])
+
     def test_remote_result_keeps_panes_when_agent_reader_is_missing(self):
         pane_line = "work:@1:%2:0:-:/tmp/tmux"
         snapshot = _source_result(
@@ -180,6 +193,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
             remote_snapshot("dev")
 
         self.assertNotIn("ControlMaster=auto", run.call_args.args[0])
+        self.assertIn("env", run.call_args.kwargs)
 
     def test_remote_snapshot_rejects_oversized_output_and_distinguishes_no_server(self):
         def oversized(command, **kwargs):

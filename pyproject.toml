@@ -35,6 +35,7 @@ mtmux = "mtmux.__main__:run_cli"
 dev = [
     "build",
     "coverage[toml]",
+    "pyinstaller",
     "ruff",
     "twine",
 ]

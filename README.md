@@ -20,12 +20,39 @@ Track important sessions, see at a glance which ones need attention, and jump be
 
 ## Quick start
 
-Requires Python 3.11+, tmux, and OpenSSH. Automatic coding-agent discovery additionally requires [astatus](https://github.com/julsemaan/astatus) locally and on configured remote hosts.
+Standalone binaries require tmux and OpenSSH, but not Python or pip. Download matching archive from [GitHub Releases](https://github.com/julsemaan/mtmux/releases), verify it against `SHA256SUMS`, then install:
+
+```sh
+VERSION=0.1.8
+PLATFORM=linux-x86_64 # macos-x86_64 or macos-arm64
+curl -LO "https://github.com/julsemaan/mtmux/releases/download/v${VERSION}/mtmux-v${VERSION}-${PLATFORM}.tar.gz"
+curl -LO "https://github.com/julsemaan/mtmux/releases/download/v${VERSION}/SHA256SUMS"
+grep "mtmux-v${VERSION}-${PLATFORM}.tar.gz" SHA256SUMS | sha256sum -c -
+tar -xzf "mtmux-v${VERSION}-${PLATFORM}.tar.gz"
+install -m 0755 mtmux "$HOME/.local/bin/mtmux"
+mtmux
+```
+
+On macOS, use `shasum -a 256 -c` instead of `sha256sum -c`. Initial macOS binaries are not signed or notarized.
+
+Supported binaries:
+
+| OS | Architecture | Notes |
+|---|---|---|
+| Linux | x86_64 | glibc 2.28+; Alpine/musl unsupported |
+| macOS | x86_64 | not notarized |
+| macOS | arm64 | not notarized |
+
+PyInstaller one-file executables extract to a temporary directory at startup. Set `TMPDIR` to an executable filesystem if system temporary directory is mounted `noexec`.
+
+Existing PyPI install remains supported and requires Python 3.11+:
 
 ```sh
 pip install mtmux
 mtmux
 ```
+
+Automatic coding-agent discovery additionally requires [astatus](https://github.com/julsemaan/astatus) locally and on configured remote hosts. Agent plugins may have their own runtime requirements.
 
 That opens an outer tmux workspace with the mtmux sidebar on the left and your selected session on the right. Press `Enter` on a session to step into it; press `q` to close the sidebar, then `C-s s` to reopen it on Sessions.
 
@@ -71,7 +98,7 @@ To restore old prefix, set `prefix = "C-g"` and rerun `mtmux`.
 
 ### Remote hosts
 
-Hosts are SSH aliases only. Keep host-specific users, ports, keys, proxies, IPv6, and other connection settings in `~/.ssh/config`.
+Hosts are SSH aliases only. Keep host-specific users, ports, keys, proxies, IPv6, and other connection settings in `~/.ssh/config`. Mtmux requires tmux, POSIX shell, and `cat` on remote hosts; Python and `jq` are not required there. Agent plugins may retain their own runtime requirements.
 
 By default, mtmux makes OpenSSH reuse one authenticated transport per host with `ControlMaster=auto`, `ControlPersist=10m`, and `ControlPath=~/.ssh/mtmux-%C`. Later discovery polls, switches, creates, and kills avoid repeating TCP setup, key exchange, and authentication. Control sockets remain for 10 minutes after last use.
 
@@ -203,6 +230,7 @@ make test          # unit tests
 make lint          # Ruff
 make coverage      # branch coverage (85% minimum)
 make build-check   # build distributions and validate metadata
+make binary-check  # build standalone executable and run --help
 make check         # all quality gates
 ```
 
