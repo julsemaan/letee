@@ -1560,7 +1560,7 @@ def run(stdscr: curses.window) -> None:
                                     state.agent_ordering = "session"
                                     rebuild()
                             continue
-                        if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0) and entry.pane_target:
+                        if mouse_state & (_b1_released | _b1_clicked) and entry.pane_target:
                             _execute(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""), state, poller, status_timeout)
                         continue
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)

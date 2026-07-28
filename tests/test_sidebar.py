@@ -1484,26 +1484,32 @@ class SidebarDrawTest(unittest.TestCase):
         beep.assert_not_called()
 
 
-    def test_single_click_selects_and_switches_scrolled_agent_name_row(self):
+    def test_press_release_selects_and_switches_scrolled_idle_agent_name_row(self):
         target = Target("ssh", "work", "dev")
         first = PaneTarget(target, "@1", "%1", "/tmp/tmux")
         second = PaneTarget(target, "@2", "%2", "/tmp/tmux")
         agents = (
             AgentEntry(first, "first", "pi-one", "working"),
-            AgentEntry(second, "second", "pi-two", "working"),
+            AgentEntry(second, "second", "pi-two", "idle"),
         )
         poller = unittest.mock.Mock()
         poller.snapshot = SessionSnapshot(
             SourceSnapshot(True, (target,), frozenset(), agents=agents), {}
         )
         poller.tick.return_value = False
-        screen = FakeScreen([9, curses.KEY_DOWN, curses.KEY_MOUSE, ord("q")], size=(20, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(20, 30))
 
         with (
             patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 17, 0, curses.BUTTON1_CLICKED)),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 17, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 17, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar.load_sessions", return_value=[target]),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
