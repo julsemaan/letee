@@ -1401,7 +1401,9 @@ def run(stdscr: curses.window) -> None:
                     current_target, poller.snapshot, unavailable_target_shown
                 )
                 agent_alert = _update_agent_alerts(state, poller.snapshot, current_target)
+                scroll_offset = state.scroll_offset
                 rebuild()
+                state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
             selectable = _selectable(entries)
             if selectable and state.selected_index not in selectable:
                 state.selected_index = selectable[0]
@@ -1565,21 +1567,22 @@ def run(stdscr: curses.window) -> None:
                     stdscr.timeout(0)
                     try:
                         while True:
+                            viewport_height = separator - session_top + 2
                             if state.scroll_offset is None:
                                 view_index = _view_index(entries, state.selected_index, current_target, dimmed)
-                                start, _ = _viewport(entries, view_index, stdscr.getmaxyx()[0] - footer_height)
+                                start, _ = _viewport(entries, view_index, viewport_height)
                                 state.scroll_offset = start
                             if mouse_state & wheel_up:
                                 state.scroll_offset = max(0, state.scroll_offset - 1)
                             else:
-                                body = max(1, stdscr.getmaxyx()[0] - footer_height - 2)
+                                body = max(1, viewport_height - 2)
                                 row_offsets = [0]
                                 for entry in entries:
                                     row_offsets.append(row_offsets[-1] + _entry_height(entry))
                                 total = row_offsets[-1]
-                                max_offset = 0
+                                max_offset = max(0, len(entries) - 1)
                                 for i in range(len(entries)):
-                                    if total - row_offsets[i] <= body:
+                                    if total - row_offsets[i] + int(i > 0) <= body:
                                         max_offset = i
                                         break
                                 state.scroll_offset = min(max_offset, state.scroll_offset + 1)

@@ -2352,6 +2352,59 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         offsets = [off for _, off in captured if off is not None]
         self.assertTrue(len(offsets) >= 1)  # scroll_offset was set
 
+    def test_wheel_down_reaches_bottom_of_session_region(self):
+        entries = [Entry(str(i), "session", Target("local", str(i)), tracked=True) for i in range(8)]
+        captured = []
+        mouse_events = [(0, 0, 0, 0, curses.BUTTON5_PRESSED)] * 10
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [ord("q")], size=(12, 30))
+
+        def draw_spy(*args, **kwargs):
+            captured.append(args[12] if len(args) > 12 else None)
+            return (1, None)
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", side_effect=mouse_events),
+        ):
+            run(screen)
+
+        _, end = _viewport(entries, 0, 7, captured[-1])
+        self.assertEqual(end, len(entries))
+
+    def test_discovery_update_preserves_wheel_position(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(8)]
+        captured = []
+        poller = unittest.mock.Mock(snapshot=snapshot())
+        poller.tick.side_effect = [False, True]
+        screen = FakeScreen([curses.KEY_MOUSE, -1, ord("q")], size=(12, 30))
+
+        def draw_spy(*args, **kwargs):
+            captured.append(args[12] if len(args) > 12 else None)
+            return (1, None)
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
+        ):
+            run(screen)
+
+        self.assertEqual(captured, [None, 1])
+
     def test_queued_wheel_reversal_is_processed_before_next_poll(self):
         entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
         captured = []
