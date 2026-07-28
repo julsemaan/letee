@@ -48,7 +48,7 @@ class SessionOperationsTest(unittest.TestCase):
 
     def test_kill_local_session_uses_default_server(self):
         with (
-            patch.dict("mtmux.sessions.os.environ", {"TMUX": "/tmp/mtmux,1,0", "PATH": "x"}, clear=True),
+            patch("mtmux.sessions.tmux.host_environment", return_value={"PATH": "x"}),
             patch("mtmux.sessions.subprocess.run") as run,
         ):
             kill(Target("local", "work"))
@@ -64,7 +64,7 @@ class SessionOperationsTest(unittest.TestCase):
     def test_create_mutates_without_cockpit_dependency(self):
         target = Target("local", "work")
         with (
-            patch.dict("mtmux.sessions.os.environ", {"TMUX": "/tmp/mtmux,1,0", "PATH": "x"}, clear=True),
+            patch("mtmux.sessions.tmux.host_environment", return_value={"PATH": "x"}),
             patch("mtmux.sessions.subprocess.run") as run,
         ):
             create(target)

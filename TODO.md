@@ -4,6 +4,7 @@
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux
 - [ ] Need Claude Code support for astatus
+- [ ] Opencode support for astatus
 - [ ] astatus needs proper tags
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 

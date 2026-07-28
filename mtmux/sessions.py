@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import os
 import shlex
 import subprocess
 
+from . import tmux
 from .config import load_persistent_ssh
 from .names import PaneTarget, Target
 
@@ -23,12 +23,6 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None) -> tuple[str, ..
     if persistent_ssh is None:
         persistent_ssh = load_persistent_ssh()
     return ("ssh", *SSH_OPTIONS, *(PERSISTENT_SSH_OPTIONS if persistent_ssh else ()), *args)
-
-
-def _default_server_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("TMUX", None)
-    return env
 
 
 def attach_command(target: Target) -> str:
@@ -51,9 +45,9 @@ def pane_attach_command(pane_target: PaneTarget) -> str:
     return shlex.join(ssh_command("-t", target.host or "", command))
 
 
-def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> None:
+def _run(operation: str, target: Target, command: tuple[str, ...], env: dict[str, str] | None = None) -> None:
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, **kwargs)
+        subprocess.run(command, check=True, capture_output=True, text=True, env=env if env is not None else tmux.host_environment())
     except subprocess.CalledProcessError as error:
         reason = (error.stderr or "").strip() or f"exit status {error.returncode}"
         raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
@@ -61,13 +55,13 @@ def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: obj
 
 def create(target: Target) -> None:
     if target.kind == "local":
-        _run("create", target, ("tmux", "new-session", "-d", "-s", target.session), env=_default_server_env())
+        _run("create", target, ("tmux", "new-session", "-d", "-s", target.session), env=tmux.host_environment(without_tmux=True))
     else:
         _run("create", target, ssh_command(target.host or "", f"tmux new-session -d -s {shlex.quote(target.session)}"))
 
 
 def kill(target: Target) -> None:
     if target.kind == "local":
-        _run("kill", target, ("tmux", "kill-session", "-t", target.session), env=_default_server_env())
+        _run("kill", target, ("tmux", "kill-session", "-t", target.session), env=tmux.host_environment(without_tmux=True))
     else:
         _run("kill", target, ssh_command(target.host or "", f"tmux kill-session -t {shlex.quote(target.session)}"))

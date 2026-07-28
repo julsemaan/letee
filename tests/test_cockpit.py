@@ -5,19 +5,28 @@ from mtmux import cockpit
 
 
 class CockpitLayoutTest(unittest.TestCase):
+    def test_self_command_uses_binary_when_frozen_and_python_module_from_source(self):
+        with patch.object(cockpit.sys, "frozen", True, create=True), patch.object(cockpit.sys, "executable", "/opt/mtmux"):
+            self.assertEqual(
+                cockpit._self_command("sidebar"),
+                "env PYINSTALLER_RESET_ENVIRONMENT=1 /opt/mtmux sidebar",
+            )
+        with patch.object(cockpit.sys, "frozen", False, create=True), patch.object(cockpit.sys, "executable", "/usr/bin/python3"):
+            self.assertEqual(cockpit._self_command("sidebar"), "/usr/bin/python3 -m mtmux sidebar")
+
     def test_attach_detaches_existing_cockpit_client(self):
         with (
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
             patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
             patch.object(cockpit.shutil, "which", return_value=None),
-            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            patch.object(cockpit.os, "execvpe", side_effect=RuntimeError) as execvpe,
             self.assertRaises(RuntimeError),
         ):
             cockpit._attach()
 
-        execvp.assert_called_once_with(
-            "tmux", ["tmux", "-L", "mtmux", "attach-session", "-d", "-t", "mtmux:cockpit"]
+        execvpe.assert_called_once_with(
+            "tmux", ["tmux", "-L", "mtmux", "attach-session", "-d", "-t", "mtmux:cockpit"], unittest.mock.ANY
         )
 
     def test_fix_layout_pins_sidebar_to_configured_width(self):
@@ -202,12 +211,12 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "d", "detach-client"),
                 ("bind-key", "h", "kill-pane", "-t", "%1"),
                 ("bind-key", "q", "kill-session", "-t", "mtmux"),
-                ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
-                ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
-                ("bind-key", "+", "run-shell", f"{cockpit.FOCUS_SIDEBAR} add"),
+                ("bind-key", "a", "run-shell", f"{cockpit._self_command('focus-sidebar')} agents"),
+                ("bind-key", "s", "run-shell", f"{cockpit._self_command('focus-sidebar')} sessions"),
+                ("bind-key", "+", "run-shell", f"{cockpit._self_command('focus-sidebar')} add"),
                 ("bind-key", "?", "respawn-pane", "-k", "-t", "%2", cockpit.help_command("C-x")),
                 *[
-                    ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m mtmux switch-session {slot}")
+                    ("bind-key", str(slot), "run-shell", f"{cockpit._self_command('switch-session', str(slot))}")
                     for slot in range(1, 10)
                 ],
             ],

@@ -58,8 +58,15 @@ Examples
     return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
 
 
-SIDEBAR = f"{shlex.quote(sys.executable)} -m mtmux sidebar"
-FOCUS_SIDEBAR = f"{shlex.quote(sys.executable)} -m mtmux focus-sidebar"
+def _self_command(*args: str) -> str:
+    command = [sys.executable]
+    if getattr(sys, "frozen", False):
+        command = ["env", "PYINSTALLER_RESET_ENVIRONMENT=1", *command]
+    else:
+        command += ["-m", "mtmux"]
+    return shlex.join((*command, *args))
+
+
 TARGET = f"{tmux.SESSION}:{tmux.WINDOW}"
 COCKPIT_OPTION = "@mtmux_cockpit"
 SIDEBAR_PANE_OPTION = "@mtmux_sidebar_pane"
@@ -128,12 +135,12 @@ def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("bind-key", "d", "detach-client")
     tmux.tmux("bind-key", "h", "kill-pane", "-t", sidebar_pane)
     tmux.tmux("bind-key", "q", "kill-session", "-t", tmux.SESSION)
-    tmux.tmux("bind-key", "a", "run-shell", f"{FOCUS_SIDEBAR} agents")
-    tmux.tmux("bind-key", "s", "run-shell", f"{FOCUS_SIDEBAR} sessions")
-    tmux.tmux("bind-key", "+", "run-shell", f"{FOCUS_SIDEBAR} add")
+    tmux.tmux("bind-key", "a", "run-shell", _self_command("focus-sidebar", "agents"))
+    tmux.tmux("bind-key", "s", "run-shell", _self_command("focus-sidebar", "sessions"))
+    tmux.tmux("bind-key", "+", "run-shell", _self_command("focus-sidebar", "add"))
     tmux.tmux("bind-key", "?", "respawn-pane", "-k", "-t", right_pane, help_command(prefix))
     for slot in range(1, 10):
-        tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m mtmux switch-session {slot}")
+        tmux.tmux("bind-key", str(slot), "run-shell", _self_command("switch-session", str(slot)))
 
 
 def _enable_mouse() -> None:
@@ -216,7 +223,7 @@ def _build(prefix: str, sidebar_width: int) -> None:
     else:
         tmux.tmux("new-window", "-d", "-t", tmux.SESSION, "-n", tmux.WINDOW, help_cmd)
     right = tmux.out("display-message", "-p", "-t", TARGET, "#{pane_id}")
-    left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, SIDEBAR)
+    left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, _self_command("sidebar"))
     _configure_cockpit(left, right, prefix, sidebar_width)
 
 
@@ -231,7 +238,7 @@ def ensure_cockpit() -> None:
     if _option(COCKPIT_OPTION) == "1":
         right = _option(RIGHT_PANE_OPTION)
         if right and tmux.has_pane(right):
-            left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, SIDEBAR)
+            left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, _self_command("sidebar"))
             _configure_cockpit(left, right, prefix, sidebar_width)
             return
     _build(prefix, sidebar_width)
@@ -252,8 +259,8 @@ def _attach() -> int:
     cmd = ["tmux", "-L", tmux.SOCKET, "attach-session", "-d", "-t", TARGET]
     if shutil.which("script"):
         shell_cmd = " ".join(shlex.quote(part) for part in cmd)
-        os.execvp("script", ["script", "-q", "-c", shell_cmd, "/dev/null"])
-    os.execvp("tmux", cmd)
+        os.execvpe("script", ["script", "-q", "-c", shell_cmd, "/dev/null"], tmux.host_environment())
+    os.execvpe("tmux", cmd, tmux.host_environment())
     return 0
 
 
