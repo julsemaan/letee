@@ -10,7 +10,7 @@
 
 `mtmux` runs inside your existing terminal and works on top of tmux. No new terminal app, no replacement tmux setup, no retraining your keyboard muscle memory. Keep your terminal, tmux configuration, keybindings, plugins, and workflows while adding a persistent sidebar for finding, opening, and switching between sessions across your machine and SSH hosts. Your sessions remain ordinary tmux sessions; mtmux simply puts them within reach.
 
-Star important sessions, see at a glance which ones need attention, and jump between local and remote work without hunting through terminal tabs.
+Track important sessions, see at a glance which ones need attention, and jump between local and remote work without hunting through terminal tabs.
 
 ## Why mtmux?
 
@@ -97,7 +97,7 @@ Names of the hosts must match:
 mtmux list
 mtmux switch local:<session>
 mtmux switch ssh:<host>:<session>
-mtmux switch-star <1-9>
+mtmux switch-session <1-9>
 mtmux create local <session>
 mtmux create ssh <host> <session>
 mtmux kill local:<session>
@@ -116,22 +116,22 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `C-s ?`: show help in right pane
 - `C-s d`: detach outer mtmux
 - `C-s C-s`: forward `C-s` to inner session
-- `C-s 1`–`C-s 9`: switch directly to numbered starred target
+- `C-s 1`–`C-s 9`: switch directly to numbered tracked target
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
 - `[` / `]`: give Agents/Sessions region more rows for current run
 - `h` / `l`: cycle agent ordering mode (Priority / Session) when ordering row is selected
 - `Enter`: switch selected session or exact agent pane, or activate selected Add row
 - `a`: open Add session menu from Sessions or Agents
 - `r`: remove selected target without killing it
-- `K` / `J`: move selected starred target up/down without wrapping
-- `x`: kill selected session but retain its star (asks first)
+- `K` / `J`: move selected tracked target up/down without wrapping
+- `x`: kill and remove selected tracked session (asks first)
 - `/`: open existing-session search directly
 - `?`: open help in right pane
 - `q`: quit sidebar only
 
 `›` marks keyboard selection; mint reverse highlight marks active cockpit session. Both appear independently while sidebar is focused. Unfocused sidebar hides pointer and keeps active session highlighted and visible.
 
-Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/mtmux/stars`. Only tracked sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only labels and ellipses.
+Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/mtmux/sessions`. Only tracked sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only labels and ellipses.
 
 ## Agent discovery
 
@@ -187,7 +187,7 @@ Native tmux copy mode forwards copied text through nested sessions using OSC 52.
 
 ## Recovery
 
-Press `C-s s` to reopen Sessions, `C-s a` to reopen Agents, or rerun:
+Press `C-s s` to restart/focus Sessions, `C-s a` to restart/focus Agents, or `C-s +` to open Add session menu. Or rerun:
 
 ```sh
 mtmux

@@ -234,8 +234,6 @@ def _entries(
                 shortcut_slot=slots.get(target),
                 status=status,
             ))
-        if not out:
-            out.append(Entry("Press a or click ＋ add", "hint"))
         return out
 
     icons = _icons()
@@ -297,8 +295,6 @@ def _add_entries(
                     grouped.append(Entry("No sessions", "empty", host=entry.host))
             else:
                 grouped.append(entry)
-        if not any(entry.kind == "session" for entry in grouped):
-            grouped.append(Entry("No existing sessions to add", "hint"))
         return grouped
     entries = [Entry("Select where to create", "section")]
     entries.extend(Entry(label, "location", host=host) for label, host in _available_locations(snapshot))
@@ -526,15 +522,14 @@ def _transition(
         return Effect(action, target=target) if target else None
     if action == "create":
         return Effect("create", target=target) if target else None
-    if action == "toggle_session" and target:
-        if target in state.favorites:
-            state.favorites.remove(target)
-            message = f"removed {target.format()}"
-        else:
-            state.favorites.append(target)
-            message = f"added {target.format()}"
+    if action == "remove_session" and target in state.favorites:
+        state.favorites.remove(target)
         state.selected_target = None if unavailable else target
-        return Effect("save_favorites", favorites=tuple(state.favorites), message=message)
+        return Effect(
+            "save_favorites",
+            favorites=tuple(state.favorites),
+            message=f"removed {target.format()}",
+        )
     if action in ("move_session_up", "move_session_down"):
         if not target or not state.selected_tracked or target not in state.favorites:
             return None
@@ -594,7 +589,6 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
             _set_status(state, f"killed {effect.target.format()}", status_timeout)
         elif effect.kind == "help":
             cockpit.show_help()
-            _set_status(state, "help opened", status_timeout)
         elif effect.kind == "save_favorites":
             save_sessions(effect.favorites or ())
             _set_status(state, effect.message, status_timeout)
@@ -1151,17 +1145,14 @@ def _draw_footer(
     w: int,
     filtering: bool = False,
     dimmed: bool = False,
-    creating: bool = False,
     adding: bool = False,
 ) -> int:
-    if creating:
-        logical_rows = ["Esc back · Enter add" if not _ascii() else "Esc back  Enter add"]
-    elif filtering:
+    if filtering:
         logical_rows = ["type to filter  backspace edit", f"esc clear  {'Enter' if _ascii() else '↵'} switch"]
     elif adding:
         logical_rows = [f"{'Enter' if _ascii() else '↵'} select · Esc back" if not _ascii() else "Enter select  Esc back"]
     else:
-        logical_rows = [f"{'Enter' if _ascii() else '↵'} activate  ? help  q quit"]
+        logical_rows = [f"{'Enter' if _ascii() else '↵'} activate  ? help  q close"]
     width = max(1, w - 1)
     lines = [line for logical_row in logical_rows for line in (textwrap.wrap(logical_row, width=width) or [""])]
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
@@ -1242,7 +1233,7 @@ def _draw(
         message_row, 0, message, max(1, w),
         _fade(message_attr) if dimmed else message_attr,
     )
-    footer_height = _draw_footer(stdscr, h, w, filtering, dimmed, creation_host is not None, adding)
+    footer_height = _draw_footer(stdscr, h, w, filtering, dimmed, adding)
     if agent_entries is None:
         creation_cursor = _draw_entries(
             stdscr, entries, selected, h - footer_height + 1, w, bell_targets or set(), current_target,
@@ -1262,7 +1253,7 @@ def _draw(
     minimum_agent_rows = 1 + (2 if has_real_agents else 1)
     session_top = 3 if filtering else 2
     if footer_top - session_top < 2 + minimum_agent_rows:
-        stdscr.addnstr(session_top, 0, "terminal too short", max(0, w - 1), curses.A_BOLD)
+        stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
         stdscr.refresh()
         return footer_height, add_col
     available = footer_top - session_top - 1
@@ -1599,8 +1590,6 @@ def run(stdscr: curses.window) -> None:
                 if new_filter is not None:
                     state.filter_text = new_filter
                     rebuild()
-                    if not state.filter_text:
-                        show_status("filter cleared")
                     continue
             if key in (27, 3) and state.add_view is not None:
                 _add_back(state, poller.snapshot)
@@ -1667,10 +1656,10 @@ def run(stdscr: curses.window) -> None:
                 _open_add(state)
                 state.focused_region = "sessions"
                 rebuild()
-            elif key == ord("r") and state.add_view is None:
+            elif key == ord("r") and state.add_view is None and entries:
                 entry = entries[state.selected_index]
-                if entry.target:
-                    effect = _transition(state, "toggle_session", entry.target)
+                if entry.kind == "session" and entry.target:
+                    effect = _transition(state, "remove_session", entry.target)
             elif key == ord("/"):
                 _open_add(state, "existing")
                 state.focused_region = "sessions"
@@ -1684,6 +1673,8 @@ def run(stdscr: curses.window) -> None:
                     state.add_button_selected = False
                     _open_add(state)
                     rebuild()
+                    continue
+                if not entries:
                     continue
                 entry = entries[state.selected_index]
                 if entry.kind == "choice_new":
@@ -1706,15 +1697,15 @@ def run(stdscr: curses.window) -> None:
                     if state.add_view == "existing":
                         _reset_add(state)
             elif key == ord("x"):
+                if not entries:
+                    continue
                 entry = entries[state.selected_index]
-                if not entry.target:
-                    show_status("select session to kill")
+                if entry.kind != "session" or not entry.target:
                     continue
                 if entry.unavailable_favorite:
-                    show_status(f"missing {entry.target.format()}")
+                    show_status("Session already missing; press r to remove")
                     continue
                 if _read_key(stdscr, f"kill {entry.target.format()}? y/N", state.filtering) != ord("y"):
-                    show_status("cancelled")
                     continue
                 effect = _transition(state, "kill", entry.target)
             if effect:
