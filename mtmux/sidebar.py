@@ -1004,6 +1004,8 @@ def _status_attr(status: str) -> int:
 def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, drag_source: bool = False, drag_target: bool = False) -> int:
     if drag_source:
         return (_color("drag") or curses.A_REVERSE) | curses.A_DIM
+    if drag_target:
+        return _color("drag") or curses.A_REVERSE
     if active:
         attr = _color("active") or curses.A_REVERSE
     elif entry.kind == "order":
@@ -1091,19 +1093,18 @@ def _draw_entries(
         is_drag_source = drag_source_entry is not None and idx == drag_source_entry
         is_drag_target = drag_target_entry is not None and idx == drag_target_entry
         if is_drag_target:
-            line_c = "-" if _ascii() else "─"
-            stdscr.addnstr(row, 0, line_c * w, w, _color("drag") or curses.A_REVERSE)
-            row += 1
+            rule = "-" if _ascii() else "─"
+            lines = [rule * w, lines[0]]
         base_attr = _entry_attr(entry, active_entry or active_agent, dimmed, drag_source=is_drag_source, drag_target=is_drag_target)
         slot_badge = ""
         slot_width = 0
-        if entry.tracked and entry.shortcut_slot is not None:
+        if entry.tracked and entry.shortcut_slot is not None and not is_drag_target:
             slot_width = 4
             ico = _icons()
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
-            attr = _fade(base_attr) if line_number and not (active_entry or active_agent) else base_attr
+            attr = _fade(base_attr) if line_number and not (active_entry or active_agent or is_drag_target) else base_attr
             if line_number == 0 and slot_width:
                 if selected_entry and not dimmed and selection_pointer_visible:
                     slot_badge = f" {ico['selected']} "

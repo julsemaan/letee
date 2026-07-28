@@ -977,6 +977,37 @@ class SidebarDrawTest(unittest.TestCase):
         start, _ = _viewport(entries, 9, 7)
         self.assertEqual(_entry_at_row(entries, 9, 2, 8, 1), start)
 
+    def test_drag_target_keeps_visible_line_without_shifting_following_entries(self):
+        entries = [
+            Entry(name, "session", Target("local", name), tracked=True, shortcut_slot=index)
+            for index, name in enumerate(("one", "two", "three"), 1)
+        ]
+        screen = FakeScreen(size=(10, 30))
+
+        with (
+            patch.dict("mtmux.sidebar._COLOR", {"drag": 123}, clear=True),
+            patch("mtmux.sidebar._ascii", return_value=False),
+        ):
+            sidebar._draw_entries(
+                screen, entries, 0, 9, 30, set(), None, drag_target_entry=1
+            )
+
+        rows = {
+            name: next(call[1] for call in screen.calls if call[0] == "addnstr" and name in call[3])
+            for name in ("one", "two", "three")
+        }
+        target_attr = next(
+            call[5] for call in screen.calls if call[0] == "addnstr" and "two" in call[3]
+        )
+        indicators = [
+            (call[1], call[5])
+            for call in screen.calls
+            if call[0] == "addnstr" and call[3] == "─" * 30
+        ]
+        self.assertEqual(rows, {"one": 1, "two": 4, "three": 5})
+        self.assertEqual(target_attr, 123)
+        self.assertEqual(indicators, [(3, 123)])
+
     def test_entry_at_row_ignores_non_selectable_and_non_entry_areas(self):
         entries = [
             Entry("LOCAL", "header"),
