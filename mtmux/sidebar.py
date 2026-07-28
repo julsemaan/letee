@@ -1316,6 +1316,8 @@ def run(stdscr: curses.window) -> None:
     add_col: int | None = None
     drag_scroll_direction = 0
     next_drag_scroll: float | None = None
+    pending_key: int | None = None
+    pending_mouse: tuple[int, int, int, int, int] | None = None
     stdscr.timeout(UI_POLL_INTERVAL_MS)
 
     def show_status(message: str) -> None:
@@ -1446,7 +1448,10 @@ def run(stdscr: curses.window) -> None:
                     )
                 rendered = render_state
             try:
-                key = stdscr.getch()
+                if pending_key is None:
+                    key = stdscr.getch()
+                else:
+                    key, pending_key = pending_key, None
             except KeyboardInterrupt:
                 if state.add_view is None:
                     raise
@@ -1488,7 +1493,9 @@ def run(stdscr: curses.window) -> None:
                 continue
             if key == curses.KEY_MOUSE:
                 try:
-                    _, mouse_col, row, _, mouse_state = curses.getmouse()
+                    mouse_event = pending_mouse or curses.getmouse()
+                    pending_mouse = None
+                    _, mouse_col, row, _, mouse_state = mouse_event
                 except (curses.error, TypeError, ValueError):
                     continue
                 if not isinstance(row, int) or not isinstance(mouse_state, int):
@@ -1551,30 +1558,49 @@ def run(stdscr: curses.window) -> None:
                             continue
                     else:
                         continue
-                if mouse_state & (getattr(curses, "BUTTON4_PRESSED", 0) or 0):
-                    if state.scroll_offset is None:
-                        view_index = _view_index(entries, state.selected_index, current_target, dimmed)
-                        start, _ = _viewport(entries, view_index, stdscr.getmaxyx()[0] - footer_height)
-                        state.scroll_offset = start
-                    state.scroll_offset = max(0, state.scroll_offset - 1)
-                    continue
-                elif mouse_state & (getattr(curses, "BUTTON5_PRESSED", 0) or 0):
-                    if state.scroll_offset is None:
-                        view_index = _view_index(entries, state.selected_index, current_target, dimmed)
-                        start, _ = _viewport(entries, view_index, stdscr.getmaxyx()[0] - footer_height)
-                        state.scroll_offset = start
-                    # ponytail: compute max scroll by finding last start that fits one entry
-                    body = max(1, stdscr.getmaxyx()[0] - footer_height - 2)
-                    row_offsets = [0]
-                    for entry in entries:
-                        row_offsets.append(row_offsets[-1] + _entry_height(entry))
-                    total = row_offsets[-1]
-                    max_offset = 0
-                    for i in range(len(entries)):
-                        if total - row_offsets[i] <= body:
-                            max_offset = i
-                            break
-                    state.scroll_offset = min(max_offset, state.scroll_offset + 1)
+                wheel_up = getattr(curses, "BUTTON4_PRESSED", 0) or 0
+                wheel_down = getattr(curses, "BUTTON5_PRESSED", 0) or 0
+                if mouse_state & (wheel_up | wheel_down):
+                    # ponytail: drain queued wheel events before slow tmux polling so direction changes stay responsive.
+                    stdscr.timeout(0)
+                    try:
+                        while True:
+                            if state.scroll_offset is None:
+                                view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                                start, _ = _viewport(entries, view_index, stdscr.getmaxyx()[0] - footer_height)
+                                state.scroll_offset = start
+                            if mouse_state & wheel_up:
+                                state.scroll_offset = max(0, state.scroll_offset - 1)
+                            else:
+                                body = max(1, stdscr.getmaxyx()[0] - footer_height - 2)
+                                row_offsets = [0]
+                                for entry in entries:
+                                    row_offsets.append(row_offsets[-1] + _entry_height(entry))
+                                total = row_offsets[-1]
+                                max_offset = 0
+                                for i in range(len(entries)):
+                                    if total - row_offsets[i] <= body:
+                                        max_offset = i
+                                        break
+                                state.scroll_offset = min(max_offset, state.scroll_offset + 1)
+
+                            next_key = stdscr.getch()
+                            if next_key != curses.KEY_MOUSE:
+                                pending_key = next_key if next_key != -1 else None
+                                break
+                            try:
+                                next_mouse = curses.getmouse()
+                                _, _, next_row, _, next_state = next_mouse
+                            except (curses.error, TypeError, ValueError):
+                                break
+                            if not isinstance(next_row, int) or not isinstance(next_state, int):
+                                break
+                            if not next_state & (wheel_up | wheel_down):
+                                pending_key, pending_mouse = curses.KEY_MOUSE, next_mouse
+                                break
+                            mouse_state = next_state
+                    finally:
+                        stdscr.timeout(UI_POLL_INTERVAL_MS)
                     continue
                 if row == 0 and add_col is not None and isinstance(mouse_col, int) and mouse_col >= add_col:
                     if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):

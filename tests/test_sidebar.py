@@ -2352,6 +2352,35 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         offsets = [off for _, off in captured if off is not None]
         self.assertTrue(len(offsets) >= 1)  # scroll_offset was set
 
+    def test_queued_wheel_reversal_is_processed_before_next_poll(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
+        captured = []
+        mouse_events = [
+            (0, 0, 0, 0, curses.BUTTON4_PRESSED),
+            (0, 0, 0, 0, curses.BUTTON4_PRESSED),
+            (0, 0, 0, 0, curses.BUTTON5_PRESSED),
+        ]
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [ord("q")], size=(8, 30))
+
+        def draw_spy(*args, **kwargs):
+            captured.append(args[12] if len(args) > 12 else None)
+            return (2, None)
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None) as current_target,
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", side_effect=mouse_events),
+        ):
+            run(screen)
+
+        self.assertEqual(captured, [None, 1])
+        self.assertLess(current_target.call_count, len(mouse_events) + 1)
+
     def test_j_key_resets_scroll_offset(self):
         entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(5)]
         captured = []
