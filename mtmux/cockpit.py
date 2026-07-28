@@ -60,7 +60,9 @@ Examples
 
 def _self_command(*args: str) -> str:
     command = [sys.executable]
-    if not getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False):
+        command = ["env", "PYINSTALLER_RESET_ENVIRONMENT=1", *command]
+    else:
         command += ["-m", "mtmux"]
     return shlex.join((*command, *args))
 
