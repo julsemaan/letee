@@ -19,6 +19,7 @@ from .names import PaneTarget, Target, validate_name
 
 
 UI_POLL_INTERVAL_MS = 50
+DRAG_SCROLL_INTERVAL = 0.2
 COCKPIT_BELL_POLL_INTERVAL = 0.5
 LAYOUT_REPAIR_INTERVAL = 0.5
 UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -1312,6 +1313,8 @@ def run(stdscr: curses.window) -> None:
     rendered: tuple[object, ...] | None = None
     footer_height = 0
     add_col: int | None = None
+    drag_scroll_direction = 0
+    next_drag_scroll: float | None = None
     stdscr.timeout(UI_POLL_INTERVAL_MS)
 
     def show_status(message: str) -> None:
@@ -1331,9 +1334,59 @@ def run(stdscr: curses.window) -> None:
         _sync_agent_selection(state, agent_entries)
         state.scroll_offset = None
 
+    def finish_drag() -> bool:
+        nonlocal drag_scroll_direction, next_drag_scroll
+        source, target_index = state.drag_source_index, state.drag_target_index
+        activate = target_index is None or source == target_index
+        if source is not None and target_index is not None and not activate:
+            if 0 <= source < len(state.favorites) and 0 <= target_index < len(state.favorites):
+                target = state.favorites.pop(source)
+                state.favorites.insert(target_index, target)
+                _execute(
+                    Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()}"),
+                    state, poller, status_timeout,
+                )
+                rebuild()
+        state.drag_source_index = None
+        state.drag_target_index = None
+        drag_scroll_direction = 0
+        next_drag_scroll = None
+        return activate
+
     try:
         while True:
             now = time.monotonic()
+            if state.drag_source_index is not None and not _pane_active():
+                finish_drag()
+            if (
+                state.drag_source_index is not None
+                and drag_scroll_direction
+                and next_drag_scroll is not None
+                and now >= next_drag_scroll
+            ):
+                h = stdscr.getmaxyx()[0]
+                footer_top = h - footer_height
+                session_top = 3 if state.filtering else 2
+                has_agents = any(entry.kind == "agent" for entry in agent_entries)
+                minimum_agent_rows = 1 + (2 if has_agents else 1)
+                available = footer_top - session_top - 1
+                wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
+                agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
+                separator = footer_top if state.add_view is not None else footer_top - agent_body - 1
+                view_index = _view_index(entries, state.selected_index, _current_target(), False)
+                start, end = _viewport(entries, view_index, separator - session_top + 2, state.scroll_offset)
+                can_scroll = start > 0 if drag_scroll_direction < 0 else end < len(entries)
+                if can_scroll:
+                    state.scroll_offset = max(0, start + drag_scroll_direction)
+                    start, end = _viewport(entries, view_index, separator - session_top + 2, state.scroll_offset)
+                    edge = start if drag_scroll_direction < 0 else end - 1
+                    target_index = _entry_to_fav_index(entries, edge)
+                    if target_index is not None:
+                        state.drag_target_index = target_index
+                    next_drag_scroll += DRAG_SCROLL_INTERVAL
+                else:
+                    drag_scroll_direction = 0
+                    next_drag_scroll = None
             if state.status_deadline is not None and now >= state.status_deadline:
                 state.status = ""
                 state.status_deadline = None
@@ -1466,7 +1519,20 @@ def run(stdscr: curses.window) -> None:
                 _b1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
                 _b1_clicked = getattr(curses, "BUTTON1_CLICKED", 0) or 0
                 if state.drag_source_index is not None:
+                    if not isinstance(mouse_col, int) or not 0 <= mouse_col < stdscr.getmaxyx()[1] or not 0 <= row < h:
+                        finish_drag()
+                        continue
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                    start, end = _viewport(
+                        entries, view_index, separator - (3 if state.filtering else 2) + 2,
+                        state.scroll_offset,
+                    )
+                    top = 3 if state.filtering else 2
+                    bottom_marker_row = top + int(start > 0) + sum(_entry_height(entry) for entry in entries[start:end])
+                    direction = -1 if start > 0 and row == top else 1 if end < len(entries) and row == bottom_marker_row else 0
+                    if direction != drag_scroll_direction:
+                        drag_scroll_direction = direction
+                        next_drag_scroll = now + DRAG_SCROLL_INTERVAL if direction else None
                     idx = _entry_at_row(
                         entries, view_index, row, separator + 1, 0,
                         3 if state.filtering else 2,
@@ -1477,18 +1543,7 @@ def run(stdscr: curses.window) -> None:
                         if fav_idx is not None and (state.drag_target_index is not None or fav_idx != state.drag_source_index):
                             state.drag_target_index = fav_idx
                     if mouse_state & (_b1_released | _b1_clicked):
-                        activate = state.drag_target_index is None or state.drag_source_index == state.drag_target_index
-                        if state.drag_target_index is not None and not activate:
-                            src = state.drag_source_index
-                            tgt = state.drag_target_index
-                            if 0 <= src < len(state.favorites) and 0 <= tgt < len(state.favorites):
-                                target = state.favorites.pop(src)
-                                state.favorites.insert(tgt, target)
-                                effect = Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()}")
-                                _execute(effect, state, poller, status_timeout)
-                                rebuild()
-                        state.drag_source_index = None
-                        state.drag_target_index = None
+                        activate = finish_drag()
                         if activate:
                             mouse_state = _b1_clicked
                         else:

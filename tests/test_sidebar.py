@@ -1554,6 +1554,39 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual(drag_targets, [None, None])
 
+    def test_drag_hovering_down_more_scrolls_without_more_motion(self):
+        targets = [Target("local", str(i)) for i in range(4)]
+        entries = [Entry(str(i), "session", target, tracked=True) for i, target in enumerate(targets)]
+        expected = (targets[1], targets[2], targets[0], targets[3])
+        screen = FakeScreen(
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, curses.KEY_MOUSE, ord("q")],
+            size=(10, 30),
+        )
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, -1, -1, 0, curses.REPORT_MOUSE_POSITION),
+                ],
+            ),
+            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0.01, 0.25, 0.5, 0.51, 0.6] + [1] * 20),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=targets),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            run(screen)
+
+        save_sessions.assert_called_once_with(expected)
+
     def test_drag_motion_reorders_tracked_sessions(self):
         first = Target("local", "one")
         second = Target("local", "two")
