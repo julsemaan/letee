@@ -1,0 +1,27 @@
+{
+  "packages": [
+    "python311@latest"
+  ],
+  "shell": {
+    "init_hook": [
+      "python3 -m pip install --user -e '.[dev]' --quiet 2>/dev/null || true"
+    ],
+    "scripts": {
+      "test": ["make test"],
+      "lint": ["make lint"],
+      "coverage": ["make coverage"],
+      "binary": [
+        "echo 'Warning: local build links Nix glibc, binary may not be portable. Use: devbox run binary-docker' >&2",
+        "make binary"
+      ],
+      "binary-check": [
+        "echo 'Warning: local build links Nix glibc, binary may not be portable. Use: devbox run binary-docker' >&2",
+        "make binary-check"
+      ],
+      "binary-docker": [
+        "echo 'Building portable Linux binary via manylinux Docker...'",
+        "make binary-docker"
+      ]
+    }
+  }
+}
