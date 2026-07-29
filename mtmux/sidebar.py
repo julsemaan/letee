@@ -692,14 +692,22 @@ class EffectRunner:
     def __init__(self) -> None:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mtmux-action")
         self._future: Future[EffectResult] | None = None
+        self._effect: Effect | None = None
 
     @property
     def busy(self) -> bool:
         return self._future is not None
 
+    @property
+    def blocks_favorite_changes(self) -> bool:
+        return self._effect is not None and self._effect.kind in (
+            "add_switch", "create", "kill"
+        )
+
     def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
         if self._future is not None:
             return False
+        self._effect = effect
         self._future = self._executor.submit(_perform_effect, effect, favorites)
         return True
 
@@ -707,6 +715,7 @@ class EffectRunner:
         if self._future is None or not self._future.done():
             return None
         future, self._future = self._future, None
+        self._effect = None
         return future.result()
 
     def close(self) -> None:
@@ -1542,6 +1551,8 @@ def run(stdscr: curses.window) -> None:
         return actions.submit(effect, tuple(state.favorites))
 
     def dispatch(effect: Effect) -> bool:
+        if effect.kind == "save_favorites":
+            return _execute(effect, state, poller, status_timeout)
         if effect.kind in ("quit", "status"):
             return _apply_effect(
                 EffectResult(effect, tuple(state.favorites)), state, poller, status_timeout
@@ -1569,8 +1580,8 @@ def run(stdscr: curses.window) -> None:
         source, target_index = state.drag_source_index, state.drag_target_index
         activate = target_index is None or source == target_index
         if source is not None and target_index is not None and not activate:
-            if actions.busy:
-                show_status("another action is still running")
+            if actions.blocks_favorite_changes:
+                show_status("another action is still changing sessions")
             elif 0 <= source < len(state.favorites) and 0 <= target_index < len(state.favorites):
                 target = state.favorites.pop(source)
                 state.favorites.insert(target_index, target)
@@ -1977,13 +1988,13 @@ def run(stdscr: curses.window) -> None:
                     state.selected_target = entries[state.selected_index].target
                     state.selected_tracked = entries[state.selected_index].tracked
             elif key == ord("K"):
-                if actions.busy:
-                    show_status("another action is still running")
+                if actions.blocks_favorite_changes:
+                    show_status("another action is still changing sessions")
                 else:
                     effect = _transition(state, "move_session_up")
             elif key == ord("J"):
-                if actions.busy:
-                    show_status("another action is still running")
+                if actions.blocks_favorite_changes:
+                    show_status("another action is still changing sessions")
                 else:
                     effect = _transition(state, "move_session_down")
             elif key == ord("a"):
@@ -1993,8 +2004,8 @@ def run(stdscr: curses.window) -> None:
             elif key == ord("r") and state.add_view is None and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target:
-                    if actions.busy:
-                        show_status("another action is still running")
+                    if actions.blocks_favorite_changes:
+                        show_status("another action is still changing sessions")
                     else:
                         effect = _transition(state, "remove_session", entry.target)
             elif key == ord("/"):

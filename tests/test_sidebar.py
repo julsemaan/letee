@@ -1745,6 +1745,35 @@ class SidebarDrawTest(unittest.TestCase):
 
         save_sessions.assert_called_once_with(expected)
 
+    def test_keyboard_reorder_is_not_blocked_by_slow_switch(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
+        poller.tick.return_value = False
+        release = threading.Event()
+        screen = FakeScreen([curses.KEY_ENTER, ord("K"), ord("q")], size=(12, 30))
+        timer = threading.Timer(0.05, release.set)
+
+        with (
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._current_target", return_value=second),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            timer.start()
+            try:
+                run(screen)
+            finally:
+                release.set()
+                timer.cancel()
+
+        save_sessions.assert_called_once_with((second, first))
+
     def test_drag_motion_reorders_tracked_sessions(self):
         first = Target("local", "one")
         second = Target("local", "two")
@@ -1774,6 +1803,58 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar.save_sessions") as save_sessions,
         ):
             run(screen)
+
+        save_sessions.assert_called_once_with((second, first))
+
+    def test_mouse_reorder_is_not_blocked_by_slow_switch(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        entries = [
+            Entry("one", "session", first, tracked=True),
+            Entry("two", "session", second, tracked=True),
+        ]
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
+        poller.tick.return_value = False
+        release = threading.Event()
+        screen = FakeScreen(
+            [
+                curses.KEY_ENTER,
+                curses.KEY_MOUSE,
+                curses.KEY_MOUSE,
+                curses.KEY_MOUSE,
+                ord("q"),
+            ],
+            size=(12, 30),
+        )
+        timer = threading.Timer(0.05, release.set)
+
+        with (
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 4, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=first),
+            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            timer.start()
+            try:
+                run(screen)
+            finally:
+                release.set()
+                timer.cancel()
 
         save_sessions.assert_called_once_with((second, first))
 
