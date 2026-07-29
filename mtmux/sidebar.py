@@ -1619,7 +1619,10 @@ def run(stdscr: curses.window) -> None:
                 if poller.pane_active:
                     drag_seen_active = True
                 elif drag_seen_active:
-                    finish_drag()
+                    if finish_drag():
+                        effect = _transition(state, "switch")
+                        if effect is not None:
+                            dispatch(effect)
             if (
                 state.drag_source_index is not None
                 and drag_scroll_direction
