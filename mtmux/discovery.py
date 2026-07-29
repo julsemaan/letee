@@ -246,8 +246,11 @@ def local_snapshot() -> SourceSnapshot:
             ["tmux", "list-panes", "-a", "-F", PANES_FORMAT],
             text=True,
             capture_output=True,
+            timeout=5,
             env=_clean_env(),
         )
+    except subprocess.TimeoutExpired:
+        return SourceSnapshot(False, (), frozenset(), "timed out")
     except OSError as error:
         return SourceSnapshot(False, (), frozenset(), error.strerror or str(error))
     snapshot = _source_result(proc.returncode, proc.stdout, proc.stderr, kind="local")

@@ -58,6 +58,7 @@ class SessionOperationsTest(unittest.TestCase):
             check=True,
             capture_output=True,
             text=True,
+            timeout=10,
             env={"PATH": "x"},
         )
 
@@ -74,6 +75,7 @@ class SessionOperationsTest(unittest.TestCase):
             check=True,
             capture_output=True,
             text=True,
+            timeout=10,
             env={"PATH": "x"},
         )
 
@@ -110,6 +112,14 @@ class SessionOperationsTest(unittest.TestCase):
             with self.subTest(operation=operation), patch("mtmux.sessions.subprocess.run", side_effect=error):
                 with self.assertRaisesRegex(SystemExit, rf"^{operation} .* failed: permission denied$"):
                     action()
+
+    def test_command_timeout_includes_operation_and_target(self):
+        with patch(
+            "mtmux.sessions.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["ssh"], 10),
+        ):
+            with self.assertRaisesRegex(SystemExit, r"^create ssh:dev:work timed out$"):
+                create(Target("ssh", "work", "dev"))
 
 
 if __name__ == "__main__":
