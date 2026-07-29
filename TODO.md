@@ -4,6 +4,7 @@
 - [ ] Allow having multiple mtmux
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
+- [ ] Get rid of the idle state in the left pane and instead use the cursor to show if it is in there. Probably need to make the cursor start somewhere consistent for predictability
 
 ## Done
 
