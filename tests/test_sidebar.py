@@ -1818,6 +1818,56 @@ class SidebarDrawTest(unittest.TestCase):
 
         save_sessions.assert_called_once_with((second, first))
 
+    def test_drag_from_unfocused_sidebar_waits_for_focus_poll(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        entries = [
+            Entry("one", "session", first, tracked=True),
+            Entry("two", "session", second, tracked=True),
+        ]
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one", "two")),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=False,
+        )
+
+        def tick(_now):
+            if poller.tick.call_count == 2:
+                poller.pane_active = True
+            return False
+
+        poller.tick.side_effect = tick
+        screen = FakeScreen(
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")],
+            size=(12, 30),
+        )
+
+        with (
+            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 4, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            run(screen)
+
+        save_sessions.assert_called_once_with((second, first))
+
     def test_mouse_reorder_is_not_blocked_by_slow_switch(self):
         first = Target("local", "one")
         second = Target("local", "two")

@@ -1540,6 +1540,7 @@ def run(stdscr: curses.window) -> None:
     add_col: int | None = None
     drag_scroll_direction = 0
     next_drag_scroll: float | None = None
+    drag_seen_active = False
     pending_key: int | None = None
     pending_mouse: tuple[int, int, int, int, int] | None = None
     stdscr.timeout(UI_POLL_INTERVAL_MS)
@@ -1576,7 +1577,7 @@ def run(stdscr: curses.window) -> None:
         state.scroll_offset = None
 
     def finish_drag() -> bool:
-        nonlocal drag_scroll_direction, next_drag_scroll
+        nonlocal drag_scroll_direction, next_drag_scroll, drag_seen_active
         source, target_index = state.drag_source_index, state.drag_target_index
         activate = target_index is None or source == target_index
         if source is not None and target_index is not None and not activate:
@@ -1595,6 +1596,7 @@ def run(stdscr: curses.window) -> None:
         state.drag_target_index = None
         drag_scroll_direction = 0
         next_drag_scroll = None
+        drag_seen_active = False
         return activate
 
     try:
@@ -1612,8 +1614,11 @@ def run(stdscr: curses.window) -> None:
                 poller.observe_effect(result)
                 rebuild()
             current_target = poller.current_target
-            if state.drag_source_index is not None and not poller.pane_active:
-                finish_drag()
+            if state.drag_source_index is not None:
+                if poller.pane_active:
+                    drag_seen_active = True
+                elif drag_seen_active:
+                    finish_drag()
             if (
                 state.drag_source_index is not None
                 and drag_scroll_direction
@@ -1910,6 +1915,7 @@ def run(stdscr: curses.window) -> None:
                         if fav_idx is not None:
                             state.drag_source_index = fav_idx
                             state.drag_target_index = None
+                            drag_seen_active = poller.pane_active
                         continue
                     if _mouse_activates(mouse_state):
                         key = curses.KEY_ENTER
