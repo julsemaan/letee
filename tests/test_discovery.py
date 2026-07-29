@@ -69,6 +69,13 @@ class DiscoverySnapshotTest(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][:3], ["tmux", "list-panes", "-a"])
 
+    def test_local_snapshot_timeout_is_reported_without_hanging(self):
+        with patch(
+            "mtmux.discovery.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["tmux"], 5),
+        ):
+            self.assertEqual(local_snapshot().error, "timed out")
+
     def test_local_no_server_is_available_empty_and_other_failure_is_explicit(self):
         no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/default\n")
         missing_socket = Mock(

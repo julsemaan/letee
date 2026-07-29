@@ -13,7 +13,7 @@ def tmux(*args: str, check: bool = True, capture: bool = False, config: Path | N
     if config is not None:
         cmd += ["-f", str(config)]
     cmd += list(args)
-    return subprocess.run(cmd, text=True, capture_output=capture, check=check)
+    return subprocess.run(cmd, text=True, capture_output=capture, check=check, timeout=5)
 
 
 def out(*args: str, check: bool = True) -> str:

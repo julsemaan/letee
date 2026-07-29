@@ -4,10 +4,13 @@ import curses
 import locale
 import os
 import socket
+import subprocess
 import textwrap
 import threading
 import time
 import unicodedata
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
@@ -20,8 +23,8 @@ from .names import PaneTarget, Target, validate_name
 
 UI_POLL_INTERVAL_MS = 50
 DRAG_SCROLL_INTERVAL = 0.2
-COCKPIT_BELL_POLL_INTERVAL = 0.5
 LAYOUT_REPAIR_INTERVAL = 0.5
+STATUS_POLL_INTERVAL = 0.1
 UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 ASCII_SPINNER = "|/-\\"
 UNICODE_STATUS_ICONS = {
@@ -36,7 +39,11 @@ ASCII_STATUS_ICONS = {
 
 @dataclass(frozen=True)
 class Effect:
-    kind: Literal["switch", "switch_pane", "add_switch", "create", "kill", "help", "save_favorites", "status", "quit"]
+    kind: Literal[
+        "switch", "switch_pane", "add_switch", "create", "kill", "help",
+        "save_favorites", "status", "quit", "show_reconnecting", "show_missing",
+        "show_unavailable",
+    ]
     target: Target | PaneTarget | None = None
     favorites: tuple[Target, ...] | None = None
     message: str = ""
@@ -84,6 +91,23 @@ class Entry:
     status: str | None = None
     runtime_updated_at: datetime | None = None
     task_status_timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class EffectResult:
+    effect: Effect
+    favorites: tuple[Target, ...]
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class StatusResult:
+    snapshot: SessionSnapshot
+    current_target: Target | None
+    bell_target: Target | None
+    current_agent: str | None
+    pane_active: bool
+    generation: int
 
 
 _COLOR: dict[str, int] = {}
@@ -189,24 +213,33 @@ def _should_show_unavailable(target: Target, snapshot: SessionSnapshot) -> bool:
 
 
 def _sync_active_session(
-    target: Target | None, snapshot: SessionSnapshot, interrupted: Target | None
+    target: Target | None,
+    snapshot: SessionSnapshot,
+    interrupted: Target | None,
+    submit: Callable[[Effect], bool] | None = None,
 ) -> Target | None:
     if target is None:
         return None
+
+    def run(effect: Effect) -> bool:
+        if submit is not None:
+            return bool(submit(effect))
+        result = _perform_effect(effect, ())
+        if result.error:
+            raise SystemExit(result.error)
+        return True
+
     status = _target_status(target, snapshot)
     if status in ("connecting…", "reconnecting…"):
-        if interrupted != target:
-            cockpit.show_reconnecting(target)
+        if interrupted != target and not run(Effect("show_reconnecting", target)):
+            return interrupted
         return target
     if status is None and interrupted == target:
-        cockpit.switch(target, sessions.attach_command(target))
-        return None
+        return interrupted if not run(Effect("switch", target)) else None
     if status == "missing" and interrupted != target:
-        cockpit.show_missing(target)
-        return target
+        return target if run(Effect("show_missing", target)) else interrupted
     if status == "unavailable" and interrupted != target:
-        cockpit.show_unavailable(target)
-        return target
+        return target if run(Effect("show_unavailable", target)) else interrupted
     return interrupted if interrupted == target else None
 
 
@@ -553,60 +586,233 @@ def _set_status(state: SidebarState, message: str, timeout: float) -> None:
     state.status_deadline = time.monotonic() + timeout
 
 
-def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, status_timeout: float) -> bool:
+def _planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[Target, ...]:
+    if effect.kind in ("add_switch", "create") and isinstance(effect.target, Target):
+        return favorites if effect.target in favorites else (*favorites, effect.target)
+    if effect.kind == "kill" and isinstance(effect.target, Target):
+        return tuple(target for target in favorites if target != effect.target)
+    if effect.kind == "save_favorites":
+        return effect.favorites or ()
+    return favorites
+
+
+def _effect_error(error: BaseException) -> str:
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "operation timed out"
+    if isinstance(error, subprocess.CalledProcessError):
+        return (error.stderr or error.stdout or "").strip() or f"exit status {error.returncode}"
+    if isinstance(error, OSError):
+        return error.strerror or str(error)
+    return str(error)
+
+
+def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
+    planned = _planned_favorites(effect, favorites)
     try:
         if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
-            if effect.kind == "add_switch" and effect.target not in state.favorites:
-                state.favorites.append(effect.target)
-                save_sessions(state.favorites)
+            if effect.kind == "add_switch" and planned != favorites:
+                save_sessions(list(planned))
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
-            state.filter_text = ""
-            state.filtering = False
-            state.selected_target = effect.target
-            if effect.kind == "add_switch":
-                _reset_add(state)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
-            state.selected_agent_key = (effect.target, effect.message)
-            state.agent_alerts.discard(state.selected_agent_key)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
-            if effect.target not in state.favorites:
-                state.favorites.append(effect.target)
-                save_sessions(state.favorites)
+            if planned != favorites:
+                save_sessions(list(planned))
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
-            _reset_add(state)
-            state.pending_selection = effect.target
-            poller.refresh()
-            _set_status(state, f"added {effect.target.session}", status_timeout)
-        elif effect.kind == "kill" and effect.target:
+        elif effect.kind == "kill" and isinstance(effect.target, Target):
             sessions.kill(effect.target)
-            if effect.target in state.favorites:
-                state.favorites.remove(effect.target)
-                save_sessions(state.favorites)
-            poller.discard(effect.target)
-            poller.refresh()
-            state.selected_target = effect.target
-            _set_status(state, f"killed {effect.target.format()}", status_timeout)
+            if planned != favorites:
+                save_sessions(list(planned))
         elif effect.kind == "help":
             cockpit.show_help()
+        elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
+            cockpit.show_reconnecting(effect.target)
+        elif effect.kind == "show_missing" and isinstance(effect.target, Target):
+            cockpit.show_missing(effect.target)
+        elif effect.kind == "show_unavailable" and isinstance(effect.target, Target):
+            cockpit.show_unavailable(effect.target)
         elif effect.kind == "save_favorites":
-            save_sessions(effect.favorites or ())
-            _set_status(state, effect.message, status_timeout)
-        elif effect.kind == "status":
-            _set_status(state, effect.message, status_timeout)
-        elif effect.kind == "quit":
-            return True
-    except SystemExit as error:
+            save_sessions(planned)
+    except (SystemExit, OSError, subprocess.SubprocessError) as error:
+        return EffectResult(effect, planned, _effect_error(error))
+    return EffectResult(effect, planned)
+
+
+def _apply_effect(
+    result: EffectResult,
+    state: SidebarState,
+    poller: DiscoveryPoller,
+    status_timeout: float,
+) -> bool:
+    effect = result.effect
+    if result.error:
         if effect.kind == "create" and isinstance(effect.target, Target):
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.target.session
-        _set_status(state, str(error), status_timeout)
-    return False
+        _set_status(state, result.error, status_timeout)
+        return False
+    if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
+        state.filter_text = ""
+        state.filtering = False
+        state.selected_target = effect.target
+        if effect.kind == "add_switch":
+            if effect.target not in state.favorites:
+                state.favorites.append(effect.target)
+            _reset_add(state)
+    elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
+        state.selected_agent_key = (effect.target, effect.message)
+        state.agent_alerts.discard(state.selected_agent_key)
+    elif effect.kind == "create" and isinstance(effect.target, Target):
+        if effect.target not in state.favorites:
+            state.favorites.append(effect.target)
+        _reset_add(state)
+        state.pending_selection = effect.target
+        poller.refresh()
+        _set_status(state, f"added {effect.target.session}", status_timeout)
+    elif effect.kind == "kill" and isinstance(effect.target, Target):
+        if effect.target in state.favorites:
+            state.favorites.remove(effect.target)
+        poller.discard(effect.target)
+        poller.refresh()
+        state.selected_target = effect.target
+        _set_status(state, f"killed {effect.target.format()}", status_timeout)
+    elif effect.kind == "save_favorites":
+        _set_status(state, effect.message, status_timeout)
+    elif effect.kind == "status":
+        _set_status(state, effect.message, status_timeout)
+    return effect.kind == "quit"
+
+
+def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, status_timeout: float) -> bool:
+    return _apply_effect(_perform_effect(effect, tuple(state.favorites)), state, poller, status_timeout)
+
+
+class EffectRunner:
+    def __init__(self) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mtmux-action")
+        self._future: Future[EffectResult] | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._future is not None
+
+    def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
+        if self._future is not None:
+            return False
+        self._future = self._executor.submit(_perform_effect, effect, favorites)
+        return True
+
+    def poll(self) -> EffectResult | None:
+        if self._future is None or not self._future.done():
+            return None
+        future, self._future = self._future, None
+        return future.result()
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _current_target() -> Target | None:
     return cockpit.current_target()
+
+
+class AsyncStatusPoller:
+    def __init__(self, poller: DiscoveryPoller, current_target: Target | None) -> None:
+        self._poller = poller
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mtmux-status")
+        self._future: Future[StatusResult] | None = None
+        self._commands: list[tuple[str, Target | None]] = []
+        self._next_poll = 0.0
+        self.snapshot = poller.snapshot
+        self.current_target = current_target
+        self.bell_target: Target | None = None
+        self.current_agent: str | None = None
+        self.pane_active = True
+        self._generation = 0
+
+    def _sample(
+        self,
+        commands: tuple[tuple[str, Target | None], ...],
+        generation: int,
+    ) -> StatusResult:
+        try:
+            for command, target in commands:
+                if command == "discard" and target is not None:
+                    self._poller.discard(target)
+                elif command == "refresh":
+                    self._poller.refresh()
+            current_target = _current_target()
+            active_host = current_target.host if current_target and current_target.kind == "ssh" else None
+            self._poller.tick(active_host)
+        except (OSError, SystemExit, subprocess.SubprocessError):
+            current_target = self.current_target
+        try:
+            bell_target = cockpit.bell_target()
+        except (OSError, SystemExit, subprocess.SubprocessError):
+            bell_target = self.bell_target
+        try:
+            current_agent = cockpit.current_agent()
+        except (OSError, SystemExit, subprocess.SubprocessError):
+            current_agent = self.current_agent
+        try:
+            pane_active = _pane_active()
+        except (OSError, SystemExit, subprocess.SubprocessError):
+            pane_active = self.pane_active
+        return StatusResult(
+            self._poller.snapshot,
+            current_target,
+            bell_target,
+            current_agent,
+            pane_active,
+            generation,
+        )
+
+    def tick(self, now: float) -> bool:
+        changed = False
+        if self._future is not None and self._future.done():
+            result = self._future.result()
+            self._future = None
+            changed = result.snapshot != self.snapshot
+            self.snapshot = result.snapshot
+            if result.generation == self._generation:
+                self.current_target = result.current_target
+                self.bell_target = result.bell_target
+                self.current_agent = result.current_agent
+                self.pane_active = result.pane_active
+        if self._future is None and now >= self._next_poll:
+            commands, self._commands = tuple(self._commands), []
+            self._future = self._executor.submit(
+                self._sample, commands, self._generation
+            )
+            self._next_poll = now + STATUS_POLL_INTERVAL
+        return changed
+
+    def observe_effect(self, result: EffectResult) -> None:
+        if result.error:
+            return
+        target = result.effect.target
+        if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
+            self.current_target = target
+            self.current_agent = None
+            self._generation += 1
+        elif result.effect.kind == "switch_pane" and isinstance(target, PaneTarget):
+            self.current_target = target.target
+            self.current_agent = result.effect.message or None
+            self._generation += 1
+
+    def refresh(self) -> bool:
+        self._commands.append(("refresh", None))
+        self._next_poll = 0.0
+        return False
+
+    def discard(self, target: Target) -> None:
+        self._commands.append(("discard", target))
+        self._next_poll = 0.0
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        self._poller.close()
 
 
 def _creation_conflicts(state: SidebarState, existing_sessions: tuple[Target, ...]) -> bool:
@@ -720,10 +926,11 @@ def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: i
         for end in range(selected + 1, len(entries) + 1):
             rows = row_offsets[end] - row_offsets[start]
             used = rows + int(start > 0) + int(end < len(entries))
-            if used <= body:
-                score = (rows, end - start, -abs((start + end - 1) - 2 * selected))
-                if score > best_score:
-                    best, best_score = (start, end), score
+            if used > body:
+                break
+            score = (rows, end - start, -abs((start + end - 1) - 2 * selected))
+            if score > best_score:
+                best, best_score = (start, end), score
     return best
 
 
@@ -763,6 +970,13 @@ def _entry_to_fav_index(entries: list[Entry], entry_index: int) -> int | None:
     if not entries[entry_index].tracked:
         return None
     return sum(1 for e in entries[:entry_index] if e.tracked)
+
+
+def _mouse_activates(mouse_state: int) -> bool:
+    return bool(mouse_state & (
+        (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+        | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+    ))
 
 
 def _mouse_mask() -> None:
@@ -1299,8 +1513,10 @@ def run(stdscr: curses.window) -> None:
     curses.curs_set(0)
     _mouse_mask()
     status_timeout = load_status_timeout()
-    state = SidebarState(favorites=load_sessions(), selected_target=_current_target())
-    poller = DiscoveryPoller(load_hosts())
+    initial_target = _current_target()
+    state = SidebarState(favorites=load_sessions(), selected_target=initial_target)
+    poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
+    actions = EffectRunner()
     entries = _entries(state.filter_text, poller.snapshot, state.favorites)
     agent_entries = _agent_entries(poller.snapshot, state.favorites)
     agent_entries = [Entry("", "order")] + agent_entries
@@ -1309,7 +1525,6 @@ def run(stdscr: curses.window) -> None:
     _sync_selection(state, entries)
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
-    next_cockpit_bell_poll = 0.0
     unavailable_target_shown: Target | None = None
     rendered: tuple[object, ...] | None = None
     footer_height = 0
@@ -1322,6 +1537,18 @@ def run(stdscr: curses.window) -> None:
 
     def show_status(message: str) -> None:
         _set_status(state, message, status_timeout)
+
+    def queue_effect(effect: Effect) -> bool:
+        return actions.submit(effect, tuple(state.favorites))
+
+    def dispatch(effect: Effect) -> bool:
+        if effect.kind in ("quit", "status"):
+            return _apply_effect(
+                EffectResult(effect, tuple(state.favorites)), state, poller, status_timeout
+            )
+        if not queue_effect(effect):
+            show_status("another action is still running")
+        return False
 
     def rebuild() -> None:
         nonlocal entries, agent_entries
@@ -1342,13 +1569,16 @@ def run(stdscr: curses.window) -> None:
         source, target_index = state.drag_source_index, state.drag_target_index
         activate = target_index is None or source == target_index
         if source is not None and target_index is not None and not activate:
-            if 0 <= source < len(state.favorites) and 0 <= target_index < len(state.favorites):
+            if actions.busy:
+                show_status("another action is still running")
+            elif 0 <= source < len(state.favorites) and 0 <= target_index < len(state.favorites):
                 target = state.favorites.pop(source)
                 state.favorites.insert(target_index, target)
-                _execute(
-                    Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()}"),
-                    state, poller, status_timeout,
-                )
+                dispatch(Effect(
+                    "save_favorites",
+                    favorites=tuple(state.favorites),
+                    message=f"moved {target.format()}",
+                ))
                 rebuild()
         state.drag_source_index = None
         state.drag_target_index = None
@@ -1359,7 +1589,19 @@ def run(stdscr: curses.window) -> None:
     try:
         while True:
             now = time.monotonic()
-            if state.drag_source_index is not None and not _pane_active():
+            if pending_key is None:
+                stdscr.timeout(0)
+                pending_key = stdscr.getch()
+                pending_key = pending_key if pending_key != -1 else None
+                stdscr.timeout(UI_POLL_INTERVAL_MS)
+            result = actions.poll()
+            if result is not None:
+                if _apply_effect(result, state, poller, status_timeout):
+                    return
+                poller.observe_effect(result)
+                rebuild()
+            current_target = poller.current_target
+            if state.drag_source_index is not None and not poller.pane_active:
                 finish_drag()
             if (
                 state.drag_source_index is not None
@@ -1376,7 +1618,7 @@ def run(stdscr: curses.window) -> None:
                 wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
                 agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
                 separator = footer_top if state.add_view is not None else footer_top - agent_body - 1
-                view_index = _view_index(entries, state.selected_index, _current_target(), False)
+                view_index = _view_index(entries, state.selected_index, current_target, False)
                 start, end = _viewport(entries, view_index, separator - session_top + 2, state.scroll_offset)
                 can_scroll = start > 0 if drag_scroll_direction < 0 else end < len(entries)
                 if can_scroll:
@@ -1393,31 +1635,29 @@ def run(stdscr: curses.window) -> None:
             if state.status_deadline is not None and now >= state.status_deadline:
                 state.status = ""
                 state.status_deadline = None
-            current_target = _current_target()
-            active_remote_host = current_target.host if current_target and current_target.kind == "ssh" else None
             agent_alert = False
-            if poller.tick(active_remote_host):
-                unavailable_target_shown = _sync_active_session(
-                    current_target, poller.snapshot, unavailable_target_shown
-                )
+            if poller.tick(now):
+                current_target = poller.current_target
                 agent_alert = _update_agent_alerts(state, poller.snapshot, current_target)
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
+            if pending_key is None:
+                unavailable_target_shown = _sync_active_session(
+                    current_target, poller.snapshot, unavailable_target_shown, queue_effect
+                )
             selectable = _selectable(entries)
             if selectable and state.selected_index not in selectable:
                 state.selected_index = selectable[0]
-            if now >= next_cockpit_bell_poll:
-                cockpit_bell_target = cockpit.bell_target()
-                active_agent_id = cockpit.current_agent()
-                next_cockpit_bell_poll = now + COCKPIT_BELL_POLL_INTERVAL
+            cockpit_bell_target = poller.bell_target
+            active_agent_id = poller.current_agent
             bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
             active_agent_id = _focused_agent_id(poller.snapshot, current_target, active_agent_id)
             visible_bells = bell_targets - ({current_target} if current_target else set())
             if visible_bells - state.rang_bells or agent_alert:
                 curses.beep()
             state.rang_bells = bell_targets
-            dimmed = not _pane_active()
+            dimmed = not poller.pane_active
             working_agents = any(entry.status == "working" for entry in agent_entries)
             spinner_frame = _spinner_frame(now) if working_agents else None
             render_state = (
@@ -1481,10 +1721,13 @@ def run(stdscr: curses.window) -> None:
                             show_status(str(error))
                         else:
                             if effect:
-                                curses.curs_set(0)
-                                _execute(effect, state, poller, status_timeout)
-                                rebuild()
-                                break
+                                if actions.busy:
+                                    show_status("another action is still running")
+                                else:
+                                    curses.curs_set(0)
+                                    dispatch(effect)
+                                    rebuild()
+                                    break
                     _draw_name(stdscr, state, dimmed)
                     try:
                         key = stdscr.getch()
@@ -1606,7 +1849,7 @@ def run(stdscr: curses.window) -> None:
                         stdscr.timeout(UI_POLL_INTERVAL_MS)
                     continue
                 if row == 0 and add_col is not None and isinstance(mouse_col, int) and mouse_col >= add_col:
-                    if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):
+                    if _mouse_activates(mouse_state):
                         _open_add(state)
                         rebuild()
                     continue
@@ -1619,7 +1862,7 @@ def run(stdscr: curses.window) -> None:
                         state.agent_selected_index = index
                         entry = agent_entries[index]
                         state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
-                        if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0) and entry.kind == "order":
+                        if _mouse_activates(mouse_state) and entry.kind == "order":
                             # ponytail: column math on rendered string; fixed offsets per word position
                             prefix = "> Order:  " if _ascii() else "›  "
                             pri_word = "PRIORITY" if _ascii() else "Priority"
@@ -1635,7 +1878,7 @@ def run(stdscr: curses.window) -> None:
                                     rebuild()
                             continue
                         if mouse_state & (_b1_released | _b1_clicked) and entry.pane_target:
-                            _execute(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""), state, poller, status_timeout)
+                            dispatch(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""))
                         continue
                     view_index = _view_index(entries, state.selected_index, current_target, dimmed)
                     index = _entry_at_row(
@@ -1657,7 +1900,7 @@ def run(stdscr: curses.window) -> None:
                             state.drag_source_index = fav_idx
                             state.drag_target_index = None
                         continue
-                    if mouse_state & (getattr(curses, "BUTTON1_CLICKED", 0) or 0):
+                    if _mouse_activates(mouse_state):
                         key = curses.KEY_ENTER
                     else:
                         continue
@@ -1734,9 +1977,15 @@ def run(stdscr: curses.window) -> None:
                     state.selected_target = entries[state.selected_index].target
                     state.selected_tracked = entries[state.selected_index].tracked
             elif key == ord("K"):
-                effect = _transition(state, "move_session_up")
+                if actions.busy:
+                    show_status("another action is still running")
+                else:
+                    effect = _transition(state, "move_session_up")
             elif key == ord("J"):
-                effect = _transition(state, "move_session_down")
+                if actions.busy:
+                    show_status("another action is still running")
+                else:
+                    effect = _transition(state, "move_session_down")
             elif key == ord("a"):
                 _open_add(state)
                 state.focused_region = "sessions"
@@ -1744,7 +1993,10 @@ def run(stdscr: curses.window) -> None:
             elif key == ord("r") and state.add_view is None and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target:
-                    effect = _transition(state, "remove_session", entry.target)
+                    if actions.busy:
+                        show_status("another action is still running")
+                    else:
+                        effect = _transition(state, "remove_session", entry.target)
             elif key == ord("/"):
                 _open_add(state, "existing")
                 state.focused_region = "sessions"
@@ -1779,8 +2031,6 @@ def run(stdscr: curses.window) -> None:
                     continue
                 if entry.target:
                     effect = _transition(state, "add_switch" if state.add_view == "existing" else "switch", entry.target)
-                    if state.add_view == "existing":
-                        _reset_add(state)
             elif key == ord("x"):
                 if not entries:
                     continue
@@ -1794,12 +2044,13 @@ def run(stdscr: curses.window) -> None:
                     continue
                 effect = _transition(state, "kill", entry.target)
             if effect:
-                if _execute(effect, state, poller, status_timeout):
+                if dispatch(effect):
                     return
                 if effect.kind in ("switch", "create"):
                     curses.curs_set(0)
                 rebuild()
     finally:
+        actions.close()
         poller.close()
         _mouse_cleanup()
 
