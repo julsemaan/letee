@@ -1,5 +1,6 @@
 import curses
 from datetime import datetime, timedelta, timezone
+import subprocess
 import threading
 import time
 import unittest
@@ -784,6 +785,13 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.status, "create failed")
         self.assertEqual((state.creation_host, state.creation_text), ("dev", "new"))
 
+    def test_pane_timeout_status_includes_action_and_session_target(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        state = SidebarState()
+        with patch("mtmux.sidebar.cockpit.switch", side_effect=subprocess.TimeoutExpired("tmux", 10)):
+            _execute(Effect("switch_pane", pane), state, unittest.mock.Mock(), 5)
+
+        self.assertEqual(state.status, "switch_pane local:work timed out")
 
     def test_exact_active_agent_uses_active_session_color(self):
         target = Target("local", "work")

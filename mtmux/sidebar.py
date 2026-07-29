@@ -596,9 +596,10 @@ def _planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[T
     return favorites
 
 
-def _effect_error(error: BaseException) -> str:
+def _effect_error(effect: Effect, error: BaseException) -> str:
     if isinstance(error, subprocess.TimeoutExpired):
-        return "operation timed out"
+        target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
+        return f"{effect.kind}{f' {target.format()}' if isinstance(target, Target) else ''} timed out"
     if isinstance(error, subprocess.CalledProcessError):
         return (error.stderr or error.stdout or "").strip() or f"exit status {error.returncode}"
     if isinstance(error, OSError):
@@ -635,7 +636,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         elif effect.kind == "save_favorites":
             save_sessions(planned)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
-        return EffectResult(effect, planned, _effect_error(error))
+        return EffectResult(effect, planned, _effect_error(effect, error))
     return EffectResult(effect, planned)
 
 
