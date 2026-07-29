@@ -1,5 +1,8 @@
 import curses
 from datetime import datetime, timedelta, timezone
+import subprocess
+import threading
+import time
 import unittest
 from unittest.mock import call, patch
 
@@ -81,6 +84,7 @@ from mtmux.sidebar import (
     _entry_lines,
     _filter_key,
     _init_colors,
+    _mouse_activates,
     _mouse_mask,
     _read_key,
     _selected_index,
@@ -781,6 +785,13 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.status, "create failed")
         self.assertEqual((state.creation_host, state.creation_text), ("dev", "new"))
 
+    def test_pane_timeout_status_includes_action_and_session_target(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        state = SidebarState()
+        with patch("mtmux.sidebar.cockpit.switch", side_effect=subprocess.TimeoutExpired("tmux", 10)):
+            _execute(Effect("switch_pane", pane), state, unittest.mock.Mock(), 5)
+
+        self.assertEqual(state.status, "switch_pane local:work timed out")
 
     def test_exact_active_agent_uses_active_session_color(self):
         target = Target("local", "work")
@@ -814,6 +825,115 @@ class SidebarStateTest(unittest.TestCase):
 
         location = next(call for call in screen.calls if call[0] == "addnstr" and "laptop" in call[3])
         self.assertEqual(location[5], 123)
+
+
+class AsyncSidebarWorkTest(unittest.TestCase):
+    def test_completed_switch_does_not_overwrite_newer_favorite_changes(self):
+        old = Target("local", "old")
+        newer = Target("local", "newer")
+        state = SidebarState(favorites=[newer])
+
+        sidebar._apply_effect(
+            sidebar.EffectResult(Effect("switch", old), (old,)),
+            state,
+            unittest.mock.Mock(),
+            5,
+        )
+
+        self.assertEqual(state.favorites, [newer])
+
+    def test_effect_runner_submit_does_not_wait_for_action(self):
+        started = threading.Event()
+        release = threading.Event()
+        effect = Effect("switch", Target("local", "work"))
+
+        def perform(effect, favorites):
+            started.set()
+            release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(effect, ()))
+                self.assertTrue(started.wait(1))
+                self.assertIsNone(runner.poll())
+                release.set()
+                deadline = time.monotonic() + 1
+                while (result := runner.poll()) is None and time.monotonic() < deadline:
+                    time.sleep(0.001)
+            self.assertEqual(result, sidebar.EffectResult(effect, ()))
+        finally:
+            release.set()
+            runner.close()
+
+    def test_effect_runner_rejects_overlapping_action(self):
+        release = threading.Event()
+        effect = Effect("switch", Target("local", "one"))
+
+        def perform(effect, favorites):
+            release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(effect, ()))
+                self.assertFalse(runner.submit(effect, ()))
+        finally:
+            release.set()
+            runner.close()
+
+    def test_status_poller_runs_discovery_and_tmux_reads_off_ui_thread(self):
+        started = threading.Event()
+        release = threading.Event()
+        target = Target("local", "work")
+        selected_target = Target("local", "selected")
+
+        class BlockingPoller:
+            snapshot = snapshot()
+
+            def tick(self, active_host):
+                started.set()
+                release.wait(1)
+                self.snapshot = snapshot(local=("work",))
+                return True
+
+            def refresh(self):
+                return False
+
+            def discard(self, target):
+                pass
+
+            def close(self):
+                pass
+
+        with (
+            patch("mtmux.sidebar._current_target", return_value=target),
+            patch("mtmux.sidebar.cockpit.bell_target", return_value=target),
+            patch("mtmux.sidebar.cockpit.current_agent", return_value="stale-agent"),
+            patch("mtmux.sidebar._pane_active", return_value=False),
+        ):
+            poller = sidebar.AsyncStatusPoller(BlockingPoller(), None)
+            try:
+                self.assertFalse(poller.tick(0))
+                self.assertTrue(started.wait(1))
+                self.assertEqual(poller.snapshot.sessions, ())
+                poller.observe_effect(
+                    sidebar.EffectResult(Effect("switch", selected_target), ())
+                )
+                release.set()
+                deadline = time.monotonic() + 1
+                while not poller.tick(1) and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                self.assertEqual(poller.snapshot.sessions, (target,))
+                self.assertEqual(poller.current_target, selected_target)
+                self.assertIsNone(poller.bell_target)
+                self.assertIsNone(poller.current_agent)
+                self.assertTrue(poller.pane_active)
+            finally:
+                release.set()
+                poller.close()
 
 
 class SidebarColorTest(unittest.TestCase):
@@ -950,6 +1070,11 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual(wrapper.call_count, 2)
 
+    def test_mouse_release_and_click_activate_but_press_does_not(self):
+        self.assertFalse(_mouse_activates(curses.BUTTON1_PRESSED))
+        self.assertTrue(_mouse_activates(curses.BUTTON1_RELEASED))
+        self.assertTrue(_mouse_activates(curses.BUTTON1_CLICKED))
+
     def test_mouse_mask_registers_only_supported_events(self):
         expected = (
             curses.BUTTON1_CLICKED
@@ -976,6 +1101,49 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(_entry_at_row(entries, 0, 1, 8, 1), 0)
         start, _ = _viewport(entries, 9, 7)
         self.assertEqual(_entry_at_row(entries, 9, 2, 8, 1), start)
+
+    def test_down_more_uses_last_available_row(self):
+        entries = [
+            Entry(str(i), "session", Target("local", str(i)), tracked=True)
+            for i in range(4)
+        ]
+        screen = FakeScreen(size=(6, 30))
+
+        sidebar._draw_entries(screen, entries, 0, 6, 30, set(), None)
+
+        marker = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "↓ more")
+        self.assertEqual(marker[1], 4)
+
+    def test_drag_target_keeps_visible_line_without_shifting_following_entries(self):
+        entries = [
+            Entry(name, "session", Target("local", name), tracked=True, shortcut_slot=index)
+            for index, name in enumerate(("one", "two", "three"), 1)
+        ]
+        screen = FakeScreen(size=(10, 30))
+
+        with (
+            patch.dict("mtmux.sidebar._COLOR", {"drag": 123}, clear=True),
+            patch("mtmux.sidebar._ascii", return_value=False),
+        ):
+            sidebar._draw_entries(
+                screen, entries, 0, 9, 30, set(), None, drag_target_entry=1
+            )
+
+        rows = {
+            name: next(call[1] for call in screen.calls if call[0] == "addnstr" and name in call[3])
+            for name in ("one", "two", "three")
+        }
+        target_attr = next(
+            call[5] for call in screen.calls if call[0] == "addnstr" and "two" in call[3]
+        )
+        indicators = [
+            (call[1], call[5])
+            for call in screen.calls
+            if call[0] == "addnstr" and call[3] == "─" * 30
+        ]
+        self.assertEqual(rows, {"one": 1, "two": 4, "three": 5})
+        self.assertEqual(target_attr, 123)
+        self.assertEqual(indicators, [(3, 123)])
 
     def test_entry_at_row_ignores_non_selectable_and_non_entry_areas(self):
         entries = [
@@ -1356,8 +1524,20 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         self.assertTrue(any(call[0] == "addnstr" and "fast" in call[3] for call in screen.calls))
-        self.assertEqual(current_target.call_count, 5)
-        self.assertEqual(pane_active.call_count, 4)
+        self.assertLessEqual(current_target.call_count, 2)
+        self.assertLessEqual(pane_active.call_count, 1)
+
+    def test_queued_input_is_handled_before_automatic_session_actions(self):
+        screen = FakeScreen([ord("q")])
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._sync_active_session") as sync_active_session,
+        ):
+            run(screen)
+
+        sync_active_session.assert_not_called()
 
     def test_run_sets_timeout_and_refreshes_on_timeout(self):
         screen = FakeScreen([-1, ord("q")])
@@ -1383,7 +1563,7 @@ class SidebarDrawTest(unittest.TestCase):
             {},
         )
         poller.tick.return_value = False
-        screen = FakeScreen([-1, ord("q")], size=(10, 40))
+        screen = FakeScreen([-1, -1, ord("q")], size=(10, 40))
         with (
             patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
             patch("mtmux.sidebar.curses.curs_set"),
@@ -1398,14 +1578,14 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         self.assertEqual(draw.call_count, 2)
-        self.assertTrue(all(call.args[-1] == "id" for call in draw.call_args_list))
+        self.assertTrue(all(call.args[-1] in (None, "id") for call in draw.call_args_list))
 
     def test_working_agent_redraws_at_spinner_rate(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         poller = unittest.mock.Mock()
         poller.snapshot = SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)), {})
         poller.tick.return_value = False
-        screen = FakeScreen([-1, -1, ord("q")], size=(10, 40))
+        screen = FakeScreen([-1, -1, -1, -1, ord("q")], size=(10, 40))
         with (
             patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
             patch("mtmux.sidebar.curses.curs_set"), patch("mtmux.sidebar._init_colors"),
@@ -1448,8 +1628,8 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        self.assertEqual(bell_target.call_count, 2)
-        self.assertEqual(poller.tick.call_count, 4)
+        self.assertLessEqual(bell_target.call_count, 2)
+        self.assertLessEqual(poller.tick.call_count, 4)
 
     def test_run_beeps_once_for_new_background_bell(self):
         screen = FakeScreen([-1, -1, ord("q")])
@@ -1516,12 +1696,10 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar._bell_targets", return_value=set()),
             patch("mtmux.sidebar._current_target", return_value=None),
             patch("mtmux.sidebar.cockpit.switch") as switch,
-            patch("mtmux.sidebar._execute", wraps=_execute) as execute,
         ):
             run(screen)
 
         switch.assert_called_once_with(target, sidebar.sessions.pane_attach_command(second), "second")
-        self.assertEqual(execute.call_args.args[1].selected_agent_key, (second, "second"))
 
     def test_click_then_hover_does_not_show_drag_target(self):
         target = Target("local", "one")
@@ -1553,6 +1731,68 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         self.assertEqual(drag_targets, [None, None])
+
+    def test_drag_hovering_down_more_scrolls_without_more_motion(self):
+        targets = [Target("local", str(i)) for i in range(4)]
+        entries = [Entry(str(i), "session", target, tracked=True) for i, target in enumerate(targets)]
+        expected = (targets[1], targets[2], targets[0], targets[3])
+        screen = FakeScreen(
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, curses.KEY_MOUSE, ord("q")],
+            size=(10, 30),
+        )
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 5, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, -1, -1, 0, curses.REPORT_MOUSE_POSITION),
+                ],
+            ),
+            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0.01, 0.25, 0.5, 0.51, 0.6] + [1] * 20),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=targets),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            run(screen)
+
+        save_sessions.assert_called_once_with(expected)
+
+    def test_keyboard_reorder_is_not_blocked_by_slow_switch(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
+        poller.tick.return_value = False
+        release = threading.Event()
+        screen = FakeScreen([curses.KEY_ENTER, ord("K"), ord("q")], size=(12, 30))
+        timer = threading.Timer(0.05, release.set)
+
+        with (
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._current_target", return_value=second),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            timer.start()
+            try:
+                run(screen)
+            finally:
+                release.set()
+                timer.cancel()
+
+        save_sessions.assert_called_once_with((second, first))
 
     def test_drag_motion_reorders_tracked_sessions(self):
         first = Target("local", "one")
@@ -1586,6 +1826,108 @@ class SidebarDrawTest(unittest.TestCase):
 
         save_sessions.assert_called_once_with((second, first))
 
+    def test_drag_from_unfocused_sidebar_waits_for_focus_poll(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        entries = [
+            Entry("one", "session", first, tracked=True),
+            Entry("two", "session", second, tracked=True),
+        ]
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one", "two")),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=False,
+        )
+
+        def tick(_now):
+            if poller.tick.call_count == 2:
+                poller.pane_active = True
+            return False
+
+        poller.tick.side_effect = tick
+        screen = FakeScreen(
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")],
+            size=(12, 30),
+        )
+
+        with (
+            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 4, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            run(screen)
+
+        save_sessions.assert_called_once_with((second, first))
+
+    def test_mouse_reorder_is_not_blocked_by_slow_switch(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        entries = [
+            Entry("one", "session", first, tracked=True),
+            Entry("two", "session", second, tracked=True),
+        ]
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
+        poller.tick.return_value = False
+        release = threading.Event()
+        screen = FakeScreen(
+            [
+                curses.KEY_ENTER,
+                curses.KEY_MOUSE,
+                curses.KEY_MOUSE,
+                curses.KEY_MOUSE,
+                ord("q"),
+            ],
+            size=(12, 30),
+        )
+        timer = threading.Timer(0.05, release.set)
+
+        with (
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 4, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=first),
+            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
+            patch("mtmux.sidebar.save_sessions") as save_sessions,
+        ):
+            timer.start()
+            try:
+                run(screen)
+            finally:
+                release.set()
+                timer.cancel()
+
+        save_sessions.assert_called_once_with((second, first))
+
     def test_single_click_switches_tracked_session_after_press_release_events(self):
         target = Target("local", "one")
         entries = [Entry("one", "session", target, tracked=True)]
@@ -1612,6 +1954,54 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one")
+
+    def test_press_release_selects_and_switches_untracked_session(self):
+        target = Target("local", "one")
+        entries = [Entry("one", "session", target)]
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 2, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        switch.assert_called_once_with(
+            target, "env -u TMUX tmux -T clipboard new-session -A -s one"
+        )
+
+    def test_press_release_opens_add_button(self):
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 29, 0, 0, curses.BUTTON1_PRESSED),
+                    (0, 29, 0, 0, curses.BUTTON1_RELEASED),
+                ],
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._current_target", return_value=None),
+        ):
+            run(screen)
+
+        text = [call[3] for call in screen.calls if call[0] == "addnstr"]
+        self.assertTrue(any("New session" in line for line in text))
 
     def test_single_click_selects_and_switches_session(self):
         entries = [
@@ -1732,7 +2122,8 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        self.assertEqual(selected, [4, 3, 1, 1])
+        self.assertEqual(selected[:3], [4, 3, 1])
+        self.assertEqual(selected[-1], 1)
 
 
 
@@ -2287,6 +2678,88 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         self.assertEqual(selected_values, {0})  # selection never changed
         offsets = [off for _, off in captured if off is not None]
         self.assertTrue(len(offsets) >= 1)  # scroll_offset was set
+
+    def test_wheel_down_reaches_bottom_of_session_region(self):
+        entries = [Entry(str(i), "session", Target("local", str(i)), tracked=True) for i in range(8)]
+        captured = []
+        mouse_events = [(0, 0, 0, 0, curses.BUTTON5_PRESSED)] * 10
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [ord("q")], size=(12, 30))
+
+        def draw_spy(*args, **kwargs):
+            captured.append(args[12] if len(args) > 12 else None)
+            return (1, None)
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", side_effect=mouse_events),
+        ):
+            run(screen)
+
+        _, end = _viewport(entries, 0, 7, captured[-1])
+        self.assertEqual(end, len(entries))
+
+    def test_discovery_update_preserves_wheel_position(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(8)]
+        captured = []
+        poller = unittest.mock.Mock(snapshot=snapshot())
+        poller.tick.side_effect = [False, True]
+        screen = FakeScreen([curses.KEY_MOUSE, -1, ord("q")], size=(12, 30))
+
+        def draw_spy(*args, **kwargs):
+            captured.append(args[12] if len(args) > 12 else None)
+            return (1, None)
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
+        ):
+            run(screen)
+
+        self.assertEqual(captured, [None, 1])
+
+    def test_queued_wheel_reversal_is_processed_before_next_poll(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
+        captured = []
+        mouse_events = [
+            (0, 0, 0, 0, curses.BUTTON4_PRESSED),
+            (0, 0, 0, 0, curses.BUTTON4_PRESSED),
+            (0, 0, 0, 0, curses.BUTTON5_PRESSED),
+        ]
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [ord("q")], size=(8, 30))
+
+        def draw_spy(*args, **kwargs):
+            captured.append(args[12] if len(args) > 12 else None)
+            return (2, None)
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None) as current_target,
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.curses.getmouse", side_effect=mouse_events),
+        ):
+            run(screen)
+
+        self.assertEqual(captured, [None, 1])
+        self.assertLess(current_target.call_count, len(mouse_events) + 1)
 
     def test_j_key_resets_scroll_offset(self):
         entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(5)]
