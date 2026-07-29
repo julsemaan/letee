@@ -1360,7 +1360,7 @@ def _draw_entries(
             row += 1
     if end < len(entries) and row < h - 1:
         attr = _color("hints") or curses.A_DIM
-        stdscr.addnstr(row, 0, "↓ more", w - 1, _fade(attr) if dimmed else attr)
+        stdscr.addnstr(h - 2, 0, "↓ more", w - 1, _fade(attr) if dimmed else attr)
     return cursor
 
 
@@ -1792,7 +1792,7 @@ def run(stdscr: curses.window) -> None:
                         state.scroll_offset,
                     )
                     top = 3 if state.filtering else 2
-                    bottom_marker_row = top + int(start > 0) + sum(_entry_height(entry) for entry in entries[start:end])
+                    bottom_marker_row = separator - 1
                     direction = -1 if start > 0 and row == top else 1 if end < len(entries) and row == bottom_marker_row else 0
                     if direction != drag_scroll_direction:
                         drag_scroll_direction = direction

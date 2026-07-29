@@ -1094,6 +1094,18 @@ class SidebarDrawTest(unittest.TestCase):
         start, _ = _viewport(entries, 9, 7)
         self.assertEqual(_entry_at_row(entries, 9, 2, 8, 1), start)
 
+    def test_down_more_uses_last_available_row(self):
+        entries = [
+            Entry(str(i), "session", Target("local", str(i)), tracked=True)
+            for i in range(4)
+        ]
+        screen = FakeScreen(size=(6, 30))
+
+        sidebar._draw_entries(screen, entries, 0, 6, 30, set(), None)
+
+        marker = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "↓ more")
+        self.assertEqual(marker[1], 4)
+
     def test_drag_target_keeps_visible_line_without_shifting_following_entries(self):
         entries = [
             Entry(name, "session", Target("local", name), tracked=True, shortcut_slot=index)
@@ -1728,7 +1740,7 @@ class SidebarDrawTest(unittest.TestCase):
                 "mtmux.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
-                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 5, 0, curses.REPORT_MOUSE_POSITION),
                     (0, -1, -1, 0, curses.REPORT_MOUSE_POSITION),
                 ],
             ),
