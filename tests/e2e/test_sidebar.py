@@ -7,7 +7,7 @@ from .helpers import (
     assert_active_session_highlighted,
     assert_add_button_selected,
     assert_cursor_on_row,
-    assert_row_dimmed,
+    assert_row_not_dimmed,
     assert_sidebar_contains,
 )
 
@@ -97,13 +97,13 @@ def test_cursor_and_active_session_move_independently(client: TmuxTestClient) ->
         _cleanup(client)
 
 
-def test_unfocused_sidebar_hides_cursor_and_dims_rows(client: TmuxTestClient) -> None:
+def test_unfocused_sidebar_hides_cursor_without_dimming(client: TmuxTestClient) -> None:
     _start(client, "/tmp/mtmux-e2e-sidebar-focus")
     try:
         _send(client, "Enter")
         _wait_for_active_pane(client, 1)
         assert ">" not in client.sidebar_text()
-        assert_row_dimmed(client, "alpha")
+        assert_row_not_dimmed(client, "alpha")
         assert_active_session_highlighted(client, "alpha", "beta")
 
         _focus_sidebar(client)
