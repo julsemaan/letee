@@ -885,9 +885,44 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             release.set()
             runner.close()
 
-    def test_effect_runner_rejects_overlapping_action(self):
+    def test_effect_runner_coalesces_navigation_to_latest_target(self):
         release = threading.Event()
-        effect = Effect("switch", Target("local", "one"))
+        first = Effect("switch", Target("local", "one"))
+        middle = Effect("switch", Target("local", "two"))
+        latest = Effect("switch", Target("local", "three"))
+        performed = []
+
+        def perform(effect, favorites):
+            performed.append(effect)
+            if effect == first:
+                release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(first, ()))
+                self.assertTrue(runner.submit(middle, ()))
+                self.assertTrue(runner.submit(latest, ()))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+
+            self.assertEqual(performed, [first, latest])
+            self.assertTrue(results[0].stale_navigation)
+            self.assertFalse(results[1].stale_navigation)
+        finally:
+            release.set()
+            runner.close()
+
+    def test_effect_runner_rejects_non_navigation_while_busy(self):
+        release = threading.Event()
+        switch = Effect("switch", Target("local", "one"))
+        create = Effect("create", Target("local", "new"))
 
         def perform(effect, favorites):
             release.wait(1)
@@ -896,11 +931,72 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         runner = sidebar.EffectRunner()
         try:
             with patch("mtmux.sidebar._perform_effect", side_effect=perform):
-                self.assertTrue(runner.submit(effect, ()))
-                self.assertFalse(runner.submit(effect, ()))
+                self.assertTrue(runner.submit(switch, ()))
+                self.assertFalse(runner.submit(create, ()))
         finally:
             release.set()
             runner.close()
+
+    def test_effect_runner_rejects_navigation_behind_non_navigation(self):
+        release = threading.Event()
+        create = Effect("create", Target("local", "new"))
+        switch = Effect("switch", Target("local", "one"))
+
+        def perform(effect, favorites):
+            release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(create, ()))
+                self.assertFalse(runner.submit(switch, ()))
+        finally:
+            release.set()
+            runner.close()
+
+    def test_stale_session_switch_preserves_newer_selection(self):
+        old_target = Target("local", "old")
+        newer_target = Target("local", "newer")
+        state = SidebarState(selected_target=newer_target)
+
+        sidebar._apply_effect(
+            sidebar.EffectResult(
+                Effect("switch", old_target), (), stale_navigation=True
+            ),
+            state,
+            unittest.mock.Mock(),
+            5,
+        )
+
+        self.assertEqual(state.selected_target, newer_target)
+
+    def test_stale_agent_switch_preserves_newer_selections(self):
+        old_target = Target("local", "old")
+        newer_target = Target("local", "newer")
+        old_pane = PaneTarget(old_target, "@1", "%1", "/tmp/tmux")
+        newer_pane = PaneTarget(newer_target, "@2", "%2", "/tmp/tmux")
+        old_key = (old_pane, "old-agent")
+        state = SidebarState(
+            selected_target=newer_target,
+            selected_agent_key=(newer_pane, "new-agent"),
+            agent_alerts={old_key},
+        )
+
+        sidebar._apply_effect(
+            sidebar.EffectResult(
+                Effect("switch_pane", old_pane, message="old-agent"),
+                (),
+                stale_navigation=True,
+            ),
+            state,
+            unittest.mock.Mock(),
+            5,
+        )
+
+        self.assertEqual(state.selected_target, newer_target)
+        self.assertEqual(state.selected_agent_key, (newer_pane, "new-agent"))
+        self.assertNotIn(old_key, state.agent_alerts)
 
     def test_status_poller_runs_discovery_and_tmux_reads_off_ui_thread(self):
         started = threading.Event()

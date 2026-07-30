@@ -98,6 +98,7 @@ class EffectResult:
     effect: Effect
     favorites: tuple[Target, ...]
     error: str = ""
+    stale_navigation: bool = False
 
 
 @dataclass(frozen=True)
@@ -670,16 +671,19 @@ def _apply_effect(
         _set_status(state, result.error, status_timeout)
         return False
     if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
-        state.filter_text = ""
-        state.filtering = False
-        state.selected_target = effect.target
+        if not result.stale_navigation:
+            state.filter_text = ""
+            state.filtering = False
+            state.selected_target = effect.target
         if effect.kind == "add_switch":
             if effect.target not in state.favorites:
                 state.favorites.append(effect.target)
             _reset_add(state)
     elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-        state.selected_agent_key = (effect.target, effect.message)
-        state.agent_alerts.discard(state.selected_agent_key)
+        completed_key = (effect.target, effect.message)
+        if not result.stale_navigation:
+            state.selected_agent_key = completed_key
+        state.agent_alerts.discard(completed_key)
     elif effect.kind == "create" and isinstance(effect.target, Target):
         if effect.target not in state.favorites:
             state.favorites.append(effect.target)
@@ -710,6 +714,7 @@ class EffectRunner:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mtmux-action")
         self._future: Future[EffectResult] | None = None
         self._effect: Effect | None = None
+        self._pending_navigation: tuple[Effect, tuple[Target, ...]] | None = None
 
     @property
     def busy(self) -> bool:
@@ -723,6 +728,13 @@ class EffectRunner:
 
     def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
         if self._future is not None:
+            if (
+                self._effect is not None
+                and self._effect.kind in ("switch", "switch_pane")
+                and effect.kind in ("switch", "switch_pane")
+            ):
+                self._pending_navigation = (effect, favorites)
+                return True
             return False
         self._effect = effect
         self._future = self._executor.submit(_perform_effect, effect, favorites)
@@ -731,9 +743,16 @@ class EffectRunner:
     def poll(self) -> EffectResult | None:
         if self._future is None or not self._future.done():
             return None
-        future, self._future = self._future, None
-        self._effect = None
-        return future.result()
+        result = self._future.result()
+        if self._pending_navigation is None:
+            self._future = None
+            self._effect = None
+            return result
+        effect, favorites = self._pending_navigation
+        self._pending_navigation = None
+        self._effect = effect
+        self._future = self._executor.submit(_perform_effect, effect, favorites)
+        return EffectResult(result.effect, result.favorites, result.error, stale_navigation=True)
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=True)
