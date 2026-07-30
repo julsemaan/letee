@@ -1893,6 +1893,75 @@ class SidebarDrawTest(unittest.TestCase):
 
         save_sessions.assert_called_once_with(expected)
 
+    def test_slow_session_switch_marks_target_active_before_action_completes(self):
+        first = Target("local", "one")
+        second = Target("ssh", "two", "dev")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one",), remotes={"dev": source("ssh", ("two",), host="dev")}),
+            current_target=first,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        release = threading.Event()
+        active_targets = []
+        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, -1, ord("q")], size=(12, 30))
+
+        def draw_spy(*args, **kwargs):
+            active_targets.append(args[7])
+            if args[7] == second:
+                release.set()
+            return (2, None)
+
+        with (
+            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
+        ):
+            run(screen)
+
+        self.assertIn(second, active_targets)
+
+    def test_slow_agent_switch_marks_agent_active_before_action_completes(self):
+        target = Target("ssh", "work", "dev")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        poller = unittest.mock.Mock(
+            snapshot=SessionSnapshot(
+                SourceSnapshot(True, (), frozenset()),
+                {"dev": SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),))},
+            ),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        release = threading.Event()
+        active_agents = []
+        screen = FakeScreen([curses.KEY_F7, curses.KEY_DOWN, curses.KEY_ENTER, -1, ord("q")], size=(12, 30))
+
+        def draw_spy(*args, **kwargs):
+            active_agents.append(args[17])
+            if args[17] == "id":
+                release.set()
+            return (2, None)
+
+        with (
+            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
+        ):
+            run(screen)
+
+        self.assertIn("id", active_agents)
+
     def test_keyboard_reorder_is_not_blocked_by_slow_switch(self):
         first = Target("local", "one")
         second = Target("local", "two")

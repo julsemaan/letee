@@ -1579,6 +1579,7 @@ def run(stdscr: curses.window) -> None:
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
+    pending_navigation: tuple[Target, str | None] | None = None
     rendered: tuple[object, ...] | None = None
     footer_height = 0
     add_col: int | None = None
@@ -1598,6 +1599,7 @@ def run(stdscr: curses.window) -> None:
         return actions.submit(effect, tuple(state.favorites))
 
     def dispatch(effect: Effect) -> bool:
+        nonlocal pending_navigation
         if effect.kind == "save_favorites":
             return _execute(effect, state, poller, status_timeout)
         if effect.kind in ("quit", "status"):
@@ -1606,6 +1608,10 @@ def run(stdscr: curses.window) -> None:
             )
         if not queue_effect(effect):
             show_status("another action is still running")
+        elif effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
+            pending_navigation = (effect.target, None)
+        elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
+            pending_navigation = (effect.target.target, effect.message or None)
         return False
 
     def rebuild() -> None:
@@ -1655,6 +1661,10 @@ def run(stdscr: curses.window) -> None:
                 stdscr.timeout(UI_POLL_INTERVAL_MS)
             result = actions.poll()
             if result is not None:
+                if not result.stale_navigation and result.effect.kind in (
+                    "switch", "add_switch", "switch_pane"
+                ):
+                    pending_navigation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
                 poller.observe_effect(result)
@@ -1715,10 +1725,15 @@ def run(stdscr: curses.window) -> None:
             if selectable and state.selected_index not in selectable:
                 state.selected_index = selectable[0]
             cockpit_bell_target = poller.bell_target
-            active_agent_id = poller.current_agent
             bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
-            active_agent_id = _focused_agent_id(poller.snapshot, current_target, active_agent_id)
-            visible_bells = bell_targets - ({current_target} if current_target else set())
+            if pending_navigation is None:
+                display_target = current_target
+                active_agent_id = _focused_agent_id(
+                    poller.snapshot, current_target, poller.current_agent
+                )
+            else:
+                display_target, active_agent_id = pending_navigation
+            visible_bells = bell_targets - ({display_target} if display_target else set())
             if visible_bells - state.rang_bells or agent_alert:
                 curses.beep()
             state.rang_bells = bell_targets
@@ -1733,7 +1748,7 @@ def run(stdscr: curses.window) -> None:
             render_state = (
                 tuple(entries), state.selected_index, state.status, state.filter_text,
                 state.filtering, state.add_view, state.creation_host, state.creation_text,
-                frozenset(bell_targets), current_target, poller.pane_active, stdscr.getmaxyx(),
+                frozenset(bell_targets), display_target, poller.pane_active, stdscr.getmaxyx(),
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
@@ -1750,7 +1765,7 @@ def run(stdscr: curses.window) -> None:
                     drag_tgt_entry = _fav_to_entry_index(entries, state.drag_target_index) if state.drag_target_index is not None else None
                     footer_height, add_col = _draw(
                         stdscr, entries, state.selected_index, state.status, state.filter_text,
-                        state.filtering, bell_targets, current_target, dimmed,
+                        state.filtering, bell_targets, display_target, dimmed,
                         state.creation_host, state.creation_text, state.add_view is not None, state.scroll_offset,
                         agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_rows,
                         active_agent_id, agent_alerts=state.agent_alerts,

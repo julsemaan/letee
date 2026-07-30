@@ -4,10 +4,10 @@
 - [ ] Allow having multiple mtmux
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
-- [ ] Sometimes when clicking on a session or agent to make it active, it doesn't give feedback rapidly. Maybe because of SSH being established. The UI should reflect the selection immediately and then do any SSH related things.
 
 ## Done
 
+- [x] Sometimes when clicking on a session or agent to make it active, it doesn't give feedback rapidly. Maybe because of SSH being established. The UI should reflect the selection immediately and then do any SSH related things.
 - [x] Use cursor instead of dimming to show sidebar focus, with predictable initial selection
 - [x] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
 
