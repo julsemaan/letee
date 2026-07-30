@@ -5,6 +5,7 @@
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Get rid of the idle state in the left pane and instead use the cursor to show if it is in there. Probably need to make the cursor start somewhere consistent for predictability
+- [ ] Sometimes when clicking on a session or agent to make it active, it doesn't give feedback rapidly. Maybe because of SSH being established. The UI should reflect the selection immediately and then do any SSH related things.
 
 ## Done
 
