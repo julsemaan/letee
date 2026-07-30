@@ -4,11 +4,11 @@
 - [ ] Allow having multiple mtmux
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
-- [ ] Get rid of the idle state in the left pane and instead use the cursor to show if it is in there. Probably need to make the cursor start somewhere consistent for predictability
 - [ ] Sometimes when clicking on a session or agent to make it active, it doesn't give feedback rapidly. Maybe because of SSH being established. The UI should reflect the selection immediately and then do any SSH related things.
 
 ## Done
 
+- [x] Use cursor instead of dimming to show sidebar focus, with predictable initial selection
 - [x] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
 
 - [x] astatus needs proper tags

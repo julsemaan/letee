@@ -529,6 +529,22 @@ def _sync_selection(state: SidebarState, entries: list[Entry]) -> None:
     state.selected_tracked = entries[state.selected_index].tracked if choices else False
 
 
+def _reset_selection(
+    state: SidebarState,
+    entries: list[Entry],
+    region: Literal["sessions", "agents"] | None = None,
+) -> None:
+    if region in (None, "sessions"):
+        choices = _selectable(entries)
+        state.selected_index = choices[0] if choices else 0
+        state.selected_target = entries[state.selected_index].target if choices else None
+        state.selected_tracked = entries[state.selected_index].tracked if choices else False
+        state.add_button_selected = False
+    if region in (None, "agents"):
+        state.agent_selected_index = 0
+        state.selected_agent_key = None
+
+
 def _sync_agent_selection(state: SidebarState, entries: list[Entry]) -> None:
     if state.selected_agent_key:
         for index, entry in enumerate(entries):
@@ -1293,9 +1309,10 @@ def _draw_entries(
     drag_source_entry: int | None = None,
     drag_target_entry: int | None = None,
     selection_pointer_visible: bool = True,
+    pane_active: bool = True,
 ) -> tuple[int, int] | None:
     cursor = None
-    view_index = _view_index(entries, selected, current_target, dimmed)
+    view_index = _view_index(entries, selected, current_target, not pane_active)
     start, end = _viewport(entries, view_index, h - top + 1, scroll_offset)
     row = top
     if start:
@@ -1310,7 +1327,7 @@ def _draw_entries(
         active_entry = entry.target is not None and entry.target == current_target and entry.kind != "agent"
         active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
         lines = _entry_lines(
-            entry, selected_entry and not dimmed and selection_pointer_visible, bell_targets, current_target, w,
+            entry, selected_entry and not dimmed and selection_pointer_visible and pane_active, bell_targets, current_target, w,
             creation_host, creation_text, now, agent_alerts, spinner_frame, agent_ordering,
         )
         # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
@@ -1330,7 +1347,7 @@ def _draw_entries(
                 break
             attr = _fade(base_attr) if line_number and not (active_entry or active_agent or is_drag_target) else base_attr
             if line_number == 0 and slot_width:
-                if selected_entry and not dimmed and selection_pointer_visible:
+                if selected_entry and not dimmed and selection_pointer_visible and pane_active:
                     slot_badge = f" {ico['selected']} "
                 else:
                     slot_badge = f"[{entry.shortcut_slot}]"
@@ -1446,10 +1463,14 @@ def _draw(
     add_button_selected: bool = False,
     drag_source_entry: int | None = None,
     drag_target_entry: int | None = None,
+    pane_active: bool = True,
 ) -> tuple[int, int | None]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
-    cursor, add_col = _draw_title(stdscr, w, entries, filter_text, filtering, dimmed, adding, add_button_selected)
+    cursor, add_col = _draw_title(
+        stdscr, w, entries, filter_text, filtering, dimmed, adding,
+        add_button_selected and pane_active,
+    )
     if filtering:
         cursor = _draw_filter(stdscr, w, filter_text, dimmed)
     message_row = 2 if filtering else 1
@@ -1466,6 +1487,7 @@ def _draw(
             dimmed, creation_host, creation_text, 3 if filtering else 2, scroll_offset,
             drag_source_entry=drag_source_entry, drag_target_entry=drag_target_entry,
             selection_pointer_visible=not add_button_selected,
+            pane_active=pane_active,
         )
         if creation_cursor:
             stdscr.move(*creation_cursor)
@@ -1491,6 +1513,7 @@ def _draw(
         dimmed or focused_region != "sessions", creation_host, creation_text, session_top, scroll_offset,
         drag_source_entry=drag_source_entry, drag_target_entry=drag_target_entry,
         selection_pointer_visible=not add_button_selected,
+        pane_active=pane_active,
     )
     rule = "-" if _ascii() else "─"
     label = "AGENTS "
@@ -1501,6 +1524,7 @@ def _draw(
             dimmed or focused_region != "agents", top=separator + 1,
             active_agent_id=active_agent_id, now=now, agent_alerts=agent_alerts,
             spinner_frame=spinner_frame, agent_ordering=agent_ordering,
+            pane_active=pane_active,
         )
     else:
         # Render order row then "No active agents"
@@ -1508,6 +1532,7 @@ def _draw(
             stdscr, agents, 0, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
             spinner_frame=None, agent_ordering=agent_ordering,
+            pane_active=pane_active,
         )
         stdscr.addnstr(separator + 2, 0, "  No active agents", max(0, w - 1), curses.A_DIM)
     if creation_cursor:
@@ -1531,8 +1556,7 @@ def run(stdscr: curses.window) -> None:
     agent_entries = _agent_entries(poller.snapshot, state.favorites)
     agent_entries = [Entry("", "order")] + agent_entries
     _update_agent_alerts(state, poller.snapshot, state.selected_target)
-    state.selected_index = _selected_index(entries, state.selected_target)
-    _sync_selection(state, entries)
+    _reset_selection(state, entries)
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
@@ -1544,6 +1568,8 @@ def run(stdscr: curses.window) -> None:
     drag_seen_active = False
     pending_key: int | None = None
     pending_mouse: tuple[int, int, int, int, int] | None = None
+    pane_was_active = poller.pane_active
+    preserve_selection_on_focus_exit = False
     stdscr.timeout(UI_POLL_INTERVAL_MS)
 
     def show_status(message: str) -> None:
@@ -1677,13 +1703,18 @@ def run(stdscr: curses.window) -> None:
             if visible_bells - state.rang_bells or agent_alert:
                 curses.beep()
             state.rang_bells = bell_targets
-            dimmed = not poller.pane_active
+            if pane_was_active and not poller.pane_active:
+                if not preserve_selection_on_focus_exit:
+                    _reset_selection(state, entries)
+                preserve_selection_on_focus_exit = False
+            pane_was_active = poller.pane_active
+            dimmed = False
             working_agents = any(entry.status == "working" for entry in agent_entries)
             spinner_frame = _spinner_frame(now) if working_agents else None
             render_state = (
                 tuple(entries), state.selected_index, state.status, state.filter_text,
                 state.filtering, state.add_view, state.creation_host, state.creation_text,
-                frozenset(bell_targets), current_target, dimmed, stdscr.getmaxyx(),
+                frozenset(bell_targets), current_target, poller.pane_active, stdscr.getmaxyx(),
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
@@ -1707,6 +1738,7 @@ def run(stdscr: curses.window) -> None:
                         spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
                         add_button_selected=state.add_button_selected,
                         drag_source_entry=drag_src_entry, drag_target_entry=drag_tgt_entry,
+                        pane_active=poller.pane_active,
                     )
                 rendered = render_state
             try:
@@ -1722,13 +1754,13 @@ def run(stdscr: curses.window) -> None:
                 continue
             if key in (curses.KEY_F6, curses.KEY_F7):
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
-                state.add_button_selected = False
+                _reset_selection(state, entries, state.focused_region)
                 continue
             if state.add_view == "name":
                 while state.add_view == "name":
                     if key in (curses.KEY_F6, curses.KEY_F7):
                         state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
-                        state.add_button_selected = False
+                        _reset_selection(state, entries, state.focused_region)
                     elif key in (27, 3):
                         _add_back(state, poller.snapshot)
                         curses.curs_set(0)
@@ -1795,7 +1827,7 @@ def run(stdscr: curses.window) -> None:
                     if not isinstance(mouse_col, int) or not 0 <= mouse_col < stdscr.getmaxyx()[1] or not 0 <= row < h:
                         finish_drag()
                         continue
-                    view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                    view_index = _view_index(entries, state.selected_index, current_target, not poller.pane_active)
                     start, end = _viewport(
                         entries, view_index, separator - (3 if state.filtering else 2) + 2,
                         state.scroll_offset,
@@ -1832,7 +1864,7 @@ def run(stdscr: curses.window) -> None:
                         while True:
                             viewport_height = separator - session_top + 2
                             if state.scroll_offset is None:
-                                view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                                view_index = _view_index(entries, state.selected_index, current_target, not poller.pane_active)
                                 start, _ = _viewport(entries, view_index, viewport_height)
                                 state.scroll_offset = start
                             if mouse_state & wheel_up:
@@ -1898,9 +1930,10 @@ def run(stdscr: curses.window) -> None:
                                     rebuild()
                             continue
                         if mouse_state & (_b1_released | _b1_clicked) and entry.pane_target:
+                            preserve_selection_on_focus_exit = True
                             dispatch(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""))
                         continue
-                    view_index = _view_index(entries, state.selected_index, current_target, dimmed)
+                    view_index = _view_index(entries, state.selected_index, current_target, not poller.pane_active)
                     index = _entry_at_row(
                         entries, view_index, row, separator + 1, 0,
                         3 if state.filtering else 2,
@@ -1922,6 +1955,7 @@ def run(stdscr: curses.window) -> None:
                             drag_seen_active = poller.pane_active
                         continue
                     if _mouse_activates(mouse_state):
+                        preserve_selection_on_focus_exit = True
                         key = curses.KEY_ENTER
                     else:
                         continue

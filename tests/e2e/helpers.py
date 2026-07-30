@@ -76,10 +76,10 @@ def assert_active_session_highlighted(
         raise AssertionError(f"Active row {active_session!r} not distinguishable from {inactive_session!r}\nSidebar:\n{ansi}")
 
 
-def assert_row_dimmed(client: TmuxTestClient, row_text: str) -> None:
+def assert_row_not_dimmed(client: TmuxTestClient, row_text: str) -> None:
     ansi = client.sidebar_ansi()
-    if "dim" not in _style_at(ansi, row_text):
-        raise AssertionError(f"Row {row_text!r} is not dimmed\nSidebar:\n{ansi}")
+    if "dim" in _style_at(ansi, row_text):
+        raise AssertionError(f"Row {row_text!r} is dimmed\nSidebar:\n{ansi}")
 
 
 def assert_add_button_selected(client: TmuxTestClient) -> None:

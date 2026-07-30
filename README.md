@@ -129,7 +129,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `?`: open help in right pane
 - `q`: quit sidebar only
 
-`›` marks keyboard selection; mint reverse highlight marks active cockpit session. Both appear independently while sidebar is focused. Unfocused sidebar hides pointer and keeps active session highlighted and visible.
+`›` marks keyboard selection and left-pane focus; mint reverse highlight marks active cockpit session independently. Unfocused sidebar hides pointer, leaves sidebar colors unchanged, and keeps active session highlighted and visible.
 
 Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/mtmux/sessions`. Only tracked sessions trigger sidebar bell indicators and beeps. Set `MTMUX_ASCII=1` for text-only labels and ellipses.
 

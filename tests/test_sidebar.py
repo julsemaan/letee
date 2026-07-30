@@ -87,6 +87,7 @@ from mtmux.sidebar import (
     _mouse_activates,
     _mouse_mask,
     _read_key,
+    _reset_selection,
     _selected_index,
     _should_auto_create,
     _sync_agent_selection,
@@ -623,6 +624,23 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(effect, Effect("create", Target("ssh", "work", "dev")))
 
+    def test_reset_selection_uses_first_session_and_agent_ordering_row(self):
+        first = Target("local", "first")
+        state = SidebarState(
+            selected_target=Target("local", "last"),
+            selected_index=3,
+            focused_region="agents",
+            agent_selected_index=2,
+            selected_agent_key=(PaneTarget(first, "@1", "%1", "/tmp/tmux"), "id"),
+            add_button_selected=True,
+        )
+
+        _reset_selection(state, [Entry("first", "session", first)])
+
+        self.assertEqual((state.selected_index, state.selected_target), (0, first))
+        self.assertEqual((state.agent_selected_index, state.selected_agent_key), (0, None))
+        self.assertFalse(state.add_button_selected)
+
     def test_pending_selection_waits_for_discovery_then_selects_target(self):
         target = Target("ssh", "new", "dev")
         state = SidebarState(selected_index=2, pending_selection=target)
@@ -1035,12 +1053,16 @@ class SidebarColorTest(unittest.TestCase):
 
 
 class SidebarDrawTest(unittest.TestCase):
-    def test_inactive_sidebar_dims_existing_colors(self):
-        faded = _fade(curses.A_COLOR | curses.A_BOLD)
+    def test_inactive_sidebar_keeps_colors_and_hides_pointer(self):
+        target = Target("local", "work")
+        screen = FakeScreen(size=(7, 30))
 
-        self.assertEqual(faded & curses.A_COLOR, curses.A_COLOR)
-        self.assertTrue(faded & curses.A_DIM)
-        self.assertTrue(faded & curses.A_BOLD)
+        with patch.dict("mtmux.sidebar._COLOR", {"local": 45}, clear=True):
+            _draw(screen, [Entry("work", "session", target)], 0, "", "", pane_active=False)
+
+        row = next(call for call in screen.calls if call[0] == "addnstr" and "work" in call[3])
+        self.assertNotIn("›", row[3])
+        self.assertEqual(row[5], 45)
 
     def test_layout_maintainer_repairs_until_stopped(self):
         waits = []
@@ -1290,6 +1312,16 @@ class SidebarDrawTest(unittest.TestCase):
         session_badge = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[2] == 0)
         self.assertIn("> add", title)
         self.assertEqual(session_badge, "[1]")
+
+    def test_inactive_sidebar_hides_add_button_pointer(self):
+        screen = FakeScreen(size=(7, 40))
+
+        with patch("mtmux.sidebar._ascii", return_value=True):
+            _draw(screen, [], 0, "", "", add_button_selected=True, pane_active=False)
+
+        title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("add", title)
+        self.assertNotIn("> add", title)
 
     def test_title_adds_terminal_icon_with_ascii_fallback(self):
         screen = FakeScreen(size=(5, 40))
@@ -1771,7 +1803,7 @@ class SidebarDrawTest(unittest.TestCase):
         poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
         poller.tick.return_value = False
         release = threading.Event()
-        screen = FakeScreen([curses.KEY_ENTER, ord("K"), ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, ord("K"), ord("q")], size=(12, 30))
         timer = threading.Timer(0.05, release.set)
 
         with (
@@ -2138,33 +2170,24 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-    def test_switching_tracked_entry_keeps_focus_in_tracked_section(self):
-        old = Target("local", "old")
-        target = Target("local", "work")
-        current = [old]
-        entries = [
-            Entry("STARRED", "header"),
-            Entry("work", "session", target, tracked=True),
-            Entry("LOCAL", "header"),
-            Entry("work", "session", target),
-            Entry("old", "session", old),
-        ]
+    def test_startup_selects_first_session_instead_of_active_session(self):
+        active = Target("local", "old")
+        first = Target("local", "work")
+        entries = [Entry("work", "session", first), Entry("old", "session", active)]
         selected = []
-        screen = FakeScreen([curses.KEY_UP, curses.KEY_UP, 10, ord("q")])
+        screen = FakeScreen([ord("q")])
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar._entries", return_value=entries),
             patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", side_effect=lambda: current[0]),
+            patch("mtmux.sidebar._current_target", return_value=active),
             patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or (2, None)),
-            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: current.__setitem__(0, target)),
         ):
             run(screen)
 
-        self.assertEqual(selected[:3], [4, 3, 1])
-        self.assertEqual(selected[-1], 1)
+        self.assertEqual(selected, [0])
 
 
 
@@ -2540,24 +2563,34 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(rows["● active"][5], 123)
         self.assertEqual(rows["› ● selected"][5], 45)
 
-    def test_unfocused_sidebar_hides_pointer_and_keeps_active_reverse(self):
+    def test_unfocused_sidebar_hides_pointer_keeps_colors_and_active_reverse(self):
         active = Target("local", "active")
         selected = Target("local", "selected")
         screen = FakeScreen(size=(7, 30))
 
-        with patch.dict("mtmux.sidebar._COLOR", {}, clear=True):
-            _draw(screen, [Entry("active", "session", active), Entry("selected", "session", selected)], 1, "ok", "", current_target=active, dimmed=True)
+        with patch.dict("mtmux.sidebar._COLOR", {"active": curses.A_REVERSE, "local": 45}, clear=True):
+            _draw(
+                screen,
+                [Entry("active", "session", active), Entry("selected", "session", selected)],
+                1,
+                "ok",
+                "",
+                current_target=active,
+                pane_active=False,
+            )
 
         rows = [call for call in screen.calls if call[0] == "addnstr" and ("active" in call[3] or "selected" in call[3])]
         self.assertFalse(any("›" in call[3] for call in rows))
         active_row = next(call for call in rows if "active" in call[3])
+        selected_row = next(call for call in rows if "selected" in call[3])
         self.assertTrue(active_row[5] & curses.A_REVERSE)
+        self.assertEqual(selected_row[5], 45)
 
     def test_unfocused_viewport_follows_active_target_not_offscreen_selection(self):
         entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
         screen = FakeScreen(size=(5, 30))
 
-        _draw(screen, entries, 9, "ok", "", current_target=entries[0].target, dimmed=True)
+        _draw(screen, entries, 9, "ok", "", current_target=entries[0].target, pane_active=False)
 
         rendered = [call[3] for call in screen.calls if call[0] == "addnstr"]
         self.assertTrue(any("0" in line for line in rendered))
