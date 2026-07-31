@@ -1063,6 +1063,57 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         self.assertEqual(result.current_agent, "focused")
 
+    def test_status_poller_keeps_switched_agent_until_focused_pane_is_confirmed(self):
+        target = Target("local", "work")
+        first_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        second_pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        agents = (
+            AgentEntry(first_pane, "first", "pi-one", "working"),
+            AgentEntry(second_pane, "second", "pi-two", "working"),
+        )
+
+        def agent_snapshot(focused_pane):
+            return SessionSnapshot(
+                SourceSnapshot(
+                    True,
+                    (target,),
+                    frozenset(),
+                    agents=agents,
+                    focused_panes=frozenset({focused_pane}),
+                ),
+                {},
+            )
+
+        stale = agent_snapshot(first_pane)
+        poller = unittest.mock.Mock(snapshot=stale)
+        status = sidebar.AsyncStatusPoller(poller, target)
+        status._next_poll = float("inf")
+
+        def complete(snapshot, current_agent):
+            status._future = unittest.mock.Mock()
+            status._future.done.return_value = True
+            status._future.result.return_value = sidebar.StatusResult(
+                snapshot, target, None, current_agent, True, status._generation
+            )
+            status.tick(0)
+
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(
+                    Effect("switch_pane", second_pane, message="second"), ()
+                )
+            )
+            complete(stale, "first")
+
+            self.assertEqual(status.current_agent, "second")
+
+            complete(agent_snapshot(second_pane), "second")
+            complete(stale, "first")
+
+            self.assertEqual(status.current_agent, "first")
+        finally:
+            status.close()
+
     def test_status_poller_runs_discovery_and_tmux_reads_off_ui_thread(self):
         started = threading.Event()
         release = threading.Event()
