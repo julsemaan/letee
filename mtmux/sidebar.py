@@ -789,6 +789,7 @@ class AsyncStatusPoller:
         self.current_agent: str | None = None
         self.pane_active = True
         self._generation = 0
+        self._pending_agent: tuple[PaneTarget, str] | None = None
 
     def _sample(
         self,
@@ -840,7 +841,13 @@ class AsyncStatusPoller:
             if result.generation == self._generation:
                 self.current_target = result.current_target
                 self.bell_target = result.bell_target
-                self.current_agent = result.current_agent
+                if self._pending_agent is None:
+                    self.current_agent = result.current_agent
+                elif self._pending_agent[0] in result.snapshot.focused_panes:
+                    self._pending_agent = None
+                    self.current_agent = result.current_agent
+                else:
+                    self.current_agent = self._pending_agent[1]
                 self.pane_active = result.pane_active
         if self._future is None and now >= self._next_poll:
             commands, self._commands = tuple(self._commands), []
@@ -857,10 +864,14 @@ class AsyncStatusPoller:
         if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
             self.current_target = target
             self.current_agent = None
+            self._pending_agent = None
             self._generation += 1
         elif result.effect.kind == "switch_pane" and isinstance(target, PaneTarget):
             self.current_target = target.target
             self.current_agent = result.effect.message or None
+            self._pending_agent = (
+                (target, result.effect.message) if result.effect.message else None
+            )
             self._generation += 1
 
     def refresh(self) -> bool:
