@@ -159,6 +159,19 @@ pi install git:github.com/julsemaan/astatus
 
 Then run `/reload` or restart pi.
 
+#### OpenCode
+
+Add the astatus plugin to `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["agent-status-opencode"]
+}
+```
+
+Then start or restart OpenCode. OpenCode installs the plugin from npm automatically.
+
 Run `mtmux` — agents appear automatically in the Agents sidebar (`C-s a`).
 
 ### How agent discovery works
