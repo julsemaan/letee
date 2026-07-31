@@ -2078,7 +2078,16 @@ class SidebarDrawTest(unittest.TestCase):
 
         poller.tick.side_effect = tick
         screen = FakeScreen(
-            [curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")],
+            [
+                curses.KEY_MOUSE,
+                -1,
+                -1,
+                -1,
+                -1,
+                curses.KEY_MOUSE,
+                curses.KEY_MOUSE,
+                ord("q"),
+            ],
             size=(12, 30),
         )
 
@@ -2198,6 +2207,53 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one")
+
+    def test_press_without_release_switches_after_sidebar_gains_focus(self):
+        target = Target("local", "one")
+        entries = [Entry("one", "session", target, tracked=True)]
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one",)),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=False,
+        )
+
+        def tick(_now):
+            if poller.tick.call_count >= 2:
+                poller.pane_active = True
+            return False
+
+        poller.tick.side_effect = tick
+        screen = FakeScreen(
+            [curses.KEY_MOUSE, -1, -1, -1, -1, ord("q")], size=(12, 30)
+        )
+
+        with (
+            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
+            patch(
+                "mtmux.sidebar.time.monotonic",
+                side_effect=[0, 0.1, 0.2, 0.5] + [1] * 20,
+            ),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask"),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                return_value=(0, 0, 2, 0, curses.BUTTON1_PRESSED),
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("mtmux.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        switch.assert_called_once_with(
+            target, "env -u TMUX tmux -T clipboard new-session -A -s one"
+        )
 
     def test_single_click_switches_tracked_session_after_press_release_events(self):
         target = Target("local", "one")
