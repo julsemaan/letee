@@ -1836,14 +1836,14 @@ def run(stdscr: curses.window) -> None:
                 # position on all moves, would change selection otherwise).
                 _b1_motion = getattr(curses, "REPORT_MOUSE_POSITION", 0) or 0
                 _button_bits = (
-                    getattr(curses, "BUTTON1_PRESSED", 0) or 0
-                    | getattr(curses, "BUTTON1_RELEASED", 0) or 0
-                    | getattr(curses, "BUTTON1_CLICKED", 0) or 0
-                    | getattr(curses, "BUTTON3_PRESSED", 0) or 0
-                    | getattr(curses, "BUTTON3_RELEASED", 0) or 0
-                    | getattr(curses, "BUTTON3_CLICKED", 0) or 0
-                    | getattr(curses, "BUTTON4_PRESSED", 0) or 0
-                    | getattr(curses, "BUTTON5_PRESSED", 0) or 0
+                    (getattr(curses, "BUTTON1_PRESSED", 0) or 0)
+                    | (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+                    | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+                    | (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
+                    | (getattr(curses, "BUTTON3_RELEASED", 0) or 0)
+                    | (getattr(curses, "BUTTON3_CLICKED", 0) or 0)
+                    | (getattr(curses, "BUTTON4_PRESSED", 0) or 0)
+                    | (getattr(curses, "BUTTON5_PRESSED", 0) or 0)
                 )
                 if state.drag_source_index is None and mouse_state & _b1_motion and not mouse_state & _button_bits:
                     continue

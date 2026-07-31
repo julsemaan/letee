@@ -2279,7 +2279,10 @@ class SidebarDrawTest(unittest.TestCase):
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask") as mousemask,
             patch("mtmux.sidebar._mouse_cleanup") as mouse_cleanup,
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 7, 4, 0, curses.BUTTON3_PRESSED)),
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                return_value=(0, 7, 4, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+            ),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
             patch("mtmux.sidebar._entries", return_value=entries),
