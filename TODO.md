@@ -4,6 +4,7 @@
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Prefix for selecting the right pane
+- [ ] When clicking on an item, it should focus it immediately even if mtmux is working towards focusing the sessions or agent pane. UI feedback should be immediate when seleting a session or agent
 
 ## Done
 
