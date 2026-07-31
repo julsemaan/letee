@@ -4,6 +4,7 @@
 - [ ] Allow having multiple mtmux
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
+- [ ] Prefix for selecting the right pane
 
 ## Done
 
