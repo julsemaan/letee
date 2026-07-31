@@ -272,6 +272,7 @@ class CockpitLayoutTest(unittest.TestCase):
             "display-menu", "-M", "-O", "-T", "work@dev", "-x", "7", "-y", "4", "-t", "%1",
             "Remove", "r", "send-keys -t %1 r",
             "Kill", "x", "send-keys -t %1 x y",
+            timeout=None,
         )
 
     def test_help_uses_configured_prefix(self):

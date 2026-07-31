@@ -1952,7 +1952,11 @@ def run(stdscr: curses.window) -> None:
                         state.selected_index = index
                         state.selected_target = entries[index].target
                         state.selected_tracked = True
-                        cockpit.show_session_menu(entries[index].target, mouse_col, row)
+                        _mouse_cleanup()
+                        try:
+                            cockpit.show_session_menu(entries[index].target, mouse_col, row)
+                        finally:
+                            _mouse_mask()
                     continue
                 if row == 0 and add_col is not None and isinstance(mouse_col, int) and mouse_col >= add_col:
                     if _mouse_activates(mouse_state):

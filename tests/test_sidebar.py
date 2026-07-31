@@ -2277,7 +2277,8 @@ class SidebarDrawTest(unittest.TestCase):
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("mtmux.sidebar.curses.mousemask") as mousemask,
+            patch("mtmux.sidebar._mouse_cleanup") as mouse_cleanup,
             patch("mtmux.sidebar.curses.getmouse", return_value=(0, 7, 4, 0, curses.BUTTON3_PRESSED)),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
@@ -2291,6 +2292,8 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         show_menu.assert_called_once_with(second, 7, 4)
+        self.assertEqual(mouse_cleanup.call_count, 2)
+        self.assertEqual(mousemask.call_count, 2)
         switch.assert_not_called()
 
     def test_location_click_target_enters_dedicated_name_view(self):
