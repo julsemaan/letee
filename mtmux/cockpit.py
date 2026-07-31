@@ -308,10 +308,11 @@ def show_help() -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), help_command(load_prefix()))
 
 
-def show_session_menu(x: int, y: int) -> None:
+def show_session_menu(target: Target, x: int, y: int) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
+    title = f"{target.session}@{target.host or 'localhost'}"
     tmux.tmux(
-        "display-menu", "-M", "-O", "-T", "Session", "-x", str(x), "-y", str(y), "-t", pane,
+        "display-menu", "-M", "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
         "Remove", "r", f"send-keys -t {pane} r",
         "Kill", "x", f"send-keys -t {pane} x y",
     )

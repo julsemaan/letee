@@ -2291,7 +2291,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with(7, 4)
+        show_menu.assert_called_once_with(second, 7, 4)
         switch.assert_not_called()
 
     def test_location_click_target_enters_dedicated_name_view(self):

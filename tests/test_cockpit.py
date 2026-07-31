@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from mtmux import cockpit
+from mtmux.names import Target
 
 
 class CockpitLayoutTest(unittest.TestCase):
@@ -265,10 +266,10 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_option", return_value="%1"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
-            cockpit.show_session_menu(7, 4)
+            cockpit.show_session_menu(Target("ssh", "work", "dev"), 7, 4)
 
         tmux_call.assert_called_once_with(
-            "display-menu", "-M", "-O", "-T", "Session", "-x", "7", "-y", "4", "-t", "%1",
+            "display-menu", "-M", "-O", "-T", "work@dev", "-x", "7", "-y", "4", "-t", "%1",
             "Remove", "r", "send-keys -t %1 r",
             "Kill", "x", "send-keys -t %1 x y",
         )
