@@ -270,7 +270,7 @@ class CockpitLayoutTest(unittest.TestCase):
         tmux_call.assert_called_once_with(
             "display-menu", "-M", "-O", "-T", "Session", "-x", "7", "-y", "4", "-t", "%1",
             "Remove", "r", "send-keys -t %1 r",
-            "Kill", "x", "send-keys -t %1 x",
+            "Kill", "x", "send-keys -t %1 x y",
         )
 
     def test_help_uses_configured_prefix(self):

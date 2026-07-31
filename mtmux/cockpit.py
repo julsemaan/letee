@@ -313,7 +313,7 @@ def show_session_menu(x: int, y: int) -> None:
     tmux.tmux(
         "display-menu", "-M", "-O", "-T", "Session", "-x", str(x), "-y", str(y), "-t", pane,
         "Remove", "r", f"send-keys -t {pane} r",
-        "Kill", "x", f"send-keys -t {pane} x",
+        "Kill", "x", f"send-keys -t {pane} x y",
     )
 
 
