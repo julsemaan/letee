@@ -1,7 +1,7 @@
 PYTHON ?= python3
 PEXPECT_DIR ?= /tmp/pexpect-pkg
 
-.PHONY: test lint coverage build-check check dev-install test-e2e test-e2e-docker bump-version
+.PHONY: test lint coverage build-check check dev-install test-e2e test-e2e-docker bump-version do-release
 
 test:
 	$(PYTHON) -m unittest discover -s tests
@@ -32,3 +32,10 @@ dev-install:
 
 bump-version:
 	$(PYTHON) tools/bump_version.py
+
+do-release:
+	@$(MAKE) bump-version $(if $(VERSION),VERSION="$(VERSION)") && \
+	VERSION=$$($(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])') && \
+	git commit -m "Release version $$VERSION" -- pyproject.toml mtmux/__init__.py && \
+	git tag -a "v$$VERSION" -m "Release version $$VERSION" && \
+	git push --atomic origin HEAD "v$$VERSION"
