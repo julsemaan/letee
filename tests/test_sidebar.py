@@ -372,19 +372,50 @@ class AgentAlertTest(unittest.TestCase):
         self.pane = PaneTarget(self.target, "@1", "%2", "/tmp/tmux")
         self.state = SidebarState(favorites=[self.target])
 
-    def update(self, *agents, focused=(), current_target=None):
+    def update(self, *agents, focused=(), current_target=None, now=None):
         data = SessionSnapshot(
             SourceSnapshot(True, (self.target,), frozenset(), agents=tuple(agents), focused_panes=frozenset(focused)),
             {},
         )
-        return _update_agent_alerts(self.state, data, current_target)
+        return _update_agent_alerts(self.state, data, current_target, now=now)
 
     def agent(self, agent_id="id", status="working", pane=None):
         return AgentEntry(pane or self.pane, agent_id, "pi", status)
 
     def test_initial_idle_agent_does_not_alert(self):
-        self.assertFalse(self.update(self.agent(status="idle")))
+        self.assertFalse(self.update(self.agent(status="idle"), now=10.0))
         self.assertEqual(self.state.agent_alerts, set())
+        self.assertEqual(self.state.agent_idle_since, {(self.pane, "id"): 10.0})
+
+    def test_repeated_idle_preserves_timestamp_and_reentry_replaces_it(self):
+        key = (self.pane, "id")
+        self.update(self.agent(status="idle"), now=10.0)
+        self.update(self.agent(status="idle"), now=20.0)
+        self.assertEqual(self.state.agent_idle_since[key], 10.0)
+
+        self.update(self.agent(status="working"), now=30.0)
+        self.assertNotIn(key, self.state.agent_idle_since)
+        self.update(self.agent(status="idle"), now=40.0)
+        self.assertEqual(self.state.agent_idle_since[key], 40.0)
+
+    def test_agents_becoming_idle_on_different_polls_sort_newest_first(self):
+        other = PaneTarget(self.target, "@1", "%3", "/tmp/tmux")
+        first = self.agent(agent_id="first", status="idle")
+        second_working = self.agent(agent_id="second", pane=other)
+        self.update(first, second_working, now=10.0)
+
+        second_idle = self.agent(agent_id="second", status="idle", pane=other)
+        self.update(first, second_idle, now=20.0)
+        data = SessionSnapshot(
+            SourceSnapshot(True, (self.target,), frozenset(), agents=(first, second_idle)),
+            {},
+        )
+        entries = _agent_entries(data, [self.target], idle_since=self.state.agent_idle_since)
+        self.assertEqual([entry.agent_id for entry in entries], ["second", "first"])
+
+        self.update(first, second_idle, now=30.0)
+        entries = _agent_entries(data, [self.target], idle_since=self.state.agent_idle_since)
+        self.assertEqual([entry.agent_id for entry in entries], ["second", "first"])
 
     def test_working_to_attention_transition_alerts_once(self):
         self.update(self.agent())
@@ -436,6 +467,7 @@ class AgentAlertTest(unittest.TestCase):
         self.assertFalse(self.update())
         self.assertEqual(self.state.agent_alerts, set())
         self.assertEqual(self.state.agent_states, {})
+        self.assertEqual(self.state.agent_idle_since, {})
 
     def test_successful_exact_pane_switch_clears_alert(self):
         key = (self.pane, "id")
@@ -3149,28 +3181,43 @@ class AgentOrderingTest(unittest.TestCase):
         ids = [e.agent_id for e in entries]
         self.assertEqual(ids, ["input", "failed", "working", "idle"])
 
-    def test_priority_mode_sorts_idle_agents_by_latest_activity_with_missing_last(self):
+    def test_priority_mode_sorts_idle_agents_by_observed_transition_newest_first(self):
         target = Target("local", "work")
         favorites = [target]
-        older = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        newer = older + timedelta(minutes=1)
         entries = [
-            self._make_agent(target, "@1", "%1", "missing", "idle"),
+            self._make_agent(target, "@1", "%1", "older", "idle"),
+            self._make_agent(target, "@1", "%2", "newer", "idle"),
+        ]
+        idle_since = {
+            (entries[0].pane_target, "older"): 10.0,
+            (entries[1].pane_target, "newer"): 20.0,
+        }
+
+        entries.sort(key=lambda entry: _agent_sort_key(entry, favorites, "priority", idle_since=idle_since))
+
+        self.assertEqual([entry.agent_id for entry in entries], ["newer", "older"])
+
+    def test_producer_timestamps_do_not_reorder_idle_agents(self):
+        target = Target("local", "work")
+        older = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        entries = [
+            Entry(
+                "pi", "agent", target, "laptop",
+                pane_target=PaneTarget(target, "@1", "%1", "/tmp/tmux"),
+                agent_id="first", status="idle", runtime_updated_at=older,
+                task_status_timestamp=older + timedelta(minutes=2),
+            ),
             Entry(
                 "pi", "agent", target, "laptop",
                 pane_target=PaneTarget(target, "@1", "%2", "/tmp/tmux"),
-                agent_id="older", status="idle", task_status_timestamp=older,
-            ),
-            Entry(
-                "pi", "agent", target, "laptop",
-                pane_target=PaneTarget(target, "@1", "%3", "/tmp/tmux"),
-                agent_id="newer", status="idle", task_status_timestamp=newer,
+                agent_id="second", status="idle", runtime_updated_at=older + timedelta(minutes=3),
+                task_status_timestamp=older + timedelta(minutes=4),
             ),
         ]
 
-        entries.sort(key=lambda entry: _agent_sort_key(entry, favorites, "priority"))
+        entries.sort(key=lambda entry: _agent_sort_key(entry, [target], "priority"))
 
-        self.assertEqual([entry.agent_id for entry in entries], ["newer", "older", "missing"])
+        self.assertEqual([entry.agent_id for entry in entries], ["first", "second"])
 
     def test_idle_runtime_heartbeats_do_not_reorder_agents_without_activity_timestamps(self):
         target = Target("local", "work")
@@ -3200,11 +3247,12 @@ class AgentOrderingTest(unittest.TestCase):
         entries = [
             Entry("pi", "agent", target, "laptop", pane_target=bell_pane, agent_id="bell", status="idle"),
             Entry("pi", "agent", target, "laptop", pane_target=other_pane, agent_id="urgent", status="input-required"),
-            Entry("pi", "agent", target, "laptop", pane_target=other_pane, agent_id="working", status="working"),
+            Entry("pi", "agent", target, "laptop", pane_target=other_pane, agent_id="newer", status="idle"),
         ]
         alerts = {(bell_pane, "bell")}
-        entries.sort(key=lambda e: _agent_sort_key(e, favorites, "priority", alerts))
-        self.assertEqual([e.agent_id for e in entries], ["bell", "urgent", "working"])
+        idle_since = {(other_pane, "newer"): 30.0, (bell_pane, "bell"): 10.0}
+        entries.sort(key=lambda e: _agent_sort_key(e, favorites, "priority", alerts, idle_since))
+        self.assertEqual([e.agent_id for e in entries], ["bell", "urgent", "newer"])
 
     def test_session_mode_ignores_status_and_follows_session_order(self):
         first = Target("local", "first")

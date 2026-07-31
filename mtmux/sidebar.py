@@ -69,6 +69,7 @@ class SidebarState:
     agent_selected_index: int = 0
     selected_agent_key: tuple[PaneTarget, str] | None = None
     agent_states: dict[tuple[PaneTarget, str], str] = field(default_factory=dict)
+    agent_idle_since: dict[tuple[PaneTarget, str], float] = field(default_factory=dict)
     agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_rows: int | None = None
     agent_ordering: Literal["priority", "session"] = "priority"
@@ -406,6 +407,7 @@ def _agent_sort_key(
     favorites: list[Target],
     agent_ordering: str,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    idle_since: dict[tuple[PaneTarget, str], float] | None = None,
 ) -> tuple:
     target = entry.target
     session_index = favorites.index(target) if target and target in favorites else len(favorites)
@@ -413,11 +415,11 @@ def _agent_sort_key(
         return (0, session_index, 0, 0, entry.agent_id or "")
     status_rank = _STATUS_RANK.get(entry.status, 5)
     bell_rank = 0 if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else 1
-    activity = entry.task_status_timestamp if entry.status == "idle" else None
-    activity_rank = (0, -activity.timestamp()) if activity else (1, 0)
+    idle_time = (idle_since or {}).get((entry.pane_target, entry.agent_id or "")) if entry.status == "idle" else None
+    activity_rank = -idle_time if idle_time is not None else 0
     window = int(entry.pane_target.window_id[1:]) if entry.pane_target and entry.pane_target.window_id else 0
     pane = int(entry.pane_target.pane_id[1:]) if entry.pane_target and entry.pane_target.pane_id else 0
-    return (bell_rank, status_rank, *activity_rank, session_index, window, pane, entry.agent_id or "")
+    return (bell_rank, status_rank, activity_rank, session_index, window, pane, entry.agent_id or "")
 
 
 def _agent_entries(
@@ -425,6 +427,7 @@ def _agent_entries(
     favorites: list[Target],
     agent_ordering: str = "priority",
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    idle_since: dict[tuple[PaneTarget, str], float] | None = None,
 ) -> list[Entry]:
     tracked = set(favorites)
     entries = [
@@ -442,7 +445,7 @@ def _agent_entries(
         for agent in snapshot.agents
         if agent.pane_target.target in tracked
     ]
-    entries.sort(key=lambda e: _agent_sort_key(e, favorites, agent_ordering, agent_alerts))
+    entries.sort(key=lambda e: _agent_sort_key(e, favorites, agent_ordering, agent_alerts, idle_since))
     return entries
 
 
@@ -454,7 +457,10 @@ def _focused_agent_id(snapshot: SessionSnapshot, current_target: Target | None, 
 
 
 def _update_agent_alerts(
-    state: SidebarState, snapshot: SessionSnapshot, current_target: Target | None
+    state: SidebarState,
+    snapshot: SessionSnapshot,
+    current_target: Target | None,
+    now: float | None = None,
 ) -> bool:
     attention_states = {"idle", "completed", "input-required", "auth-required", "failed", "rejected", "canceled"}
     tracked = set(state.favorites)
@@ -462,6 +468,13 @@ def _update_agent_alerts(
         (agent.pane_target, agent.agent_id): agent.task_state or "idle"
         for agent in snapshot.agents
         if agent.pane_target.target in tracked
+    }
+    idle_agents = {key for key, status in agents.items() if status == "idle"}
+    new_idle_agents = idle_agents.difference(state.agent_idle_since)
+    observed_at = (time.monotonic() if now is None else now) if new_idle_agents else 0.0
+    state.agent_idle_since = {
+        key: state.agent_idle_since.get(key, observed_at)
+        for key in idle_agents
     }
     active = {
         key
@@ -1573,9 +1586,15 @@ def run(stdscr: curses.window) -> None:
     poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
     actions = EffectRunner()
     entries = _entries(state.filter_text, poller.snapshot, state.favorites)
-    agent_entries = _agent_entries(poller.snapshot, state.favorites)
-    agent_entries = [Entry("", "order")] + agent_entries
     _update_agent_alerts(state, poller.snapshot, state.selected_target)
+    agent_entries = _agent_entries(
+        poller.snapshot,
+        state.favorites,
+        state.agent_ordering,
+        state.agent_alerts,
+        state.agent_idle_since,
+    )
+    agent_entries = [Entry("", "order")] + agent_entries
     _reset_selection(state, entries)
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
@@ -1622,7 +1641,13 @@ def run(stdscr: curses.window) -> None:
             if state.add_view in ("choice", "existing", "location")
             else _entries(state.filter_text, poller.snapshot, state.favorites)
         )
-        raw_agents = _agent_entries(poller.snapshot, state.favorites, state.agent_ordering, state.agent_alerts)
+        raw_agents = _agent_entries(
+            poller.snapshot,
+            state.favorites,
+            state.agent_ordering,
+            state.agent_alerts,
+            state.agent_idle_since,
+        )
         # ponytail: order row is always index 0; rebuild prepends it so draw and navigation see same list
         agent_entries = [Entry("", "order")] + raw_agents
         _sync_selection(state, entries)
