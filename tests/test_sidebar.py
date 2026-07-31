@@ -1198,9 +1198,7 @@ class SidebarDrawTest(unittest.TestCase):
             curses.BUTTON1_CLICKED
             | curses.BUTTON1_PRESSED
             | curses.BUTTON1_RELEASED
-            | curses.BUTTON3_CLICKED
             | curses.BUTTON3_PRESSED
-            | curses.BUTTON3_RELEASED
             | curses.REPORT_MOUSE_POSITION
             | curses.BUTTON4_PRESSED
             | getattr(curses, "BUTTON5_PRESSED", 0)
@@ -2275,15 +2273,12 @@ class SidebarDrawTest(unittest.TestCase):
             Entry("one", "session", first, tracked=True),
             Entry("two", "session", second, tracked=True),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", side_effect=[
-                (0, 7, 4, 0, curses.BUTTON3_PRESSED),
-                (0, 7, 4, 0, curses.BUTTON3_RELEASED),
-            ]),
+            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 7, 4, 0, curses.BUTTON3_PRESSED)),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
             patch("mtmux.sidebar._entries", return_value=entries),
