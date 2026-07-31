@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from mtmux import cockpit
+from mtmux.names import Target
 
 
 class CockpitLayoutTest(unittest.TestCase):
@@ -260,6 +261,20 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("set-option -u -t mtmux @mtmux_current_target", command)
         self.assertIn("select-pane -t %1", command)
 
+    def test_session_menu_targets_sidebar_at_click_coordinates(self):
+        with (
+            patch.object(cockpit, "_option", return_value="%1"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_session_menu(Target("ssh", "work", "dev"), 7, 4)
+
+        tmux_call.assert_called_once_with(
+            "display-menu", "-M", "-O", "-T", "work@dev", "-x", "7", "-y", "4", "-t", "%1",
+            "Remove", "r", "send-keys -t %1 r",
+            "Kill", "x", "send-keys -t %1 x y",
+            timeout=None,
+        )
+
     def test_help_uses_configured_prefix(self):
         command = cockpit.help_command("C-x")
 
@@ -278,6 +293,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("n      open grouped local/SSH Add picker", command)
         self.assertIn("r      remove selected session", command)
         self.assertIn("x      kill and remove selected session", command)
+        self.assertIn("Right-click  open session Remove/Kill menu", command)
         self.assertNotIn("f      star/unstar", command)
         self.assertNotIn("r      refresh", command)
         self.assertIn("C-x d  detach cockpit", command)

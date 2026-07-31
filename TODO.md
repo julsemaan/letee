@@ -1,4 +1,3 @@
-- [ ] Focusing on the left pane with the mousechanges the active session which is fine but makes it hard to change things about a session (like kill/remove). See about supporting right-click to open a context menu for the session
 - [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple mtmux
@@ -8,6 +7,7 @@
 
 ## Done
 
+- [x] Support right-click context menu for removing or killing tracked sessions without activating them
 - [x] Sometimes when clicking on a session or agent to make it active, it doesn't give feedback rapidly. Maybe because of SSH being established. The UI should reflect the selection immediately and then do any SSH related things.
 - [x] Use cursor instead of dimming to show sidebar focus, with predictable initial selection
 - [x] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
