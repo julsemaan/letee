@@ -1030,6 +1030,7 @@ def _mouse_mask() -> None:
         getattr(curses, "BUTTON1_PRESSED", 0),
         getattr(curses, "BUTTON1_RELEASED", 0),
         getattr(curses, "BUTTON3_CLICKED", 0),
+        getattr(curses, "BUTTON3_PRESSED", 0),
         getattr(curses, "BUTTON3_RELEASED", 0),
         getattr(curses, "REPORT_MOUSE_POSITION", 0),
         getattr(curses, "BUTTON4_PRESSED", 0),
@@ -1840,6 +1841,7 @@ def run(stdscr: curses.window) -> None:
                     getattr(curses, "BUTTON1_PRESSED", 0) or 0
                     | getattr(curses, "BUTTON1_RELEASED", 0) or 0
                     | getattr(curses, "BUTTON1_CLICKED", 0) or 0
+                    | getattr(curses, "BUTTON3_PRESSED", 0) or 0
                     | getattr(curses, "BUTTON3_RELEASED", 0) or 0
                     | getattr(curses, "BUTTON3_CLICKED", 0) or 0
                     | getattr(curses, "BUTTON4_PRESSED", 0) or 0
@@ -1938,10 +1940,7 @@ def run(stdscr: curses.window) -> None:
                     finally:
                         stdscr.timeout(UI_POLL_INTERVAL_MS)
                     continue
-                right_click = mouse_state & (
-                    (getattr(curses, "BUTTON3_RELEASED", 0) or 0)
-                    | (getattr(curses, "BUTTON3_CLICKED", 0) or 0)
-                )
+                right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
                 if right_click:
                     view_index = _view_index(entries, state.selected_index, current_target, not poller.pane_active)
                     index = _entry_at_row(

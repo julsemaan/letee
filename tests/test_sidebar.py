@@ -1199,6 +1199,7 @@ class SidebarDrawTest(unittest.TestCase):
             | curses.BUTTON1_PRESSED
             | curses.BUTTON1_RELEASED
             | curses.BUTTON3_CLICKED
+            | curses.BUTTON3_PRESSED
             | curses.BUTTON3_RELEASED
             | curses.REPORT_MOUSE_POSITION
             | curses.BUTTON4_PRESSED
@@ -2267,19 +2268,22 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "two")
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s two")
 
-    def test_right_click_opens_menu_for_clicked_tracked_session_without_switching(self):
+    def test_right_click_press_opens_menu_without_switching(self):
         first = Target("local", "one")
         second = Target("local", "two")
         entries = [
             Entry("one", "session", first, tracked=True),
             Entry("two", "session", second, tracked=True),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
             patch("mtmux.sidebar.curses.curs_set"),
             patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 7, 4, 0, curses.BUTTON3_CLICKED)),
+            patch("mtmux.sidebar.curses.getmouse", side_effect=[
+                (0, 7, 4, 0, curses.BUTTON3_PRESSED),
+                (0, 7, 4, 0, curses.BUTTON3_RELEASED),
+            ]),
             patch("mtmux.sidebar._init_colors"),
             patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
             patch("mtmux.sidebar._entries", return_value=entries),
