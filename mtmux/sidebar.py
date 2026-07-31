@@ -1029,6 +1029,7 @@ def _mouse_mask() -> None:
         getattr(curses, "BUTTON1_CLICKED", 0),
         getattr(curses, "BUTTON1_PRESSED", 0),
         getattr(curses, "BUTTON1_RELEASED", 0),
+        getattr(curses, "BUTTON3_PRESSED", 0),
         getattr(curses, "REPORT_MOUSE_POSITION", 0),
         getattr(curses, "BUTTON4_PRESSED", 0),
         getattr(curses, "BUTTON5_PRESSED", 0),
@@ -1835,11 +1836,14 @@ def run(stdscr: curses.window) -> None:
                 # position on all moves, would change selection otherwise).
                 _b1_motion = getattr(curses, "REPORT_MOUSE_POSITION", 0) or 0
                 _button_bits = (
-                    getattr(curses, "BUTTON1_PRESSED", 0) or 0
-                    | getattr(curses, "BUTTON1_RELEASED", 0) or 0
-                    | getattr(curses, "BUTTON1_CLICKED", 0) or 0
-                    | getattr(curses, "BUTTON4_PRESSED", 0) or 0
-                    | getattr(curses, "BUTTON5_PRESSED", 0) or 0
+                    (getattr(curses, "BUTTON1_PRESSED", 0) or 0)
+                    | (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+                    | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+                    | (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
+                    | (getattr(curses, "BUTTON3_RELEASED", 0) or 0)
+                    | (getattr(curses, "BUTTON3_CLICKED", 0) or 0)
+                    | (getattr(curses, "BUTTON4_PRESSED", 0) or 0)
+                    | (getattr(curses, "BUTTON5_PRESSED", 0) or 0)
                 )
                 if state.drag_source_index is None and mouse_state & _b1_motion and not mouse_state & _button_bits:
                     continue
@@ -1933,6 +1937,26 @@ def run(stdscr: curses.window) -> None:
                             mouse_state = next_state
                     finally:
                         stdscr.timeout(UI_POLL_INTERVAL_MS)
+                    continue
+                right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
+                if right_click:
+                    view_index = _view_index(entries, state.selected_index, current_target, not poller.pane_active)
+                    index = _entry_at_row(
+                        entries, view_index, row, separator + 1, 0,
+                        3 if state.filtering else 2,
+                        state.scroll_offset,
+                    )
+                    if isinstance(mouse_col, int) and index is not None and entries[index].kind == "session" and entries[index].tracked:
+                        state.focused_region = "sessions"
+                        state.add_button_selected = False
+                        state.selected_index = index
+                        state.selected_target = entries[index].target
+                        state.selected_tracked = True
+                        _mouse_cleanup()
+                        try:
+                            cockpit.show_session_menu(entries[index].target, mouse_col, row)
+                        finally:
+                            _mouse_mask()
                     continue
                 if row == 0 and add_col is not None and isinstance(mouse_col, int) and mouse_col >= add_col:
                     if _mouse_activates(mouse_state):

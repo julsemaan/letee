@@ -36,6 +36,7 @@ Session actions
   r      remove selected session (session keeps running)
   K/J    move session up/down
   x      kill and remove selected session
+  Right-click  open session Remove/Kill menu
   /      search untracked existing sessions
 
 Agent actions
@@ -305,6 +306,17 @@ def switch(target: Target, attach_command: str, agent_id: str | None = None) -> 
 
 def show_help() -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), help_command(load_prefix()))
+
+
+def show_session_menu(target: Target, x: int, y: int) -> None:
+    pane = _option(SIDEBAR_PANE_OPTION)
+    title = f"{target.session}@{target.host or 'localhost'}"
+    tmux.tmux(
+        "display-menu", "-M", "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
+        "Remove", "r", f"send-keys -t {pane} r",
+        "Kill", "x", f"send-keys -t {pane} x y",
+        timeout=None,
+    )
 
 
 def show_unavailable(target: Target) -> None:

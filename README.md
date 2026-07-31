@@ -172,6 +172,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 ## Mouse controls
 
 - click session row: select and switch
+- right-click tracked session: open native tmux menu to remove it or kill it with confirmation; right-click does not switch sessions
 - drag tracked session: reorder it; hovering `↑ more` or `↓ more` auto-scrolls, and leaving sidebar drops at current insertion line
 - click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - wheel over sidebar: navigate selectable session and host rows

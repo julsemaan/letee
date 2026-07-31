@@ -1198,6 +1198,7 @@ class SidebarDrawTest(unittest.TestCase):
             curses.BUTTON1_CLICKED
             | curses.BUTTON1_PRESSED
             | curses.BUTTON1_RELEASED
+            | curses.BUTTON3_PRESSED
             | curses.REPORT_MOUSE_POSITION
             | curses.BUTTON4_PRESSED
             | getattr(curses, "BUTTON5_PRESSED", 0)
@@ -2264,6 +2265,39 @@ class SidebarDrawTest(unittest.TestCase):
 
         target = Target("local", "two")
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s two")
+
+    def test_right_click_press_opens_menu_without_switching(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        entries = [
+            Entry("one", "session", first, tracked=True),
+            Entry("two", "session", second, tracked=True),
+        ]
+        screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
+
+        with (
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar.curses.mousemask") as mousemask,
+            patch("mtmux.sidebar._mouse_cleanup") as mouse_cleanup,
+            patch(
+                "mtmux.sidebar.curses.getmouse",
+                return_value=(0, 7, 4, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+            ),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
+            patch("mtmux.sidebar._entries", return_value=entries),
+            patch("mtmux.sidebar._agent_entries", return_value=[]),
+            patch("mtmux.sidebar._bell_targets", return_value=set()),
+            patch("mtmux.sidebar._current_target", return_value=first),
+            patch("mtmux.sidebar.cockpit.show_session_menu") as show_menu,
+            patch("mtmux.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        show_menu.assert_called_once_with(second, 7, 4)
+        self.assertEqual(mouse_cleanup.call_count, 2)
+        self.assertEqual(mousemask.call_count, 2)
+        switch.assert_not_called()
 
     def test_location_click_target_enters_dedicated_name_view(self):
         state = SidebarState(add_view="location")

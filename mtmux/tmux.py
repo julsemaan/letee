@@ -9,15 +9,21 @@ SESSION = "mtmux"
 WINDOW = "cockpit"
 
 
-def tmux(*args: str, check: bool = True, capture: bool = False, config: Path | None = None) -> subprocess.CompletedProcess[str]:
+def tmux(
+    *args: str,
+    check: bool = True,
+    capture: bool = False,
+    config: Path | None = None,
+    timeout: float | None = 5,
+) -> subprocess.CompletedProcess[str]:
     cmd = ["tmux", "-L", SOCKET]
     if config is not None:
         cmd += ["-f", str(config)]
     cmd += list(args)
     try:
-        return subprocess.run(cmd, text=True, capture_output=capture, check=check, timeout=5)
+        return subprocess.run(cmd, text=True, capture_output=capture, check=check, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise SystemExit(f"{shlex.join(cmd)} timed out after 5 seconds") from None
+        raise SystemExit(f"{shlex.join(cmd)} timed out after {timeout:g} seconds") from None
 
 
 def out(*args: str, check: bool = True) -> str:
