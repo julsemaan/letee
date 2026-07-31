@@ -1030,6 +1030,39 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertEqual(state.selected_agent_key, (newer_pane, "new-agent"))
         self.assertNotIn(old_key, state.agent_alerts)
 
+    def test_status_poller_resolves_focused_agent_from_same_snapshot(self):
+        target = Target("local", "work")
+        focused_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        stored_pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        poller = unittest.mock.Mock()
+        poller.snapshot = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(
+                    AgentEntry(focused_pane, "focused", "pi-one", "working"),
+                    AgentEntry(stored_pane, "stored", "pi-two", "working"),
+                ),
+                focused_panes=frozenset({focused_pane}),
+            ),
+            {},
+        )
+
+        with (
+            patch("mtmux.sidebar._current_target", return_value=target),
+            patch("mtmux.sidebar.cockpit.bell_target", return_value=None),
+            patch("mtmux.sidebar.cockpit.current_agent", return_value="stored"),
+            patch("mtmux.sidebar._pane_active", return_value=True),
+        ):
+            status = sidebar.AsyncStatusPoller(poller, target)
+            try:
+                result = status._sample((), 0)
+            finally:
+                status.close()
+
+        self.assertEqual(result.current_agent, "focused")
+
     def test_status_poller_runs_discovery_and_tmux_reads_off_ui_thread(self):
         started = threading.Event()
         release = threading.Event()
@@ -1994,6 +2027,63 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         self.assertIn("id", active_agents)
+
+    def test_completed_agent_switch_does_not_restore_stale_focused_agent(self):
+        target = Target("local", "work")
+        first_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        second_pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        agents = (
+            AgentEntry(first_pane, "first", "pi-one", "working"),
+            AgentEntry(second_pane, "second", "pi-two", "working"),
+        )
+        poller = unittest.mock.Mock(
+            snapshot=SessionSnapshot(
+                SourceSnapshot(
+                    True,
+                    (target,),
+                    frozenset(),
+                    agents=agents,
+                    focused_panes=frozenset({first_pane}),
+                ),
+                {},
+            ),
+            current_target=target,
+            bell_target=None,
+            current_agent="first",
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        poller.observe_effect.side_effect = lambda result: setattr(
+            poller, "current_agent", result.effect.message
+        )
+        active_agents = []
+        screen = FakeScreen(
+            [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_ENTER, -1, -1, ord("q")],
+            size=(14, 30),
+        )
+
+        result = sidebar.EffectResult(
+            Effect("switch_pane", second_pane, message="second"), (target,)
+        )
+        runner = unittest.mock.Mock(blocks_favorite_changes=False, busy=False)
+        runner.submit.return_value = True
+        runner.poll.side_effect = [None] * 5 + [result]
+
+        with (
+            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("mtmux.sidebar.EffectRunner", return_value=runner),
+            patch("mtmux.sidebar.curses.curs_set"),
+            patch("mtmux.sidebar._init_colors"),
+            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch(
+                "mtmux.sidebar._draw",
+                side_effect=lambda *args, **kwargs: active_agents.append(args[17]) or (2, None),
+            ),
+        ):
+            run(screen)
+
+        second_selected = active_agents.index("second")
+        self.assertNotIn("first", active_agents[second_selected:])
 
     def test_keyboard_reorder_is_not_blocked_by_slow_switch(self):
         first = Target("local", "one")
