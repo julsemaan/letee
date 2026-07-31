@@ -811,9 +811,12 @@ class AsyncStatusPoller:
         except (OSError, SystemExit, subprocess.SubprocessError):
             bell_target = self.bell_target
         try:
-            current_agent = cockpit.current_agent()
+            stored_agent = cockpit.current_agent()
         except (OSError, SystemExit, subprocess.SubprocessError):
-            current_agent = self.current_agent
+            stored_agent = self.current_agent
+        current_agent = _focused_agent_id(
+            self._poller.snapshot, current_target, stored_agent
+        )
         try:
             pane_active = _pane_active()
         except (OSError, SystemExit, subprocess.SubprocessError):
@@ -1774,9 +1777,7 @@ def run(stdscr: curses.window) -> None:
             bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
             if pending_navigation is None:
                 display_target = current_target
-                active_agent_id = _focused_agent_id(
-                    poller.snapshot, current_target, poller.current_agent
-                )
+                active_agent_id = poller.current_agent
             else:
                 display_target, active_agent_id = pending_navigation
             visible_bells = bell_targets - ({display_target} if display_target else set())
