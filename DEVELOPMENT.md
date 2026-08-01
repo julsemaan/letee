@@ -24,6 +24,8 @@ make check         # all quality gates
 
 ## End-to-end tests
 
+WARNING: These tests are not working (yet). Only use `make test` for now.
+
 End-to-end tests interact with tmux and must run in Docker:
 
 ```sh
