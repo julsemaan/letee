@@ -23,6 +23,9 @@ Navigation
   {prefix} a  focus/open Agents
   {prefix} s  focus/open Sessions
   {prefix} +  add session
+  {prefix} r  remove active session
+  {prefix} x  kill and remove active session (confirm)
+  {prefix} !  jump to first alerted agent
   {prefix} w  focus right pane
   {prefix} h  hide sidebar
   {prefix} q  quit cockpit
@@ -62,6 +65,7 @@ Examples
 
 SIDEBAR = f"{shlex.quote(sys.executable)} -m letee sidebar"
 FOCUS_SIDEBAR = f"{shlex.quote(sys.executable)} -m letee focus-sidebar"
+SIDEBAR_ACTION_KEYS = {"remove": "F8", "kill": "F9", "alert": "F10"}
 TARGET = f"{tmux.SESSION}:{tmux.WINDOW}"
 COCKPIT_OPTION = "@letee_cockpit"
 SIDEBAR_PANE_OPTION = "@letee_sidebar_pane"
@@ -133,6 +137,9 @@ def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("bind-key", "a", "run-shell", f"{FOCUS_SIDEBAR} agents")
     tmux.tmux("bind-key", "s", "run-shell", f"{FOCUS_SIDEBAR} sessions")
     tmux.tmux("bind-key", "+", "run-shell", f"{FOCUS_SIDEBAR} add")
+    tmux.tmux("bind-key", "r", "run-shell", f"{FOCUS_SIDEBAR} remove")
+    tmux.tmux("bind-key", "x", "run-shell", f"{FOCUS_SIDEBAR} kill")
+    tmux.tmux("bind-key", "!", "run-shell", f"{FOCUS_SIDEBAR} alert")
     tmux.tmux("bind-key", "w", "select-pane", "-t", right_pane)
     tmux.tmux("bind-key", "?", "respawn-pane", "-k", "-t", right_pane, help_command(prefix))
     for slot in range(1, 10):
@@ -274,8 +281,16 @@ def focus_sidebar(region: str = "sessions") -> int:
     ensure_config()
     ensure_cockpit()
     pane = _option(SIDEBAR_PANE_OPTION)
-    tmux.tmux("select-pane", "-t", pane)
-    keys = {"sessions": ("F6",), "agents": ("F7",), "add": ("F6", "a")}[region]
+    if region != "alert":
+        tmux.tmux("select-pane", "-t", pane)
+    keys = {
+        "sessions": ("F6",),
+        "agents": ("F7",),
+        "add": ("F6", "a"),
+        "remove": ("F6", SIDEBAR_ACTION_KEYS["remove"]),
+        "kill": ("F6", SIDEBAR_ACTION_KEYS["kill"]),
+        "alert": ("F7", SIDEBAR_ACTION_KEYS["alert"]),
+    }[region]
     tmux.tmux("send-keys", "-t", pane, *keys)
     return 0
 

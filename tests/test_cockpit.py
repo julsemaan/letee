@@ -206,6 +206,9 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
                 ("bind-key", "+", "run-shell", f"{cockpit.FOCUS_SIDEBAR} add"),
+                ("bind-key", "r", "run-shell", f"{cockpit.FOCUS_SIDEBAR} remove"),
+                ("bind-key", "x", "run-shell", f"{cockpit.FOCUS_SIDEBAR} kill"),
+                ("bind-key", "!", "run-shell", f"{cockpit.FOCUS_SIDEBAR} alert"),
                 ("bind-key", "w", "select-pane", "-t", "%2"),
                 ("bind-key", "?", "respawn-pane", "-k", "-t", "%2", cockpit.help_command("C-x")),
                 *[
@@ -249,6 +252,27 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_focus_sidebar_injects_distinct_action_keys_after_recreation(self):
+        for region, injected_key, focus_key, selects_sidebar in (
+            ("remove", "F8", "F6", True),
+            ("kill", "F9", "F6", True),
+            ("alert", "F10", "F7", False),
+        ):
+            with self.subTest(region=region), patch.object(
+                cockpit, "ensure_config"
+            ), patch.object(cockpit, "ensure_cockpit") as ensure_cockpit, patch.object(
+                cockpit, "_option", return_value="%7"
+            ), patch.object(cockpit.tmux, "tmux") as tmux_call:
+                cockpit.focus_sidebar(region)
+
+            ensure_cockpit.assert_called_once_with()
+            expected = [
+                unittest.mock.call("send-keys", "-t", "%7", focus_key, injected_key),
+            ]
+            if selects_sidebar:
+                expected.insert(0, unittest.mock.call("select-pane", "-t", "%7"))
+            self.assertEqual(tmux_call.call_args_list, expected)
+
     def test_right_pane_reset_shows_unavailable_message_and_preserves_target(self):
         calls = []
 
@@ -282,6 +306,9 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x a  focus/open Agents", command)
         self.assertIn("C-x s  focus/open Sessions", command)
         self.assertIn("C-x +  add session", command)
+        self.assertIn("C-x r  remove active session", command)
+        self.assertIn("C-x x  kill and remove active session", command)
+        self.assertIn("C-x !  jump to first alerted agent", command)
         self.assertIn("C-x w  focus right pane", command)
         self.assertIn("C-x h  hide sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)

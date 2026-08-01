@@ -40,6 +40,9 @@ That opens an outer tmux workspace with the sidebar on the left and your selecte
 - focus/open Sessions: `C-s s`
 - add session: `C-s +`
 - focus/open Agents: `C-s a`
+- remove active session from letee: `C-s r`
+- kill and remove active session: `C-s x` (confirmation required)
+- jump to first alerted agent: `C-s !`
 - focus active session: `C-s w`
 - hide sidebar: `C-s h`
 - quit cockpit: `C-s q`
@@ -115,6 +118,9 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `C-s s`: focus Sessions; recreates sidebar if quit
 - `C-s +`: focus Sessions and open Add session menu
 - `C-s a`: focus Agents; recreates sidebar if quit
+- `C-s r`: remove active right-pane session from letee without killing tmux session
+- `C-s x`: kill and remove active right-pane session after `y/N` confirmation
+- `C-s !`: show Agents and jump to first alerted agent; no alert leaves right pane focused
 - `C-s w`: focus right pane
 - `C-s h`: hide sidebar
 - `C-s q`: quit outer letee
@@ -136,7 +142,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 
 `›` marks keyboard selection and left-pane focus; mint reverse highlight marks active session independently. Unfocused sidebar hides pointer, leaves sidebar colors unchanged, and keeps active session highlighted and visible.
 
-Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/letee/sessions`. Only tracked sessions trigger sidebar bell indicators and beeps. Set `LETEE_ASCII=1` for text-only labels and ellipses.
+Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/letee/sessions`. Prefix session actions use active right-pane target, never sidebar selection; missing or untracked targets show status and do nothing. `prefix+!` follows current Agents ordering, jumps to exact window/pane, and clears only selected alert after success. No alert shows `no agent alerts` in Agents and leaves right pane focused. Set `LETEE_ASCII=1` for text-only labels and ellipses.
 
 ## Agent discovery
 
