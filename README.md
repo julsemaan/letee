@@ -38,6 +38,7 @@ That opens an outer tmux workspace with the letee sidebar on the left and your s
 - focus/open Sessions: `C-s s`
 - add session: `C-s +`
 - focus/open Agents: `C-s a`
+- focus right pane: `C-s w`
 - hide sidebar: `C-s h`
 - quit cockpit: `C-s q`
 - show help: `C-s ?`
@@ -112,6 +113,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `C-s s`: focus Sessions; recreates sidebar if quit
 - `C-s +`: focus Sessions and open Add session menu
 - `C-s a`: focus Agents; recreates sidebar if quit
+- `C-s w`: focus right pane
 - `C-s h`: hide sidebar
 - `C-s q`: quit outer letee
 - `C-s ?`: show help in right pane
