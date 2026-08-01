@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from letee.__main__ import main
+from letee.__main__ import _tmux_socket_dir, main
 from letee.discovery import SessionSnapshot, SourceSnapshot
 from letee.names import Target
 
@@ -15,6 +15,13 @@ class MainTest(unittest.TestCase):
 
         config.set_server(None)
         tmux.set_server(None)
+
+    def test_socket_dir_matches_tmux_default_when_tmpdir_is_unset(self):
+        with (
+            patch.dict("letee.__main__.os.environ", {"TMPDIR": "/wrong"}, clear=True),
+            patch("letee.__main__.os.getuid", return_value=1000),
+        ):
+            self.assertEqual(_tmux_socket_dir(), Path("/tmp/tmux-1000"))
 
     def test_global_server_option_configures_named_cockpit(self):
         with (

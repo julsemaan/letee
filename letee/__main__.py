@@ -5,7 +5,6 @@ from pathlib import Path
 import os
 import subprocess
 import sys
-import tempfile
 
 from . import config, cockpit, sessions, tmux
 from .config import ensure_config, load_sessions, save_sessions
@@ -47,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _tmux_socket_dir() -> Path:
-    root = Path(os.environ.get("TMUX_TMPDIR") or tempfile.gettempdir()).expanduser()
+    root = Path(os.environ.get("TMUX_TMPDIR") or "/tmp").expanduser()
     return root / f"tmux-{os.getuid()}"
 
 
