@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Literal
 
@@ -69,6 +69,7 @@ class PaneTarget:
     window_id: str
     pane_id: str
     socket_path: str
+    window_name: str = field(default="", compare=False, hash=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.target, Target):
