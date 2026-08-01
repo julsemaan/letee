@@ -11,31 +11,31 @@ from .conftest import TmuxTestClient
 
 
 def test_cockpit_starts_and_renders_sidebar(client: TmuxTestClient) -> None:
-    """Cockpit starts, sidebar renders with mtmux branding and footer hints."""
+    """Cockpit starts, sidebar renders with letee branding and footer hints."""
     client.start_cockpit()
 
-    # Sidebar renders the title bar with "mtmux"
-    assert client.wait_for_sidebar_text("mtmux", timeout=10), \
-        f"Sidebar did not render mtmux branding\nSidebar:\n{client.sidebar_text()}"
+    # Sidebar renders the title bar with "letee"
+    assert client.wait_for_sidebar_text("letee", timeout=10), \
+        f"Sidebar did not render letee branding\nSidebar:\n{client.sidebar_text()}"
 
     sidebar = client.sidebar_text()
-    assert "mtmux" in sidebar, "Sidebar should show mtmux branding"
+    assert "letee" in sidebar, "Sidebar should show letee branding"
     assert "activate" in sidebar.lower() or "help" in sidebar.lower(), \
         f"Sidebar footer should show keybinding hints\nSidebar:\n{sidebar}"
 
     # tmux session exists
     sessions = client.tmux("list-sessions", "-F", "#{session_name}")
-    assert "mtmux" in sessions, f"mtmux session not found in: {sessions}"
+    assert "letee" in sessions, f"letee session not found in: {sessions}"
 
     # cockpit window exists
-    windows = client.tmux("list-windows", "-t", "mtmux", "-F", "#{window_name}")
+    windows = client.tmux("list-windows", "-t", "letee", "-F", "#{window_name}")
     assert "cockpit" in windows, f"cockpit window not found in: {windows}"
 
 
 def test_cockpit_help(client: TmuxTestClient) -> None:
     """Pressing ? opens help in the right pane."""
     client.start_cockpit()
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     # Right pane starts with help content by default.
     # ponytail: long help scrolls off top in small panes; check text visible at bottom.
@@ -53,11 +53,11 @@ def test_cockpit_help(client: TmuxTestClient) -> None:
 def test_cockpit_recovery(client: TmuxTestClient) -> None:
     """After sidebar pane dies, cockpit recovers."""
     client.start_cockpit()
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     # Get sidebar pane ID
     sidebar_pane = client.tmux(
-        "display-message", "-p", "-t", "mtmux:cockpit.0", "-F", "#{pane_id}"
+        "display-message", "-p", "-t", "letee:cockpit.0", "-F", "#{pane_id}"
     ).strip()
     assert sidebar_pane, "Could not get sidebar pane ID"
 
@@ -70,21 +70,21 @@ def test_cockpit_recovery(client: TmuxTestClient) -> None:
     time.sleep(0.5)
 
     client.start_cockpit()
-    assert client.wait_for_sidebar_text("mtmux", timeout=10), \
+    assert client.wait_for_sidebar_text("letee", timeout=10), \
         "Sidebar did not recover after pane death"
 
-    # @mtmux_cockpit option should still be "1"
-    cockpit_opt = client.tmux("show-options", "-v", "-t", "mtmux", "@mtmux_cockpit").strip()
-    assert cockpit_opt == "1", f"@mtmux_cockpit should be '1', got '{cockpit_opt}'"
+    # @letee_cockpit option should still be "1"
+    cockpit_opt = client.tmux("show-options", "-v", "-t", "letee", "@letee_cockpit").strip()
+    assert cockpit_opt == "1", f"@letee_cockpit should be '1', got '{cockpit_opt}'"
 
 
 def test_cockpit_reattach(client: TmuxTestClient) -> None:
     """Re-attaching to an existing cockpit reuses the same window."""
     client.start_cockpit()
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     # Record current windows
-    windows_before = client.tmux("list-windows", "-t", "mtmux", "-F", "#{window_name}").strip()
+    windows_before = client.tmux("list-windows", "-t", "letee", "-F", "#{window_name}").strip()
     cockpit_count = windows_before.count("cockpit")
 
     # Detach: C-s d
@@ -101,28 +101,28 @@ def test_cockpit_reattach(client: TmuxTestClient) -> None:
 
     # Reattach
     client.start_cockpit()
-    assert client.wait_for_sidebar_text("mtmux", timeout=10), \
+    assert client.wait_for_sidebar_text("letee", timeout=10), \
         "Sidebar did not render after reattach"
 
     # Only one cockpit window
-    windows_after = client.tmux("list-windows", "-t", "mtmux", "-F", "#{window_name}").strip()
+    windows_after = client.tmux("list-windows", "-t", "letee", "-F", "#{window_name}").strip()
     assert windows_after.count("cockpit") == 1, \
         f"Should have exactly 1 cockpit window, got: {windows_after}"
 
 
 def test_terminal_too_narrow(client: TmuxTestClient) -> None:
     """Cockpit refuses to start on terminals narrower than 90 columns."""
-    env = {"COLUMNS": "79", "MTMUX_CONFIG_DIR": "/tmp/mtmux-narrow", "MTMUX_ASCII": "1", "LINES": "24"}
+    env = {"COLUMNS": "79", "LETEE_CONFIG_DIR": "/tmp/letee-narrow", "LETEE_ASCII": "1", "LINES": "24"}
     merged_env = dict(os.environ)
     merged_env.update(env)
 
     if client.container:
         cmd = ["docker", "exec", "-e", "COLUMNS=79",
-               "-e", "MTMUX_CONFIG_DIR=/tmp/mtmux-narrow",
-               "-e", "MTMUX_ASCII=1",
-               client.container, "mtmux", "cockpit"]
+               "-e", "LETEE_CONFIG_DIR=/tmp/letee-narrow",
+               "-e", "LETEE_ASCII=1",
+               client.container, "letee", "cockpit"]
     else:
-        cmd = [sys.executable, "-m", "mtmux", "cockpit"]
+        cmd = [sys.executable, "-m", "letee", "cockpit"]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=merged_env)
     assert result.returncode == 2, f"Expected exit 2, got {result.returncode}"
@@ -133,5 +133,5 @@ def test_terminal_too_narrow(client: TmuxTestClient) -> None:
 def test_terminal_exactly_90_columns(client: TmuxTestClient) -> None:
     """Cockpit starts with exactly 90 columns."""
     client.start_cockpit(cols=90)
-    assert client.wait_for_sidebar_text("mtmux", timeout=10), \
+    assert client.wait_for_sidebar_text("letee", timeout=10), \
         "Cockpit should start with exactly 90 columns"

@@ -3,14 +3,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mtmux import config
+from letee import config
 
 
 class ConfigTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
-        self.env = patch.dict("mtmux.config.os.environ", {"MTMUX_CONFIG_DIR": self.tempdir.name}, clear=True)
+        self.env = patch.dict("letee.config.os.environ", {"LETEE_CONFIG_DIR": self.tempdir.name}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
 

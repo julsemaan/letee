@@ -4,8 +4,8 @@ from pathlib import Path
 import shlex
 import subprocess
 
-SOCKET = "mtmux"
-SESSION = "mtmux"
+SOCKET = "letee"
+SESSION = "letee"
 WINDOW = "cockpit"
 
 

@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from mtmux import cockpit
-from mtmux.names import Target
+from letee import cockpit
+from letee.names import Target
 
 
 class CockpitLayoutTest(unittest.TestCase):
@@ -18,7 +18,7 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._attach()
 
         execvp.assert_called_once_with(
-            "tmux", ["tmux", "-L", "mtmux", "attach-session", "-d", "-t", "mtmux:cockpit"]
+            "tmux", ["tmux", "-L", "letee", "attach-session", "-d", "-t", "letee:cockpit"]
         )
 
     def test_fix_layout_pins_sidebar_to_configured_width(self):
@@ -68,8 +68,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             tmux_call.call_args_list,
             [
-                unittest.mock.call("set-option", "-t", "mtmux", "prefix", "C-x"),
-                unittest.mock.call("set-option", "-t", "mtmux", "status", "off"),
+                unittest.mock.call("set-option", "-t", "letee", "prefix", "C-x"),
+                unittest.mock.call("set-option", "-t", "letee", "status", "off"),
                 unittest.mock.call("set-option", "-s", "escape-time", "0"),
             ],
         )
@@ -105,8 +105,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             tmux_call.call_args_list,
             [
-                unittest.mock.call("set-option", "-t", "mtmux", "prefix", "C-x"),
-                unittest.mock.call("set-option", "-t", "mtmux", "status", "off"),
+                unittest.mock.call("set-option", "-t", "letee", "prefix", "C-x"),
+                unittest.mock.call("set-option", "-t", "letee", "status", "off"),
                 unittest.mock.call("set-option", "-s", "escape-time", "0"),
             ],
         )
@@ -120,8 +120,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("set-hook", "-u", "-t", "mtmux", "client-attached"),
-                ("set-hook", "-u", "-t", "mtmux", "client-resized"),
+                ("set-hook", "-u", "-t", "letee", "client-attached"),
+                ("set-hook", "-u", "-t", "letee", "client-resized"),
                 ("set-hook", "-w", "-t", cockpit.TARGET, "window-resized", "resize-pane -t %1 -x 52"),
             ],
         )
@@ -135,7 +135,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_out.assert_called_once_with(
             "display-message", "-p", "-t", "%1",
-            "#{pane_width}:#{@mtmux_sidebar_width}:#{window_width}:#{client_width}:#{window_offset_x}",
+            "#{pane_width}:#{@letee_sidebar_width}:#{window_width}:#{client_width}:#{window_offset_x}",
             check=False,
         )
         tmux_call.assert_not_called()
@@ -149,7 +149,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_call.assert_called_once_with(
             "run-shell", "-C", "-t", "%1",
-            "resize-window -a -t mtmux:cockpit ; resize-pane -t %1 -x '#{@mtmux_sidebar_width}'",
+            "resize-window -a -t letee:cockpit ; resize-pane -t %1 -x '#{@letee_sidebar_width}'",
             check=False,
         )
 
@@ -160,7 +160,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             tmux_call.call_args_list,
             [
-                unittest.mock.call("set-option", "-t", "mtmux", "mouse", "on"),
+                unittest.mock.call("set-option", "-t", "letee", "mouse", "on"),
                 unittest.mock.call("unbind-key", "-q", "-T", "root", "MouseDrag1Border"),
             ],
         )
@@ -189,7 +189,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_call.assert_not_called()
 
-    def test_bindings_replace_outer_prefix_table_with_mtmux_shortcuts(self):
+    def test_bindings_replace_outer_prefix_table_with_letee_shortcuts(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
@@ -202,13 +202,13 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "d", "detach-client"),
                 ("bind-key", "h", "kill-pane", "-t", "%1"),
-                ("bind-key", "q", "kill-session", "-t", "mtmux"),
+                ("bind-key", "q", "kill-session", "-t", "letee"),
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
                 ("bind-key", "+", "run-shell", f"{cockpit.FOCUS_SIDEBAR} add"),
                 ("bind-key", "?", "respawn-pane", "-k", "-t", "%2", cockpit.help_command("C-x")),
                 *[
-                    ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m mtmux switch-session {slot}")
+                    ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee switch-session {slot}")
                     for slot in range(1, 10)
                 ],
             ],
@@ -256,9 +256,9 @@ class CockpitLayoutTest(unittest.TestCase):
 
         command = calls[1][4]
         self.assertEqual(calls[0], ("set-option", "-p", "-t", "%2", "remain-on-exit", "on"))
-        self.assertEqual(calls[1][:4], ("set-hook", "-t", "mtmux", "pane-died"))
+        self.assertEqual(calls[1][:4], ("set-hook", "-t", "letee", "pane-died"))
         self.assertIn("Active session is unavailable.", command)
-        self.assertNotIn("set-option -u -t mtmux @mtmux_current_target", command)
+        self.assertNotIn("set-option -u -t letee @letee_current_target", command)
         self.assertIn("select-pane -t %1", command)
 
     def test_session_menu_targets_sidebar_at_click_coordinates(self):
@@ -325,8 +325,8 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._build("C-x", 52)
 
         enable_clipboard.assert_called_once_with()
-        self.assertIn((("set-option", "-t", "mtmux", "prefix", "C-x"), {}), calls)
-        self.assertIn((("set-option", "-t", "mtmux", "mouse", "on"), {}), calls)
+        self.assertIn((("set-option", "-t", "letee", "prefix", "C-x"), {}), calls)
+        self.assertIn((("set-option", "-t", "letee", "mouse", "on"), {}), calls)
         self.assertIn((("set-option", "-s", "escape-time", "0"), {}), calls)
         new_session = next(args for args, _ in calls if args[0] == "new-session")
         self.assertIn("C-x s  focus/open Sessions", new_session[-1])
@@ -338,7 +338,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "load_prefix", return_value="C-x"),
             patch.object(cockpit, "load_sidebar_width", return_value=52),
             patch.object(cockpit, "_valid", return_value=False),
-            patch.object(cockpit, "_option", side_effect=lambda name: "1" if name == "@mtmux_cockpit" else "%2"),
+            patch.object(cockpit, "_option", side_effect=lambda name: "1" if name == "@letee_cockpit" else "%2"),
             patch.object(cockpit.tmux, "has_pane", return_value=True),
             patch.object(cockpit.tmux, "out", return_value="%1"),
             patch.object(cockpit.tmux, "tmux"),
@@ -369,9 +369,9 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("set-option", "-t", "mtmux", "@mtmux_current_target", "local:work"),
-                ("set-option", "-u", "-t", "mtmux", "@mtmux_current_agent"),
-                ("set-option", "-u", "-t", "mtmux", "@mtmux_bell_target"),
+                ("set-option", "-t", "letee", "@letee_current_target", "local:work"),
+                ("set-option", "-u", "-t", "letee", "@letee_current_agent"),
+                ("set-option", "-u", "-t", "letee", "@letee_bell_target"),
                 ("respawn-pane", "-k", "-t", "%2", "attach work"),
                 ("select-pane", "-t", "%2"),
             ],
@@ -386,14 +386,14 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             cockpit.switch(target, "attach work", "agent-1")
 
-        self.assertIn(("set-option", "-t", "mtmux", "@mtmux_current_agent", "agent-1"), calls)
+        self.assertIn(("set-option", "-t", "letee", "@letee_current_agent", "agent-1"), calls)
         with patch.object(cockpit, "_option", side_effect=["agent-1", ""]):
             self.assertEqual(cockpit.current_agent(), "agent-1")
             self.assertIsNone(cockpit.current_agent())
 
     def test_switch_rejects_missing_cockpit(self):
         with patch.object(cockpit, "right_pane", return_value=None):
-            with self.assertRaisesRegex(SystemExit, "No valid mtmux"):
+            with self.assertRaisesRegex(SystemExit, "No valid letee"):
                 cockpit.switch(cockpit.Target("local", "work"), "attach work")
 
     def test_show_reconnecting_displays_remote_session_details_and_unicode_spinner(self):
@@ -418,12 +418,12 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("·  ", command[4])
         self.assertNotIn("Trying again automatically", command[4])
         self.assertIn("while :", command[4])
-        self.assertNotIn("mtmux", command[4])
+        self.assertNotIn("letee", command[4])
         self.assertNotIn("ssh:dev:work", command[4])
         self.assertNotIn("tail -f", command[4])
 
     def test_reconnecting_uses_ascii_spinner_when_requested(self):
-        with patch.dict(cockpit.os.environ, {"MTMUX_ASCII": "1"}):
+        with patch.dict(cockpit.os.environ, {"LETEE_ASCII": "1"}):
             command = cockpit._reconnecting_command(cockpit.Target("ssh", "work", "dev"))
 
         self.assertIn("+-- Connection interrupted --+", command)
@@ -477,7 +477,7 @@ class CockpitLayoutTest(unittest.TestCase):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
 
     def test_current_target_recovers_from_option_rich_ssh_command(self):
-        command = "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/mtmux-%C' -t dev 'tmux -T clipboard new-session -A -s work'"
+        command = "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'"
         with (
             patch.object(cockpit, "_option", return_value=""),
             patch.object(cockpit, "right_pane", return_value="%2"),
@@ -508,14 +508,14 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("set-window-option", "-t", "mtmux:cockpit", "monitor-bell", "on"),
-                ("set-option", "-t", "mtmux", "bell-action", "any"),
+                ("set-window-option", "-t", "letee:cockpit", "monitor-bell", "on"),
+                ("set-option", "-t", "letee", "bell-action", "any"),
                 (
                     "set-hook",
                     "-t",
-                    "mtmux",
+                    "letee",
                     "alert-bell",
-                    "set-option -F -t mtmux @mtmux_bell_target '#{@mtmux_current_target}'",
+                    "set-option -F -t letee @letee_bell_target '#{@letee_current_target}'",
                 ),
             ],
         )

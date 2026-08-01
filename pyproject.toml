@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mtmux"
+name = "letee"
 version = "0.1.21"
 description = "Outer tmux cockpit for local and SSH tmux sessions"
 readme = "README.md"
@@ -24,12 +24,12 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/julsemaan/mtmux"
-Repository = "https://github.com/julsemaan/mtmux"
-Issues = "https://github.com/julsemaan/mtmux/issues"
+Homepage = "https://github.com/julsemaan/letee"
+Repository = "https://github.com/julsemaan/letee"
+Issues = "https://github.com/julsemaan/letee/issues"
 
 [project.scripts]
-mtmux = "mtmux.__main__:run_cli"
+letee = "letee.__main__:run_cli"
 
 [project.optional-dependencies]
 dev = [
@@ -41,7 +41,7 @@ dev = [
 
 [tool.coverage.run]
 branch = true
-source = ["mtmux"]
+source = ["letee"]
 
 [tool.coverage.report]
 fail_under = 85

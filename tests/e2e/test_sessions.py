@@ -13,7 +13,7 @@ from .conftest import TmuxTestClient
 # -- Helpers --
 
 def _command(client: TmuxTestClient, *args: str) -> list[str]:
-    """Run a command where mtmux runs: host or Docker container."""
+    """Run a command where letee runs: host or Docker container."""
     return ["docker", "exec", client.container, *args] if client.container else list(args)
 
 
@@ -37,7 +37,7 @@ def _write_favorites(client: TmuxTestClient, config_dir: str, *targets: str) -> 
 
 
 def _read_favorites(client: TmuxTestClient, config_dir: str) -> str:
-    """Read favorites where mtmux runs."""
+    """Read favorites where letee runs."""
     path = f"{config_dir}/sessions"
     if client.container:
         result = subprocess.run(
@@ -66,8 +66,8 @@ def _kill_session_default(client: TmuxTestClient, name: str) -> None:
 
 
 def _current_target(client: TmuxTestClient) -> str:
-    """Return the @mtmux_current_target value."""
-    return client.tmux("show-options", "-v", "-t", "mtmux", "@mtmux_current_target").strip()
+    """Return the @letee_current_target value."""
+    return client.tmux("show-options", "-v", "-t", "letee", "@letee_current_target").strip()
 
 
 # ============================================================
@@ -77,7 +77,7 @@ def _current_target(client: TmuxTestClient) -> str:
 
 def test_cli_create_local(client: TmuxTestClient) -> None:
     """Create a local session via CLI."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-create"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-create"}
     client.cli("create", "local", "test-session", env=env)
     assert _default_tmux_ok(client, "has-session", "-t", "test-session"), \
         "Session test-session should exist"
@@ -87,7 +87,7 @@ def test_cli_create_local(client: TmuxTestClient) -> None:
 
 def test_cli_create_name_with_dots_and_hyphens(client: TmuxTestClient) -> None:
     """Session names accept hyphens and underscores. ponytail: tmux replaces . with _ in session names."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-dots"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-dots"}
     client.cli("create", "local", "my-test-session_1", env=env)
     assert _default_tmux_ok(client, "has-session", "-t", "my-test-session_1")
 
@@ -96,14 +96,14 @@ def test_cli_create_name_with_dots_and_hyphens(client: TmuxTestClient) -> None:
 
 def test_cli_create_name_too_long(client: TmuxTestClient) -> None:
     """Session name >64 chars exits with error."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-long"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-long"}
     out = client.cli("create", "local", "a" * 65, env=env)
     assert "Invalid" in out, f"Expected Invalid for long name, got: {out}"
 
 
 def test_cli_create_name_with_spaces(client: TmuxTestClient) -> None:
     """Session name with spaces exits with error."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-spaces"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-spaces"}
     out = client.cli("create", "local", "bad name", env=env)
     assert "Invalid" in out, f"Expected Invalid for name with spaces, got: {out}"
 
@@ -113,7 +113,7 @@ def test_cli_list(client: TmuxTestClient) -> None:
     _create_session_default(client, "alpha")
     _create_session_default(client, "beta")
 
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-list"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-list"}
     out = client.cli("list", env=env)
     assert "local:alpha" in out, f"alpha not in list output:\n{out}"
     assert "local:beta" in out, f"beta not in list output:\n{out}"
@@ -124,11 +124,11 @@ def test_cli_list(client: TmuxTestClient) -> None:
 
 def test_cli_switch(client: TmuxTestClient) -> None:
     """Switch session via CLI updates current target."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-switch"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-switch"}
     _create_session_default(client, "work")
 
     client.start_cockpit(env=env)
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     client.cli("switch", "local:work", env=env)
     time.sleep(0.5)
@@ -142,7 +142,7 @@ def test_cli_switch(client: TmuxTestClient) -> None:
 
 def test_cli_kill(client: TmuxTestClient) -> None:
     """Kill session via CLI removes it from default server."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-kill"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-kill"}
     _create_session_default(client, "to-kill")
     assert _default_tmux_ok(client, "has-session", "-t", "to-kill")
 
@@ -153,7 +153,7 @@ def test_cli_kill(client: TmuxTestClient) -> None:
 
 def test_cli_kill_nonexistent(client: TmuxTestClient) -> None:
     """Kill non-existent session exits with error."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-killnx"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-killnx"}
     out = client.cli("kill", "local:no-such-session", env=env)
     assert "failed" in out.lower() or "no-such" in out.lower(), \
         f"Expected error for non-existent session, got: {out}"
@@ -161,7 +161,7 @@ def test_cli_kill_nonexistent(client: TmuxTestClient) -> None:
 
 def test_cli_invalid_target(client: TmuxTestClient) -> None:
     """Invalid target format exits with error."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-invalid"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-invalid"}
     out1 = client.cli("switch", "garbage", env=env)
     assert "Invalid" in out1 or "failed" in out1.lower(), \
         f"Expected error for garbage target, got: {out1}"
@@ -179,7 +179,7 @@ def test_cli_invalid_target(client: TmuxTestClient) -> None:
 
 def _send_sidebar(client: TmuxTestClient, keys: str) -> None:
     """Send keys directly to the sidebar pane via tmux send-keys."""
-    client.tmux("send-keys", "-t", "mtmux:cockpit.0", keys)
+    client.tmux("send-keys", "-t", "letee:cockpit.0", keys)
 
 
 def _send_sidebar_special(client: TmuxTestClient, key: str) -> None:
@@ -192,15 +192,15 @@ def _send_sidebar_special(client: TmuxTestClient, key: str) -> None:
         "C-s": "C-s",
     }
     tmux_key = key_map.get(key, key)
-    client.tmux("send-keys", "-t", "mtmux:cockpit.0", tmux_key)
+    client.tmux("send-keys", "-t", "letee:cockpit.0", tmux_key)
 
 
 def test_tui_add_session(client: TmuxTestClient) -> None:
     """Add a session through the sidebar Add picker."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-tui-add"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-tui-add"}
 
     client.start_cockpit(env=env)
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     # Press 'a' to open Add picker
     _send_sidebar(client, "a")
@@ -231,14 +231,14 @@ def test_tui_add_session(client: TmuxTestClient) -> None:
 
 def test_tui_switch_session(client: TmuxTestClient) -> None:
     """Switch between sessions using j/k and Enter in sidebar."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-tui-switch"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-tui-switch"}
 
     _create_session_default(client, "alpha")
     _create_session_default(client, "beta")
-    _write_favorites(client, env["MTMUX_CONFIG_DIR"], "local:alpha", "local:beta")
+    _write_favorites(client, env["LETEE_CONFIG_DIR"], "local:alpha", "local:beta")
 
     client.start_cockpit(env=env)
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     # First session (alpha) should be selected. Press Enter to switch to alpha.
     _send_sidebar_special(client, "Enter")
@@ -265,13 +265,13 @@ def test_tui_switch_session(client: TmuxTestClient) -> None:
 
 def test_tui_remove_favorite(client: TmuxTestClient) -> None:
     """Remove a favorite (unstar) via the sidebar."""
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-tui-remove"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-tui-remove"}
 
     _create_session_default(client, "keepme")
-    _write_favorites(client, env["MTMUX_CONFIG_DIR"], "local:keepme")
+    _write_favorites(client, env["LETEE_CONFIG_DIR"], "local:keepme")
 
     client.start_cockpit(env=env)
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     # keepme should be the first (only) session. Press 'r' to remove favorite.
     _send_sidebar(client, "r")
@@ -282,7 +282,7 @@ def test_tui_remove_favorite(client: TmuxTestClient) -> None:
         "Session should still exist after unstar"
 
     # Verify favorites file is now empty (or doesn't contain keepme)
-    content = _read_favorites(client, env["MTMUX_CONFIG_DIR"])
+    content = _read_favorites(client, env["LETEE_CONFIG_DIR"])
     assert "keepme" not in content, \
         f"keepme should be removed from favorites file, got: {content}"
 
@@ -296,18 +296,18 @@ def test_prefix_number_switch(client: TmuxTestClient) -> None:
     ponytail: send C-s + digit to the cockpit pane (not sidebar),
     since prefix bindings are handled by the outer tmux (cockpit window).
     """
-    env = {"MTMUX_CONFIG_DIR": "/tmp/mtmux-e2e-prefix"}
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-prefix"}
 
     _create_session_default(client, "first")
     _create_session_default(client, "second")
     _create_session_default(client, "third")
-    _write_favorites(client, env["MTMUX_CONFIG_DIR"], "local:first", "local:second", "local:third")
+    _write_favorites(client, env["LETEE_CONFIG_DIR"], "local:first", "local:second", "local:third")
 
     client.start_cockpit(env=env)
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
     # Switch to slot 2 via prefix binding using the right pane
-    # ponytail: mtmux prefix-digit bindings work from inside the cockpit session.
+    # ponytail: letee prefix-digit bindings work from inside the cockpit session.
     # Use cli switch-session instead since pexpect send_special("C-s") may not
     # reach the tmux prefix handler reliably.
     out = client.cli("switch-session", "2", env=env)

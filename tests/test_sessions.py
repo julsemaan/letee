@@ -2,8 +2,8 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from mtmux.names import PaneTarget, Target
-from mtmux.sessions import attach_command, create, kill, pane_attach_command, ssh_command
+from letee.names import PaneTarget, Target
+from letee.sessions import attach_command, create, kill, pane_attach_command, ssh_command
 
 
 class SessionOperationsTest(unittest.TestCase):
@@ -14,7 +14,7 @@ class SessionOperationsTest(unittest.TestCase):
             (
                 "ssh", *keepalive,
                 "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
-                "-o", "ControlPath=~/.ssh/mtmux-%C", "-t", "dev", "remote command",
+                "-o", "ControlPath=~/.ssh/letee-%C", "-t", "dev", "remote command",
             ),
         )
         self.assertEqual(
@@ -27,10 +27,10 @@ class SessionOperationsTest(unittest.TestCase):
             attach_command(Target("local", "work")),
             "env -u TMUX tmux -T clipboard new-session -A -s work",
         )
-        with patch("mtmux.sessions.load_persistent_ssh", return_value=True):
+        with patch("letee.sessions.load_persistent_ssh", return_value=True):
             self.assertEqual(
                 attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/mtmux-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
             )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
@@ -40,7 +40,7 @@ class SessionOperationsTest(unittest.TestCase):
             "env -u TMUX tmux -S '/tmp/tmux socket' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
         )
         remote = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket")
-        with patch("mtmux.sessions.load_persistent_ssh", return_value=False):
+        with patch("letee.sessions.load_persistent_ssh", return_value=False):
             self.assertEqual(
                 pane_attach_command(remote),
                 "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
@@ -48,8 +48,8 @@ class SessionOperationsTest(unittest.TestCase):
 
     def test_kill_local_session_uses_default_server(self):
         with (
-            patch.dict("mtmux.sessions.os.environ", {"TMUX": "/tmp/mtmux,1,0", "PATH": "x"}, clear=True),
-            patch("mtmux.sessions.subprocess.run") as run,
+            patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/letee,1,0", "PATH": "x"}, clear=True),
+            patch("letee.sessions.subprocess.run") as run,
         ):
             kill(Target("local", "work"))
 
@@ -65,8 +65,8 @@ class SessionOperationsTest(unittest.TestCase):
     def test_create_mutates_without_cockpit_dependency(self):
         target = Target("local", "work")
         with (
-            patch.dict("mtmux.sessions.os.environ", {"TMUX": "/tmp/mtmux,1,0", "PATH": "x"}, clear=True),
-            patch("mtmux.sessions.subprocess.run") as run,
+            patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/letee,1,0", "PATH": "x"}, clear=True),
+            patch("letee.sessions.subprocess.run") as run,
         ):
             create(target)
 
@@ -82,8 +82,8 @@ class SessionOperationsTest(unittest.TestCase):
     def test_remote_create_and_kill_use_configured_persistence(self):
         target = Target("ssh", "work.one", "dev")
         with (
-            patch("mtmux.sessions.load_persistent_ssh", side_effect=[True, False]),
-            patch("mtmux.sessions.subprocess.run") as run,
+            patch("letee.sessions.load_persistent_ssh", side_effect=[True, False]),
+            patch("letee.sessions.subprocess.run") as run,
         ):
             create(target)
             kill(target)
@@ -94,7 +94,7 @@ class SessionOperationsTest(unittest.TestCase):
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
                     "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
-                    "-o", "ControlPath=~/.ssh/mtmux-%C", "dev", "tmux new-session -d -s work.one",
+                    "-o", "ControlPath=~/.ssh/letee-%C", "dev", "tmux new-session -d -s work.one",
                 ),
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
@@ -109,13 +109,13 @@ class SessionOperationsTest(unittest.TestCase):
             ("create", lambda: create(Target("local", "work"))),
             ("kill", lambda: kill(Target("ssh", "work", "dev"))),
         ):
-            with self.subTest(operation=operation), patch("mtmux.sessions.subprocess.run", side_effect=error):
+            with self.subTest(operation=operation), patch("letee.sessions.subprocess.run", side_effect=error):
                 with self.assertRaisesRegex(SystemExit, rf"^{operation} .* failed: permission denied$"):
                     action()
 
     def test_command_timeout_includes_operation_and_target(self):
         with patch(
-            "mtmux.sessions.subprocess.run",
+            "letee.sessions.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["ssh"], 10),
         ):
             with self.assertRaisesRegex(SystemExit, r"^create ssh:dev:work timed out$"):

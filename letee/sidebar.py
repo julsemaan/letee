@@ -118,7 +118,7 @@ _COLOR: dict[str, int] = {}
 
 def _ascii() -> bool:
     enc = locale.getpreferredencoding(False).lower()
-    return os.environ.get("MTMUX_ASCII") == "1" or "utf" not in enc
+    return os.environ.get("LETEE_ASCII") == "1" or "utf" not in enc
 
 
 def _icons() -> dict[str, str]:
@@ -725,7 +725,7 @@ def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, statu
 
 class EffectRunner:
     def __init__(self) -> None:
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mtmux-action")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="letee-action")
         self._future: Future[EffectResult] | None = None
         self._effect: Effect | None = None
         self._pending_navigation: tuple[Effect, tuple[Target, ...]] | None = None
@@ -779,7 +779,7 @@ def _current_target() -> Target | None:
 class AsyncStatusPoller:
     def __init__(self, poller: DiscoveryPoller, current_target: Target | None) -> None:
         self._poller = poller
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mtmux-status")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="letee-status")
         self._future: Future[StatusResult] | None = None
         self._commands: list[tuple[str, Target | None]] = []
         self._next_poll = 0.0
@@ -1099,7 +1099,7 @@ def _draw_title(
     add_button_selected: bool = False,
 ) -> tuple[int, int | None]:
     width = max(1, w)
-    brand = " mtmux" if _ascii() else "  mtmux"
+    brand = " letee" if _ascii() else "  letee"
     if adding:
         section = "Add existing" if filtering else "New session" if any(entry.kind == "location" for entry in entries) else "Add session"
         left = f"{brand} / {section}"

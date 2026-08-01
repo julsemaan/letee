@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 pyproject_path = Path("pyproject.toml")
-package_path = Path("mtmux/__init__.py")
+package_path = Path("letee/__init__.py")
 current = tomllib.loads(pyproject_path.read_text())["project"]["version"]
 version = os.getenv("VERSION")
 if version is None:

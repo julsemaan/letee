@@ -1,6 +1,6 @@
 import unittest
 
-from mtmux.names import PaneTarget, Target
+from letee.names import PaneTarget, Target
 
 
 class TargetTest(unittest.TestCase):

@@ -13,11 +13,11 @@ def _setup(client: TmuxTestClient, config: str, status_dir: str, *sessions: str)
         client.default_tmux("new-session", "-d", "-s", name)
     client.write_file(f"{config}/sessions", "".join(f"local:{name}\n" for name in sessions))
     client.start_cockpit(env={
-        "MTMUX_CONFIG_DIR": config,
-        "MTMUX_ASCII": "1",
+        "LETEE_CONFIG_DIR": config,
+        "LETEE_ASCII": "1",
         "AGENT_STATUS_DIR": status_dir,
     })
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
 
 def _write_agent(
@@ -61,7 +61,7 @@ def _wait_for_line(client: TmuxTestClient, *parts: str, timeout: float = 4) -> s
 
 
 def test_agents_appear_for_tracked_sessions(client: TmuxTestClient) -> None:
-    config, statuses = "/tmp/mtmux-e2e-agent", "/tmp/mtmux-e2e-agent-status"
+    config, statuses = "/tmp/letee-e2e-agent", "/tmp/letee-e2e-agent-status"
     _setup(client, config, statuses, "dev")
     try:
         _write_agent(client, statuses, "dev", "pi-visible", "working")
@@ -72,7 +72,7 @@ def test_agents_appear_for_tracked_sessions(client: TmuxTestClient) -> None:
 
 
 def test_agents_only_for_tracked_sessions(client: TmuxTestClient) -> None:
-    config, statuses = "/tmp/mtmux-e2e-agent-hidden", "/tmp/mtmux-e2e-agent-hidden-status"
+    config, statuses = "/tmp/letee-e2e-agent-hidden", "/tmp/letee-e2e-agent-hidden-status"
     _setup(client, config, statuses, "tracked")
     client.default_tmux("new-session", "-d", "-s", "hidden")
     try:
@@ -84,7 +84,7 @@ def test_agents_only_for_tracked_sessions(client: TmuxTestClient) -> None:
 
 
 def test_agent_status_icons_update(client: TmuxTestClient) -> None:
-    config, statuses = "/tmp/mtmux-e2e-agent-update", "/tmp/mtmux-e2e-agent-update-status"
+    config, statuses = "/tmp/letee-e2e-agent-update", "/tmp/letee-e2e-agent-update-status"
     _setup(client, config, statuses, "dev")
     try:
         _write_agent(client, statuses, "dev", "pi-update", "working")
@@ -97,7 +97,7 @@ def test_agent_status_icons_update(client: TmuxTestClient) -> None:
 
 
 def test_agent_alert_on_completion(client: TmuxTestClient) -> None:
-    config, statuses = "/tmp/mtmux-e2e-agent-alert", "/tmp/mtmux-e2e-agent-alert-status"
+    config, statuses = "/tmp/letee-e2e-agent-alert", "/tmp/letee-e2e-agent-alert-status"
     _setup(client, config, statuses, "dev")
     try:
         _write_agent(client, statuses, "dev", "pi-alert", "working")
@@ -109,15 +109,15 @@ def test_agent_alert_on_completion(client: TmuxTestClient) -> None:
 
 
 def test_agent_alert_clears_on_select(client: TmuxTestClient) -> None:
-    config, statuses = "/tmp/mtmux-e2e-agent-clear", "/tmp/mtmux-e2e-agent-clear-status"
+    config, statuses = "/tmp/letee-e2e-agent-clear", "/tmp/letee-e2e-agent-clear-status"
     _setup(client, config, statuses, "dev")
     try:
         _write_agent(client, statuses, "dev", "pi-clear", "working")
         _wait_for_line(client, "pi", "working")
         _write_agent(client, statuses, "dev", "pi-clear", "completed")
         _wait_for_line(client, "pi", "completed", "BELL")
-        client.tmux("run-shell", "mtmux focus-sidebar agents")
-        client.tmux("send-keys", "-t", "mtmux:cockpit.0", "j", "Enter")
+        client.tmux("run-shell", "letee focus-sidebar agents")
+        client.tmux("send-keys", "-t", "letee:cockpit.0", "j", "Enter")
         _wait_for_line(client, "pi", "completed")
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -131,7 +131,7 @@ def test_agent_alert_clears_on_select(client: TmuxTestClient) -> None:
 
 
 def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
-    config, statuses = "/tmp/mtmux-e2e-agent-order", "/tmp/mtmux-e2e-agent-order-status"
+    config, statuses = "/tmp/letee-e2e-agent-order", "/tmp/letee-e2e-agent-order-status"
     _setup(client, config, statuses, "alpha", "beta")
     try:
         _write_agent(client, statuses, "alpha", "alpha-agent", "working", name="alpha-agent")
@@ -141,8 +141,8 @@ def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
         sidebar = client.sidebar_text()
         assert sidebar.index("beta-agent") < sidebar.index("alpha-agent")
 
-        client.tmux("run-shell", "mtmux focus-sidebar agents")
-        client.tmux("send-keys", "-t", "mtmux:cockpit.0", "l")
+        client.tmux("run-shell", "letee focus-sidebar agents")
+        client.tmux("send-keys", "-t", "letee:cockpit.0", "l")
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             sidebar = client.sidebar_text()
@@ -156,7 +156,7 @@ def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
 
 
 def test_stale_agents_ignored(client: TmuxTestClient) -> None:
-    config, statuses = "/tmp/mtmux-e2e-agent-stale", "/tmp/mtmux-e2e-agent-stale-status"
+    config, statuses = "/tmp/letee-e2e-agent-stale", "/tmp/letee-e2e-agent-stale-status"
     _setup(client, config, statuses, "dev")
     try:
         _write_agent(client, statuses, "dev", "pi-stale", "working", name="stale-agent", age=61)

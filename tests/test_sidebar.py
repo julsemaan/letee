@@ -6,9 +6,9 @@ import time
 import unittest
 from unittest.mock import call, patch
 
-import mtmux.sidebar as sidebar
-from mtmux.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
-from mtmux.names import PaneTarget, Target
+import letee.sidebar as sidebar
+from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
+from letee.names import PaneTarget, Target
 
 
 def source(kind, sessions=(), bells=(), host=None, available=True, error=None):
@@ -67,7 +67,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertIsNone(restored)
 
 
-from mtmux.sidebar import (
+from letee.sidebar import (
     Effect,
     Entry,
     SidebarState,
@@ -192,7 +192,7 @@ class SidebarViewModeTest(unittest.TestCase):
         self.assertTrue(all(entry.unavailable_favorite for entry in entries))
         self.assertEqual([entry.status for entry in entries], ["missing", "missing"])
         self.assertTrue(all("· ⚠ missing" in _entry_lines(entry, False, set(), None, 40)[1] for entry in entries))
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             self.assertTrue(all("| missing" in _entry_lines(entry, False, set(), None, 40)[1] for entry in entries))
 
     def test_tracked_unknown_remote_host_stays_unavailable(self):
@@ -209,7 +209,7 @@ class SidebarViewModeTest(unittest.TestCase):
 
         reconnecting = next(entry for entry in entries if entry.kind == "unavailable")
         self.assertEqual(reconnecting.label, "reconnecting…: connection refused")
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             line = _entry_lines(reconnecting, False, set(), None, 24)[0]
         self.assertTrue(line.isascii())
         self.assertLessEqual(sidebar._cell_width(line), 24)
@@ -243,24 +243,24 @@ class AgentSidebarTest(unittest.TestCase):
             True: {"working": "|", "submitted": ".", "idle": "o", "completed": "+", "input-required": "?", "auth-required": "@", "failed": "x", "rejected": "!", "canceled": "-", "unknown": "?"},
         }
         for ascii_mode, icons in expected.items():
-            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 self.assertEqual({status: sidebar._status_icon(status, 0) for status in icons}, icons)
 
     def test_agent_cursor_replaces_icon_only_while_focused(self):
         entry = Entry("pi", "agent", Target("local", "work"), status="completed")
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             self.assertEqual(_entry_lines(entry, True, set(), None, 40)[0], "› pi · completed")
             self.assertEqual(_entry_lines(entry, False, set(), None, 40)[0], "✓ pi · completed")
 
     def test_spinner_frames_progress_and_wrap(self):
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             self.assertEqual([sidebar._spinner_frame(t) for t in (0, 0.1, 0.9, 1.0)], ["⠋", "⠙", "⠏", "⠋"])
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             self.assertEqual([sidebar._spinner_frame(t) for t in (0, 0.1, 0.2, 0.3, 0.4)], ["|", "/", "-", "\\", "|"])
 
     def test_agent_icon_and_status_share_semantic_attr_but_cursor_stays_active(self):
         entry = Entry("pi", "agent", Target("local", "work"), status="completed")
-        with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_completed": 456}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": 123, "agent_completed": 456}, clear=True):
             screen = FakeScreen(size=(6, 40))
             sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None, dimmed=True)
             semantic = [call for call in screen.calls if call[0] == "addnstr" and call[3] in ("✓", "completed")]
@@ -292,7 +292,7 @@ class AgentSidebarTest(unittest.TestCase):
         entry = _agent_entries(data, [pane.target])[0]
 
         self.assertEqual(entry.pane_target, pane)
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ @dev · work"])
 
     def test_local_agent_location_uses_localhost(self):
@@ -304,7 +304,7 @@ class AgentSidebarTest(unittest.TestCase):
 
         entry = _agent_entries(data, [pane.target])[0]
 
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ @localhost · work")
 
     def test_draw_shows_agent_divider_and_empty_state(self):
@@ -330,7 +330,7 @@ class AgentSidebarTest(unittest.TestCase):
     def test_switch_pane_uses_exact_attach_command_and_agent_id(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         state = SidebarState()
-        with patch("mtmux.sidebar.cockpit.switch") as switch:
+        with patch("letee.sidebar.cockpit.switch") as switch:
             _execute(Effect("switch_pane", pane, message="id"), state, unittest.mock.Mock(), 5)
 
         switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work", "id")
@@ -347,7 +347,7 @@ class AgentSidebarTest(unittest.TestCase):
         )
         entries = _agent_entries(SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=agents), {}), [pane.target])
 
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             lines = {entry.agent_id: _entry_lines(entry, False, set(), None, 40, now=now)[0] for entry in entries}
 
         self.assertEqual(lines["working"][2:], "pi · working · for 12s")
@@ -359,7 +359,7 @@ class AgentSidebarTest(unittest.TestCase):
 
     def test_missing_timestamp_omits_duration_and_narrow_ascii_truncates_safely(self):
         entry = Entry("pi", "agent", Target("local", "work"), host="laptop", status="working")
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             lines = _entry_lines(entry, False, set(), None, 14)
         self.assertIn(lines[0][0], "|/-\\")
         self.assertEqual(lines[0][1:], " pi · working")
@@ -472,14 +472,14 @@ class AgentAlertTest(unittest.TestCase):
     def test_successful_exact_pane_switch_clears_alert(self):
         key = (self.pane, "id")
         self.state.agent_alerts.add(key)
-        with patch("mtmux.sidebar.cockpit.switch"):
+        with patch("letee.sidebar.cockpit.switch"):
             _execute(Effect("switch_pane", self.pane, message="id"), self.state, unittest.mock.Mock(), 5)
         self.assertNotIn(key, self.state.agent_alerts)
 
     def test_agent_alert_marker_has_unicode_and_ascii_forms(self):
         entry = Entry("pi", "agent", self.target, pane_target=self.pane, agent_id="id", status="completed")
         for ascii_mode, marker in ((False, "🔔"), (True, "BELL")):
-            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 line = _entry_lines(entry, False, set(), None, 40, agent_alerts={(self.pane, "id")})[0]
             self.assertIn(marker, line)
 
@@ -496,8 +496,8 @@ class AddFlowTest(unittest.TestCase):
         new = Entry("New session", "choice_new")
         existing = Entry("Existing session", "choice_existing")
 
-        with patch("mtmux.sidebar._ascii", return_value=False), patch.dict(
-            "mtmux.sidebar._COLOR", {"create": 11, "remote": 22}, clear=True
+        with patch("letee.sidebar._ascii", return_value=False), patch.dict(
+            "letee.sidebar._COLOR", {"create": 11, "remote": 22}, clear=True
         ):
             self.assertEqual(_entry_lines(new, True, set(), None, 40), ["› + New session", "    Create a fresh tmux session"])
             self.assertEqual(_entry_lines(existing, False, set(), None, 40), ["  ≡ Existing session", "    Add a running tmux session"])
@@ -519,8 +519,8 @@ class AddFlowTest(unittest.TestCase):
         local = Entry("localhost", "location", host="")
         remote = Entry("dev", "location", host="dev")
 
-        with patch("mtmux.sidebar._ascii", return_value=False), patch.dict(
-            "mtmux.sidebar._COLOR", {"local": 11, "remote": 22, "add_entry": 33}, clear=True
+        with patch("letee.sidebar._ascii", return_value=False), patch.dict(
+            "letee.sidebar._COLOR", {"local": 11, "remote": 22, "add_entry": 33}, clear=True
         ):
             self.assertEqual(_entry_lines(local, False, set(), None, 40), ["  ● localhost"])
             self.assertEqual(_entry_lines(remote, True, set(), None, 40), ["› ◆ dev"])
@@ -578,7 +578,7 @@ class AddFlowTest(unittest.TestCase):
     def test_name_screen_uses_dedicated_row_and_cursor_at_narrow_width(self):
         screen = FakeScreen(size=(6, 16))
         state = SidebarState(add_view="name", creation_host="", creation_text="x" * 64)
-        with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"):
+        with patch("letee.sidebar.socket.gethostname", return_value="laptop"):
             sidebar._draw_name(screen, state)
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
         self.assertTrue(any("● localhost" in line for line in lines))
@@ -602,7 +602,7 @@ class AddFlowTest(unittest.TestCase):
         screen = FakeScreen(size=(6, 30))
         state = SidebarState(add_view="name", creation_host="dev")
 
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             sidebar._draw_name(screen, state)
 
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
@@ -757,10 +757,10 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState()
         poller = unittest.mock.Mock()
         with (
-            patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.save_sessions"),
-            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar.sessions.create") as create,
+            patch("letee.sidebar.save_sessions"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             self.assertFalse(_execute(Effect("create", target=target), state, poller, 5))
 
@@ -776,8 +776,8 @@ class SidebarStateTest(unittest.TestCase):
         poller = unittest.mock.Mock()
 
         with (
-            patch("mtmux.sidebar.sessions.kill"),
-            patch("mtmux.sidebar.save_sessions") as save,
+            patch("letee.sidebar.sessions.kill"),
+            patch("letee.sidebar.save_sessions") as save,
         ):
             _execute(Effect("kill", target=target), state, poller, 5)
 
@@ -792,9 +792,9 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState(add_view="existing")
         poller = unittest.mock.Mock()
         with (
-            patch("mtmux.sidebar.save_sessions") as save,
-            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar.save_sessions") as save,
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             _execute(Effect("add_switch", target=target), state, poller, 5)
 
@@ -809,10 +809,10 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState(add_view="name", creation_host="")
         poller = unittest.mock.Mock()
         with (
-            patch("mtmux.sidebar.sessions.create") as create,
-            patch("mtmux.sidebar.save_sessions") as save,
-            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
-            patch("mtmux.sidebar.cockpit.switch"),
+            patch("letee.sidebar.sessions.create") as create,
+            patch("letee.sidebar.save_sessions") as save,
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.cockpit.switch"),
         ):
             _execute(Effect("create", target=target), state, poller, 5)
 
@@ -825,8 +825,8 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState()
         poller = unittest.mock.Mock()
         with (
-            patch("mtmux.sidebar.sessions.create", side_effect=SystemExit("create failed")),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar.sessions.create", side_effect=SystemExit("create failed")),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             self.assertFalse(_execute(Effect("create", target=target), state, poller, 5))
 
@@ -838,7 +838,7 @@ class SidebarStateTest(unittest.TestCase):
     def test_pane_timeout_status_includes_action_and_session_target(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         state = SidebarState()
-        with patch("mtmux.sidebar.cockpit.switch", side_effect=subprocess.TimeoutExpired("tmux", 10)):
+        with patch("letee.sidebar.cockpit.switch", side_effect=subprocess.TimeoutExpired("tmux", 10)):
             _execute(Effect("switch_pane", pane), state, unittest.mock.Mock(), 5)
 
         self.assertEqual(state.status, "switch_pane local:work timed out")
@@ -850,7 +850,7 @@ class SidebarStateTest(unittest.TestCase):
             Entry("pi", "agent", target, host="laptop", agent_id="two", status="working"),
         ]
         screen = FakeScreen(size=(8, 40))
-        with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
             sidebar._draw_entries(screen, entries, 0, 7, 40, set(), None, active_agent_id="one")
 
         first_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "laptop" in call[3])
@@ -870,7 +870,7 @@ class SidebarStateTest(unittest.TestCase):
     def test_active_agent_uses_active_session_color(self):
         entry = Entry("pi", "agent", Target("local", "work"), host="laptop", agent_id="one", status="working")
         screen = FakeScreen(size=(6, 40))
-        with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
             sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None, active_agent_id="one")
 
         location = next(call for call in screen.calls if call[0] == "addnstr" and "laptop" in call[3])
@@ -904,7 +904,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         runner = sidebar.EffectRunner()
         try:
-            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
                 self.assertTrue(runner.submit(effect, ()))
                 self.assertTrue(started.wait(1))
                 self.assertIsNone(runner.poll())
@@ -932,7 +932,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         runner = sidebar.EffectRunner()
         try:
-            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
                 self.assertTrue(runner.submit(first, ()))
                 self.assertTrue(runner.submit(middle, ()))
                 self.assertTrue(runner.submit(latest, ()))
@@ -962,7 +962,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         runner = sidebar.EffectRunner()
         try:
-            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
                 self.assertTrue(runner.submit(switch, ()))
                 self.assertFalse(runner.submit(create, ()))
         finally:
@@ -980,7 +980,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         runner = sidebar.EffectRunner()
         try:
-            with patch("mtmux.sidebar._perform_effect", side_effect=perform):
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
                 self.assertTrue(runner.submit(create, ()))
                 self.assertFalse(runner.submit(switch, ()))
         finally:
@@ -1050,10 +1050,10 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         )
 
         with (
-            patch("mtmux.sidebar._current_target", return_value=target),
-            patch("mtmux.sidebar.cockpit.bell_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.current_agent", return_value="stored"),
-            patch("mtmux.sidebar._pane_active", return_value=True),
+            patch("letee.sidebar._current_target", return_value=target),
+            patch("letee.sidebar.cockpit.bell_target", return_value=None),
+            patch("letee.sidebar.cockpit.current_agent", return_value="stored"),
+            patch("letee.sidebar._pane_active", return_value=True),
         ):
             status = sidebar.AsyncStatusPoller(poller, target)
             try:
@@ -1139,10 +1139,10 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 pass
 
         with (
-            patch("mtmux.sidebar._current_target", return_value=target),
-            patch("mtmux.sidebar.cockpit.bell_target", return_value=target),
-            patch("mtmux.sidebar.cockpit.current_agent", return_value="stale-agent"),
-            patch("mtmux.sidebar._pane_active", return_value=False),
+            patch("letee.sidebar._current_target", return_value=target),
+            patch("letee.sidebar.cockpit.bell_target", return_value=target),
+            patch("letee.sidebar.cockpit.current_agent", return_value="stale-agent"),
+            patch("letee.sidebar._pane_active", return_value=False),
         ):
             poller = sidebar.AsyncStatusPoller(BlockingPoller(), None)
             try:
@@ -1174,12 +1174,12 @@ class SidebarColorTest(unittest.TestCase):
 
     def test_256_color_terminal_uses_logo_palette(self):
         with (
-            patch("mtmux.sidebar.curses.has_colors", return_value=True),
-            patch("mtmux.sidebar.curses.start_color"),
-            patch("mtmux.sidebar.curses.use_default_colors"),
+            patch("letee.sidebar.curses.has_colors", return_value=True),
+            patch("letee.sidebar.curses.start_color"),
+            patch("letee.sidebar.curses.use_default_colors"),
             patch.object(curses, "COLORS", 256, create=True),
-            patch("mtmux.sidebar.curses.init_pair") as init_pair,
-            patch("mtmux.sidebar.curses.color_pair", side_effect=lambda pair: pair << 8),
+            patch("letee.sidebar.curses.init_pair") as init_pair,
+            patch("letee.sidebar.curses.color_pair", side_effect=lambda pair: pair << 8),
         ):
             _init_colors()
 
@@ -1213,12 +1213,12 @@ class SidebarColorTest(unittest.TestCase):
 
     def test_8_color_terminal_uses_safe_palette(self):
         with (
-            patch("mtmux.sidebar.curses.has_colors", return_value=True),
-            patch("mtmux.sidebar.curses.start_color"),
-            patch("mtmux.sidebar.curses.use_default_colors"),
+            patch("letee.sidebar.curses.has_colors", return_value=True),
+            patch("letee.sidebar.curses.start_color"),
+            patch("letee.sidebar.curses.use_default_colors"),
             patch.object(curses, "COLORS", 8, create=True),
-            patch("mtmux.sidebar.curses.init_pair") as init_pair,
-            patch("mtmux.sidebar.curses.color_pair", side_effect=lambda pair: pair << 8),
+            patch("letee.sidebar.curses.init_pair") as init_pair,
+            patch("letee.sidebar.curses.color_pair", side_effect=lambda pair: pair << 8),
         ):
             _init_colors()
 
@@ -1250,15 +1250,15 @@ class SidebarColorTest(unittest.TestCase):
 
     def test_no_color_terminal_leaves_palette_empty(self):
         sidebar._COLOR = {"title": 123}
-        with patch("mtmux.sidebar.curses.has_colors", return_value=False):
+        with patch("letee.sidebar.curses.has_colors", return_value=False):
             _init_colors()
         self.assertEqual(sidebar._COLOR, {})
 
     def test_curses_error_leaves_palette_empty(self):
         sidebar._COLOR = {"title": 123}
         with (
-            patch("mtmux.sidebar.curses.has_colors", return_value=True),
-            patch("mtmux.sidebar.curses.start_color", side_effect=curses.error),
+            patch("letee.sidebar.curses.has_colors", return_value=True),
+            patch("letee.sidebar.curses.start_color", side_effect=curses.error),
         ):
             _init_colors()
         self.assertEqual(sidebar._COLOR, {})
@@ -1269,7 +1269,7 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "work")
         screen = FakeScreen(size=(7, 30))
 
-        with patch.dict("mtmux.sidebar._COLOR", {"local": 45}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"local": 45}, clear=True):
             _draw(screen, [Entry("work", "session", target)], 0, "", "", pane_active=False)
 
         row = next(call for call in screen.calls if call[0] == "addnstr" and "work" in call[3])
@@ -1298,7 +1298,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_main_restarts_after_keyboard_interrupt(self):
         with (
             patch.dict(sidebar.os.environ, {}, clear=True),
-            patch("mtmux.sidebar.curses.wrapper", side_effect=[KeyboardInterrupt, None]) as wrapper,
+            patch("letee.sidebar.curses.wrapper", side_effect=[KeyboardInterrupt, None]) as wrapper,
         ):
             self.assertEqual(main(), 0)
 
@@ -1319,13 +1319,13 @@ class SidebarDrawTest(unittest.TestCase):
             | curses.BUTTON4_PRESSED
             | getattr(curses, "BUTTON5_PRESSED", 0)
         )
-        with patch("mtmux.sidebar.curses.mousemask") as mousemask:
+        with patch("letee.sidebar.curses.mousemask") as mousemask:
             _mouse_mask()
 
         mousemask.assert_called_once_with(expected)
 
     def test_mouse_mask_tolerates_missing_button5(self):
-        with patch.object(curses, "BUTTON5_PRESSED", None), patch("mtmux.sidebar.curses.mousemask") as mousemask:
+        with patch.object(curses, "BUTTON5_PRESSED", None), patch("letee.sidebar.curses.mousemask") as mousemask:
             _mouse_mask()
 
         self.assertFalse(mousemask.call_args.args[0] & 2097152)
@@ -1357,8 +1357,8 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen(size=(10, 30))
 
         with (
-            patch.dict("mtmux.sidebar._COLOR", {"drag": 123}, clear=True),
-            patch("mtmux.sidebar._ascii", return_value=False),
+            patch.dict("letee.sidebar._COLOR", {"drag": 123}, clear=True),
+            patch("letee.sidebar._ascii", return_value=False),
         ):
             sidebar._draw_entries(
                 screen, entries, 0, 9, 30, set(), None, drag_target_entry=1
@@ -1443,7 +1443,7 @@ class SidebarDrawTest(unittest.TestCase):
             for focused_region in ("sessions", "agents"):
                 screen = FakeScreen(size=(10, 60))
                 with self.subTest(ascii=ascii_mode, focused_region=focused_region), patch(
-                    "mtmux.sidebar._ascii", return_value=ascii_mode
+                    "letee.sidebar._ascii", return_value=ascii_mode
                 ):
                     _draw(
                         screen, [], 0, "hidden status", "", agent_entries=[], focused_region=focused_region
@@ -1464,21 +1464,21 @@ class SidebarDrawTest(unittest.TestCase):
             (True, ["type to filter  backspace edit", "esc clear  Enter switch"]),
         ):
             screen = FakeScreen(size=(7, 60))
-            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 _draw(screen, [], 0, "ignored", "", filtering=True)
             footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
             self.assertEqual(footer, expected)
 
     def test_footer_reuses_title_style_and_dims_inactive_pane(self):
         screen = FakeScreen(size=(7, 60))
-        with patch.dict("mtmux.sidebar._COLOR", {"title": 123}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"title": 123}, clear=True):
             _draw(screen, [], 0, "", "", dimmed=True)
         footer = [call for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
         self.assertTrue(all(call[5] == _fade(123) for call in footer))
 
     def test_footer_monochrome_fallback_is_bold_reverse_video(self):
         screen = FakeScreen(size=(7, 60))
-        with patch.dict("mtmux.sidebar._COLOR", {}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {}, clear=True):
             _draw(screen, [], 0, "", "")
         footer = [call for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
         self.assertTrue(all(call[5] & curses.A_BOLD and call[5] & curses.A_REVERSE for call in footer))
@@ -1506,7 +1506,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_read_key_places_confirmation_below_filter_and_truncates_safely(self):
         screen = FakeScreen(size=(6, 12))
 
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             _read_key(screen, "kill session-with-a-long-name? y/N", filtering=True)
 
         prompt = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[3].strip())
@@ -1518,7 +1518,7 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "work")
         entries = [Entry("work", "session", target, host="localhost", tracked=True, shortcut_slot=1)]
 
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             _draw(screen, entries, 0, "", "", add_button_selected=True)
 
         title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
@@ -1529,7 +1529,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_inactive_sidebar_hides_add_button_pointer(self):
         screen = FakeScreen(size=(7, 40))
 
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             _draw(screen, [], 0, "", "", add_button_selected=True, pane_active=False)
 
         title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
@@ -1539,16 +1539,16 @@ class SidebarDrawTest(unittest.TestCase):
     def test_title_adds_terminal_icon_with_ascii_fallback(self):
         screen = FakeScreen(size=(5, 40))
 
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             _draw(screen, [], 0, "ok", "")
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].startswith("  mtmux"))
+        self.assertTrue(title[3].startswith("  letee"))
 
         screen = FakeScreen(size=(5, 40))
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             _draw(screen, [], 0, "ok", "")
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].startswith(" mtmux"))
+        self.assertTrue(title[3].startswith(" letee"))
 
     def test_draw_erases_without_forcing_full_repaint(self):
         screen = FakeScreen(size=(5, 40))
@@ -1579,7 +1579,7 @@ class SidebarDrawTest(unittest.TestCase):
         _draw(screen, entries, 1, "ok", "")
 
         title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertIn("mtmux", title_text)
+        self.assertIn("letee", title_text)
         self.assertIn("＋ add", title_text)
         self.assertNotIn("2 sessions", title_text)
 
@@ -1589,7 +1589,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         _draw(screen, entries, 0, "ok", "")
         normal_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertIn("mtmux", normal_text)
+        self.assertIn("letee", normal_text)
         self.assertIn("＋ add", normal_text)
         self.assertNotIn("1 session", normal_text)
 
@@ -1597,7 +1597,7 @@ class SidebarDrawTest(unittest.TestCase):
         _draw(screen, entries, 0, "filtering", "work", filtering=True)
         filtering_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
-        self.assertIn("mtmux", filtering_text)
+        self.assertIn("letee", filtering_text)
         self.assertNotIn("1 match", filtering_text)
         self.assertTrue(filter_row[3].startswith(" Filter: work"))
 
@@ -1663,7 +1663,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_title_uses_configured_style_and_dims_inactive_pane(self):
         screen = FakeScreen(size=(5, 20))
 
-        with patch.dict("mtmux.sidebar._COLOR", {"title": 123}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"title": 123}, clear=True):
             _draw(screen, [], 0, "ok", "", dimmed=True)
 
         title_calls = [call for call in screen.calls if call[0] == "addnstr" and call[1] == 0]
@@ -1674,7 +1674,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_title_monochrome_fallback_is_bold_reverse_video(self):
         screen = FakeScreen(size=(5, 20))
 
-        with patch.dict("mtmux.sidebar._COLOR", {}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {}, clear=True):
             _draw(screen, [], 0, "ok", "")
 
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
@@ -1725,12 +1725,12 @@ class SidebarDrawTest(unittest.TestCase):
             screen = FakeScreen(keys, size=(10, 40))
             with (
                 self.subTest(keys=keys),
-                patch("mtmux.sidebar.curses.curs_set"),
-                patch("mtmux.sidebar._init_colors"),
-                patch("mtmux.sidebar._entries", return_value=[]),
-                patch("mtmux.sidebar._bell_targets", return_value=set()),
-                patch("mtmux.sidebar._current_target", return_value=None),
-                patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
+                patch("letee.sidebar.curses.curs_set"),
+                patch("letee.sidebar._init_colors"),
+                patch("letee.sidebar._entries", return_value=[]),
+                patch("letee.sidebar._bell_targets", return_value=set()),
+                patch("letee.sidebar._current_target", return_value=None),
+                patch("letee.sidebar._draw", return_value=(2, None)) as draw,
             ):
                 run(screen)
 
@@ -1740,12 +1740,12 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([ord("a"), curses.KEY_UP, ord("q")])
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", return_value=(2, None)) as draw,
         ):
             run(screen)
 
@@ -1760,11 +1760,11 @@ class SidebarDrawTest(unittest.TestCase):
         poller.tick.return_value = False
 
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._current_target", return_value=None) as current_target,
-            patch("mtmux.sidebar._pane_active", return_value=True) as pane_active,
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._current_target", return_value=None) as current_target,
+            patch("letee.sidebar._pane_active", return_value=True) as pane_active,
         ):
             run(screen)
 
@@ -1775,10 +1775,10 @@ class SidebarDrawTest(unittest.TestCase):
     def test_queued_input_is_handled_before_automatic_session_actions(self):
         screen = FakeScreen([ord("q")])
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._sync_active_session") as sync_active_session,
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._sync_active_session") as sync_active_session,
         ):
             run(screen)
 
@@ -1789,11 +1789,11 @@ class SidebarDrawTest(unittest.TestCase):
         calls = []
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", side_effect=lambda filter_text="", *_: calls.append(filter_text) or [Entry("work", "session", Target("local", "work"))]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", side_effect=lambda filter_text="", *_: calls.append(filter_text) or [Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
         ):
             run(screen)
 
@@ -1810,15 +1810,15 @@ class SidebarDrawTest(unittest.TestCase):
         poller.tick.return_value = False
         screen = FakeScreen([-1, -1, ord("q")], size=(10, 40))
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[pane.target]),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar.cockpit.current_agent", return_value="id"),
-            patch("mtmux.sidebar.time.monotonic", side_effect=[100, 100.1]),
-            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[pane.target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar.cockpit.current_agent", return_value="id"),
+            patch("letee.sidebar.time.monotonic", side_effect=[100, 100.1]),
+            patch("letee.sidebar._draw", return_value=(2, None)) as draw,
         ):
             run(screen)
 
@@ -1832,12 +1832,12 @@ class SidebarDrawTest(unittest.TestCase):
         poller.tick.return_value = False
         screen = FakeScreen([-1, -1, -1, -1, ord("q")], size=(10, 40))
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"), patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[pane.target]),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0.05, 0.1]),
-            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"), patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[pane.target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.05, 0.1]),
+            patch("letee.sidebar._draw", return_value=(2, None)) as draw,
         ):
             run(screen)
         self.assertEqual(draw.call_count, 2)
@@ -1846,12 +1846,12 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([-1, -1, ord("q")])
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", return_value=(2, None)) as draw,
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", return_value=(2, None)) as draw,
         ):
             run(screen)
 
@@ -1864,12 +1864,12 @@ class SidebarDrawTest(unittest.TestCase):
         poller.tick.return_value = False
 
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0.1, 0.49, 0.5]),
-            patch("mtmux.sidebar.cockpit.bell_target", return_value=None) as bell_target,
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.1, 0.49, 0.5]),
+            patch("letee.sidebar.cockpit.bell_target", return_value=None) as bell_target,
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._current_target", return_value=None),
         ):
             run(screen)
 
@@ -1881,12 +1881,12 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "work")
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.beep") as beep,
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", target)]),
-            patch("mtmux.sidebar._bell_targets", return_value={target}),
-            patch("mtmux.sidebar._current_target", return_value=Target("local", "shell")),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.beep") as beep,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", target)]),
+            patch("letee.sidebar._bell_targets", return_value={target}),
+            patch("letee.sidebar._current_target", return_value=Target("local", "shell")),
         ):
             run(screen)
 
@@ -1898,12 +1898,12 @@ class SidebarDrawTest(unittest.TestCase):
         current = Target("local", "b")
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.beep") as beep,
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("a", "session", ringing)]),
-            patch("mtmux.sidebar._bell_targets", return_value={ringing}),
-            patch("mtmux.sidebar._current_target", side_effect=[ringing, ringing, current]),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.beep") as beep,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("a", "session", ringing)]),
+            patch("letee.sidebar._bell_targets", return_value={ringing}),
+            patch("letee.sidebar._current_target", side_effect=[ringing, ringing, current]),
         ):
             run(screen)
 
@@ -1926,21 +1926,21 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(20, 30))
 
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 17, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 17, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             run(screen)
 
@@ -1956,22 +1956,22 @@ class SidebarDrawTest(unittest.TestCase):
             return (2, None)
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 1, 0, curses.REPORT_MOUSE_POSITION),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._entries", return_value=[Entry("one", "session", target, tracked=True)]),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._entries", return_value=[Entry("one", "session", target, tracked=True)]),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
         ):
             run(screen)
 
@@ -1987,24 +1987,24 @@ class SidebarDrawTest(unittest.TestCase):
         )
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 5, 0, curses.REPORT_MOUSE_POSITION),
                     (0, -1, -1, 0, curses.REPORT_MOUSE_POSITION),
                 ],
             ),
-            patch("mtmux.sidebar.time.monotonic", side_effect=[0, 0.01, 0.25, 0.5, 0.51, 0.6] + [1] * 20),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=targets),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.save_sessions") as save_sessions,
+            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.01, 0.25, 0.5, 0.51, 0.6] + [1] * 20),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=targets),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.save_sessions") as save_sessions,
         ):
             run(screen)
 
@@ -2032,12 +2032,12 @@ class SidebarDrawTest(unittest.TestCase):
             return (2, None)
 
         with (
-            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
         ):
             run(screen)
 
@@ -2068,12 +2068,12 @@ class SidebarDrawTest(unittest.TestCase):
             return (2, None)
 
         with (
-            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
         ):
             run(screen)
 
@@ -2121,13 +2121,13 @@ class SidebarDrawTest(unittest.TestCase):
         runner.poll.side_effect = [None] * 5 + [result]
 
         with (
-            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
-            patch("mtmux.sidebar.EffectRunner", return_value=runner),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.EffectRunner", return_value=runner),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
             patch(
-                "mtmux.sidebar._draw",
+                "letee.sidebar._draw",
                 side_effect=lambda *args, **kwargs: active_agents.append(args[17]) or (2, None),
             ),
         ):
@@ -2146,15 +2146,15 @@ class SidebarDrawTest(unittest.TestCase):
         timer = threading.Timer(0.05, release.set)
 
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
-            patch("mtmux.sidebar._current_target", return_value=second),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
-            patch("mtmux.sidebar.save_sessions") as save_sessions,
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._current_target", return_value=second),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
+            patch("letee.sidebar.save_sessions") as save_sessions,
         ):
             timer.start()
             try:
@@ -2175,23 +2175,23 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
                     (0, 0, 4, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.save_sessions") as save_sessions,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.save_sessions") as save_sessions,
         ):
             run(screen)
 
@@ -2233,24 +2233,24 @@ class SidebarDrawTest(unittest.TestCase):
         )
 
         with (
-            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
                     (0, 0, 4, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.save_sessions") as save_sessions,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.save_sessions") as save_sessions,
         ):
             run(screen)
 
@@ -2279,25 +2279,25 @@ class SidebarDrawTest(unittest.TestCase):
         timer = threading.Timer(0.05, release.set)
 
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
                     (0, 0, 4, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=first),
-            patch("mtmux.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
-            patch("mtmux.sidebar.save_sessions") as save_sessions,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=first),
+            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
+            patch("letee.sidebar.save_sessions") as save_sessions,
         ):
             timer.start()
             try:
@@ -2327,23 +2327,23 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, ord("q")], size=(12, 30))
 
         with (
-            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 1, 2, 0, curses.REPORT_MOUSE_POSITION),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             run(screen)
 
@@ -2371,24 +2371,24 @@ class SidebarDrawTest(unittest.TestCase):
         )
 
         with (
-            patch("mtmux.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
             patch(
-                "mtmux.sidebar.time.monotonic",
+                "letee.sidebar.time.monotonic",
                 side_effect=[0, 0.1, 0.2, 0.5] + [1] * 20,
             ),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 return_value=(0, 0, 2, 0, curses.BUTTON1_PRESSED),
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             run(screen)
 
@@ -2402,22 +2402,22 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 2, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             run(screen)
 
@@ -2429,21 +2429,21 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
                     (0, 0, 2, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             run(screen)
 
@@ -2454,17 +2454,17 @@ class SidebarDrawTest(unittest.TestCase):
     def test_press_release_opens_add_button(self):
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 29, 0, 0, curses.BUTTON1_PRESSED),
                     (0, 29, 0, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._current_target", return_value=None),
         ):
             run(screen)
 
@@ -2480,15 +2480,15 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 4, 0, curses.BUTTON1_CLICKED)),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 4, 0, curses.BUTTON1_CLICKED)),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             run(screen)
 
@@ -2505,21 +2505,21 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask") as mousemask,
-            patch("mtmux.sidebar._mouse_cleanup") as mouse_cleanup,
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask") as mousemask,
+            patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
             patch(
-                "mtmux.sidebar.curses.getmouse",
+                "letee.sidebar.curses.getmouse",
                 return_value=(0, 7, 4, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
             ),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=first),
-            patch("mtmux.sidebar.cockpit.show_session_menu") as show_menu,
-            patch("mtmux.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=first),
+            patch("letee.sidebar.cockpit.show_session_menu") as show_menu,
+            patch("letee.sidebar.cockpit.switch") as switch,
         ):
             run(screen)
 
@@ -2568,16 +2568,16 @@ class SidebarDrawTest(unittest.TestCase):
             return (2, None)
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.cockpit.switch") as switch,
-            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
         ):
             run(screen)
 
@@ -2588,13 +2588,13 @@ class SidebarDrawTest(unittest.TestCase):
     def test_malformed_mouse_event_is_ignored(self):
         screen = FakeScreen([curses.KEY_MOUSE, ord("q")])
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar.curses.getmouse", side_effect=[(0, 0, None, 0, None), curses.error()]),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.getmouse", side_effect=[(0, 0, None, 0, None), curses.error()]),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
         ):
             run(screen)
 
@@ -2606,12 +2606,12 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([ord("q")])
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=active),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or (2, None)),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=active),
+            patch("letee.sidebar._draw", side_effect=lambda _, __, index, *args, **kwargs: selected.append(index) or (2, None)),
         ):
             run(screen)
 
@@ -2633,9 +2633,9 @@ class SidebarDrawTest(unittest.TestCase):
 
 
     def test_section_divider_fills_width_and_has_ascii_fallback(self):
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             unicode_line = _entry_lines(Entry("✱ STARRED", "section"), False, set(), None, 20)[0]
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             ascii_line = _entry_lines(Entry("* STARRED", "section"), False, set(), None, 20)[0]
 
         self.assertEqual(unicode_line, "✱ STARRED " + "─" * 10)
@@ -2643,7 +2643,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(ascii_line.isascii())
 
     def test_section_divider_truncates_safely_at_narrow_width(self):
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             self.assertEqual(_entry_lines(Entry("ALL SESSIONS", "section"), False, set(), None, 5), ["ALL …"])
 
     def test_sections_are_non_selectable_and_mouse_ignores_them(self):
@@ -2659,7 +2659,7 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_section_attr_uses_mint_bold_and_inactive_dim(self):
         entry = Entry("STARRED", "section")
-        with patch.dict("mtmux.sidebar._COLOR", {"section": 123 | curses.A_BOLD}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"section": 123 | curses.A_BOLD}, clear=True):
             active = _entry_attr(entry, False)
             inactive = _entry_attr(entry, False, True)
 
@@ -2667,7 +2667,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(inactive, active | curses.A_DIM)
 
     def test_section_attr_monochrome_fallback_is_bold(self):
-        with patch.dict("mtmux.sidebar._COLOR", {}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {}, clear=True):
             self.assertEqual(_entry_attr(Entry("STARRED", "section"), False), curses.A_BOLD)
 
 
@@ -2677,8 +2677,8 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(any(entry.kind == "unavailable" and entry.label == "unavailable: permission denied" for entry in entries))
 
     def test_available_hosts_replace_create_rows_and_show_enter_affordance(self):
-        with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"), patch(
-            "mtmux.sidebar._ascii", return_value=False
+        with patch("letee.sidebar.socket.gethostname", return_value="laptop"), patch(
+            "letee.sidebar._ascii", return_value=False
         ):
             entries = _entries("", snapshot(remotes={"dev": source("ssh", host="dev")}))
 
@@ -2694,8 +2694,8 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertFalse(any(entry.kind == "host" for entry in filtered + unavailable))
 
     def test_ascii_headers_preserve_text_only_labels(self):
-        with patch.dict("mtmux.sidebar.os.environ", {"MTMUX_ASCII": "1"}), patch(
-            "mtmux.sidebar.socket.gethostname", return_value="laptop"
+        with patch.dict("letee.sidebar.os.environ", {"LETEE_ASCII": "1"}), patch(
+            "letee.sidebar.socket.gethostname", return_value="laptop"
         ):
             entries = _entries("", snapshot(remotes={"dev": None}))
 
@@ -2711,8 +2711,8 @@ class SidebarDrawTest(unittest.TestCase):
     def test_add_titles_name_mode_and_filter_query(self):
         for query, filtering, adding, expected in (
             ("", False, False, "＋ add"),
-            ("", False, True, "mtmux / Add session"),
-            ("work", True, True, "mtmux / Add existing"),
+            ("", False, True, "letee / Add session"),
+            ("work", True, True, "letee / Add existing"),
         ):
             screen = FakeScreen(size=(5, 50))
             _draw(screen, [], 0, "", query, filtering=filtering, adding=adding)
@@ -2728,7 +2728,7 @@ class SidebarDrawTest(unittest.TestCase):
         _draw(screen, entries, 0, "ok", "")
 
         title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertIn("mtmux", title_text)
+        self.assertIn("letee", title_text)
 
     def test_numbered_tracked_has_no_slot_in_entry_lines_in_unicode_and_ascii(self):
         entry = Entry(
@@ -2737,7 +2737,7 @@ class SidebarDrawTest(unittest.TestCase):
         )
 
         for ascii_mode, expected in ((False, "work"), (True, "work")):
-            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 line = _entry_lines(entry, False, set(), None, 30)[0]
             self.assertEqual(line, expected)
             self.assertNotIn("✱", line)
@@ -2749,7 +2749,7 @@ class SidebarDrawTest(unittest.TestCase):
         other = Entry("other", "session", Target("local", "other"))
         screen = FakeScreen(size=(7, 30))
 
-        with patch.dict("mtmux.sidebar._COLOR", {"slot": 456, "local": 123}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"slot": 456, "local": 123}, clear=True):
             sidebar._draw_entries(
                 screen, [other, tracked], 0, 5, 30, set(), None, dimmed=False, top=1,
             )
@@ -2763,15 +2763,15 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(line_call[5], 123)
 
     def test_tracked_entries_render_session_then_source_without_raw_targets(self):
-        with patch("mtmux.sidebar.socket.gethostname", return_value="laptop"):
+        with patch("letee.sidebar.socket.gethostname", return_value="laptop"):
             local = next(entry for entry in _entries("", snapshot(local=("dashboard",)), [Target("local", "dashboard")]) if entry.kind == "session")
         remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", tracked=True)
 
         self.assertEqual(local.host, "localhost")
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             self.assertEqual(_entry_lines(local, True, set(), None, 30), ["dashboard", "  └─ @localhost"])
             self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["  auth", "  └─ @dev"])
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             self.assertEqual(_entry_lines(local, True, set(), None, 30), ["dashboard", "  `- @localhost"])
 
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
@@ -2780,7 +2780,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_tracked_lines_truncate_session_and_metadata_and_keep_bell(self):
         entry = Entry("s" * 64, "session", Target("ssh", "s" * 64, "host"), host="h" * 64, tracked=True)
 
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             lines = _entry_lines(entry, False, {entry.target}, None, 20)
 
         self.assertEqual(len(lines), 2)
@@ -2794,7 +2794,7 @@ class SidebarDrawTest(unittest.TestCase):
             host="long-host", tracked=True, unavailable_favorite=True, status="reconnecting…",
         )
 
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             lines = _entry_lines(entry, True, set(), None, 24)
 
         self.assertTrue(lines[0].isascii())
@@ -2811,7 +2811,7 @@ class SidebarDrawTest(unittest.TestCase):
         ]
         screen = FakeScreen(size=(7, 30))
 
-        with patch.dict("mtmux.sidebar._COLOR", {"active": 123}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": 123}, clear=True):
             _draw(screen, entries, 0, "ok", "", current_target=target)
 
         rows = [call for call in screen.calls if call[0] == "addnstr" and call[3].strip().endswith("work")]
@@ -2822,7 +2822,7 @@ class SidebarDrawTest(unittest.TestCase):
         entry = Entry("work", "session", target, host="laptop", tracked=True)
         screen = FakeScreen(size=(6, 30))
 
-        with patch.dict("mtmux.sidebar._COLOR", {"active": 123}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": 123}, clear=True):
             _draw(screen, [entry], 0, "ok", "", current_target=target)
 
         rows = [call for call in screen.calls if call[0] == "addnstr" and call[1] in (2, 3)]
@@ -2844,7 +2844,7 @@ class SidebarDrawTest(unittest.TestCase):
         entry = Entry("work", "session", target, host="laptop", tracked=True)
         for ascii_mode, pointer in ((False, "› work"), (True, "> work")):
             screen = FakeScreen(size=(7, 30))
-            with self.subTest(ascii=ascii_mode), patch("mtmux.sidebar._ascii", return_value=ascii_mode):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 _draw(screen, [entry], 0, "ok", "")
             rendered = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr"]
             self.assertIn(pointer, rendered)
@@ -2858,15 +2858,15 @@ class SidebarDrawTest(unittest.TestCase):
         selections = []
 
         with (
-            patch("mtmux.sidebar.load_sessions", return_value=[first, second]),
-            patch("mtmux.sidebar.save_sessions") as save,
-            patch("mtmux.discovery.local_snapshot", return_value=source("local", ("first", "second"))),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=lambda _, entries, index, *args, **kwargs: selections.append(entries[index]) or (2, None)),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar.save_sessions") as save,
+            patch("letee.discovery.local_snapshot", return_value=source("local", ("first", "second"))),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=lambda _, entries, index, *args, **kwargs: selections.append(entries[index]) or (2, None)),
         ):
             run(screen)
 
@@ -2878,12 +2878,12 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_ENTER, ord("r"), ord("x"), ord("q")], size=(8, 60))
 
         with (
-            patch("mtmux.discovery.local_snapshot", return_value=source("local")),
-            patch("mtmux.sidebar.load_sessions", return_value=[]),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.sessions.kill") as kill,
+            patch("letee.discovery.local_snapshot", return_value=source("local")),
+            patch("letee.sidebar.load_sessions", return_value=[]),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.sessions.kill") as kill,
         ):
             run(screen)
 
@@ -2893,12 +2893,12 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([ord("a"), ord("x"), ord("q")], size=(8, 60))
 
         with (
-            patch("mtmux.discovery.local_snapshot", return_value=source("local")),
-            patch("mtmux.sidebar.load_sessions", return_value=[]),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.sessions.kill") as kill,
+            patch("letee.discovery.local_snapshot", return_value=source("local")),
+            patch("letee.sidebar.load_sessions", return_value=[]),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.sessions.kill") as kill,
         ):
             run(screen)
 
@@ -2910,13 +2910,13 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([ord("x"), ord("q")], size=(8, 60))
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", target, unavailable_favorite=True, tracked=True)]),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", target, unavailable_favorite=True, tracked=True)]),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
         ):
             run(screen)
 
@@ -2930,14 +2930,14 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "work")
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar._entries", return_value=[Entry("work", "session", target, tracked=True)]),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=target),
-            patch("mtmux.sidebar.sessions.kill") as kill,
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", target, tracked=True)]),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=target),
+            patch("letee.sidebar.sessions.kill") as kill,
         ):
             run(screen)
 
@@ -2949,14 +2949,14 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "work")
 
         with (
-            patch("mtmux.discovery.local_snapshot", return_value=source("local", ("work",))),
-            patch("mtmux.sidebar.load_sessions", return_value=[target]),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=target),
-            patch("mtmux.sidebar.sessions.kill", side_effect=SystemExit("kill local:work failed: denied")),
+            patch("letee.discovery.local_snapshot", return_value=source("local", ("work",))),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=target),
+            patch("letee.sidebar.sessions.kill", side_effect=SystemExit("kill local:work failed: denied")),
         ):
             run(screen)
 
@@ -2971,7 +2971,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_rendered_rows_include_icons(self):
         screen = FakeScreen(size=(9, 30))
 
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             _draw(screen, [Entry("laptop", "host", host=""), Entry("work", "session", Target("local", "work"))], 1, "ok", "")
 
         text = "\n".join(str(call) for call in screen.calls)
@@ -2984,7 +2984,7 @@ class SidebarDrawTest(unittest.TestCase):
         entries = [Entry("active", "session", active), Entry("selected", "session", selected)]
         screen = FakeScreen(size=(7, 30))
 
-        with patch.dict("mtmux.sidebar._COLOR", {"active": 123, "local": 45}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": 123, "local": 45}, clear=True):
             _draw(screen, entries, 1, "ok", "", current_target=active)
 
         rows = {call[3].strip(): call for call in screen.calls if call[0] == "addnstr" and "session" not in call[3]}
@@ -2996,7 +2996,7 @@ class SidebarDrawTest(unittest.TestCase):
         selected = Target("local", "selected")
         screen = FakeScreen(size=(7, 30))
 
-        with patch.dict("mtmux.sidebar._COLOR", {"active": curses.A_REVERSE, "local": 45}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": curses.A_REVERSE, "local": 45}, clear=True):
             _draw(
                 screen,
                 [Entry("active", "session", active), Entry("selected", "session", selected)],
@@ -3061,12 +3061,12 @@ class SidebarDrawTest(unittest.TestCase):
         poller.tick.return_value = False
 
         with (
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar.load_hosts", return_value=[]),
-            patch("mtmux.sidebar.cockpit.bell_target", return_value=None),
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.cockpit.bell_target", return_value=None),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._current_target", return_value=None),
         ):
             with self.assertRaises(KeyboardInterrupt):
                 run(screen)
@@ -3135,14 +3135,14 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
         ):
             run(screen)
 
@@ -3164,14 +3164,14 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
         ):
             run(screen)
 
@@ -3192,15 +3192,15 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             return (1, None)
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", side_effect=mouse_events),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", side_effect=mouse_events),
         ):
             run(screen)
 
@@ -3219,16 +3219,16 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             return (1, None)
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar.DiscoveryPoller", return_value=poller),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._agent_entries", return_value=[]),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
         ):
             run(screen)
 
@@ -3249,14 +3249,14 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             return (2, None)
 
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None) as current_target,
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", side_effect=mouse_events),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None) as current_target,
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", side_effect=mouse_events),
         ):
             run(screen)
 
@@ -3279,14 +3279,14 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             ord("q"),
         ], size=(8, 30))
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
         ):
             run(screen)
 
@@ -3309,14 +3309,14 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             ord("q"),
         ], size=(8, 30))
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
         ):
             run(screen)
 
@@ -3338,16 +3338,16 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             ord("q"),
         ], size=(8, 30))
         with (
-            patch("mtmux.sidebar.curses.curs_set"),
-            patch("mtmux.sidebar.curses.mousemask"),
-            patch("mtmux.sidebar._init_colors"),
-            patch("mtmux.sidebar._entries", return_value=entries),
-            patch("mtmux.sidebar._bell_targets", return_value=set()),
-            patch("mtmux.sidebar._current_target", return_value=None),
-            patch("mtmux.sidebar._draw", side_effect=draw_spy),
-            patch("mtmux.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
-            patch("mtmux.sidebar.cockpit.switch"),
-            patch("mtmux.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.cockpit.switch"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
         ):
             run(screen)
 
@@ -3478,7 +3478,7 @@ class AgentOrderingTest(unittest.TestCase):
         target = Target("local", "work")
         pane1 = PaneTarget(target, "@1", "%1", "/tmp/tmux")
         pane2 = PaneTarget(target, "@1", "%2", "/tmp/tmux")
-        from mtmux.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
+        from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
         agents = (
             AgentEntry(pane1, "idle", "pi", None),
             AgentEntry(pane2, "urgent", "pi", "input-required"),
@@ -3493,7 +3493,7 @@ class AgentOrderingTest(unittest.TestCase):
         second = Target("local", "second")
         pane1 = PaneTarget(first, "@1", "%1", "/tmp/tmux")
         pane2 = PaneTarget(second, "@1", "%1", "/tmp/tmux")
-        from mtmux.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
+        from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
         agents = (
             AgentEntry(pane2, "input", "pi", "input-required"),
             AgentEntry(pane1, "idle", "pi", None),
@@ -3510,7 +3510,7 @@ class AgentOrderingToggleTest(unittest.TestCase):
     def test_mode_toggle_with_keyboard_h_l(self):
         state = SidebarState(agent_ordering="priority")
         # Simulate h key: toggle to session
-        with patch("mtmux.sidebar._pane_active", return_value=True):
+        with patch("letee.sidebar._pane_active", return_value=True):
             pass  # run() would handle this; we test state mutation directly
         state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
         self.assertEqual(state.agent_ordering, "session")
@@ -3520,7 +3520,7 @@ class AgentOrderingToggleTest(unittest.TestCase):
     def test_mode_toggle_preserves_selection_through_rebuild(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
-        from mtmux.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
+        from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
         agents = (
             AgentEntry(pane, "id", "pi", "working"),
         )
@@ -3581,7 +3581,7 @@ class AgentOrderingRenderTest(unittest.TestCase):
 
     def test_ordering_row_renders_in_ascii_mode(self):
         screen = FakeScreen(size=(10, 40))
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], agent_ordering="priority")
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
         order_line = next(line for line in text if "Order:" in line)
@@ -3591,7 +3591,7 @@ class AgentOrderingRenderTest(unittest.TestCase):
 
     def test_ordering_row_dimmed_when_pane_inactive(self):
         screen = FakeScreen(size=(10, 40))
-        with patch.dict("mtmux.sidebar._COLOR", {"active": 123}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"active": 123}, clear=True):
             _draw(screen, [], 0, "", "", dimmed=True, agent_entries=[Entry("", "order")], agent_ordering="priority")
         # Order line still rendered; dimming applies via _fade
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
@@ -3606,9 +3606,9 @@ class AgentOrderingRenderTest(unittest.TestCase):
 
     def test_entry_lines_order_kind_unicode_and_ascii(self):
         order_entry = Entry("", "order")
-        with patch("mtmux.sidebar._ascii", return_value=False):
+        with patch("letee.sidebar._ascii", return_value=False):
             unicode_line = _entry_lines(order_entry, False, set(), None, 40, agent_ordering="priority")[0]
-        with patch("mtmux.sidebar._ascii", return_value=True):
+        with patch("letee.sidebar._ascii", return_value=True):
             ascii_line = _entry_lines(order_entry, False, set(), None, 40, agent_ordering="session")[0]
         self.assertIn("⇅", unicode_line)
         self.assertNotIn("Order:", unicode_line)
