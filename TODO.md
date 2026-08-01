@@ -2,6 +2,10 @@
 - [ ] Allow having multiple letee
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Open fresh terminal, run letee in a tab, open new tab, close new tab, letee is messed up in first tab
+- [ ] New prefixes
+  - [ ] prefix+x kill session
+  - [ ] prefix+r remove session
+  - [ ] Any other prefixes you could suggest?
 
 ## Done
 
