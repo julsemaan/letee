@@ -47,11 +47,14 @@ class MainTest(unittest.TestCase):
         set_tmux.assert_called_once_with("work")
         sidebar.assert_called_once_with()
 
-    def test_focus_sidebar_defaults_to_sessions_and_accepts_agents_and_add(self):
+    def test_focus_sidebar_defaults_to_sessions_and_accepts_all_actions(self):
         with patch("letee.__main__.cockpit.focus_sidebar") as focus_sidebar:
             main(["focus-sidebar"])
             main(["focus-sidebar", "agents"])
             main(["focus-sidebar", "add"])
+            main(["focus-sidebar", "remove"])
+            main(["focus-sidebar", "kill"])
+            main(["focus-sidebar", "alert"])
 
         self.assertEqual(
             focus_sidebar.call_args_list,
@@ -59,6 +62,9 @@ class MainTest(unittest.TestCase):
                 unittest.mock.call("sessions"),
                 unittest.mock.call("agents"),
                 unittest.mock.call("add"),
+                unittest.mock.call("remove"),
+                unittest.mock.call("kill"),
+                unittest.mock.call("alert"),
             ],
         )
 

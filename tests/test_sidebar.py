@@ -1,4 +1,5 @@
 import curses
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import subprocess
 import threading
@@ -3637,6 +3638,182 @@ class AgentOrderingRenderTest(unittest.TestCase):
 
     def test_entry_height_order_is_one(self):
         self.assertEqual(_entry_height(Entry("", "order")), 2)
+
+
+class PrefixActionTest(unittest.TestCase):
+    def _run(self, keys, favorites, current_target, data, *, seed_alerts=None):
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=current_target,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen(keys, size=(12, 40))
+        patches = [
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "load_sessions", return_value=favorites),
+            patch.object(sidebar, "_current_target", return_value=current_target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar.curses, "curs_set"),
+        ]
+        alert_patch = (
+            patch.object(sidebar, "_update_agent_alerts", side_effect=seed_alerts)
+            if seed_alerts is not None else nullcontext()
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], alert_patch:
+            run(screen)
+        return screen
+
+    def test_remove_prefix_targets_active_session_not_stale_selection(self):
+        stale = Target("local", "stale")
+        active = Target("local", "active")
+        data = snapshot(local=("stale", "active"))
+
+        with patch.object(sidebar, "save_sessions") as save, patch.object(sidebar.sessions, "kill") as kill:
+            self._run([curses.KEY_F6, curses.KEY_F8, ord("q")], [stale, active], active, data)
+
+        save.assert_called_once_with((stale,))
+        kill.assert_not_called()
+
+    def test_remove_prefix_exits_existing_session_search_before_targeting(self):
+        target = Target("local", "active")
+        data = snapshot(local=("active", "other"))
+
+        with patch.object(sidebar, "save_sessions") as save:
+            self._run([ord("/"), curses.KEY_F6, curses.KEY_F8, ord("q")], [target], target, data)
+
+        save.assert_called_once_with(())
+
+    def test_kill_prefix_targets_active_session_and_confirms(self):
+        stale = Target("local", "stale")
+        active = Target("local", "active")
+        data = snapshot(local=("stale", "active"))
+
+        with patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
+            self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), ord("q")], [stale, active], active, data)
+
+        kill.assert_called_once_with(active)
+        save.assert_called_once_with([stale])
+
+    def test_rejected_kill_prefix_does_not_mutate_sessions(self):
+        target = Target("local", "active")
+        data = snapshot(local=("active",))
+
+        with patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
+            self._run([curses.KEY_F6, curses.KEY_F9, ord("n"), ord("q")], [target], target, data)
+
+        kill.assert_not_called()
+        save.assert_not_called()
+
+    def test_busy_runner_skips_kill_confirmation(self):
+        target = Target("local", "active")
+        data = snapshot(local=("active",))
+        actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=True)
+        actions.poll.return_value = None
+
+        with (
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "_read_key") as read_key,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            screen = self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), ord("q")], [target], target, data)
+
+        read_key.assert_not_called()
+        kill.assert_not_called()
+        self.assertTrue(any(
+            "another action is still running" in call[3]
+            for call in screen.calls
+            if call[0] == "addnstr"
+        ))
+
+    def test_prefix_actions_never_fall_back_when_active_target_is_missing_or_untracked(self):
+        tracked = Target("local", "tracked")
+        active = Target("local", "active")
+        data = snapshot(local=("tracked", "active"))
+
+        for current_target, expected_status in ((active, "not tracked"), (None, "no active session")):
+            with self.subTest(current_target=current_target), patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
+                screen = self._run(
+                    [curses.KEY_F6, curses.KEY_F8, curses.KEY_F9, ord("q")],
+                    [tracked], current_target, data,
+                )
+
+            kill.assert_not_called()
+            save.assert_not_called()
+            self.assertTrue(any(expected_status in call[3] for call in screen.calls if call[0] == "addnstr"))
+
+    def test_alert_prefix_uses_first_alert_in_current_agent_order(self):
+        target = Target("local", "work")
+        first_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        second_pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        agents = (
+            AgentEntry(first_pane, "first", "pi", "completed"),
+            AgentEntry(second_pane, "second", "pi", "input-required"),
+        )
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=agents), {},
+        )
+
+        def seed_alerts(state, *_args, **_kwargs):
+            state.agent_alerts.update({(first_pane, "first"), (second_pane, "second")})
+            return False
+
+        with patch.object(sidebar.cockpit, "switch") as switch:
+            self._run([curses.KEY_F7, curses.KEY_F10, ord("q")], [target], None, data, seed_alerts=seed_alerts)
+
+        switch.assert_called_once_with(
+            target, sidebar.sessions.pane_attach_command(second_pane), "second"
+        )
+
+    def test_alert_prefix_without_alerts_shows_feedback_and_does_not_navigate(self):
+        target = Target("local", "work")
+        data = snapshot(local=("work",))
+
+        with patch.object(sidebar.cockpit, "switch") as switch:
+            screen = self._run([curses.KEY_F7, curses.KEY_F10, ord("q")], [target], None, data)
+
+        switch.assert_not_called()
+        message = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "no agent alerts" in call[3]
+        )
+        self.assertTrue(message[3].startswith("⚠ no agent alerts"))
+        self.assertGreater(message[1], 2)
+
+    def test_no_alert_message_uses_danger_color_and_warning_icon(self):
+        screen = FakeScreen(size=(12, 40))
+        with patch.object(sidebar, "_ascii", return_value=False), patch.dict(
+            sidebar._COLOR, {"danger": 123}, clear=True
+        ):
+            _draw(
+                screen,
+                [],
+                0,
+                "no agent alerts",
+                "",
+                agent_entries=[Entry("", "order")],
+                focused_region="agents",
+                status_region="agents",
+            )
+
+        message = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "no agent alerts" in call[3]
+        )
+        self.assertEqual(message[3], "⚠ no agent alerts")
+        self.assertEqual(message[5], 123 | curses.A_BOLD)
+
+    def test_failed_alert_switch_preserves_alert(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        state = SidebarState(agent_alerts={(pane, "agent")})
+
+        with patch.object(sidebar.cockpit, "switch", side_effect=SystemExit("switch failed")):
+            _execute(Effect("switch_pane", pane, message="agent"), state, unittest.mock.Mock(), 5)
+
+        self.assertEqual(state.agent_alerts, {(pane, "agent")})
 
 
 if __name__ == "__main__":
