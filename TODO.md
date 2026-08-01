@@ -6,6 +6,7 @@
   - [ ] prefix+x kill session
   - [ ] prefix+r remove session
   - [ ] Any other prefixes you could suggest?
+- [ ] Show the window name for agents
 
 ## Done
 
