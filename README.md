@@ -23,7 +23,7 @@ Your sessions remain ordinary tmux sessions. Keep your terminal, tmux configurat
 
 ## Quick start
 
-Requires Python 3.11+, tmux, and OpenSSH. Automatic discovery for Claude Code, Codex, Pi, and OpenCode is optional and requires [agent-status](https://github.com/julsemaan/agent-status) wherever those agents run.
+Requires Python 3.11+, tmux, and OpenSSH. Automatic discovery for Claude Code, Codex, Pi, and OpenCode is optional and requires [agent-status](https://github.com/julsemaan/agent-status) wherever those agents run. `pip install letee` also installs the `agent-status` Python package. Remote machines without letee still need `agent-status` installed separately when agents run there.
 
 ```sh
 pip install letee
@@ -162,7 +162,6 @@ Agent discovery requires the agent-status plugin for your coding agent. The plug
 Requires Python 3.10+ and Linux or macOS.
 
 ```bash
-pip install agent-status
 claude plugin marketplace add julsemaan/agent-status
 claude plugin install agent-status@agent-status
 ```
@@ -172,7 +171,6 @@ Start or restart Claude Code. The plugin uses hooks only—no model tools or MCP
 #### Codex (OpenAI Codex CLI)
 
 ```bash
-pip install agent-status
 codex plugin marketplace add julsemaan/agent-status
 codex plugin add agent-status@agent-status
 ```
