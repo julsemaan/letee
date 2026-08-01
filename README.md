@@ -6,7 +6,7 @@
 
 <p align="center">
   Letee, pronounced luh-tee.<br>
-  Every tmux session. Every coding agent. Local or remote. All in one terminal.
+  Every tmux session. Every coding agent. Local or remote. In one place.
 </p>
 
 `letee` is a tmux cockpit that allows to run many sessions and coding agents. It adds a persistent sidebar to your existing terminal, bringing local and SSH work into one unified focused view.
