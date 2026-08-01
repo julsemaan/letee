@@ -43,10 +43,21 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2", "%3"])
         self.assertEqual(snapshot.panes[0].socket_path, "/tmp/tmux:dev")
 
+    def test_source_parser_collects_window_names_with_spaces_and_colons(self):
+        snapshot = _parse_source_snapshot(
+            "work:@1:%1:0:-:1:1:/tmp/tmux:dev\teditor pane:one\n"
+            "work:@1:%2:0:-:0:1:/tmp/tmux\tlogs\n",
+            kind="local",
+        )
+
+        self.assertEqual([pane.window_name for pane in snapshot.panes], ["editor pane:one", "logs"])
+        self.assertEqual([pane.socket_path for pane in snapshot.panes], ["/tmp/tmux:dev", "/tmp/tmux"])
+
     def test_source_parser_collects_focused_pane(self):
         snapshot = _parse_source_snapshot("work:@1:%1:0:-:1:1:/tmp/tmux\nwork:@1:%2:0:-:0:1:/tmp/tmux\n", kind="local")
 
         self.assertEqual(snapshot.focused_panes, frozenset({snapshot.panes[0]}))
+        self.assertEqual([pane.window_name for pane in snapshot.panes], ["", ""])
 
     def test_source_parser_keeps_sessions_named_letee(self):
         for kind, host in (("local", None), ("ssh", "dev")):

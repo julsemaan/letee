@@ -1308,8 +1308,9 @@ def _entry_lines(
         first = _truncate_cells(prefix + name + suffix, width)
         branch = "`-" if _ascii() else "└─"
         location_prefix = f"  {branch} "
-        location = f"@{entry.host} · {entry.target.session if entry.target else ''}"
-        return [_truncate_cells(first, width), location_prefix + _truncate_cells(location, max(0, width - _cell_width(location_prefix)))]
+        window_name = entry.pane_target.window_name if entry.pane_target else ""
+        location = f"{entry.target.session if entry.target else ''} · {window_name}"
+        return [_truncate_cells(first, width), _truncate_cells(location_prefix + location, width)]
     if entry.kind == "session":
         kind = "unavailable" if entry.unavailable_favorite else ("remote" if entry.target and entry.target.kind == "ssh" else "local")
         bell = " BELL" if _ascii() else " 🔔"

@@ -1,6 +1,20 @@
 import unittest
 
-from letee.names import PaneTarget, Target
+from letee.names import PaneTarget, Target, normalize_server, server_socket, validate_server
+
+
+class ServerNameTest(unittest.TestCase):
+    def test_default_and_named_servers_map_to_outer_socket_names(self):
+        self.assertEqual(normalize_server(None), "default")
+        self.assertEqual(server_socket("default"), "letee")
+        self.assertEqual(server_socket("work"), "letee-work")
+
+    def test_server_names_use_safe_name_format(self):
+        for value in ("work", "personal_1", "prod.dev-2"):
+            self.assertEqual(validate_server(value), value)
+        for value in ("", "bad name", "/tmp/socket", "-V", "x" * 65):
+            with self.subTest(value=value), self.assertRaisesRegex(SystemExit, "Invalid server"):
+                validate_server(value)
 
 
 class TargetTest(unittest.TestCase):
@@ -29,6 +43,14 @@ class PaneTargetTest(unittest.TestCase):
             PaneTarget(Target("ssh", "work", "dev"), "@3", "%4", "/run/tmux/socket"),
             PaneTarget(Target("ssh", "work", "dev"), "@3", "%4", "/run/tmux/socket"),
         )
+
+    def test_window_name_does_not_change_identity(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux.sock", "editor")
+        renamed = PaneTarget(target, "@1", "%2", "/tmp/tmux.sock", "shell")
+
+        self.assertEqual(pane, renamed)
+        self.assertEqual(hash(pane), hash(renamed))
 
     def test_rejects_invalid_ids_and_empty_socket(self):
         target = Target("local", "work")

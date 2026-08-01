@@ -1,5 +1,5 @@
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
-- [ ] Allow having multiple letee
+- [x] Allow having multiple letee servers with named outer tmux sockets
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Open fresh terminal, run letee in a tab, open new tab, close new tab, letee is messed up in first tab
 - [x] New prefixes
@@ -7,10 +7,10 @@
   - [x] prefix+r remove session
   - [x] prefix+! jump to first alerted agent
   - [ ] Any other prefixes you could suggest?
-- [ ] Show the window name for agents
 
 ## Done
 
+- [x] Show the window name for agents
 - [x] Opencode support for agent-status
 - [x] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [x] Prefix for selecting the right pane

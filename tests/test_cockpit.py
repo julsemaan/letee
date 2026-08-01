@@ -21,6 +21,23 @@ class CockpitLayoutTest(unittest.TestCase):
             "tmux", ["tmux", "-L", "letee", "attach-session", "-d", "-t", "letee:cockpit"]
         )
 
+    def test_named_server_attach_uses_prefixed_socket_and_keeps_target(self):
+        cockpit.tmux.set_server("work")
+        self.addCleanup(cockpit.tmux.set_server, None)
+        with (
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
+            patch.object(cockpit.shutil, "which", return_value=None),
+            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            self.assertRaises(RuntimeError),
+        ):
+            cockpit._attach()
+
+        execvp.assert_called_once_with(
+            "tmux", ["tmux", "-L", "letee-work", "attach-session", "-d", "-t", "letee:cockpit"]
+        )
+
     def test_fix_layout_pins_sidebar_to_configured_width(self):
         calls = []
 
@@ -217,6 +234,17 @@ class CockpitLayoutTest(unittest.TestCase):
                 ],
             ],
         )
+
+    def test_named_bindings_propagate_server_to_generated_commands(self):
+        cockpit.tmux.set_server("work")
+        self.addCleanup(cockpit.tmux.set_server, None)
+        calls = []
+
+        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+            cockpit._install_bindings("C-x", "%1", "%2")
+
+        self.assertEqual(calls[5], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
+        self.assertEqual(calls[13], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
 
     def test_focus_sidebar_recreates_selects_and_injects_region_key(self):
         with (
