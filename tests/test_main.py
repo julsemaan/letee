@@ -1,14 +1,14 @@
 import unittest
 from unittest.mock import patch
 
-from mtmux.__main__ import main
-from mtmux.discovery import SessionSnapshot, SourceSnapshot
-from mtmux.names import Target
+from letee.__main__ import main
+from letee.discovery import SessionSnapshot, SourceSnapshot
+from letee.names import Target
 
 
 class MainTest(unittest.TestCase):
     def test_focus_sidebar_defaults_to_sessions_and_accepts_agents_and_add(self):
-        with patch("mtmux.__main__.cockpit.focus_sidebar") as focus_sidebar:
+        with patch("letee.__main__.cockpit.focus_sidebar") as focus_sidebar:
             main(["focus-sidebar"])
             main(["focus-sidebar", "agents"])
             main(["focus-sidebar", "add"])
@@ -30,9 +30,9 @@ class MainTest(unittest.TestCase):
         ]
         target = Target("local", "zeta")
         with (
-            patch("mtmux.__main__.load_sessions", return_value=favorites),
-            patch("mtmux.__main__.sessions.attach_command", return_value="attach") as attach_command,
-            patch("mtmux.__main__.cockpit.switch") as switch,
+            patch("letee.__main__.load_sessions", return_value=favorites),
+            patch("letee.__main__.sessions.attach_command", return_value="attach") as attach_command,
+            patch("letee.__main__.cockpit.switch") as switch,
         ):
             main(["switch-session", "2"])
 
@@ -41,8 +41,8 @@ class MainTest(unittest.TestCase):
 
     def test_switch_session_rejects_empty_slot_without_switching(self):
         with (
-            patch("mtmux.__main__.load_sessions", return_value=[Target("local", "work")]),
-            patch("mtmux.__main__.cockpit.switch") as switch,
+            patch("letee.__main__.load_sessions", return_value=[Target("local", "work")]),
+            patch("letee.__main__.cockpit.switch") as switch,
         ):
             with self.assertRaisesRegex(SystemExit, "^No session in slot 2$"):
                 main(["switch-session", "2"])
@@ -51,7 +51,7 @@ class MainTest(unittest.TestCase):
 
     def test_switch_session_rejects_slots_outside_one_to_nine(self):
         for slot in ("0", "10", "x"):
-            with self.subTest(slot=slot), patch("mtmux.__main__.cockpit.switch") as switch:
+            with self.subTest(slot=slot), patch("letee.__main__.cockpit.switch") as switch:
                 with self.assertRaises(SystemExit):
                     main(["switch-session", slot])
                 switch.assert_not_called()
@@ -60,9 +60,9 @@ class MainTest(unittest.TestCase):
         target = Target("local", "work")
         other = Target("ssh", "other", "dev")
         with (
-            patch("mtmux.__main__.sessions.kill") as kill,
-            patch("mtmux.__main__.load_sessions", return_value=[target, other]),
-            patch("mtmux.__main__.save_sessions") as save,
+            patch("letee.__main__.sessions.kill") as kill,
+            patch("letee.__main__.load_sessions", return_value=[target, other]),
+            patch("letee.__main__.save_sessions") as save,
         ):
             main(["kill", target.format()])
 
@@ -72,7 +72,7 @@ class MainTest(unittest.TestCase):
     def test_create_ssh_rejects_option_like_hosts(self):
         for host in ("-V", "-F", "--help"):
             with self.subTest(host=host):
-                with patch("mtmux.__main__.sessions.create") as create:
+                with patch("letee.__main__.sessions.create") as create:
                     with self.assertRaisesRegex(SystemExit, rf"Invalid host: {host!r}"):
                         main(["create", "ssh", "--", host, "work"])
                     create.assert_not_called()
@@ -80,9 +80,9 @@ class MainTest(unittest.TestCase):
     def test_create_local_keeps_option_like_session_support(self):
         target = Target("local", "-V")
         with (
-            patch("mtmux.__main__.sessions.create") as create,
-            patch("mtmux.__main__.sessions.attach_command", return_value="attach") as attach_command,
-            patch("mtmux.__main__.cockpit.switch") as switch,
+            patch("letee.__main__.sessions.create") as create,
+            patch("letee.__main__.sessions.attach_command", return_value="attach") as attach_command,
+            patch("letee.__main__.cockpit.switch") as switch,
         ):
             main(["create", "local", "--", "-V"])
 
@@ -98,7 +98,7 @@ class MainTest(unittest.TestCase):
                 "off": SourceSnapshot(False, (), frozenset(), "offline"),
             },
         )
-        with patch("mtmux.__main__.discover", return_value=snapshot), patch("builtins.print") as print_:
+        with patch("letee.__main__.discover", return_value=snapshot), patch("builtins.print") as print_:
             main(["list"])
 
         self.assertEqual(
@@ -108,8 +108,8 @@ class MainTest(unittest.TestCase):
 
     def test_failed_create_never_switches(self):
         with (
-            patch("mtmux.__main__.sessions.create", side_effect=SystemExit("create failed")),
-            patch("mtmux.__main__.cockpit.switch") as switch,
+            patch("letee.__main__.sessions.create", side_effect=SystemExit("create failed")),
+            patch("letee.__main__.cockpit.switch") as switch,
         ):
             with self.assertRaisesRegex(SystemExit, "create failed"):
                 main(["create", "local", "work"])

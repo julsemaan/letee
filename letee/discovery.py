@@ -18,7 +18,7 @@ from .sessions import ssh_command
 
 PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}"
 PANES_COMMAND = f'tmux list-panes -a -F "{PANES_FORMAT}"'
-REMOTE_SEPARATOR = "__MTMUX_AGENT_STATUS__"
+REMOTE_SEPARATOR = "__LETEE_AGENT_STATUS__"
 _REMOTE_READER = """import glob,json,os,pathlib
 root=os.environ.get('AGENT_STATUS_DIR') or str(pathlib.Path(os.environ.get('XDG_STATE_HOME', '~/.local/state')).expanduser() / 'agent-status')
 for path in sorted(glob.glob(os.path.join(root,'*.json'))):

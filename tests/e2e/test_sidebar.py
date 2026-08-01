@@ -18,8 +18,8 @@ def _start(client: TmuxTestClient, config_dir: str) -> None:
         client.default_tmux("new-session", "-d", "-s", name)
     client.write_file(f"{config_dir}/sessions", "local:alpha\nlocal:beta\n")
     client.start_cockpit(env={
-        "MTMUX_CONFIG_DIR": config_dir,
-        "MTMUX_ASCII": "1",
+        "LETEE_CONFIG_DIR": config_dir,
+        "LETEE_ASCII": "1",
         "TERM": "xterm-256color",
     })
     assert client.wait_for_sidebar_text("alpha", timeout=10)
@@ -43,13 +43,13 @@ def _wait_for_active_pane(
     active = ""
     while time.monotonic() < deadline:
         active = client.tmux(
-            "display-message", "-p", "-t", f"mtmux:cockpit.{pane}", "#{pane_active}",
+            "display-message", "-p", "-t", f"letee:cockpit.{pane}", "#{pane_active}",
         )
         if active == "1":
             return
         time.sleep(0.1)
     raise AssertionError(
-        f"Expected mtmux:cockpit.{pane} to be active, got pane_active={active!r}"
+        f"Expected letee:cockpit.{pane} to be active, got pane_active={active!r}"
     )
 
 
@@ -66,7 +66,7 @@ def _cleanup(client: TmuxTestClient) -> None:
 
 
 def test_cursor_moves_with_jk_and_arrow_keys(client: TmuxTestClient) -> None:
-    _start(client, "/tmp/mtmux-e2e-sidebar-cursor")
+    _start(client, "/tmp/letee-e2e-sidebar-cursor")
     try:
         assert_cursor_on_row(client, "alpha")
         _send(client, "j")
@@ -82,7 +82,7 @@ def test_cursor_moves_with_jk_and_arrow_keys(client: TmuxTestClient) -> None:
 
 
 def test_cursor_and_active_session_move_independently(client: TmuxTestClient) -> None:
-    _start(client, "/tmp/mtmux-e2e-sidebar-active")
+    _start(client, "/tmp/letee-e2e-sidebar-active")
     try:
         _send(client, "Enter")
         _wait_for_active_pane(client, 1)
@@ -98,7 +98,7 @@ def test_cursor_and_active_session_move_independently(client: TmuxTestClient) ->
 
 
 def test_unfocused_sidebar_hides_cursor_without_dimming(client: TmuxTestClient) -> None:
-    _start(client, "/tmp/mtmux-e2e-sidebar-focus")
+    _start(client, "/tmp/letee-e2e-sidebar-focus")
     try:
         _send(client, "Enter")
         _wait_for_active_pane(client, 1)
@@ -113,7 +113,7 @@ def test_unfocused_sidebar_hides_cursor_without_dimming(client: TmuxTestClient) 
 
 
 def test_add_button_selection_opens_add_session_view(client: TmuxTestClient) -> None:
-    _start(client, "/tmp/mtmux-e2e-sidebar-add")
+    _start(client, "/tmp/letee-e2e-sidebar-add")
     try:
         _send(client, "k")
         assert_add_button_selected(client)

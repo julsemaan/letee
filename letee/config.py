@@ -18,10 +18,10 @@ set -g mouse on
 
 
 def config_dir() -> Path:
-    override = os.environ.get("MTMUX_CONFIG_DIR")
+    override = os.environ.get("LETEE_CONFIG_DIR")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".config" / "mtmux"
+    return Path.home() / ".config" / "letee"
 
 
 def paths() -> tuple[Path, Path]:

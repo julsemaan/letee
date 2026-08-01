@@ -2,7 +2,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from mtmux.discovery import (
+from letee.discovery import (
     DiscoveryPoller,
     REMOTE_COMMAND,
     SessionSnapshot,
@@ -18,7 +18,7 @@ from mtmux.discovery import (
 )
 from datetime import datetime, timezone
 
-from mtmux.names import PaneTarget, Target
+from letee.names import PaneTarget, Target
 
 
 EMPTY_LOCAL = SourceSnapshot(True, (), frozenset())
@@ -26,7 +26,7 @@ EMPTY_LOCAL = SourceSnapshot(True, (), frozenset())
 
 class DiscoverySnapshotTest(unittest.TestCase):
     def test_clean_env_removes_current_tmux_socket(self):
-        with patch.dict("mtmux.discovery.os.environ", {"TMUX": "/tmp/tmux,1,0", "PATH": "x"}, clear=True):
+        with patch.dict("letee.discovery.os.environ", {"TMUX": "/tmp/tmux,1,0", "PATH": "x"}, clear=True):
             self.assertEqual(_clean_env(), {"PATH": "x"})
 
     def test_source_parser_deduplicates_targets_and_collects_bells(self):
@@ -48,18 +48,18 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
         self.assertEqual(snapshot.focused_panes, frozenset({snapshot.panes[0]}))
 
-    def test_source_parser_keeps_sessions_named_mtmux(self):
+    def test_source_parser_keeps_sessions_named_letee(self):
         for kind, host in (("local", None), ("ssh", "dev")):
             with self.subTest(kind=kind):
-                target = Target(kind, "mtmux", host)
-                snapshot = _parse_source_snapshot("mtmux:@1:%1:1:!:/tmp/tmux\n", kind=kind, host=host)
+                target = Target(kind, "letee", host)
+                snapshot = _parse_source_snapshot("letee:@1:%1:1:!:/tmp/tmux\n", kind=kind, host=host)
 
                 self.assertEqual(snapshot.sessions, (target,))
                 self.assertEqual(snapshot.bells, frozenset({target}))
 
     def test_local_snapshot_derives_sessions_and_bells_from_one_sample(self):
         proc = Mock(returncode=0, stdout="work:@1:%1:1:!:1:1:/tmp/tmux\nidle:@2:%2:0:-:1:0:/tmp/tmux\n", stderr="")
-        with patch("mtmux.discovery.subprocess.run", return_value=proc) as run:
+        with patch("letee.discovery.subprocess.run", return_value=proc) as run:
             snapshot = local_snapshot()
 
         self.assertEqual(snapshot.sessions, (Target("local", "work"), Target("local", "idle")))
@@ -71,7 +71,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
     def test_local_snapshot_timeout_is_reported_without_hanging(self):
         with patch(
-            "mtmux.discovery.subprocess.run",
+            "letee.discovery.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["tmux"], 5),
         ):
             self.assertEqual(local_snapshot().error, "timed out")
@@ -84,7 +84,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
             stderr="error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
         )
         failure = Mock(returncode=1, stdout="", stderr="tmux: permission denied\n")
-        with patch("mtmux.discovery.subprocess.run", side_effect=[no_server, missing_socket, failure]):
+        with patch("letee.discovery.subprocess.run", side_effect=[no_server, missing_socket, failure]):
             self.assertEqual(local_snapshot(), EMPTY_LOCAL)
             self.assertEqual(local_snapshot(), EMPTY_LOCAL)
             self.assertEqual(local_snapshot().error, "tmux: permission denied")
@@ -159,7 +159,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         discovery = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "dev", REMOTE_COMMAND)
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
-            "-o", "ControlPath=~/.ssh/mtmux-%C",
+            "-o", "ControlPath=~/.ssh/letee-%C",
         )
         self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
         self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
@@ -168,7 +168,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         pane_line = "work:@1:%2:0:-:/tmp/tmux"
         snapshot = _source_result(
             0,
-            pane_line + "\n__MTMUX_AGENT_STATUS__\n",
+            pane_line + "\n__LETEE_AGENT_STATUS__\n",
             "sh: python3: not found\n",
             kind="ssh",
             host="dev",
@@ -181,8 +181,8 @@ class DiscoverySnapshotTest(unittest.TestCase):
     def test_remote_snapshot_resolves_persistence_for_command(self):
         proc = Mock(returncode=0, stdout="", stderr="")
         with (
-            patch("mtmux.discovery.load_persistent_ssh", return_value=False),
-            patch("mtmux.discovery.subprocess.run", return_value=proc) as run,
+            patch("letee.discovery.load_persistent_ssh", return_value=False),
+            patch("letee.discovery.subprocess.run", return_value=proc) as run,
         ):
             remote_snapshot("dev")
 
@@ -194,20 +194,20 @@ class DiscoverySnapshotTest(unittest.TestCase):
             kwargs["stderr"].write(b"diagnostic")
             return Mock(returncode=0)
 
-        with patch("mtmux.discovery.subprocess.run", side_effect=oversized):
+        with patch("letee.discovery.subprocess.run", side_effect=oversized):
             self.assertEqual(remote_snapshot("dev").error, "output exceeded 1 MiB")
 
         no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/default\n")
-        with patch("mtmux.discovery.subprocess.run", return_value=no_server):
+        with patch("letee.discovery.subprocess.run", return_value=no_server):
             self.assertEqual(remote_snapshot("dev"), SourceSnapshot(True, (), frozenset()))
 
     def test_discover_returns_common_snapshot(self):
         local = SourceSnapshot(True, (Target("local", "work"),), frozenset())
         remote = SourceSnapshot(False, (), frozenset(), "offline")
         with (
-            patch("mtmux.discovery.load_hosts", return_value=["dev"]),
-            patch("mtmux.discovery.local_snapshot", return_value=local),
-            patch("mtmux.discovery.remote_snapshot", return_value=remote),
+            patch("letee.discovery.load_hosts", return_value=["dev"]),
+            patch("letee.discovery.local_snapshot", return_value=local),
+            patch("letee.discovery.remote_snapshot", return_value=remote),
         ):
             self.assertEqual(discover(), SessionSnapshot(local, {"dev": remote}))
 
@@ -291,7 +291,7 @@ class DiscoveryPollerTest(unittest.TestCase):
 
     def test_poller_resolves_persistence_once_and_uses_it_for_commands(self):
         popen = Mock(return_value=FakeProcess())
-        with patch("mtmux.discovery.load_persistent_ssh", return_value=False) as load:
+        with patch("letee.discovery.load_persistent_ssh", return_value=False) as load:
             poller = self.make_poller(["dev"], popen=popen, clock=Mock(return_value=0))
             poller.tick()
 

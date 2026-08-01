@@ -9,7 +9,7 @@ import pytest
 
 
 class TmuxTestClient:
-    """Drives mtmux inside a Docker container."""
+    """Drives letee inside a Docker container."""
 
     def __init__(self, container_name: str):
         self.container = container_name
@@ -19,12 +19,12 @@ class TmuxTestClient:
     # -- CLI (subprocess) --
 
     def cli(self, *args: str, env: dict[str, str] | None = None) -> str:
-        """Run mtmux CLI command, return stdout+stderr."""
+        """Run letee CLI command, return stdout+stderr."""
         cmd = ["docker", "exec"]
         if env:
             for k, v in env.items():
                 cmd += ["-e", f"{k}={v}"]
-        cmd += [self.container, "mtmux"] + list(args)
+        cmd += [self.container, "letee"] + list(args)
         merged_env = dict(os.environ)
         if env:
             merged_env.update(env)
@@ -33,7 +33,7 @@ class TmuxTestClient:
 
     def _tmux_cmd(self, *args: str) -> list[str]:
         """Build the tmux command list."""
-        return ["docker", "exec", self.container, "tmux", "-L", "mtmux"] + list(args)
+        return ["docker", "exec", self.container, "tmux", "-L", "letee"] + list(args)
 
     def tmux(self, *args: str) -> str:
         """Run tmux command, return stdout (or stderr on failure)."""
@@ -77,17 +77,17 @@ class TmuxTestClient:
         cols: int = 90,
         rows: int = 24,
     ) -> None:
-        """Spawn mtmux in a pseudo-terminal via pexpect."""
+        """Spawn letee in a pseudo-terminal via pexpect."""
         if self._pexpect is not None:
             self.stop_cockpit()
 
         env_vars = dict(env or {})
-        env_vars.setdefault("MTMUX_ASCII", "1")
-        if "MTMUX_CONFIG_DIR" not in env_vars:
-            self._config_dir = f"/tmp/mtmux-e2e-{os.urandom(4).hex()}"
-            env_vars["MTMUX_CONFIG_DIR"] = self._config_dir
+        env_vars.setdefault("LETEE_ASCII", "1")
+        if "LETEE_CONFIG_DIR" not in env_vars:
+            self._config_dir = f"/tmp/letee-e2e-{os.urandom(4).hex()}"
+            env_vars["LETEE_CONFIG_DIR"] = self._config_dir
         else:
-            self._config_dir = env_vars["MTMUX_CONFIG_DIR"]
+            self._config_dir = env_vars["LETEE_CONFIG_DIR"]
 
         merged_env = dict(os.environ)
         merged_env.update(env_vars)
@@ -98,7 +98,7 @@ class TmuxTestClient:
         for k, v in env_vars.items():
             cmd += ["-e", f"{k}={v}"]
         cmd += ["-e", f"COLUMNS={cols}", "-e", f"LINES={rows}"]
-        cmd += ["-it", self.container, "mtmux", "cockpit"]
+        cmd += ["-it", self.container, "letee", "cockpit"]
         spawn_cmd = cmd[0]
         spawn_args = cmd[1:]
 
@@ -148,15 +148,15 @@ class TmuxTestClient:
 
     def sidebar_text(self) -> str:
         """capture-pane of left pane (sidebar). Returns empty string if server not ready."""
-        return self._capture_pane("mtmux:cockpit.0")
+        return self._capture_pane("letee:cockpit.0")
 
     def sidebar_ansi(self) -> str:
         """Capture sidebar while preserving ANSI SGR styles."""
-        return self._capture_pane("mtmux:cockpit.0", preserve_styles=True)
+        return self._capture_pane("letee:cockpit.0", preserve_styles=True)
 
     def right_pane_text(self) -> str:
         """capture-pane of right pane. Returns empty string if server not ready."""
-        return self._capture_pane("mtmux:cockpit.1")
+        return self._capture_pane("letee:cockpit.1")
 
     def wait_for_sidebar_text(self, text: str, timeout: float = 5.0) -> bool:
         """Poll sidebar_text() until text appears or timeout."""
@@ -198,18 +198,18 @@ class TmuxTestClient:
             pass
         self._pexpect = None
 
-        self._kill_mtmux_server()
+        self._kill_letee_server()
 
-    def _kill_mtmux_server(self) -> None:
-        """Kill the mtmux tmux server."""
+    def _kill_letee_server(self) -> None:
+        """Kill the letee tmux server."""
         subprocess.run(
             self._tmux_cmd("kill-server"),
             capture_output=True, check=False, timeout=10,
         )
 
     def cleanup_tmux(self) -> None:
-        """Kill all tmux sessions on the mtmux socket."""
-        self._kill_mtmux_server()
+        """Kill all tmux sessions on the letee socket."""
+        self._kill_letee_server()
 
 
 def pytest_addoption(parser):
@@ -232,13 +232,13 @@ def pytest_sessionstart(session):
 @pytest.fixture(scope="module")
 def container():
     """Build and start Docker container for test module, then clean it up."""
-    name = f"mtmux-e2e-{os.urandom(4).hex()}"
+    name = f"letee-e2e-{os.urandom(4).hex()}"
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     subprocess.run(
-        ["docker", "build", "-t", "mtmux-e2e", "-f", "tests/e2e/Dockerfile", "."],
+        ["docker", "build", "-t", "letee-e2e", "-f", "tests/e2e/Dockerfile", "."],
         check=True, cwd=project_root,
     )
-    subprocess.run(["docker", "run", "-d", "--name", name, "mtmux-e2e"], check=True)
+    subprocess.run(["docker", "run", "-d", "--name", name, "letee-e2e"], check=True)
     yield name
     subprocess.run(["docker", "rm", "-f", name], check=False)
 

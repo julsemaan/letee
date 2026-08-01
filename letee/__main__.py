@@ -12,7 +12,7 @@ from .names import Target, parse_target
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mtmux")
+    parser = argparse.ArgumentParser(prog="letee")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("cockpit", help="launch or attach cockpit")
@@ -101,15 +101,15 @@ def run_cli(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError as error:
         command = Path(str(error.cmd[0] if isinstance(error.cmd, (list, tuple)) else error.cmd)).name
         reason = (error.stderr or error.stdout or "").strip() or f"exit status {error.returncode}"
-        print(f"mtmux: {command} failed: {reason}", file=sys.stderr)
+        print(f"letee: {command} failed: {reason}", file=sys.stderr)
     except OSError as error:
         reason = error.strerror or str(error)
         detail = f"{error.filename}: {reason}" if error.filename else reason
-        print(f"mtmux: {detail}", file=sys.stderr)
+        print(f"letee: {detail}", file=sys.stderr)
     except UnicodeError as error:
-        print(f"mtmux: text decoding failed: {error}", file=sys.stderr)
+        print(f"letee: text decoding failed: {error}", file=sys.stderr)
     except subprocess.SubprocessError as error:
-        print(f"mtmux: subprocess failed: {error}", file=sys.stderr)
+        print(f"letee: subprocess failed: {error}", file=sys.stderr)
     return 1
 
 

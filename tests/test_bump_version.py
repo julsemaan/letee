@@ -13,8 +13,8 @@ class BumpVersionTest(unittest.TestCase):
             root = Path(tmp)
             shutil.copy("Makefile", root / "Makefile")
             shutil.copy("pyproject.toml", root / "pyproject.toml")
-            (root / "mtmux").mkdir()
-            shutil.copy("mtmux/__init__.py", root / "mtmux/__init__.py")
+            (root / "letee").mkdir()
+            shutil.copy("letee/__init__.py", root / "letee/__init__.py")
             (root / "tools").mkdir()
             shutil.copy("tools/bump_version.py", root / "tools/bump_version.py")
             env = os.environ.copy()
@@ -27,7 +27,7 @@ class BumpVersionTest(unittest.TestCase):
             )
             return (
                 (root / "pyproject.toml").read_text(),
-                (root / "mtmux/__init__.py").read_text(),
+                (root / "letee/__init__.py").read_text(),
             )
 
     def test_bumps_patch_version_from_pyproject(self):

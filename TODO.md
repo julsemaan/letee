@@ -1,10 +1,10 @@
 - [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
-- [ ] Allow having multiple mtmux
+- [ ] Allow having multiple letee
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Prefix for selecting the right pane
-- [ ] Open fresh terminal, run mtmux in a tab, open new tab, close new tab, mtmux is messed up in first tab
+- [ ] Open fresh terminal, run letee in a tab, open new tab, close new tab, letee is messed up in first tab
 
 ## Done
 
@@ -37,7 +37,7 @@
 - [x] Find way to get rid of stale agents
 - [x] Some prefix based shortcuts like
   - [x] prefix+h to hide
-  - [x] prefix+q to quit mtmux
+  - [x] prefix+q to quit letee
   - [x] prefix+a to get to agents
   - [x] prefix+s always gets to sessions instead of wherever you were last in the left pane
   - [x] Get rid of 'tab' to move around between agents/sessions and use prefix
@@ -52,7 +52,7 @@
 - [x] Refactor polling loop. The 500ms is tied to the bell refresh and to some UI features which means the UI refreshes slowly in some cases
 - [x] When filtering rows, remove the "new" options
 - [x] Make targets for common tasks (dev install, tests, etc)
-- [x] Handle persistent SSH connections via options in mtmux instead of forcing configuration in .ssh/config
+- [x] Handle persistent SSH connections via options in letee instead of forcing configuration in .ssh/config
 - [x] Don't require double clicks to switch session, clicking once switches to it
 - [x] When defocusing the left pane, it should highlight the currently active session
 - [x] When cycling through the various sessions with the keyboard, it is not obvious which is active because we use the highlight to show the active one and the selection. Rethink it
@@ -64,7 +64,7 @@
 - [x] The highlight of the active row is too strong and confuses with the cursor
 - [x] Highlighting the row to mark the new session on a host confuses with the active session. Find a better way to mark the new session
 - [x] Selecting a starred session highlights both the starred session and the one in all sessions. Need to review how to better organize sessions
-- [x] When starting a fresh mtmux, there are these bugs
+- [x] When starting a fresh letee, there are these bugs
   - [x] Default tmux server may not be running which leads to errors
   - [x] Sessions section shows "No starred sessions" but sessions are not starred anymore, they are just "sessions". Change the text for now, a larger refactor will follow
 - [x] The concept of starred session doesn't exist anymore, it is just sessions that are added from existing tmux sessions or created. Need to refactor the code to change this
@@ -78,11 +78,11 @@
 - [x] Show last reported status of agent
 - [x] Only list agents that are part of currently tracked sessions
 - [x] Have agents ring bell so that it is easy to navigate to the agent that has finished
-- [x] When using mtmux and creating a new window using tmux's prefix+c, it always creates the window in the first session
+- [x] When using letee and creating a new window using tmux's prefix+c, it always creates the window in the first session
 - [x] Don't use orange for input-required, use red
 - [x] Allow ordering the agent sessions by session order or priority
 - [x] The agents pane doesn't show @host like the sessions do
-- [x] There seems to be some idle timeouts happening with the SSH sessions and they are not kept alive if I'm not active within mtmux
+- [x] There seems to be some idle timeouts happening with the SSH sessions and they are not kept alive if I'm not active within letee
 - [x] When dealing with SSH reconnection or initial connection, show that instead of "unavailable"
 - [x] Agents highlight in orange when navigating with keyboard
 - [x] Add session + sign should be in cursor row. Also consider the same style as the order row

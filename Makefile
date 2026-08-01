@@ -7,7 +7,7 @@ test:
 	$(PYTHON) -m unittest discover -s tests
 
 lint:
-	$(PYTHON) -m ruff check mtmux tests
+	$(PYTHON) -m ruff check letee tests
 
 coverage:
 	$(PYTHON) -m coverage run -m unittest discover -s tests
@@ -36,6 +36,6 @@ bump-version:
 do-release:
 	@$(MAKE) bump-version $(if $(VERSION),VERSION="$(VERSION)") && \
 	VERSION=$$($(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])') && \
-	git commit -m "Release version $$VERSION" -- pyproject.toml mtmux/__init__.py && \
+	git commit -m "Release version $$VERSION" -- pyproject.toml letee/__init__.py && \
 	git tag -a "v$$VERSION" -m "Release version $$VERSION" && \
 	git push --atomic origin HEAD "v$$VERSION"

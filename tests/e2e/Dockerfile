@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends tmux \
 
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
-COPY mtmux/ mtmux/
+COPY letee/ letee/
 RUN pip install --no-cache-dir .
 
 CMD ["sleep", "infinity"]

@@ -15,7 +15,7 @@ SSH_OPTIONS = (
 PERSISTENT_SSH_OPTIONS = (
     "-o", "ControlMaster=auto",
     "-o", "ControlPersist=10m",
-    "-o", "ControlPath=~/.ssh/mtmux-%C",
+    "-o", "ControlPath=~/.ssh/letee-%C",
 )
 
 

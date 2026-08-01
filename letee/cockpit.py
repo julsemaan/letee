@@ -17,7 +17,7 @@ def _truecolor_enabled() -> bool:
     return colorterm in ("truecolor", "24bit")
 
 def help_command(prefix: str) -> str:
-    text = f"""mtmux
+    text = f"""letee
 
 Navigation
   {prefix} a  focus/open Agents
@@ -59,17 +59,17 @@ Examples
     return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
 
 
-SIDEBAR = f"{shlex.quote(sys.executable)} -m mtmux sidebar"
-FOCUS_SIDEBAR = f"{shlex.quote(sys.executable)} -m mtmux focus-sidebar"
+SIDEBAR = f"{shlex.quote(sys.executable)} -m letee sidebar"
+FOCUS_SIDEBAR = f"{shlex.quote(sys.executable)} -m letee focus-sidebar"
 TARGET = f"{tmux.SESSION}:{tmux.WINDOW}"
-COCKPIT_OPTION = "@mtmux_cockpit"
-SIDEBAR_PANE_OPTION = "@mtmux_sidebar_pane"
-SIDEBAR_WIDTH_OPTION = "@mtmux_sidebar_width"
-RIGHT_PANE_OPTION = "@mtmux_right_pane"
-CURRENT_TARGET_OPTION = "@mtmux_current_target"
-CURRENT_AGENT_OPTION = "@mtmux_current_agent"
-BELL_TARGET_OPTION = "@mtmux_bell_target"
-NO_COCKPIT = "No valid mtmux. Run: mtmux"
+COCKPIT_OPTION = "@letee_cockpit"
+SIDEBAR_PANE_OPTION = "@letee_sidebar_pane"
+SIDEBAR_WIDTH_OPTION = "@letee_sidebar_width"
+RIGHT_PANE_OPTION = "@letee_right_pane"
+CURRENT_TARGET_OPTION = "@letee_current_target"
+CURRENT_AGENT_OPTION = "@letee_current_agent"
+BELL_TARGET_OPTION = "@letee_bell_target"
+NO_COCKPIT = "No valid letee. Run: letee"
 
 
 def _option(name: str) -> str:
@@ -134,7 +134,7 @@ def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("bind-key", "+", "run-shell", f"{FOCUS_SIDEBAR} add")
     tmux.tmux("bind-key", "?", "respawn-pane", "-k", "-t", right_pane, help_command(prefix))
     for slot in range(1, 10):
-        tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m mtmux switch-session {slot}")
+        tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m letee switch-session {slot}")
 
 
 def _enable_mouse() -> None:
@@ -155,7 +155,7 @@ def _enable_truecolor() -> None:
 def _install_bell_hook() -> None:
     tmux.tmux("set-window-option", "-t", TARGET, "monitor-bell", "on")
     tmux.tmux("set-option", "-t", tmux.SESSION, "bell-action", "any")
-    tmux.tmux("set-hook", "-t", tmux.SESSION, "alert-bell", "set-option -F -t mtmux @mtmux_bell_target '#{@mtmux_current_target}'")
+    tmux.tmux("set-hook", "-t", tmux.SESSION, "alert-bell", "set-option -F -t letee @letee_bell_target '#{@letee_current_target}'")
 
 
 def _unavailable_command(target: Target | None = None) -> str:
@@ -171,7 +171,7 @@ def _missing_command(target: Target) -> str:
 
 def _reconnecting_command(target: Target) -> str:
     reset, cyan, dim = "\033[0m", "\033[38;5;81m", "\033[2m"
-    ascii_mode = os.environ.get("MTMUX_ASCII") == "1"
+    ascii_mode = os.environ.get("LETEE_ASCII") == "1"
     banner = "+-- Connection interrupted --+" if ascii_mode else "╭─ Connection interrupted ─╮"
     underline = "+----------------------------+" if ascii_mode else "╰──────────────────────────╯"
     indent = "    "
@@ -188,7 +188,7 @@ def _reconnecting_command(target: Target) -> str:
 
 def _install_right_pane_reset(left: str, right: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
-    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @mtmux_current_agent ; set-option -u -t {tmux.SESSION} @mtmux_bell_target ; respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left} }}"
+    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @letee_current_agent ; set-option -u -t {tmux.SESSION} @letee_bell_target ; respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left} }}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
@@ -239,7 +239,7 @@ def ensure_cockpit() -> None:
 
 
 def _attach() -> int:
-    attach_cmd = "tmux -L mtmux attach -d -t mtmux:cockpit"
+    attach_cmd = "tmux -L letee attach -d -t letee:cockpit"
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(f"Cockpit ready. Attach from a real terminal: {attach_cmd}")
         return 0
@@ -262,7 +262,7 @@ def cockpit() -> int:
     ensure_config()
     width = shutil.get_terminal_size((80, 24)).columns
     if width < 90:
-        print("Terminal too narrow for mtmux: need at least 90 columns.", file=sys.stderr)
+        print("Terminal too narrow for letee: need at least 90 columns.", file=sys.stderr)
         return 2
     ensure_cockpit()
     return _attach()

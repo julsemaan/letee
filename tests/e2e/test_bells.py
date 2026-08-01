@@ -12,8 +12,8 @@ def _setup(client: TmuxTestClient, config_dir: str, *sessions: str) -> None:
         client.default_tmux("new-session", "-d", "-s", name)
         client.default_tmux("set-window-option", "-t", name, "monitor-bell", "on")
     client.write_file(f"{config_dir}/sessions", "".join(f"local:{name}\n" for name in sessions))
-    client.start_cockpit(env={"MTMUX_CONFIG_DIR": config_dir, "MTMUX_ASCII": "1"})
-    assert client.wait_for_sidebar_text("mtmux", timeout=10)
+    client.start_cockpit(env={"LETEE_CONFIG_DIR": config_dir, "LETEE_ASCII": "1"})
+    assert client.wait_for_sidebar_text("letee", timeout=10)
 
 
 def _ring(client: TmuxTestClient, session: str) -> None:
@@ -21,7 +21,7 @@ def _ring(client: TmuxTestClient, session: str) -> None:
 
 
 def _switch(client: TmuxTestClient, config_dir: str, session: str) -> None:
-    client.cli("switch", f"local:{session}", env={"MTMUX_CONFIG_DIR": config_dir, "MTMUX_ASCII": "1"})
+    client.cli("switch", f"local:{session}", env={"LETEE_CONFIG_DIR": config_dir, "LETEE_ASCII": "1"})
     time.sleep(0.6)
 
 
@@ -32,7 +32,7 @@ def _cleanup(client: TmuxTestClient, *sessions: str) -> None:
 
 
 def test_bell_icon_on_ringing_session(client: TmuxTestClient) -> None:
-    config = "/tmp/mtmux-e2e-bell"
+    config = "/tmp/letee-e2e-bell"
     _setup(client, config, "beeper", "other")
     try:
         _switch(client, config, "other")
@@ -48,7 +48,7 @@ def test_bell_icon_on_ringing_session(client: TmuxTestClient) -> None:
 
 
 def test_bell_clears_on_switch(client: TmuxTestClient) -> None:
-    config = "/tmp/mtmux-e2e-bell-clear"
+    config = "/tmp/letee-e2e-bell-clear"
     _setup(client, config, "beeper", "other")
     try:
         _switch(client, config, "other")
@@ -61,7 +61,7 @@ def test_bell_clears_on_switch(client: TmuxTestClient) -> None:
 
 
 def test_multiple_bells(client: TmuxTestClient) -> None:
-    config = "/tmp/mtmux-e2e-bells-multiple"
+    config = "/tmp/letee-e2e-bells-multiple"
     _setup(client, config, "bell-a", "bell-b", "quiet-c")
     try:
         _switch(client, config, "quiet-c")
@@ -90,7 +90,7 @@ def test_multiple_bells(client: TmuxTestClient) -> None:
 
 
 def test_no_bell_icon_on_current_session(client: TmuxTestClient) -> None:
-    config = "/tmp/mtmux-e2e-bell-current"
+    config = "/tmp/letee-e2e-bell-current"
     _setup(client, config, "beeper", "other")
     try:
         _switch(client, config, "beeper")
@@ -106,7 +106,7 @@ def test_no_bell_icon_on_current_session(client: TmuxTestClient) -> None:
 
 
 def test_no_bell_on_unstarred_session(client: TmuxTestClient) -> None:
-    config = "/tmp/mtmux-e2e-bell-unstarred"
+    config = "/tmp/letee-e2e-bell-unstarred"
     _setup(client, config, "starred")
     client.default_tmux("new-session", "-d", "-s", "noisy")
     client.default_tmux("set-window-option", "-t", "noisy", "monitor-bell", "on")
