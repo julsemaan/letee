@@ -95,30 +95,6 @@ Names of the hosts must match:
 [A-Za-z0-9_.-]{1,64}
 ```
 
-### Manual SSH latency testing
-
-Use `tools/ssh_latency_proxy.py` to test letee against a slow SSH connection without root access or global network shaping. Add a separate alias so normal host connections remain unaffected:
-
-```sshconfig
-Host dev-slow
-    HostName dev.example.com
-    User me
-    ProxyCommand python3 /absolute/path/tools/ssh_latency_proxy.py --delay-ms 300 %h %p
-```
-
-Configure letee to use delayed alias:
-
-```toml
-hosts = ["dev-slow"]
-persistent_ssh = false
-```
-
-`--delay-ms` is one-way delay, so `300ms` approximates `600ms` RTT. `persistent_ssh = false` prevents letee's OpenSSH multiplexing from bypassing proxy after first connection. Run direct smoke test with:
-
-```sh
-ssh dev-slow
-```
-
 ## CLI commands
 
 ```sh
@@ -241,16 +217,7 @@ Native tmux copy mode forwards copied text through nested sessions using OSC 52.
 
 **Security:** `set-clipboard on` permits processes in local and remote panes to set system clipboard through OSC 52. Only connect to trusted hosts and run trusted pane processes.
 
-## Development
-
-```sh
-make dev-install
-make test          # unit tests
-make lint          # Ruff
-make coverage      # branch coverage (85% minimum)
-make build-check   # build distributions and validate metadata
-make check         # all quality gates
-```
+For development and testing instructions, see the [development guide](DEVELOPMENT.md).
 
 ## License
 
