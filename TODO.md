@@ -3,11 +3,11 @@
 - [ ] Allow having multiple letee
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
-- [ ] Prefix for selecting the right pane
 - [ ] Open fresh terminal, run letee in a tab, open new tab, close new tab, letee is messed up in first tab
 
 ## Done
 
+- [x] Prefix for selecting the right pane
 - [x] When there are more than 1 agent in a session and I alternate between them in the left pane, it highlights the correct one, then while it is switching to the right pane, it highlights the wrong one for a brief moment before highlighting the correct one again
 - [x] Support right-click context menu for removing or killing tracked sessions without activating them
 - [x] Sometimes when clicking on a session or agent to make it active, it doesn't give feedback rapidly. Maybe because of SSH being established. The UI should reflect the selection immediately and then do any SSH related things.

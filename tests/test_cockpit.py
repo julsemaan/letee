@@ -206,6 +206,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
                 ("bind-key", "+", "run-shell", f"{cockpit.FOCUS_SIDEBAR} add"),
+                ("bind-key", "w", "select-pane", "-t", "%2"),
                 ("bind-key", "?", "respawn-pane", "-k", "-t", "%2", cockpit.help_command("C-x")),
                 *[
                     ("bind-key", str(slot), "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee switch-session {slot}")
@@ -281,6 +282,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x a  focus/open Agents", command)
         self.assertIn("C-x s  focus/open Sessions", command)
         self.assertIn("C-x +  add session", command)
+        self.assertIn("C-x w  focus right pane", command)
         self.assertIn("C-x h  hide sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)
         self.assertIn("C-x 1-9  switch session", command)
