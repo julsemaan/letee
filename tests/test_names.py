@@ -44,6 +44,14 @@ class PaneTargetTest(unittest.TestCase):
             PaneTarget(Target("ssh", "work", "dev"), "@3", "%4", "/run/tmux/socket"),
         )
 
+    def test_window_name_does_not_change_identity(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux.sock", "editor")
+        renamed = PaneTarget(target, "@1", "%2", "/tmp/tmux.sock", "shell")
+
+        self.assertEqual(pane, renamed)
+        self.assertEqual(hash(pane), hash(renamed))
+
     def test_rejects_invalid_ids_and_empty_socket(self):
         target = Target("local", "work")
         for args, message in (
