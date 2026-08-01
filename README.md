@@ -6,19 +6,20 @@
 
 <p align="center">
   Letee, pronounced luh-tee.<br>
-  All your tmux session, all your agents, local or remote, at your fingertips.
+  Every tmux session. Every coding agent. Local or remote. All in one terminal.
 </p>
 
-`letee` runs inside your existing terminal and works on top of tmux. No new terminal app, no replacement tmux setup, no retraining your keyboard muscle memory. Keep your terminal, tmux configuration, keybindings, plugins, and workflows while adding a persistent sidebar for finding, opening, and switching between sessions across your machine and SSH hosts. Your sessions remain ordinary tmux sessions; letee simply puts them within reach.
+`letee` is a tmux cockpit that allows to run many sessions and coding agents. It adds a persistent sidebar to your existing terminal, bringing local and SSH work into one unified focused view.
 
-Track important sessions, see at a glance which ones need attention, and jump between local and remote work without hunting through terminal tabs.
+Your sessions remain ordinary tmux sessions. Keep your terminal, tmux configuration, keybindings, plugins, and workflows. `letee` only makes them easier to see and reach.
 
 ## Why letee?
 
-- **Keep your terminal and tmux setup**: letee runs inside your current terminal and builds on tmux instead of forcing a new terminal app. Your configuration, keybindings, plugins, and workflows keep working.
-- **One view across machines**: local and remote sessions live in the same sidebar.
-- **Unified view of all your agents**: all your agents in all your sessions are easily accessible in the left pane.
-- **Fast context switches**: see which sessions and agents need your attention, then jump straight to them.
+- **Keep your setup**: letee builds on tmux instead of replacing it. No new terminal app. No replacement tmux setup. No retraining your muscle memory.
+- **See everything in one place**: local and remote sessions and their agents share one sidebar.
+- **Know what needs you**: live agent states, agent alerts, and tmux bells surface work that needs attention.
+- **Jump straight to the work**: select a session or go directly to an agent's exact tmux window and pane.
+- **Manage sessions without breaking focus**: find, create, track, reorder, remove, kill, or recreate sessions with the keyboard or mouse.
 
 ## Quick start
 
@@ -29,7 +30,7 @@ pip install letee
 letee
 ```
 
-That opens an outer tmux workspace with the letee sidebar on the left and your selected session on the right. Press `Enter` on a session to step into it; press `q` to close the sidebar, then `C-s s` to reopen it on Sessions.
+That opens an outer tmux workspace with the sidebar on the left and your selected session on the right. Press `C-s s` for Sessions, `C-s a` for Agents, or `C-s +` to add a session. Press `Enter` to open the selected session or jump to the selected agent's exact pane.
 
 ## How it works
 
@@ -39,11 +40,11 @@ That opens an outer tmux workspace with the letee sidebar on the left and your s
 - focus/open Sessions: `C-s s`
 - add session: `C-s +`
 - focus/open Agents: `C-s a`
-- focus right pane: `C-s w`
+- focus active session: `C-s w`
 - hide sidebar: `C-s h`
 - quit cockpit: `C-s q`
 - show help: `C-s ?`
-- detach cockpit: `C-s d`
+- detach letee: `C-s d`
 - forward outer prefix to inner session: `C-s C-s`
 - standard outer tmux prefix bindings: disabled
 - outer status: off
@@ -133,7 +134,7 @@ Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay 
 - `?`: open help in right pane
 - `q`: quit sidebar only
 
-`›` marks keyboard selection and left-pane focus; mint reverse highlight marks active cockpit session independently. Unfocused sidebar hides pointer, leaves sidebar colors unchanged, and keeps active session highlighted and visible.
+`›` marks keyboard selection and left-pane focus; mint reverse highlight marks active session independently. Unfocused sidebar hides pointer, leaves sidebar colors unchanged, and keeps active session highlighted and visible.
 
 Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Sessions persist in `~/.config/letee/sessions`. Only tracked sessions trigger sidebar bell indicators and beeps. Set `LETEE_ASCII=1` for text-only labels and ellipses.
 
@@ -216,16 +217,6 @@ Native tmux copy mode forwards copied text through nested sessions using OSC 52.
 
 **Security:** `set-clipboard on` permits processes in local and remote panes to set system clipboard through OSC 52. Only connect to trusted hosts and run trusted pane processes.
 
-## Recovery
-
-Press `C-s s` to restart/focus Sessions, `C-s a` to restart/focus Agents, or `C-s +` to open Add session menu. Or rerun:
-
-```sh
-letee
-```
-
-It reuses valid cockpit, repairs broken window, and respawns missing sidebar.
-
 ## Development
 
 ```sh
@@ -241,8 +232,3 @@ make check         # all quality gates
 
 Licensed under the [Apache License 2.0](LICENSE).
 
-Missing cockpit for switch/create prints:
-
-```text
-No valid letee. Run: letee
-```
