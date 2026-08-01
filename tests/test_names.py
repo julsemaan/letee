@@ -1,6 +1,20 @@
 import unittest
 
-from letee.names import PaneTarget, Target
+from letee.names import PaneTarget, Target, normalize_server, server_socket, validate_server
+
+
+class ServerNameTest(unittest.TestCase):
+    def test_default_and_named_servers_map_to_outer_socket_names(self):
+        self.assertEqual(normalize_server(None), "default")
+        self.assertEqual(server_socket("default"), "letee")
+        self.assertEqual(server_socket("work"), "letee-work")
+
+    def test_server_names_use_safe_name_format(self):
+        for value in ("work", "personal_1", "prod.dev-2"):
+            self.assertEqual(validate_server(value), value)
+        for value in ("", "bad name", "/tmp/socket", "-V", "x" * 65):
+            with self.subTest(value=value), self.assertRaisesRegex(SystemExit, "Invalid server"):
+                validate_server(value)
 
 
 class TargetTest(unittest.TestCase):

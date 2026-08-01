@@ -2,24 +2,29 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import os
 import subprocess
 import sys
 
-from . import cockpit, sessions
+from . import config, cockpit, sessions, tmux
 from .config import ensure_config, load_sessions, save_sessions
 from .discovery import discover
-from .names import Target, parse_target
+from .names import DEFAULT_SERVER, Target, normalize_server, parse_target, server_socket, validate_server
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="letee")
+    parser.add_argument("-L", dest="server", metavar="SERVER", help="select named letee server")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("cockpit", help="launch or attach cockpit")
+    sub.add_parser("sidebar", help=argparse.SUPPRESS)
     focus_sidebar = sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
     focus_sidebar.add_argument("region", nargs="?", choices=("sessions", "agents", "add"), default="sessions")
     sub.add_parser("init", help="create missing config files")
     sub.add_parser("list", help="list discovered targets")
+    sub.add_parser("list-servers", help="list running letee servers")
+    sub.add_parser("kill-server", help="kill selected letee server")
 
     switch = sub.add_parser("switch", help="switch cockpit target")
     switch.add_argument("target")
@@ -40,12 +45,69 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _tmux_socket_dir() -> Path:
+    root = Path(os.environ.get("TMUX_TMPDIR") or "/tmp").expanduser()
+    return root / f"tmux-{os.getuid()}"
+
+
+def _run_server_tmux(server: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["tmux", "-L", server_socket(server), *args],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+
+
+def _server_attached(server: str) -> bool | None:
+    try:
+        marker = _run_server_tmux(server, "show-options", "-v", "-t", tmux.SESSION, "@letee_cockpit")
+        if marker.returncode != 0 or marker.stdout.strip() != "1":
+            return None
+        clients = _run_server_tmux(server, "list-clients", "-t", tmux.SESSION, "-F", "#{client_name}")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if clients.returncode != 0:
+        return None
+    return bool(clients.stdout.strip())
+
+
+def list_servers() -> list[tuple[str, bool]]:
+    try:
+        paths = sorted(_tmux_socket_dir().iterdir(), key=lambda path: path.name)
+    except OSError:
+        return []
+    servers: list[tuple[str, bool]] = []
+    for path in paths:
+        if path.name == "letee":
+            server = DEFAULT_SERVER
+        elif path.name.startswith("letee-"):
+            try:
+                server = validate_server(path.name.removeprefix("letee-"))
+            except SystemExit:
+                continue
+            if server == DEFAULT_SERVER:
+                continue
+        else:
+            continue
+        attached = _server_attached(server)
+        if attached is not None:
+            servers.append((server, attached))
+    return sorted(servers, key=lambda item: (item[0] != DEFAULT_SERVER, item[0]))
+
+
+def _configure_server(server: str | None) -> None:
+    tmux.set_server(config.set_server(server))
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["sidebar"]:
+    args = build_parser().parse_args(argv)
+    _configure_server(args.server)
+    if args.command == "sidebar":
         from .sidebar import main as sidebar_main
         return sidebar_main()
-    args = build_parser().parse_args(argv)
     if args.command in (None, "cockpit"):
         return cockpit.cockpit()
     if args.command == "init":
@@ -55,6 +117,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "focus-sidebar":
         return cockpit.focus_sidebar(args.region)
+    if args.command == "list-servers":
+        for server, attached in list_servers():
+            print(f"{server} ({'attached' if attached else 'detached'})")
+        return 0
+    if args.command == "kill-server":
+        server = normalize_server(args.server)
+        if _server_attached(server) is None:
+            raise SystemExit(f"Not a running letee server: {server}")
+        result = _run_server_tmux(server, "kill-server")
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                ["tmux", "-L", server_socket(server), "kill-server"],
+                result.stdout,
+                result.stderr,
+            )
+        return 0
     if args.command == "list":
         snapshot = discover()
         if not snapshot.local.available:

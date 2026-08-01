@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import tomllib
 
-from .names import Target, parse_target, validate_host
+from .names import DEFAULT_SERVER, Target, normalize_server, parse_target, validate_host
 
 DEFAULT_PREFIX = "C-s"
 DEFAULT_SIDEBAR_WIDTH = 40
@@ -15,6 +15,17 @@ WRAPPER_TEXT = """unbind C-b
 set -g status off
 set -g mouse on
 """
+_CURRENT_SERVER = DEFAULT_SERVER
+
+
+def set_server(server: str | None) -> str:
+    global _CURRENT_SERVER
+    _CURRENT_SERVER = normalize_server(server)
+    return _CURRENT_SERVER
+
+
+def current_server() -> str:
+    return _CURRENT_SERVER
 
 
 def config_dir() -> Path:
@@ -37,6 +48,13 @@ def ensure_config() -> tuple[Path, Path]:
     if not wrapper.exists():
         wrapper.write_text(WRAPPER_TEXT)
     return cfg, wrapper
+
+
+def sessions_path(server: str | None = None) -> Path:
+    name = normalize_server(_CURRENT_SERVER if server is None else server)
+    if name == DEFAULT_SERVER:
+        return config_dir() / "sessions"
+    return config_dir() / "servers" / name / "sessions"
 
 
 def _load_config() -> tuple[Path, dict]:
@@ -90,8 +108,8 @@ def load_hosts() -> list[str]:
         raise SystemExit(f"Invalid config {cfg}: {error}") from error
 
 
-def load_sessions() -> list[Target]:
-    path = config_dir() / "sessions"
+def load_sessions(server: str | None = None) -> list[Target]:
+    path = sessions_path(server)
     if not path.exists():
         return []
     favorites: list[Target] = []
@@ -109,7 +127,7 @@ def load_sessions() -> list[Target]:
     return favorites
 
 
-def save_sessions(favorites: list[Target] | tuple[Target, ...]) -> None:
-    path = config_dir() / "sessions"
+def save_sessions(favorites: list[Target] | tuple[Target, ...], server: str | None = None) -> None:
+    path = sessions_path(server)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"{target.format()}\n" for target in favorites))

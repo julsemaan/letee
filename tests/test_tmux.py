@@ -2,10 +2,20 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from letee.tmux import tmux
+from letee.tmux import set_server, tmux
 
 
 class TmuxTests(unittest.TestCase):
+    def tearDown(self):
+        set_server(None)
+
+    def test_named_server_selects_prefixed_socket(self):
+        set_server("work")
+        with patch("letee.tmux.subprocess.run") as run:
+            tmux("list-sessions")
+
+        self.assertEqual(run.call_args.args[0], ["tmux", "-L", "letee-work", "list-sessions"])
+
     def test_timeout_can_be_disabled_for_interactive_commands(self):
         with patch("letee.tmux.subprocess.run") as run:
             tmux("display-menu", timeout=None)
