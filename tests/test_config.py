@@ -13,6 +13,7 @@ class ConfigTest(unittest.TestCase):
         self.env = patch.dict("letee.config.os.environ", {"LETEE_CONFIG_DIR": self.tempdir.name}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+        config.set_server("default")
 
     def write_config(self, text):
         path = Path(self.tempdir.name) / "config.toml"
@@ -130,6 +131,29 @@ class ConfigTest(unittest.TestCase):
         config.save_sessions(favorites)
 
         self.assertEqual((Path(self.tempdir.name) / "sessions").read_text(), "ssh:dev:work\nlocal:notes\n")
+
+    def test_named_server_sessions_are_isolated_under_servers(self):
+        target = config.parse_target("local:work")
+
+        config.set_server("work")
+        self.assertEqual(config.load_sessions(), [])
+        config.save_sessions([target])
+
+        named_path = Path(self.tempdir.name) / "servers" / "work" / "sessions"
+        self.assertEqual(named_path.read_text(), "local:work\n")
+        config.set_server("default")
+        self.assertEqual(config.load_sessions(), [])
+
+    def test_server_argument_selects_sessions_without_changing_shared_config_paths(self):
+        target = config.parse_target("local:personal")
+
+        config.save_sessions([target], server="personal")
+
+        self.assertEqual(config.load_sessions(server="personal"), [target])
+        self.assertEqual(config.paths(), (
+            Path(self.tempdir.name) / "config.toml",
+            Path(self.tempdir.name) / "wrapper.tmux.conf",
+        ))
 
 
 if __name__ == "__main__":
