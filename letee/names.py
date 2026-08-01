@@ -52,6 +52,7 @@ class PaneTarget:
     window_id: str
     pane_id: str
     socket_path: str
+    window_name: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.target, Target):

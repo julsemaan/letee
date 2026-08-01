@@ -16,7 +16,7 @@ from .names import PaneTarget, Target, validate_host
 from .sessions import ssh_command
 
 
-PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}"
+PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}\t#{window_name}"
 PANES_COMMAND = f'tmux list-panes -a -F "{PANES_FORMAT}"'
 REMOTE_SEPARATOR = "__LETEE_AGENT_STATUS__"
 _REMOTE_READER = """import glob,json,os,pathlib
@@ -130,9 +130,10 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None) -> 
                 continue
             name, window_id, pane_id, bell_flag, window_flags, socket_path = parts
             pane_active = window_active = "0"
+        socket_path, _, window_name = socket_path.partition("\t")
         try:
             target = Target("local", name) if kind == "local" else Target("ssh", name, host)
-            pane = PaneTarget(target, window_id, pane_id, socket_path)
+            pane = PaneTarget(target, window_id, pane_id, socket_path, window_name)
         except SystemExit:
             continue
         if target not in sessions:

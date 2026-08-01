@@ -286,17 +286,29 @@ class AgentSidebarTest(unittest.TestCase):
         self.assertEqual(_agent_entries(data, []), [])
 
     def test_agent_entries_are_compact_and_keep_exact_pane(self):
-        pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/tmux")
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/tmux", "editor")
         data = SessionSnapshot(SourceSnapshot(True, (), frozenset()), {"dev": SourceSnapshot(True, (pane.target,), frozenset(), panes=(pane,), agents=(AgentEntry(pane, "id", "pi", None),))})
 
         entry = _agent_entries(data, [pane.target])[0]
 
         self.assertEqual(entry.pane_target, pane)
+        self.assertEqual(entry.host, "dev")
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ @dev · work"])
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ work · editor"])
 
-    def test_local_agent_location_uses_localhost(self):
-        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+    def test_agent_location_omits_host_and_truncates_safely(self):
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/tmux", "editor")
+        entry = Entry("pi", "agent", pane.target, host="dev", pane_target=pane, agent_id="id")
+
+        with patch("letee.sidebar._ascii", return_value=False):
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ work · editor")
+            lines = _entry_lines(entry, False, set(), None, 4)
+
+        self.assertNotIn("dev", lines[1])
+        self.assertTrue(all(sidebar._cell_width(line) <= 4 for line in lines))
+
+    def test_local_agent_location_uses_window_name(self):
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux", "shell")
         data = SessionSnapshot(
             SourceSnapshot(True, (pane.target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", None),)),
             {},
@@ -305,7 +317,7 @@ class AgentSidebarTest(unittest.TestCase):
         entry = _agent_entries(data, [pane.target])[0]
 
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ @localhost · work")
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ work · shell")
 
     def test_draw_shows_agent_divider_and_empty_state(self):
         screen = FakeScreen(size=(10, 40))
@@ -853,8 +865,8 @@ class SidebarStateTest(unittest.TestCase):
         with patch.dict("letee.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
             sidebar._draw_entries(screen, entries, 0, 7, 40, set(), None, active_agent_id="one")
 
-        first_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "laptop" in call[3])
-        second_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 4 and "laptop" in call[3])
+        first_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "work" in call[3])
+        second_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 4 and "work" in call[3])
         self.assertEqual(first_location[5], 123)
         self.assertNotEqual(second_location[5], 123)
 
@@ -873,7 +885,7 @@ class SidebarStateTest(unittest.TestCase):
         with patch.dict("letee.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
             sidebar._draw_entries(screen, [entry], 0, 5, 40, set(), None, active_agent_id="one")
 
-        location = next(call for call in screen.calls if call[0] == "addnstr" and "laptop" in call[3])
+        location = next(call for call in screen.calls if call[0] == "addnstr" and "work" in call[3])
         self.assertEqual(location[5], 123)
 
 

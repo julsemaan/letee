@@ -6,10 +6,10 @@
   - [ ] prefix+x kill session
   - [ ] prefix+r remove session
   - [ ] Any other prefixes you could suggest?
-- [ ] Show the window name for agents
 
 ## Done
 
+- [x] Show the window name for agents
 - [x] Opencode support for agent-status
 - [x] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [x] Prefix for selecting the right pane
