@@ -1,4 +1,7 @@
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from letee.__main__ import main
@@ -7,6 +10,36 @@ from letee.names import Target
 
 
 class MainTest(unittest.TestCase):
+    def tearDown(self):
+        from letee import config, tmux
+
+        config.set_server(None)
+        tmux.set_server(None)
+
+    def test_global_server_option_configures_named_cockpit(self):
+        with (
+            patch("letee.__main__.config.set_server", return_value="work") as set_config,
+            patch("letee.__main__.tmux.set_server") as set_tmux,
+            patch("letee.__main__.cockpit.cockpit", return_value=0) as cockpit,
+        ):
+            self.assertEqual(main(["-L", "work"]), 0)
+
+        set_config.assert_called_once_with("work")
+        set_tmux.assert_called_once_with("work")
+        cockpit.assert_called_once_with()
+
+    def test_sidebar_is_internal_command_and_accepts_named_server(self):
+        with (
+            patch("letee.__main__.config.set_server", return_value="work") as set_config,
+            patch("letee.__main__.tmux.set_server") as set_tmux,
+            patch("letee.sidebar.main", return_value=0) as sidebar,
+        ):
+            self.assertEqual(main(["-L", "work", "sidebar"]), 0)
+
+        set_config.assert_called_once_with("work")
+        set_tmux.assert_called_once_with("work")
+        sidebar.assert_called_once_with()
+
     def test_focus_sidebar_defaults_to_sessions_and_accepts_agents_and_add(self):
         with patch("letee.__main__.cockpit.focus_sidebar") as focus_sidebar:
             main(["focus-sidebar"])
@@ -105,6 +138,54 @@ class MainTest(unittest.TestCase):
             [call.args[0] for call in print_.call_args_list],
             ["local unavailable: permission denied", "ssh:dev:work", "ssh:off unavailable"],
         )
+
+    def test_list_servers_shows_only_verified_servers_and_attachment_state(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            socket_dir = Path(tempdir) / "tmux-1000"
+            socket_dir.mkdir()
+            for name in ("letee", "letee-personal", "letee-stale", "other"):
+                (socket_dir / name).touch()
+
+            def run(command, **kwargs):
+                socket = command[2]
+                if socket == "letee-stale":
+                    return subprocess.CompletedProcess(command, 1, "", "stale socket")
+                if command[3:6] == ["show-options", "-v", "-t"]:
+                    return subprocess.CompletedProcess(command, 0, "1\n", "")
+                clients = "client\n" if socket == "letee" else ""
+                return subprocess.CompletedProcess(command, 0, clients, "")
+
+            with (
+                patch("letee.__main__._tmux_socket_dir", return_value=socket_dir),
+                patch("letee.__main__.subprocess.run", side_effect=run),
+                patch("builtins.print") as print_,
+            ):
+                main(["list-servers"])
+
+        self.assertEqual(
+            [call.args[0] for call in print_.call_args_list],
+            ["default (attached)", "personal (detached)"],
+        )
+
+    def test_kill_server_requires_verified_letee_server_and_uses_selected_socket(self):
+        with (
+            patch("letee.__main__._server_attached", return_value=False) as status,
+            patch("letee.__main__.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
+        ):
+            main(["-L", "work", "kill-server"])
+
+        status.assert_called_once_with("work")
+        run.assert_called_once_with(
+            ["tmux", "-L", "letee-work", "kill-server"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+
+    def test_kill_server_refuses_missing_or_non_letee_server(self):
+        with patch("letee.__main__._server_attached", return_value=None), patch("letee.__main__.subprocess.run") as run:
+            with self.assertRaisesRegex(SystemExit, "Not a running letee server: work"):
+                main(["-L", "work", "kill-server"])
+
+        run.assert_not_called()
 
     def test_failed_create_never_switches(self):
         with (
