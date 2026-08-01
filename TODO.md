@@ -6,6 +6,8 @@
   - [x] prefix+x kill session
   - [x] prefix+r remove session
   - [x] prefix+! jump to first alerted agent
+  - [ ] Any other prefixes you could suggest?
+- [ ] Show the window name for agents
 
 ## Done
 
