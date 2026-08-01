@@ -144,6 +144,18 @@ Letee discovers coding agents by reading [astatus](https://github.com/julsemaan/
 
 Agent discovery requires the astatus plugin for your coding agent. The plugin emits JSON status files that letee reads to show agent state in the sidebar.
 
+#### Claude Code
+
+Requires Python 3.10+ and Linux or macOS.
+
+```bash
+pip install agent-status
+claude plugin marketplace add julsemaan/astatus
+claude plugin install agent-status@astatus
+```
+
+Start or restart Claude Code. The plugin uses hooks only—no model tools or MCP server—and emits 20-second heartbeats while the session runs.
+
 #### Codex (OpenAI Codex CLI)
 
 ```bash
@@ -157,7 +169,7 @@ Start Codex in any repo, open `/hooks`, and trust the agent-status hooks. First 
 #### Pi (pi-coding-agent)
 
 ```bash
-pi install git:github.com/julsemaan/astatus
+pi install git:github.com/julsemaan/astatus@v0.1.26
 ```
 
 Then run `/reload` or restart pi.
