@@ -250,13 +250,12 @@ class SshLatencyProxyTest(unittest.TestCase):
         with socket.socket() as socket_:
             socket_.bind(("127.0.0.1", 0))
             port = socket_.getsockname()[1]
-
-        result = subprocess.run(
-            [sys.executable, str(PROXY), "--delay-ms", "0", "127.0.0.1", str(port)],
-            input=b"",
-            capture_output=True,
-            timeout=2,
-        )
+            result = subprocess.run(
+                [sys.executable, str(PROXY), "--delay-ms", "0", "127.0.0.1", str(port)],
+                input=b"",
+                capture_output=True,
+                timeout=2,
+            )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertRegex(result.stderr.decode(), r"(?i)(connect|connection|refused)")
