@@ -1773,6 +1773,9 @@ def run(stdscr: curses.window) -> None:
             if entry.unavailable_favorite:
                 show_status("Session already missing; press r to remove")
                 return None
+            if actions.busy:
+                show_status("another action is still running")
+                return None
             if _read_key(stdscr, f"kill {current_target.format()}? y/N", state.filtering) != ord("y"):
                 return None
             return _transition(state, "kill", current_target)

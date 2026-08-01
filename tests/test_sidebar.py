@@ -3695,6 +3695,27 @@ class PrefixActionTest(unittest.TestCase):
         kill.assert_not_called()
         save.assert_not_called()
 
+    def test_busy_runner_skips_kill_confirmation(self):
+        target = Target("local", "active")
+        data = snapshot(local=("active",))
+        actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=True)
+        actions.poll.return_value = None
+
+        with (
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "_read_key") as read_key,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            screen = self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), ord("q")], [target], target, data)
+
+        read_key.assert_not_called()
+        kill.assert_not_called()
+        self.assertTrue(any(
+            "another action is still running" in call[3]
+            for call in screen.calls
+            if call[0] == "addnstr"
+        ))
+
     def test_prefix_actions_never_fall_back_when_active_target_is_missing_or_untracked(self):
         tracked = Target("local", "tracked")
         active = Target("local", "active")
