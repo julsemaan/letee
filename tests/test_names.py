@@ -12,7 +12,7 @@ class ServerNameTest(unittest.TestCase):
     def test_server_names_use_safe_name_format(self):
         for value in ("work", "personal_1", "prod.dev-2"):
             self.assertEqual(validate_server(value), value)
-        for value in ("", "bad name", "/tmp/socket", "x" * 65):
+        for value in ("", "bad name", "/tmp/socket", "-V", "x" * 65):
             with self.subTest(value=value), self.assertRaisesRegex(SystemExit, "Invalid server"):
                 validate_server(value)
 

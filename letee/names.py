@@ -24,7 +24,10 @@ def validate_host(value: str) -> str:
 
 
 def validate_server(value: str) -> str:
-    return validate_name(value, "server")
+    validate_name(value, "server")
+    if value.startswith("-"):
+        raise SystemExit(f"Invalid server: {value!r}. Must not start with '-'")
+    return value
 
 
 def normalize_server(value: str | None) -> str:

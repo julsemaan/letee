@@ -99,8 +99,7 @@ def list_servers() -> list[tuple[str, bool]]:
 
 
 def _configure_server(server: str | None) -> None:
-    selected = config.set_server(normalize_server(server))
-    tmux.set_server(selected)
+    tmux.set_server(config.set_server(server))
 
 
 def main(argv: list[str] | None = None) -> int:
