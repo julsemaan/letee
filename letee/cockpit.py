@@ -7,7 +7,7 @@ import shutil
 import sys
 
 from .config import ensure_config, load_prefix, load_sidebar_width
-from .names import Target, parse_target
+from .names import DEFAULT_SERVER, Target, parse_target
 from . import tmux
 
 
@@ -73,6 +73,21 @@ BELL_TARGET_OPTION = "@letee_bell_target"
 NO_COCKPIT = "No valid letee. Run: letee"
 
 
+def _letee_command(*args: str) -> str:
+    command = [sys.executable, "-m", "letee"]
+    if tmux.SERVER != DEFAULT_SERVER:
+        command.extend(("-L", tmux.SERVER))
+    return shlex.join((*command, *args))
+
+
+def _sidebar_command() -> str:
+    return _letee_command("sidebar")
+
+
+def _focus_sidebar_command(region: str) -> str:
+    return _letee_command("focus-sidebar", region)
+
+
 def _option(name: str) -> str:
     return tmux.out("show-options", "-v", "-t", tmux.SESSION, name, check=False)
 
@@ -130,13 +145,13 @@ def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("bind-key", "d", "detach-client")
     tmux.tmux("bind-key", "h", "kill-pane", "-t", sidebar_pane)
     tmux.tmux("bind-key", "q", "kill-session", "-t", tmux.SESSION)
-    tmux.tmux("bind-key", "a", "run-shell", f"{FOCUS_SIDEBAR} agents")
-    tmux.tmux("bind-key", "s", "run-shell", f"{FOCUS_SIDEBAR} sessions")
-    tmux.tmux("bind-key", "+", "run-shell", f"{FOCUS_SIDEBAR} add")
+    tmux.tmux("bind-key", "a", "run-shell", _focus_sidebar_command("agents"))
+    tmux.tmux("bind-key", "s", "run-shell", _focus_sidebar_command("sessions"))
+    tmux.tmux("bind-key", "+", "run-shell", _focus_sidebar_command("add"))
     tmux.tmux("bind-key", "w", "select-pane", "-t", right_pane)
     tmux.tmux("bind-key", "?", "respawn-pane", "-k", "-t", right_pane, help_command(prefix))
     for slot in range(1, 10):
-        tmux.tmux("bind-key", str(slot), "run-shell", f"{shlex.quote(sys.executable)} -m letee switch-session {slot}")
+        tmux.tmux("bind-key", str(slot), "run-shell", _letee_command("switch-session", str(slot)))
 
 
 def _enable_mouse() -> None:
@@ -219,7 +234,7 @@ def _build(prefix: str, sidebar_width: int) -> None:
     else:
         tmux.tmux("new-window", "-d", "-t", tmux.SESSION, "-n", tmux.WINDOW, help_cmd)
     right = tmux.out("display-message", "-p", "-t", TARGET, "#{pane_id}")
-    left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, SIDEBAR)
+    left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, _sidebar_command())
     _configure_cockpit(left, right, prefix, sidebar_width)
 
 
@@ -234,14 +249,14 @@ def ensure_cockpit() -> None:
     if _option(COCKPIT_OPTION) == "1":
         right = _option(RIGHT_PANE_OPTION)
         if right and tmux.has_pane(right):
-            left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, SIDEBAR)
+            left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, _sidebar_command())
             _configure_cockpit(left, right, prefix, sidebar_width)
             return
     _build(prefix, sidebar_width)
 
 
 def _attach() -> int:
-    attach_cmd = "tmux -L letee attach -d -t letee:cockpit"
+    attach_cmd = f"tmux -L {shlex.quote(tmux.SOCKET)} attach -d -t {TARGET}"
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(f"Cockpit ready. Attach from a real terminal: {attach_cmd}")
         return 0

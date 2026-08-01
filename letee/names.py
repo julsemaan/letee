@@ -7,6 +7,7 @@ from typing import Literal
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 WINDOW_ID_RE = re.compile(r"^@\d+$")
 PANE_ID_RE = re.compile(r"^%\d+$")
+DEFAULT_SERVER = "default"
 
 
 def validate_name(value: str, label: str = "name") -> str:
@@ -20,6 +21,22 @@ def validate_host(value: str) -> str:
     if value.startswith("-"):
         raise SystemExit(f"Invalid host: {value!r}. Must not start with '-'")
     return value
+
+
+def validate_server(value: str) -> str:
+    validate_name(value, "server")
+    if value.startswith("-"):
+        raise SystemExit(f"Invalid server: {value!r}. Must not start with '-'")
+    return value
+
+
+def normalize_server(value: str | None) -> str:
+    return DEFAULT_SERVER if value is None else validate_server(value)
+
+
+def server_socket(value: str | None) -> str:
+    server = normalize_server(value)
+    return "letee" if server == DEFAULT_SERVER else f"letee-{server}"
 
 
 @dataclass(frozen=True)

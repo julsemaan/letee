@@ -4,9 +4,19 @@ from pathlib import Path
 import shlex
 import subprocess
 
-SOCKET = "letee"
+from .names import DEFAULT_SERVER, normalize_server, server_socket
+
+SERVER = DEFAULT_SERVER
+SOCKET = server_socket(SERVER)
 SESSION = "letee"
 WINDOW = "cockpit"
+
+
+def set_server(server: str | None) -> str:
+    global SERVER, SOCKET
+    SERVER = normalize_server(server)
+    SOCKET = server_socket(SERVER)
+    return SERVER
 
 
 def tmux(
