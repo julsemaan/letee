@@ -1,12 +1,12 @@
-- [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple letee
-- [ ] Opencode support for agent-status
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Open fresh terminal, run letee in a tab, open new tab, close new tab, letee is messed up in first tab
 
 ## Done
 
+- [x] Opencode support for agent-status
+- [x] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [x] Prefix for selecting the right pane
 - [x] When there are more than 1 agent in a session and I alternate between them in the left pane, it highlights the correct one, then while it is switching to the right pane, it highlights the wrong one for a brief moment before highlighting the correct one again
 - [x] Support right-click context menu for removing or killing tracked sessions without activating them
