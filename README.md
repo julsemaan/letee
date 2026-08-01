@@ -6,7 +6,7 @@
 
 <p align="center">
   Letee, pronounced luh-tee.<br>
-  Every tmux session, local or remote, at your fingertips.
+  All your tmux session, all your agents, local or remote, at your fingertips.
 </p>
 
 `letee` runs inside your existing terminal and works on top of tmux. No new terminal app, no replacement tmux setup, no retraining your keyboard muscle memory. Keep your terminal, tmux configuration, keybindings, plugins, and workflows while adding a persistent sidebar for finding, opening, and switching between sessions across your machine and SSH hosts. Your sessions remain ordinary tmux sessions; letee simply puts them within reach.
@@ -15,9 +15,10 @@ Track important sessions, see at a glance which ones need attention, and jump be
 
 ## Why letee?
 
-- **Keep your terminal and tmux setup**: unlike cmux, letee runs inside your current terminal and builds on tmux instead of forcing a new terminal app. Your configuration, keybindings, plugins, and workflows keep working.
+- **Keep your terminal and tmux setup**: letee runs inside your current terminal and builds on tmux instead of forcing a new terminal app. Your configuration, keybindings, plugins, and workflows keep working.
 - **One view across machines**: local and remote sessions live in the same sidebar.
-- **Fast context switches**: see which sessions need your attention via tmux bells, then jump straight to them.
+- **Unified view of all your agents**: all your agents in all your sessions are easily accessible in the left pane.
+- **Fast context switches**: see which sessions and agents need your attention, then jump straight to them.
 
 ## Quick start
 
