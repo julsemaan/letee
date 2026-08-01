@@ -22,7 +22,7 @@ Track important sessions, see at a glance which ones need attention, and jump be
 
 ## Quick start
 
-Requires Python 3.11+, tmux, and OpenSSH. Automatic coding-agent discovery additionally requires [astatus](https://github.com/julsemaan/astatus) locally and on configured remote hosts.
+Requires Python 3.11+, tmux, and OpenSSH. Automatic discovery for Claude Code, Codex, Pi, and OpenCode is optional and requires [agent-status](https://github.com/julsemaan/agent-status) wherever those agents run.
 
 ```sh
 pip install letee
@@ -139,11 +139,11 @@ Normal sidebar lists sessions in persisted order. Add menu separates `New sessio
 
 ## Agent discovery
 
-Letee discovers coding agents by reading [astatus](https://github.com/julsemaan/astatus) JSON status files. The astatus plugin for your coding agent is **required** for detection — install it in each agent you want letee to discover. See the [astatus documentation](https://github.com/julsemaan/astatus) for full setup instructions and configuration.
+Letee discovers coding agents by reading [agent-status](https://github.com/julsemaan/agent-status) JSON status files. The agent-status plugin for your coding agent is **required** for detection — install it in each agent you want letee to discover. See the [agent-status documentation](https://github.com/julsemaan/agent-status) for full setup instructions and configuration.
 
 ### Getting started with coding agents
 
-Agent discovery requires the astatus plugin for your coding agent. The plugin emits JSON status files that letee reads to show agent state in the sidebar.
+Agent discovery requires the agent-status plugin for your coding agent. The plugin emits JSON status files that letee reads to show agent state in the sidebar.
 
 #### Claude Code
 
@@ -151,8 +151,8 @@ Requires Python 3.10+ and Linux or macOS.
 
 ```bash
 pip install agent-status
-claude plugin marketplace add julsemaan/astatus
-claude plugin install agent-status@astatus
+claude plugin marketplace add julsemaan/agent-status
+claude plugin install agent-status@agent-status
 ```
 
 Start or restart Claude Code. The plugin uses hooks only—no model tools or MCP server—and emits 20-second heartbeats while the session runs.
@@ -161,8 +161,8 @@ Start or restart Claude Code. The plugin uses hooks only—no model tools or MCP
 
 ```bash
 pip install agent-status
-codex plugin marketplace add julsemaan/astatus
-codex plugin add agent-status@astatus
+codex plugin marketplace add julsemaan/agent-status
+codex plugin add agent-status@agent-status
 ```
 
 Start Codex in any repo, open `/hooks`, and trust the agent-status hooks. First prompt starts a detached sidecar that emits 20-second heartbeats.
@@ -170,14 +170,14 @@ Start Codex in any repo, open `/hooks`, and trust the agent-status hooks. First 
 #### Pi (pi-coding-agent)
 
 ```bash
-pi install git:github.com/julsemaan/astatus@v0.1.26
+pi install git:github.com/julsemaan/agent-status@v0.1.26
 ```
 
 Then run `/reload` or restart pi.
 
 #### OpenCode
 
-Add the astatus plugin to `opencode.json`:
+Add the agent-status plugin to `opencode.json`:
 
 ```json
 {

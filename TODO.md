@@ -1,7 +1,7 @@
 - [ ] The left pane is not consistently the same size and disapears when the terminal is smaller but doesn't reappear when it gets larger or gets an invalid size
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [ ] Allow having multiple letee
-- [ ] Opencode support for astatus
+- [ ] Opencode support for agent-status
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Open fresh terminal, run letee in a tab, open new tab, close new tab, letee is messed up in first tab
 
@@ -14,12 +14,12 @@
 - [x] Use cursor instead of dimming to show sidebar focus, with predictable initial selection
 - [x] Drag and drop: auto-scroll when hovering over "↑ more" / "↓ more" so hidden sessions are reachable during drag
 
-- [x] astatus needs proper tags
+- [x] agent-status needs proper tags
 - [x] Sometimes, I have to click multiple times to get an action to be done. Hard to reproduce consistently but I **think** it may be related to when a pane is idle and I click in it. Again, not happening every time.
 - [x] Typing in the new session name field is very sluggish. Have to type letters one by one slowly
 - [x] Mark sessions as something else than unavailable when they are not present on the target host
 - [x] When killing a session, remove it from the list too
-- [x] Need documentation on installing astatus for agent support
+- [x] Need documentation on installing agent-status for agent support
 - [x] When killing a session, show confirmation near the top without replacing footer shortcuts
 - [x] Agent sessions in priority ordering should have latest activity at the top for idle sessions
 
@@ -71,7 +71,7 @@
 - [x] Rethink the second row with the hostname. Emojis look off
 - [x] Not overly satisfied of the placement of the session number at the end of the row. Rethink that, maybe like tmux where it is in a differently colored box left of the name
 - [x] When on a fresh one, you press enter to add a session, then are presented with a menu to create a session on the current host and it's the only option and it isn't clear you have to press enter again. Could be implicit if there is a single host and it has no existing sessions. Also having the cursor be there could be useful. This has to be rethought and polished.
-- [x] Start designing agents status in the left bar based on julsemaan/astatus
+- [x] Start designing agents status in the left bar based on julsemaan/agent-status
   - julsemaan-tmp/html-plans/2026-07-19-1537-automatic-starred-agent-panes.html
 - [x] Consider having 'Add session' become '+ new' in the topmost header
 - [x] Make active agent pane colored
