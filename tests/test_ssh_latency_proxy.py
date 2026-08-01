@@ -8,6 +8,9 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from tools import ssh_latency_proxy
 
 
 PROXY = Path(__file__).parents[1] / "tools" / "ssh_latency_proxy.py"
@@ -228,6 +231,20 @@ class SshLatencyProxyTest(unittest.TestCase):
             server.wait_connected()
             self.proxy.stdin.close()
             self.assertEqual(self.proxy.wait(timeout=2), 0)
+
+    def test_connect_uses_ten_second_timeout(self):
+        connection = object()
+        with (
+            mock.patch.object(
+                ssh_latency_proxy.socket,
+                "create_connection",
+                return_value=connection,
+            ) as create_connection,
+            mock.patch.object(ssh_latency_proxy, "_forward", return_value=0),
+        ):
+            self.assertEqual(ssh_latency_proxy.main(["example.com", "22"]), 0)
+
+        create_connection.assert_called_once_with(("example.com", 22), timeout=10)
 
     def test_connection_failure_returns_nonzero_with_stderr(self):
         with socket.socket() as socket_:

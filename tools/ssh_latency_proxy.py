@@ -176,7 +176,7 @@ def main(argv=None):
         return 1
 
     try:
-        connection = socket.create_connection((args.host, args.port))
+        connection = socket.create_connection((args.host, args.port), timeout=10)
     except KeyboardInterrupt:
         return 0
     except OSError as error:
