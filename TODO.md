@@ -4,6 +4,7 @@
 - [ ] Opencode support for astatus
 - [ ] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Prefix for selecting the right pane
+- [ ] Open fresh terminal, run mtmux in a tab, open new tab, close new tab, mtmux is messed up in first tab
 
 ## Done
 
