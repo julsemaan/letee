@@ -4,7 +4,7 @@ import os
 import shlex
 import subprocess
 
-from .config import load_persistent_ssh
+from .config import load_persistent_ssh, load_session_scripts
 from .names import PaneTarget, Target
 
 
@@ -31,11 +31,29 @@ def _default_server_env() -> dict[str, str]:
     return env
 
 
-def attach_command(target: Target) -> str:
+def _normal_attach_command(target: Target) -> str:
     session = shlex.quote(target.session)
+    command = f"tmux -T clipboard new-session -A -s {session}"
     if target.kind == "local":
-        return f"env -u TMUX tmux -T clipboard new-session -A -s {session}"
-    return shlex.join(ssh_command("-t", target.host or "", f"tmux -T clipboard new-session -A -s {session}"))
+        return f"env -u TMUX {command}"
+    return shlex.join(ssh_command("-t", target.host or "", command))
+
+
+def _scripted_attach_command(target: Target, script: str) -> str:
+    session = shlex.quote(target.session)
+    command = (
+        f"if tmux has-session -t {session} 2>/dev/null; "
+        f"then tmux -T clipboard new-session -A -s {session}; "
+        f"else {script}; fi"
+    )
+    if target.kind == "local":
+        return f"env -u TMUX sh -c {shlex.quote(command)}"
+    return shlex.join(ssh_command("-t", target.host or "", command))
+
+
+def attach_command(target: Target) -> str:
+    script = load_session_scripts().get(target)
+    return _scripted_attach_command(target, script) if script is not None else _normal_attach_command(target)
 
 
 def pane_attach_command(pane_target: PaneTarget) -> str:
@@ -62,6 +80,8 @@ def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: obj
 
 
 def create(target: Target) -> None:
+    if target in load_session_scripts():
+        return
     if target.kind == "local":
         _run("create", target, ("tmux", "new-session", "-d", "-s", target.session), env=_default_server_env())
     else:
