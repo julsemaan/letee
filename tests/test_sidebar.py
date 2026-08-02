@@ -698,6 +698,15 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertTrue(state.add_button_selected)
 
+    def test_sync_selection_preserves_add_button_selection_when_sessions_exist(self):
+        target = Target("local", "work")
+        state = SidebarState(add_button_selected=True)
+        entries = _entries("", snapshot(local=("work",)), [target])
+
+        _sync_selection(state, entries)
+
+        self.assertTrue(state.add_button_selected)
+
     def test_pending_selection_waits_for_discovery_then_selects_target(self):
         target = Target("ssh", "new", "dev")
         state = SidebarState(selected_index=2, pending_selection=target)

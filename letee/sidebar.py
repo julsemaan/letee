@@ -534,7 +534,8 @@ def _target_index(entries: list[Entry], target: Target, tracked: bool = False) -
 
 
 def _sync_selection(state: SidebarState, entries: list[Entry]) -> None:
-    state.add_button_selected = state.add_view is None and not _selectable(entries)
+    if state.add_view is None and not _selectable(entries):
+        state.add_button_selected = True
     if state.pending_selection is not None:
         index = _target_index(entries, state.pending_selection)
         if index is not None:
