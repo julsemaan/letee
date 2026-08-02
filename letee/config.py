@@ -97,6 +97,27 @@ def load_persistent_ssh() -> bool:
     return persistent
 
 
+def load_session_scripts() -> dict[Target, str]:
+    cfg, data = _load_config()
+    scripts = data.get("session_scripts", {})
+    if not isinstance(scripts, dict):
+        raise SystemExit(f"Invalid config {cfg}: session_scripts must be a table")
+    parsed: dict[Target, str] = {}
+    for target_text, command in scripts.items():
+        if not isinstance(target_text, str):
+            raise SystemExit(f"Invalid config {cfg}: session_scripts target must be a string")
+        try:
+            target = parse_target(target_text)
+        except SystemExit as error:
+            raise SystemExit(f"Invalid config {cfg}: session_scripts target {target_text!r}: {error}") from error
+        if not isinstance(command, str) or not command.strip():
+            raise SystemExit(
+                f"Invalid config {cfg}: session_scripts command for {target_text!r} must be a non-empty string"
+            )
+        parsed[target] = command
+    return parsed
+
+
 def load_hosts() -> list[str]:
     cfg, data = _load_config()
     hosts = data.get("hosts", [])

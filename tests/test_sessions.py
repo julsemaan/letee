@@ -23,15 +23,34 @@ class SessionOperationsTest(unittest.TestCase):
         )
 
     def test_attach_commands_quote_local_and_remote_targets(self):
-        self.assertEqual(
-            attach_command(Target("local", "work")),
-            "env -u TMUX tmux -T clipboard new-session -A -s work",
-        )
-        with patch("letee.sessions.load_persistent_ssh", return_value=True):
+        with patch("letee.sessions.load_session_scripts", return_value={}):
             self.assertEqual(
-                attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                attach_command(Target("local", "work")),
+                "env -u TMUX tmux -T clipboard new-session -A -s work",
             )
+            with patch("letee.sessions.load_persistent_ssh", return_value=True):
+                self.assertEqual(
+                    attach_command(Target("ssh", "work", "dev")),
+                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                )
+
+    def test_configured_session_scripts_run_only_when_session_is_missing(self):
+        local = Target("local", "work")
+        remote = Target("ssh", "api", "dev")
+        scripts = {
+            local: "tmuxifier load-session work",
+            remote: "tmuxifier load-session api",
+        }
+        with patch("letee.sessions.load_session_scripts", return_value=scripts):
+            self.assertEqual(
+                attach_command(local),
+                "env -u TMUX sh -c 'if tmux has-session -t work 2>/dev/null; then tmux -T clipboard new-session -A -s work; else tmuxifier load-session work; fi'",
+            )
+            with patch("letee.sessions.load_persistent_ssh", return_value=False):
+                self.assertEqual(
+                    attach_command(remote),
+                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t dev 'if tmux has-session -t api 2>/dev/null; then tmux -T clipboard new-session -A -s api; else tmuxifier load-session api; fi'",
+                )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
         local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
@@ -65,6 +84,7 @@ class SessionOperationsTest(unittest.TestCase):
     def test_create_mutates_without_cockpit_dependency(self):
         target = Target("local", "work")
         with (
+            patch("letee.sessions.load_session_scripts", return_value={}),
             patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/letee,1,0", "PATH": "x"}, clear=True),
             patch("letee.sessions.subprocess.run") as run,
         ):
@@ -78,6 +98,16 @@ class SessionOperationsTest(unittest.TestCase):
             timeout=10,
             env={"PATH": "x"},
         )
+
+    def test_create_skips_eager_bare_session_for_configured_script(self):
+        target = Target("ssh", "api", "dev")
+        with (
+            patch("letee.sessions.load_session_scripts", return_value={target: "tmuxifier load-session api"}),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            create(target)
+
+        run.assert_not_called()
 
     def test_remote_create_and_kill_use_configured_persistence(self):
         target = Target("ssh", "work.one", "dev")

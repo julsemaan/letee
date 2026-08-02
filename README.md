@@ -101,6 +101,22 @@ persistent_ssh = false
 
 SSH config still applies, so this opt-out does not disable multiplexing configured there.
 
+### Session startup scripts
+
+Use `[session_scripts]` for exact target-to-command mappings:
+
+```toml
+[session_scripts]
+"local:work" = "tmuxifier load-session work"
+"ssh:dev:api" = "tmuxifier load-session api"
+```
+
+Scripts run only when matching tmux session is missing. Existing sessions use normal tmux attach. Local commands run with `TMUX` unset, so tmuxifier targets inner/default tmux server. SSH commands run on configured host through letee's normal SSH options; install tmuxifier and its layouts on that host too.
+
+Commands must create and attach matching session. For tmuxifier, `tmuxifier load-session work` loads and attaches `work` layout; use matching layout name for each target. Mappings are exact: `local:work` does not apply to another session or SSH host.
+
+These are trusted shell commands, not quoted arguments or a sandbox. Do not put untrusted input in them.
+
 Names of the hosts must match:
 
 ```text

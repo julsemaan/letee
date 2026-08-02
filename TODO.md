@@ -1,6 +1,6 @@
 - [ ] Simulate network latency and see how the UI behaves. It should be able to handle slow connections gracefully
 - [x] Allow having multiple letee servers with named outer tmux sockets
-- [ ] Add the ability to have a script to start the session (for tmuxifier)
+- [x] Add the ability to have a script to start the session (for tmuxifier)
 - [ ] Open fresh terminal, run letee in a tab, open new tab, close new tab, letee is messed up in first tab
 - [x] New prefixes
   - [x] prefix+x kill session
