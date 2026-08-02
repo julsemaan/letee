@@ -243,6 +243,22 @@ make build-check   # build distributions and validate metadata
 make check         # all quality gates
 ```
 
+### Preparing a release
+
+Create and push release PR from `main`:
+
+```sh
+git switch main
+git pull --ff-only
+git switch -c release/v0.1.23
+make bump-version VERSION=0.1.23
+git add pyproject.toml letee/__init__.py
+git commit -m "Release version 0.1.23"
+git push -u origin HEAD
+```
+
+Open PR to `main`. Merging it starts build, PyPI publication, and GitHub release automatically.
+
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
