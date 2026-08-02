@@ -232,16 +232,7 @@ Native tmux copy mode forwards copied text through nested sessions using OSC 52.
 
 **Security:** `set-clipboard on` permits processes in local and remote panes to set system clipboard through OSC 52. Only connect to trusted hosts and run trusted pane processes.
 
-## Development
-
-```sh
-make dev-install
-make test          # unit tests
-make lint          # Ruff
-make coverage      # branch coverage (85% minimum)
-make build-check   # build distributions and validate metadata
-make check         # all quality gates
-```
+For development and testing instructions, see the [development guide](DEVELOPMENT.md).
 
 ## License
 
