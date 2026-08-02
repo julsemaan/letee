@@ -278,7 +278,10 @@ def _entries(
                 shortcut_slot=slots.get(target),
                 status=status,
             ))
-        return out
+        return out or [
+            Entry("No sessions yet", "empty"),
+            Entry("Press Enter to add one.", "hint"),
+        ]
 
     icons = _icons()
     out: list[Entry] = []
@@ -531,6 +534,7 @@ def _target_index(entries: list[Entry], target: Target, tracked: bool = False) -
 
 
 def _sync_selection(state: SidebarState, entries: list[Entry]) -> None:
+    state.add_button_selected = state.add_view is None and not _selectable(entries)
     if state.pending_selection is not None:
         index = _target_index(entries, state.pending_selection)
         if index is not None:
@@ -561,7 +565,7 @@ def _reset_selection(
         state.selected_index = choices[0] if choices else 0
         state.selected_target = entries[state.selected_index].target if choices else None
         state.selected_tracked = entries[state.selected_index].tracked if choices else False
-        state.add_button_selected = False
+        state.add_button_selected = state.add_view is None and not choices
     if region in (None, "agents"):
         state.agent_selected_index = 0
         state.selected_agent_key = None
