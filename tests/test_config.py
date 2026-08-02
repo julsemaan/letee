@@ -106,6 +106,42 @@ class ConfigTest(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, rf"Invalid config .*Invalid host: {host!r}"):
                     config.load_hosts()
 
+    def test_session_scripts_default_empty_and_map_exact_targets(self):
+        self.write_config(
+            '[session_scripts]\n'
+            '"local:work" = "tmuxifier load-session work"\n'
+            '"ssh:dev:api" = "tmuxifier load-session api"\n'
+        )
+
+        self.assertEqual(
+            config.load_session_scripts(),
+            {
+                config.parse_target("local:work"): "tmuxifier load-session work",
+                config.parse_target("ssh:dev:api"): "tmuxifier load-session api",
+            },
+        )
+
+        self.write_config("hosts = []\n")
+        self.assertEqual(config.load_session_scripts(), {})
+
+    def test_session_scripts_require_table(self):
+        for value in ('"command"', "[]", "false"):
+            with self.subTest(value=value):
+                self.write_config(f"session_scripts = {value}\n")
+                with self.assertRaisesRegex(SystemExit, "session_scripts must be a table"):
+                    config.load_session_scripts()
+
+    def test_session_scripts_validate_targets_and_commands(self):
+        self.write_config('[session_scripts]\n"bad target" = "command"\n')
+        with self.assertRaisesRegex(SystemExit, "session_scripts target .*Invalid target"):
+            config.load_session_scripts()
+
+        for command in ('""', '"   "', "1", "[]"):
+            with self.subTest(command=command):
+                self.write_config(f'[session_scripts]\n"local:work" = {command}\n')
+                with self.assertRaisesRegex(SystemExit, "session_scripts command .*non-empty string"):
+                    config.load_session_scripts()
+
     def test_missing_sessions_file_loads_empty(self):
         self.assertEqual(config.load_sessions(), [])
 
