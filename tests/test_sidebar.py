@@ -162,8 +162,13 @@ class SidebarViewModeTest(unittest.TestCase):
         self.assertEqual([entry.kind for entry in entries[:2]], ["session", "session"])
         self.assertEqual(sidebar._selectable(entries)[0], 0)
 
-    def test_empty_normal_view_has_no_instruction_row(self):
-        self.assertEqual(_entries("", snapshot(local=("work",)), []), [])
+    def test_empty_normal_view_shows_add_instructions(self):
+        entries = _entries("", snapshot(local=("work",)), [])
+
+        self.assertEqual(
+            [(entry.label, entry.kind) for entry in entries],
+            [("No sessions yet", "empty"), ("Press Enter to add one.", "hint")],
+        )
 
     def test_tracked_remote_favorite_shows_connecting_during_initial_discovery(self):
         target = Target("ssh", "work", "dev")
@@ -685,6 +690,22 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual((state.selected_index, state.selected_target), (0, first))
         self.assertEqual((state.agent_selected_index, state.selected_agent_key), (0, None))
         self.assertFalse(state.add_button_selected)
+
+    def test_reset_selection_selects_add_button_when_sessions_are_empty(self):
+        state = SidebarState()
+
+        _reset_selection(state, _entries("", snapshot(), []))
+
+        self.assertTrue(state.add_button_selected)
+
+    def test_sync_selection_preserves_add_button_selection_when_sessions_exist(self):
+        target = Target("local", "work")
+        state = SidebarState(add_button_selected=True)
+        entries = _entries("", snapshot(local=("work",)), [target])
+
+        _sync_selection(state, entries)
+
+        self.assertTrue(state.add_button_selected)
 
     def test_pending_selection_waits_for_discovery_then_selects_target(self):
         target = Target("ssh", "new", "dev")
@@ -2887,7 +2908,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(selections[-1].target, first)
         self.assertTrue(selections[-1].tracked)
 
-    def test_empty_session_list_ignores_enter_remove_and_kill(self):
+    def test_empty_session_list_opens_add_menu_and_ignores_remove_and_kill(self):
         screen = FakeScreen([curses.KEY_ENTER, ord("r"), ord("x"), ord("q")], size=(8, 60))
 
         with (
@@ -2901,6 +2922,10 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         kill.assert_not_called()
+        self.assertTrue(any(
+            call[0] == "addnstr" and "New session" in call[3]
+            for call in screen.calls
+        ))
 
     def test_kill_outside_session_rows_is_ignored(self):
         screen = FakeScreen([ord("a"), ord("x"), ord("q")], size=(8, 60))
