@@ -317,12 +317,28 @@ class CockpitLayoutTest(unittest.TestCase):
     def test_session_menu_targets_sidebar_at_click_coordinates(self):
         with (
             patch.object(cockpit, "_option", return_value="%1"),
+            patch.object(cockpit.tmux, "out", return_value="tmux 3.4"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
             cockpit.show_session_menu(Target("ssh", "work", "dev"), 7, 4)
 
         tmux_call.assert_called_once_with(
-            "display-menu", "-M", "-O", "-T", "work@dev", "-x", "7", "-y", "4", "-t", "%1",
+            "display-menu", "-O", "-T", "work@dev", "-x", "7", "-y", "4", "-t", "%1",
+            "Remove", "r", "send-keys -t %1 r",
+            "Kill", "x", "send-keys -t %1 x y",
+            timeout=None,
+        )
+
+    def test_session_menu_enables_mouse_on_tmux_35_and_newer(self):
+        with (
+            patch.object(cockpit, "_option", return_value="%1"),
+            patch.object(cockpit.tmux, "out", return_value="tmux 3.6"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_session_menu(Target("local", "work"), 7, 4)
+
+        tmux_call.assert_called_once_with(
+            "display-menu", "-M", "-O", "-T", "work@localhost", "-x", "7", "-y", "4", "-t", "%1",
             "Remove", "r", "send-keys -t %1 r",
             "Kill", "x", "send-keys -t %1 x y",
             timeout=None,
