@@ -340,11 +340,17 @@ def show_help() -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), help_command(load_prefix()))
 
 
+def _tmux_supports_menu_mouse() -> bool:
+    match = re.search(r"(\d+)\.(\d+)", tmux.out("-V", check=False))
+    return bool(match and (int(match.group(1)), int(match.group(2))) >= (3, 5))
+
+
 def show_session_menu(target: Target, x: int, y: int) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
     title = f"{target.session}@{target.host or 'localhost'}"
+    mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
     tmux.tmux(
-        "display-menu", "-M", "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
+        "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
         "Remove", "r", f"send-keys -t {pane} r",
         "Kill", "x", f"send-keys -t {pane} x y",
         timeout=None,
