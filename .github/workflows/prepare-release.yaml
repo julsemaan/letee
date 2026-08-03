@@ -45,6 +45,15 @@ jobs:
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Check release tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git show-ref --verify --quiet "refs/tags/v$VERSION"; then
+            echo "::error::Tag v$VERSION already exists."
+            exit 1
+          fi
+
       - name: Create release branch and commit
         id: release
         env:
