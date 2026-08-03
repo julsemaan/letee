@@ -236,19 +236,18 @@ For development and testing instructions, see the [development guide](DEVELOPMEN
 
 ### Preparing a release
 
-Create and push release PR from `main`:
+Use GitHub UI to create release PR:
 
-```sh
-git switch main
-git pull --ff-only
-git switch -c release/v0.1.23
-make bump-version VERSION=0.1.23
-git add pyproject.toml letee/__init__.py
-git commit -m "Release version 0.1.23"
-git push -u origin HEAD
-```
+1. Open **Actions → Prepare release**.
+2. Select `main` as workflow branch and click **Run workflow**.
+3. Leave **Version** blank for next patch version, or enter explicit `MAJOR.MINOR.PATCH` version.
+4. Click **Run workflow**.
 
-Open PR to `main`. Merging it starts build, PyPI publication, and GitHub release automatically.
+Workflow creates `release/v<version>`, commits `pyproject.toml` and `letee/__init__.py`, pushes branch, and opens PR to `main`.
+
+Enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** so workflow can open PRs with built-in `GITHUB_TOKEN`.
+
+Merging release PR starts build, PyPI publication, and GitHub release automatically.
 
 ## License
 
