@@ -27,7 +27,7 @@ Navigation
   {prefix} x  kill and remove active session (confirm)
   {prefix} !  jump to first alerted agent
   {prefix} w  focus right pane
-  {prefix} h  hide sidebar
+  {prefix} h  hide/show sidebar
   {prefix} q  quit cockpit
   {prefix} 1-9  switch session
   {prefix} ?  open help
@@ -147,7 +147,7 @@ def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("unbind-key", "-a", "-T", "prefix")
     tmux.tmux("bind-key", prefix, "send-prefix")
     tmux.tmux("bind-key", "d", "detach-client")
-    tmux.tmux("bind-key", "h", "kill-pane", "-t", sidebar_pane)
+    tmux.tmux("bind-key", "h", "resize-pane", "-Z", "-t", right_pane)
     tmux.tmux("bind-key", "q", "kill-session", "-t", tmux.SESSION)
     tmux.tmux("bind-key", "a", "run-shell", _focus_sidebar_command("agents"))
     tmux.tmux("bind-key", "s", "run-shell", _focus_sidebar_command("sessions"))
