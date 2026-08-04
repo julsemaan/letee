@@ -2227,10 +2227,20 @@ def run(stdscr: curses.window) -> None:
             effect: Effect | None = None
             if key == ord("q"):
                 effect = _transition(state, "quit")
-            elif key == ord("["):
-                state.agent_rows = (state.agent_rows or max(2, round(stdscr.getmaxyx()[0] * 0.4))) + 1
-            elif key == ord("]"):
-                state.agent_rows = max(1, (state.agent_rows or max(2, round(stdscr.getmaxyx()[0] * 0.4))) - 1)
+            elif key in (ord("["), ord("]")):
+                h = stdscr.getmaxyx()[0]
+                footer_top = h - footer_height
+                session_top = 3 if state.filtering else 2
+                has_real_agents = any(entry.kind == "agent" for entry in agent_entries)
+                minimum_agent_rows = 1 + (2 if has_real_agents else 1)
+                available = footer_top - session_top - 1
+                baseline = max(minimum_agent_rows, round(available * 0.4))
+                current = state.agent_rows if state.agent_rows is not None else baseline
+                state.agent_rows = (
+                    current + 1
+                    if key == ord("[")
+                    else max(minimum_agent_rows, current - 1)
+                )
             elif state.focused_region == "agents" and key in map(ord, "hl") and state.agent_selected_index == 0:
                 state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
                 rebuild()
