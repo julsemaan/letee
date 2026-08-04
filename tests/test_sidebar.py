@@ -1,4 +1,5 @@
 import curses
+import inspect
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import subprocess
@@ -333,6 +334,18 @@ class AgentSidebarTest(unittest.TestCase):
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
         self.assertTrue(any(line.startswith("AGENTS ") for line in text))
         self.assertIn("  No active agents", text)
+
+    def test_short_height_keeps_both_lines_of_first_agent_entry_visible(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux", "shell")
+        agent = Entry("pi", "agent", target, pane_target=pane, agent_id="id", status="idle")
+        screen = FakeScreen(size=(9, 40))
+
+        _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order"), agent])
+
+        text = [item[3] for item in screen.calls if item[0] == "addnstr"]
+        self.assertIn("○ pi · idle", text)
+        self.assertIn("  └─ work · shell", text)
 
     def test_agent_entry_can_be_selected_with_mouse(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
@@ -1310,6 +1323,47 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertNotIn("›", row[3])
         self.assertEqual(row[5], 45)
 
+    def test_agent_resize_keys_use_visible_default_as_baseline(self):
+        def run_key(key):
+            screen = FakeScreen([ord(key), ord("q")], size=(24, 40))
+            agent_rows = []
+
+            def draw_spy(*args, **kwargs):
+                bound = inspect.signature(_draw).bind(*args, **kwargs)
+                agent_rows.append(bound.arguments.get("agent_rows"))
+                return _draw(*args, **kwargs)
+
+            poller = unittest.mock.Mock(
+                snapshot=snapshot(),
+                current_target=None,
+                bell_target=None,
+                current_agent=None,
+                pane_active=True,
+            )
+            poller.tick.return_value = False
+            with (
+                patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+                patch("letee.sidebar.curses.curs_set"),
+                patch("letee.sidebar._mouse_mask"),
+                patch("letee.sidebar._init_colors"),
+                patch("letee.sidebar.load_sessions", return_value=[]),
+                patch("letee.sidebar._entries", return_value=[]),
+                patch("letee.sidebar._bell_targets", return_value=set()),
+                patch("letee.sidebar._current_target", return_value=None),
+                patch("letee.sidebar._draw", side_effect=draw_spy),
+            ):
+                run(screen)
+
+            dividers = [
+                call[1]
+                for call in screen.calls
+                if call[0] == "addnstr" and call[3].startswith("AGENTS ")
+            ]
+            return agent_rows, dividers
+
+        self.assertEqual(run_key("["), ([None, 9], [14, 13]))
+        self.assertEqual(run_key("]"), ([None, 7], [14, 15]))
+
     def test_layout_maintainer_repairs_until_stopped(self):
         waits = []
 
@@ -2027,7 +2081,7 @@ class SidebarDrawTest(unittest.TestCase):
                 "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 0, 2, 0, curses.BUTTON1_PRESSED),
-                    (0, 0, 5, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
                     (0, -1, -1, 0, curses.REPORT_MOUSE_POSITION),
                 ],
             ),
