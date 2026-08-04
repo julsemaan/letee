@@ -1,4 +1,5 @@
 import curses
+import inspect
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import subprocess
@@ -1328,7 +1329,8 @@ class SidebarDrawTest(unittest.TestCase):
             agent_rows = []
 
             def draw_spy(*args, **kwargs):
-                agent_rows.append(args[16])
+                bound = inspect.signature(_draw).bind(*args, **kwargs)
+                agent_rows.append(bound.arguments.get("agent_rows"))
                 return _draw(*args, **kwargs)
 
             poller = unittest.mock.Mock(
