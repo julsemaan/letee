@@ -1623,7 +1623,7 @@ def _draw(
     footer_top = h - footer_height
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
-    minimum_agent_rows = 1 + (2 if has_real_agents else 1)
+    minimum_agent_rows = 4 if has_real_agents else 3
     session_top = 3 if filtering else 2
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
@@ -1868,7 +1868,7 @@ def run(stdscr: curses.window) -> None:
                 footer_top = h - footer_height
                 session_top = 3 if state.filtering else 2
                 has_agents = any(entry.kind == "agent" for entry in agent_entries)
-                minimum_agent_rows = 1 + (2 if has_agents else 1)
+                minimum_agent_rows = 4 if has_agents else 3
                 available = footer_top - session_top - 1
                 wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
                 agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
@@ -2036,7 +2036,7 @@ def run(stdscr: curses.window) -> None:
                 footer_top = h - footer_height
                 session_top = 3 if state.filtering else 2
                 has_agents = any(e.kind == "agent" for e in agent_entries)
-                minimum_agent_rows = 1 + (2 if has_agents else 1)
+                minimum_agent_rows = 4 if has_agents else 3
                 available = footer_top - session_top - 1
                 wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
                 agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
@@ -2232,7 +2232,7 @@ def run(stdscr: curses.window) -> None:
                 footer_top = h - footer_height
                 session_top = 3 if state.filtering else 2
                 has_real_agents = any(entry.kind == "agent" for entry in agent_entries)
-                minimum_agent_rows = 1 + (2 if has_real_agents else 1)
+                minimum_agent_rows = 4 if has_real_agents else 3
                 available = footer_top - session_top - 1
                 baseline = max(minimum_agent_rows, round(available * 0.4))
                 current = state.agent_rows if state.agent_rows is not None else baseline
