@@ -5,6 +5,7 @@ import re
 import shlex
 import shutil
 import sys
+from dataclasses import dataclass
 
 from .config import ensure_config, load_prefix, load_sidebar_width
 from .names import DEFAULT_SERVER, Target, parse_target
@@ -75,6 +76,14 @@ CURRENT_TARGET_OPTION = "@letee_current_target"
 CURRENT_AGENT_OPTION = "@letee_current_agent"
 BELL_TARGET_OPTION = "@letee_bell_target"
 NO_COCKPIT = "No valid letee. Run: letee"
+
+
+@dataclass(frozen=True)
+class StatusSnapshot:
+    current_target: Target | None
+    bell_target: Target | None
+    current_agent: str | None
+    pane_active: bool
 
 
 def _letee_command(*args: str) -> str:
@@ -369,14 +378,38 @@ def show_reconnecting(target: Target) -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _reconnecting_command(target))
 
 
-def _target_option(name: str) -> Target | None:
-    text = _option(name)
+def _parse_target_option(text: str) -> Target | None:
     if not text:
         return None
     try:
         return parse_target(text)
     except SystemExit:
         return None
+
+
+def _target_option(name: str) -> Target | None:
+    return _parse_target_option(_option(name))
+
+
+def _parse_status_snapshot(text: str) -> StatusSnapshot | None:
+    fields = text.split("\t")
+    if len(fields) != 5 or fields[0] not in ("0", "1") or fields[4] != ".":
+        return None
+    return StatusSnapshot(
+        _parse_target_option(fields[1]),
+        _parse_target_option(fields[2]),
+        fields[3] or None,
+        fields[0] == "1",
+    )
+
+
+def status_snapshot() -> StatusSnapshot | None:
+    text = tmux.out(
+        "display-message", "-p", "-t", f"{tmux.SESSION}:#{{{SIDEBAR_PANE_OPTION}}}",
+        f"#{{pane_active}}\t#{{{CURRENT_TARGET_OPTION}}}\t#{{{BELL_TARGET_OPTION}}}\t#{{{CURRENT_AGENT_OPTION}}}\t.",
+        check=False,
+    )
+    return _parse_status_snapshot(text)
 
 
 def current_target() -> Target | None:

@@ -572,6 +572,37 @@ class CockpitLayoutTest(unittest.TestCase):
 
         out.assert_called_once_with("display-message", "-p", "-t", "%1", "#{pane_active}", check=False)
 
+    def test_status_snapshot_reads_all_runtime_state_with_one_tmux_call(self):
+        with patch.object(cockpit.tmux, "out", return_value="1\tlocal:work\tssh:dev:bell\tagent-1\t.") as out:
+            status = cockpit.status_snapshot()
+
+        self.assertEqual(
+            status,
+            cockpit.StatusSnapshot(
+                Target("local", "work"),
+                Target("ssh", "bell", "dev"),
+                "agent-1",
+                True,
+            ),
+        )
+        self.assertEqual(out.call_count, 1)
+        self.assertEqual(out.call_args.args[:4], ("display-message", "-p", "-t", "letee:#{@letee_sidebar_pane}"))
+
+    def test_status_snapshot_accepts_empty_options(self):
+        with patch.object(cockpit.tmux, "out", return_value="1\t\t\t\t."):
+            self.assertEqual(
+                cockpit.status_snapshot(),
+                cockpit.StatusSnapshot(None, None, None, True),
+            )
+
+    def test_status_snapshot_ignores_invalid_targets_and_malformed_output(self):
+        with patch.object(cockpit.tmux, "out", return_value="1\tbad\tssh:nope\tagent-1\t."):
+            status = cockpit.status_snapshot()
+        self.assertEqual(status, cockpit.StatusSnapshot(None, None, "agent-1", True))
+
+        with patch.object(cockpit.tmux, "out", return_value="malformed"):
+            self.assertIsNone(cockpit.status_snapshot())
+
     def test_install_bell_hook_enables_outer_tmux_bells(self):
         calls = []
 

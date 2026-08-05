@@ -925,6 +925,52 @@ class SidebarStateTest(unittest.TestCase):
 
 
 class AsyncSidebarWorkTest(unittest.TestCase):
+    def test_status_poller_uses_batched_cockpit_snapshot(self):
+        target = Target("local", "work")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("work",)))
+        status = sidebar.AsyncStatusPoller(poller, target)
+        try:
+            with (
+                patch.object(
+                    sidebar.cockpit,
+                    "status_snapshot",
+                    return_value=sidebar.cockpit.StatusSnapshot(target, target, "agent", False),
+                ) as read,
+                patch.object(sidebar, "_current_target") as legacy_target,
+                patch.object(sidebar, "_pane_active") as legacy_activity,
+            ):
+                result = status._sample((), 0)
+        finally:
+            status.close()
+
+        read.assert_called_once_with()
+        legacy_target.assert_not_called()
+        legacy_activity.assert_not_called()
+        self.assertEqual(
+            (result.current_target, result.bell_target, result.current_agent, result.pane_active),
+            (target, target, "agent", False),
+        )
+
+    def test_status_query_failure_retains_last_known_state(self):
+        target = Target("local", "work")
+        bell = Target("local", "bell")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("work",)))
+        status = sidebar.AsyncStatusPoller(poller, target)
+        status.bell_target = bell
+        status.current_agent = "agent"
+        status.pane_active = False
+        try:
+            with patch.object(sidebar.cockpit, "status_snapshot", side_effect=OSError("tmux unavailable")):
+                result = status._sample((), 0)
+        finally:
+            status.close()
+
+        self.assertEqual(
+            (result.current_target, result.bell_target, result.current_agent, result.pane_active),
+            (target, bell, "agent", False),
+        )
+        poller.tick.assert_not_called()
+
     def test_completed_switch_does_not_overwrite_newer_favorite_changes(self):
         old = Target("local", "old")
         newer = Target("local", "newer")
@@ -1096,11 +1142,10 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             {},
         )
 
-        with (
-            patch("letee.sidebar._current_target", return_value=target),
-            patch("letee.sidebar.cockpit.bell_target", return_value=None),
-            patch("letee.sidebar.cockpit.current_agent", return_value="stored"),
-            patch("letee.sidebar._pane_active", return_value=True),
+        with patch.object(
+            sidebar.cockpit,
+            "status_snapshot",
+            return_value=sidebar.cockpit.StatusSnapshot(target, None, "stored", True),
         ):
             status = sidebar.AsyncStatusPoller(poller, target)
             try:
@@ -1185,11 +1230,10 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             def close(self):
                 pass
 
-        with (
-            patch("letee.sidebar._current_target", return_value=target),
-            patch("letee.sidebar.cockpit.bell_target", return_value=target),
-            patch("letee.sidebar.cockpit.current_agent", return_value="stale-agent"),
-            patch("letee.sidebar._pane_active", return_value=False),
+        with patch.object(
+            sidebar.cockpit,
+            "status_snapshot",
+            return_value=sidebar.cockpit.StatusSnapshot(target, target, "stale-agent", False),
         ):
             poller = sidebar.AsyncStatusPoller(BlockingPoller(), None)
             try:
