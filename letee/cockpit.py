@@ -393,20 +393,21 @@ def _target_option(name: str) -> Target | None:
 
 def _parse_status_snapshot(text: str) -> StatusSnapshot | None:
     fields = text.split("\t")
-    if len(fields) != 5 or fields[0] not in ("0", "1") or fields[4] != ".":
+    if len(fields) != 6 or fields[5] != ".":
         return None
+    active_pane, sidebar_pane, current_target, bell_target, current_agent, _ = fields
     return StatusSnapshot(
-        _parse_target_option(fields[1]),
-        _parse_target_option(fields[2]),
-        fields[3] or None,
-        fields[0] == "1",
+        _parse_target_option(current_target),
+        _parse_target_option(bell_target),
+        current_agent or None,
+        not sidebar_pane or active_pane == sidebar_pane,
     )
 
 
 def status_snapshot() -> StatusSnapshot | None:
     text = tmux.out(
-        "display-message", "-p", "-t", f"{tmux.SESSION}:#{{{SIDEBAR_PANE_OPTION}}}",
-        f"#{{pane_active}}\t#{{{CURRENT_TARGET_OPTION}}}\t#{{{BELL_TARGET_OPTION}}}\t#{{{CURRENT_AGENT_OPTION}}}\t.",
+        "display-message", "-p", "-t", TARGET,
+        f"#{{pane_id}}\t#{{{SIDEBAR_PANE_OPTION}}}\t#{{{CURRENT_TARGET_OPTION}}}\t#{{{BELL_TARGET_OPTION}}}\t#{{{CURRENT_AGENT_OPTION}}}\t.",
         check=False,
     )
     return _parse_status_snapshot(text)
