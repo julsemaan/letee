@@ -288,7 +288,7 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     if interactive:
         print("Preparing SSH access before opening letee.", flush=True)
-        print("Enter key passphrase if OpenSSH asks. Successfully used keys will be saved in SSH agent.", flush=True)
+        print("Enter key passphrase if OpenSSH asks. If an SSH agent is available, successfully used keys will be saved in it.", flush=True)
         print("Press Ctrl-C to cancel.", flush=True)
     agent_ready = sessions.ensure_ssh_agent()
     if not interactive:
