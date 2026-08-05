@@ -6,9 +6,9 @@ import shlex
 import shutil
 import sys
 
-from .config import ensure_config, load_prefix, load_sidebar_width
+from .config import ensure_config, load_hosts, load_prefix, load_sidebar_width
 from .names import DEFAULT_SERVER, Target, parse_target
-from . import tmux
+from . import sessions, tmux
 
 
 def _truecolor_enabled() -> bool:
@@ -282,12 +282,51 @@ def _attach() -> int:
     return 0
 
 
+def _prepare_remote_hosts(hosts: list[str]) -> None:
+    if not hosts:
+        return
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if interactive:
+        print("Preparing SSH access before opening letee.", flush=True)
+        print("Enter key passphrase if OpenSSH asks. Successfully used keys will be saved in SSH agent.", flush=True)
+        print("Press Ctrl-C to cancel.", flush=True)
+    agent_ready = sessions.ensure_ssh_agent()
+    if not interactive:
+        print("Skipping interactive SSH checks: non-TTY startup (not attached to a TTY).", flush=True)
+        return
+    if agent_ready:
+        print("SSH agent: ready", flush=True)
+    else:
+        print("SSH agent: unavailable; passphrases may repeat.", flush=True)
+
+    ready = 0
+    failed: list[str] = []
+    for index, host in enumerate(hosts, 1):
+        print(f"[{index}/{len(hosts)}] {host} — connecting...", flush=True)
+        if sessions.prepare_host(host):
+            ready += 1
+            print(f"[{index}/{len(hosts)}] {host} — ready", flush=True)
+        else:
+            failed.append(host)
+            print(f"[{index}/{len(hosts)}] {host} — failed", flush=True)
+    print(f"SSH check complete: {ready} ready, {len(failed)} failed.", flush=True)
+    if failed:
+        print(f"Failed hosts remain unavailable. Run `ssh {failed[0]}` to diagnose.", flush=True)
+    print("Starting letee...", flush=True)
+
+
 def cockpit() -> int:
     ensure_config()
     width = shutil.get_terminal_size((80, 24)).columns
     if width < 90:
         print("Terminal too narrow for letee: need at least 90 columns.", file=sys.stderr)
         return 2
+    hosts = load_hosts()
+    try:
+        _prepare_remote_hosts(hosts)
+    except KeyboardInterrupt:
+        print("\nSSH preparation canceled.", file=sys.stderr, flush=True)
+        return 130
     ensure_cockpit()
     return _attach()
 

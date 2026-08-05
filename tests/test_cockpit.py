@@ -5,6 +5,156 @@ from letee import cockpit
 from letee.names import Target
 
 
+class CockpitStartupTest(unittest.TestCase):
+    def test_agent_and_hosts_prepare_before_cockpit_creation(self):
+        events = []
+
+        def prepare(host):
+            events.append(("host", host))
+            return True
+
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=["dev", "prod"]),
+            patch.object(cockpit.sessions, "ensure_ssh_agent", side_effect=lambda: events.append(("agent",)) or "/tmp/agent"),
+            patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
+            patch.object(cockpit, "ensure_cockpit", side_effect=lambda: events.append(("cockpit",))),
+            patch.object(cockpit, "_attach", return_value=0),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+        ):
+            self.assertEqual(cockpit.cockpit(), 0)
+
+        self.assertEqual(
+            events,
+            [("agent",), ("host", "dev"), ("host", "prod"), ("cockpit",)],
+        )
+
+    def test_progress_is_flushed_before_each_blocking_host_check(self):
+        events = []
+
+        def print_call(*args, **kwargs):
+            events.append(("print", args[0], kwargs.get("flush")))
+
+        def prepare(host):
+            events.append(("ssh", host))
+            return True
+
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=["dev"]),
+            patch.object(cockpit.sessions, "ensure_ssh_agent", return_value="/tmp/agent"),
+            patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
+            patch.object(cockpit, "ensure_cockpit"),
+            patch.object(cockpit, "_attach", return_value=0),
+            patch("builtins.print", side_effect=print_call),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+        ):
+            cockpit.cockpit()
+
+        ssh_index = events.index(("ssh", "dev"))
+        connecting = events[:ssh_index]
+        self.assertTrue(any(item[0] == "print" and "connecting" in item[1] and item[2] for item in connecting))
+
+    def test_partial_failure_summary_contains_recovery_command(self):
+        output = []
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=["dev", "prod"]),
+            patch.object(cockpit.sessions, "ensure_ssh_agent", return_value=None),
+            patch.object(cockpit.sessions, "prepare_host", side_effect=[True, False]),
+            patch.object(cockpit, "ensure_cockpit"),
+            patch.object(cockpit, "_attach", return_value=0),
+            patch("builtins.print", side_effect=lambda *args, **kwargs: output.append(str(args[0]))),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+        ):
+            self.assertEqual(cockpit.cockpit(), 0)
+
+        text = "\n".join(output)
+        self.assertIn("SSH agent: unavailable", text)
+        self.assertIn("SSH check complete: 1 ready, 1 failed.", text)
+        self.assertIn("ssh prod", text)
+        self.assertIn("Starting letee...", text)
+
+    def test_all_hosts_are_attempted_sequentially_after_agent_setup(self):
+        order = []
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=["one", "two", "three"]),
+            patch.object(cockpit.sessions, "ensure_ssh_agent", side_effect=lambda: order.append("agent") or "/tmp/agent"),
+            patch.object(cockpit.sessions, "prepare_host", side_effect=lambda host: order.append(host) or host != "two"),
+            patch.object(cockpit, "ensure_cockpit", side_effect=lambda: order.append("cockpit")),
+            patch.object(cockpit, "_attach", return_value=0),
+            patch("builtins.print"),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+        ):
+            cockpit.cockpit()
+
+        self.assertEqual(order, ["agent", "one", "two", "three", "cockpit"])
+
+    def test_no_hosts_skips_ssh_setup_silently(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=[]),
+            patch.object(cockpit.sessions, "ensure_ssh_agent") as ensure_agent,
+            patch.object(cockpit.sessions, "prepare_host") as prepare_host,
+            patch.object(cockpit, "ensure_cockpit"),
+            patch.object(cockpit, "_attach", return_value=0),
+            patch("builtins.print") as print_,
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+        ):
+            self.assertEqual(cockpit.cockpit(), 0)
+
+        ensure_agent.assert_not_called()
+        prepare_host.assert_not_called()
+        print_.assert_not_called()
+
+    def test_non_tty_reports_skip_and_does_not_prompt(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=["dev"]),
+            patch.object(cockpit.sessions, "ensure_ssh_agent") as ensure_agent,
+            patch.object(cockpit.sessions, "prepare_host") as prepare_host,
+            patch.object(cockpit, "ensure_cockpit"),
+            patch.object(cockpit, "_attach", return_value=0),
+            patch("builtins.print") as print_,
+            patch.object(cockpit.sys.stdin, "isatty", return_value=False),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+        ):
+            self.assertEqual(cockpit.cockpit(), 0)
+
+        ensure_agent.assert_called_once_with()
+        prepare_host.assert_not_called()
+        self.assertIn("not attached to a TTY", "\n".join(str(call.args[0]) for call in print_.call_args_list))
+
+    def test_ctrl_c_prevents_cockpit_creation(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=["dev"]),
+            patch.object(cockpit.sessions, "ensure_ssh_agent", return_value="/tmp/agent"),
+            patch.object(cockpit.sessions, "prepare_host", side_effect=KeyboardInterrupt),
+            patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
+            patch.object(cockpit, "_attach", return_value=0),
+            patch("builtins.print"),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+        ):
+            self.assertEqual(cockpit.cockpit(), 130)
+
+        ensure_cockpit.assert_not_called()
+
+
 class CockpitLayoutTest(unittest.TestCase):
     def test_attach_detaches_existing_cockpit_client(self):
         with (
