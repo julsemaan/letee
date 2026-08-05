@@ -53,7 +53,7 @@ letee -L work kill-server
 - kill and remove active session: `C-s x` (confirmation required)
 - jump to first alerted agent: `C-s !`
 - focus active session: `C-s w`
-- hide sidebar: `C-s h`
+- hide/show sidebar: `C-s h`
 - quit cockpit: `C-s q`
 - show help: `C-s ?`
 - detach letee: `C-s d`
@@ -62,6 +62,8 @@ letee -L work kill-server
 - outer status: off
 - left pane: `letee` sidebar, 40 columns by default
 - right pane: selected local/remote tmux attach client
+
+`C-s h` zooms the right pane instead of killing the sidebar. Sidebar process stays alive while hidden, preserving selection, polling, and alerts. `C-s a`, `C-s s`, and `C-s +` restore visible layout while focusing Agents, focusing Sessions, or opening Add session menu.
 
 Inner local and remote sessions keep their normal tmux prefix and bindings, and remain alive when you switch away. Only letee's outer `prefix` key table is restricted.
 
@@ -126,14 +128,14 @@ letee -L <name> kill-server
 
 ## Sidebar keys
 
-- `C-s s`: focus Sessions; recreates sidebar if quit
-- `C-s +`: focus Sessions and open Add session menu
-- `C-s a`: focus Agents; recreates sidebar if quit
+- `C-s s`: show sidebar and focus Sessions; recreates sidebar if quit
+- `C-s +`: show sidebar and open Add session menu; recreates sidebar if quit
+- `C-s a`: show sidebar and focus Agents; recreates sidebar if quit
 - `C-s r`: remove active right-pane session from letee without killing tmux session
 - `C-s x`: kill and remove active right-pane session after `y/N` confirmation
 - `C-s !`: show Agents and jump to first alerted agent; no alert leaves right pane focused
 - `C-s w`: focus right pane
-- `C-s h`: hide sidebar
+- `C-s h`: hide/show sidebar; sidebar remains alive while hidden
 - `C-s q`: quit outer letee
 - `C-s ?`: show help in right pane
 - `C-s d`: detach outer letee
