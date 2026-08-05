@@ -872,26 +872,23 @@ class AsyncStatusPoller:
                     self._poller.discard(target)
                 elif command == "refresh":
                     self._poller.refresh()
-            current_target = _current_target()
+            status = cockpit.status_snapshot()
+            if status is None:
+                raise SystemExit("invalid cockpit status snapshot")
+            current_target = status.current_target if status.current_target is not None else self.current_target
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
+            bell_target = status.bell_target
+            stored_agent = status.current_agent
+            pane_active = status.pane_active
         except (OSError, SystemExit, subprocess.SubprocessError):
             current_target = self.current_target
-        try:
-            bell_target = cockpit.bell_target()
-        except (OSError, SystemExit, subprocess.SubprocessError):
             bell_target = self.bell_target
-        try:
-            stored_agent = cockpit.current_agent()
-        except (OSError, SystemExit, subprocess.SubprocessError):
             stored_agent = self.current_agent
+            pane_active = self.pane_active
         current_agent = _focused_agent_id(
             self._poller.snapshot, current_target, stored_agent
         )
-        try:
-            pane_active = _pane_active()
-        except (OSError, SystemExit, subprocess.SubprocessError):
-            pane_active = self.pane_active
         return StatusResult(
             self._poller.snapshot,
             current_target,
