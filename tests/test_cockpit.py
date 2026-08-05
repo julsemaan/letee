@@ -137,6 +137,18 @@ class CockpitStartupTest(unittest.TestCase):
         prepare_host.assert_not_called()
         self.assertIn("not attached to a TTY", "\n".join(str(call.args[0]) for call in print_.call_args_list))
 
+    def test_stdout_redirect_does_not_skip_interactive_ssh_checks(self):
+        with (
+            patch.object(cockpit.sessions, "ensure_ssh_agent", return_value="/tmp/agent"),
+            patch.object(cockpit.sessions, "prepare_host", return_value=True) as prepare_host,
+            patch("builtins.print"),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=False),
+        ):
+            cockpit._prepare_remote_hosts(["dev"])
+
+        prepare_host.assert_called_once_with("dev")
+
     def test_ctrl_c_prevents_cockpit_creation(self):
         with (
             patch.object(cockpit, "ensure_config"),

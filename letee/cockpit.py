@@ -285,7 +285,7 @@ def _attach() -> int:
 def _prepare_remote_hosts(hosts: list[str]) -> None:
     if not hosts:
         return
-    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    interactive = sys.stdin.isatty()
     if interactive:
         print("Preparing SSH access before opening letee.", flush=True)
         print("Enter key passphrase if OpenSSH asks. If an SSH agent is available, successfully used keys will be saved in it.", flush=True)
