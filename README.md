@@ -93,6 +93,10 @@ Hosts are SSH aliases only. Keep host-specific users, ports, keys, proxies, IPv6
 
 By default, letee makes OpenSSH reuse one authenticated transport per host with `ControlMaster=auto`, `ControlPersist=10m`, and `ControlPath=~/.ssh/letee-%C`. Later discovery polls, switches, creates, and kills avoid repeating TCP setup, key exchange, and authentication. Control sockets remain for 10 minutes after last use.
 
+Interactive startup blocks before opening cockpit while it checks configured hosts sequentially. Enter passphrases when OpenSSH asks; failed hosts remain unavailable, and diagnostics suggest running `ssh <host>` directly. Preflight disables multiplexing, so an existing control connection cannot bypass authentication. Non-TTY startup skips these interactive checks and reports why. No configured hosts means no SSH setup output.
+
+Letee reuses reachable inherited `SSH_AUTH_SOCK`. When none is usable, it starts or reuses persistent fallback agent socket `~/.ssh/letee-agent.sock`; its unlocked keys survive later letee launches while agent stays alive. Shared SSH options include `AddKeysToAgent=yes`, so successfully used file-backed keys are cached in agent. Hardware-backed keys and keys requiring confirmation may still prompt for each use.
+
 Every letee SSH connection also uses `ServerAliveInterval=60` and `ServerAliveCountMax=3` to detect dead connections and keep idle sessions active through network and NAT timeouts. Keepalive remains enabled when `persistent_ssh` is disabled.
 
 To omit letee's persistence options, set:
