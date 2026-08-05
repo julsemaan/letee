@@ -875,7 +875,7 @@ class AsyncStatusPoller:
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
-            current_target = status.current_target
+            current_target = status.current_target if status.current_target is not None else self.current_target
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
             bell_target = status.bell_target

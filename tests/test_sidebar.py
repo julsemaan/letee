@@ -951,6 +951,25 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             (target, target, "agent", False),
         )
 
+    def test_status_poller_preserves_last_known_target_when_snapshot_omits_target(self):
+        target = Target("ssh", "work", "dev")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        )
+        status = sidebar.AsyncStatusPoller(poller, target)
+        try:
+            with patch.object(
+                sidebar.cockpit,
+                "status_snapshot",
+                return_value=sidebar.cockpit.StatusSnapshot(None, None, None, True),
+            ):
+                result = status._sample((), 0)
+        finally:
+            status.close()
+
+        self.assertEqual(result.current_target, target)
+        poller.tick.assert_called_once_with("dev")
+
     def test_status_query_failure_retains_last_known_state(self):
         target = Target("local", "work")
         bell = Target("local", "bell")
