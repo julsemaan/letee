@@ -166,7 +166,10 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(agents["malformed"].activity_timestamp, agents["malformed"].runtime_updated_at)
 
     def test_ssh_command_uses_shared_keepalive_with_optional_persistence(self):
-        keepalive = ("-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3")
+        keepalive = (
+            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "AddKeysToAgent=yes",
+        )
         discovery = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "dev", REMOTE_COMMAND)
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
