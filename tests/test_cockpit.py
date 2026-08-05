@@ -368,7 +368,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("unbind-key", "-a", "-T", "prefix"),
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "d", "detach-client"),
-                ("bind-key", "h", "kill-pane", "-t", "%1"),
+                ("bind-key", "h", "resize-pane", "-Z", "-t", "%2"),
                 ("bind-key", "q", "kill-session", "-t", "letee"),
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
@@ -504,7 +504,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x x  kill and remove active session", command)
         self.assertIn("C-x !  jump to first alerted agent", command)
         self.assertIn("C-x w  focus right pane", command)
-        self.assertIn("C-x h  hide sidebar", command)
+        self.assertIn("C-x h  hide/show sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)
         self.assertIn("C-x 1-9  switch session", command)
         self.assertIn("C-x ?  open help", command)
