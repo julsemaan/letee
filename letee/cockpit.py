@@ -32,22 +32,18 @@ Navigation
   {prefix} q  quit cockpit
   {prefix} 1-9  switch session
   {prefix} ?  open help
-  ?      open help from sidebar
-  q      quit sidebar only
 
 Session actions
   Enter  activate selected row
-  a      open Add session menu
   r      remove selected session (session keeps running)
   K/J    move session up/down
   x      kill and remove selected session
   Right-click  open session Remove/Kill menu
-  /      search untracked existing sessions
 
 Agent actions
   j/k    navigate agents
   Enter  switch to agent pane
-  h/l    cycle ordering on selected ordering row (Priority / Session)
+  Left/Right  cycle ordering on selected ordering row (Priority / Session)
   [ / ]  resize agent panel
 
 Recovery
@@ -55,10 +51,9 @@ Recovery
   {prefix} s  restart/focus Sessions
   {prefix} a  restart/focus Agents
   {prefix} +  open Add session menu
-  Esc    cancel prompts/filter
+  Esc/Ctrl-C  cancel prompts/filter
 
 Examples
-  /work  find available sessions matching work
   Enter  recreate missing session or activate selected Add row
 """
     return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
@@ -349,7 +344,7 @@ def focus_sidebar(region: str = "sessions") -> int:
     keys = {
         "sessions": ("F6",),
         "agents": ("F7",),
-        "add": ("F6", "a"),
+        "add": ("F11",),
         "remove": ("F6", SIDEBAR_ACTION_KEYS["remove"]),
         "kill": ("F6", SIDEBAR_ACTION_KEYS["kill"]),
         "alert": ("F7", SIDEBAR_ACTION_KEYS["alert"]),
@@ -382,10 +377,6 @@ def switch(target: Target, attach_command: str, agent_id: str | None = None) -> 
     tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
     tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command)
     tmux.tmux("select-pane", "-t", pane)
-
-
-def show_help() -> None:
-    tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), help_command(load_prefix()))
 
 
 def _tmux_supports_menu_mouse() -> bool:

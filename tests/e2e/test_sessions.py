@@ -202,8 +202,9 @@ def test_tui_add_session(client: TmuxTestClient) -> None:
     client.start_cockpit(env=env)
     assert client.wait_for_sidebar_text("letee", timeout=10)
 
-    # Press 'a' to open Add picker
-    _send_sidebar(client, "a")
+    # Use outer prefix C-s + to open Add picker
+    client.send_special("C-s")
+    client.send_keys("+")
     time.sleep(0.3)
 
     # Sole localhost entry enters creation mode automatically.

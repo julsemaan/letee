@@ -438,7 +438,7 @@ class CockpitLayoutTest(unittest.TestCase):
             tmux_call.call_args_list,
             [
                 unittest.mock.call("select-pane", "-t", "%7"),
-                unittest.mock.call("send-keys", "-t", "%7", "F6", "a"),
+                unittest.mock.call("send-keys", "-t", "%7", "F11"),
             ],
         )
 
@@ -522,9 +522,13 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x ?  open help", command)
         self.assertIn("K/J    move session up/down", command)
         self.assertIn("Agent actions", command)
-        self.assertIn("h/l    cycle ordering on selected ordering row", command)
+        self.assertIn("Left/Right  cycle ordering on selected ordering row", command)
         self.assertIn("Enter  activate selected row", command)
-        self.assertIn("a      open Add session menu", command)
+        self.assertNotIn("a      open Add session menu", command)
+        self.assertNotIn("?      open help from sidebar", command)
+        self.assertNotIn("q      quit sidebar only", command)
+        self.assertNotIn("/      search untracked existing sessions", command)
+        self.assertNotIn("/work  find available sessions matching work", command)
         self.assertNotIn("n      open grouped local/SSH Add picker", command)
         self.assertIn("r      remove selected session", command)
         self.assertIn("x      kill and remove selected session", command)
@@ -690,18 +694,6 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
         self.assertIn("Session ssh:dev:work is unavailable.", command[4])
         self.assertIn("Select another session", command[4])
-
-    def test_show_help_respawns_right_pane(self):
-        with (
-            patch.object(cockpit, "right_pane", return_value="%2"),
-            patch.object(cockpit, "load_prefix", return_value="C-x"),
-            patch.object(cockpit.tmux, "tmux") as tmux_call,
-        ):
-            cockpit.show_help()
-
-        command = tmux_call.call_args.args
-        self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
-        self.assertIn("C-x s  focus/open Sessions", command[4])
 
     def test_current_target_recovers_from_right_pane_command(self):
         with (
