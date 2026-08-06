@@ -172,8 +172,8 @@ class DiscoverySnapshotTest(unittest.TestCase):
         )
         discovery = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "dev", REMOTE_COMMAND)
         persistence = (
-            "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
-            "-o", "ControlPath=~/.ssh/letee-%C",
+            "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
+            "-o", "ControlPersist=10m",
         )
         self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
         self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
