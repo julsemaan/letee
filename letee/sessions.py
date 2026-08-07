@@ -27,6 +27,10 @@ MULTIPLEX_OPTIONS = (
     "-o", "ControlMaster=auto",
     "-o", "ControlPath=~/.ssh/letee-%C",
 )
+INTERACTIVE_OPTIONS = (
+    "-o", "ControlMaster=no",
+    "-o", "ControlPath=none",
+)
 PERSIST_OPTIONS = (
     "-o", "ControlPersist=10m",
 )
@@ -176,10 +180,12 @@ def bootstrap_hosts(hosts: Iterable[str]) -> list[bool]:
 def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: bool = False) -> tuple[str, ...]:
     if persistent_ssh is None:
         persistent_ssh = load_persistent_ssh()
-    # ponytail: same ControlPersist=no on attach for all OpenSSH versions;
-    # version detection would add branches without changing the fix
-    persist = () if not persistent_ssh else (("-o", "ControlPersist=no") if interactive else PERSIST_OPTIONS)
-    multiplex = MULTIPLEX_OPTIONS if persistent_ssh else ()
+    if interactive:
+        multiplex = INTERACTIVE_OPTIONS
+        persist = ()
+    else:
+        multiplex = MULTIPLEX_OPTIONS if persistent_ssh else ()
+        persist = PERSIST_OPTIONS if persistent_ssh else ()
     return ("ssh", *SSH_OPTIONS, *multiplex, *persist, *args)
 
 
