@@ -30,7 +30,6 @@ MULTIPLEX_OPTIONS = (
 PERSIST_OPTIONS = (
     "-o", "ControlPersist=10m",
 )
-PERSISTENT_SSH_OPTIONS = MULTIPLEX_OPTIONS + PERSIST_OPTIONS
 
 
 def _agent_reachable(socket_path: str) -> bool | None:
