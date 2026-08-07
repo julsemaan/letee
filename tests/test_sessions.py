@@ -21,13 +21,41 @@ class SessionOperationsTest(unittest.TestCase):
             ssh_command("-t", "dev", "remote command", persistent_ssh=True),
             (
                 "ssh", *shared,
-                "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
-                "-o", "ControlPath=~/.ssh/letee-%C", "-t", "dev", "remote command",
+                "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
+                "-o", "ControlPersist=10m", "-t", "dev", "remote command",
             ),
         )
         self.assertEqual(
             ssh_command("-t", "dev", "remote command", persistent_ssh=False),
             ("ssh", *shared, "-t", "dev", "remote command"),
+        )
+
+    def test_ssh_command_interactive_disables_multiplexing(self):
+        shared = (
+            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "AddKeysToAgent=yes",
+        )
+        self.assertEqual(
+            ssh_command("-t", "dev", "remote command", persistent_ssh=True, interactive=True),
+            (
+                "ssh", *shared,
+                "-o", "ControlMaster=no", "-o", "ControlPath=none",
+                "-t", "dev", "remote command",
+            ),
+        )
+
+    def test_ssh_command_non_interactive_keeps_persist_options(self):
+        shared = (
+            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "AddKeysToAgent=yes",
+        )
+        self.assertEqual(
+            ssh_command("dev", "remote command", persistent_ssh=True),
+            (
+                "ssh", *shared,
+                "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
+                "-o", "ControlPersist=10m", "dev", "remote command",
+            ),
         )
 
     def test_attach_commands_quote_local_and_remote_targets(self):
@@ -38,7 +66,7 @@ class SessionOperationsTest(unittest.TestCase):
         with patch("letee.sessions.load_persistent_ssh", return_value=True):
             self.assertEqual(
                 attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o ControlPath=none -t dev 'tmux -T clipboard new-session -A -s work'",
             )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
@@ -51,7 +79,7 @@ class SessionOperationsTest(unittest.TestCase):
         with patch("letee.sessions.load_persistent_ssh", return_value=False):
             self.assertEqual(
                 pane_attach_command(remote),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o ControlPath=none -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
             )
 
     def test_kill_local_session_uses_default_server(self):
@@ -101,8 +129,9 @@ class SessionOperationsTest(unittest.TestCase):
             [
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
-                    "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto", "-o", "ControlPersist=10m",
-                    "-o", "ControlPath=~/.ssh/letee-%C", "dev", "tmux new-session -d -s work.one",
+                    "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
+                    "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
+                    "dev", "tmux new-session -d -s work.one",
                 ),
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",

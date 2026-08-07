@@ -23,10 +23,16 @@ SSH_OPTIONS = (
     "-o", "ServerAliveCountMax=3",
     "-o", "AddKeysToAgent=yes",
 )
-PERSISTENT_SSH_OPTIONS = (
+MULTIPLEX_OPTIONS = (
     "-o", "ControlMaster=auto",
-    "-o", "ControlPersist=10m",
     "-o", "ControlPath=~/.ssh/letee-%C",
+)
+INTERACTIVE_OPTIONS = (
+    "-o", "ControlMaster=no",
+    "-o", "ControlPath=none",
+)
+PERSIST_OPTIONS = (
+    "-o", "ControlPersist=10m",
 )
 
 
@@ -171,10 +177,16 @@ def bootstrap_hosts(hosts: Iterable[str]) -> list[bool]:
     return [prepare_host(host) for host in hosts]
 
 
-def ssh_command(*args: str, persistent_ssh: bool | None = None) -> tuple[str, ...]:
+def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: bool = False) -> tuple[str, ...]:
     if persistent_ssh is None:
         persistent_ssh = load_persistent_ssh()
-    return ("ssh", *SSH_OPTIONS, *(PERSISTENT_SSH_OPTIONS if persistent_ssh else ()), *args)
+    if interactive:
+        multiplex = INTERACTIVE_OPTIONS
+        persist = ()
+    else:
+        multiplex = MULTIPLEX_OPTIONS if persistent_ssh else ()
+        persist = PERSIST_OPTIONS if persistent_ssh else ()
+    return ("ssh", *SSH_OPTIONS, *multiplex, *persist, *args)
 
 
 def _default_server_env() -> dict[str, str]:
@@ -187,7 +199,7 @@ def attach_command(target: Target) -> str:
     session = shlex.quote(target.session)
     if target.kind == "local":
         return f"env -u TMUX tmux -T clipboard new-session -A -s {session}"
-    return shlex.join(ssh_command("-t", target.host or "", f"tmux -T clipboard new-session -A -s {session}"))
+    return shlex.join(ssh_command("-t", target.host or "", f"tmux -T clipboard new-session -A -s {session}", interactive=True))
 
 
 def pane_attach_command(pane_target: PaneTarget) -> str:
@@ -200,7 +212,7 @@ def pane_attach_command(pane_target: PaneTarget) -> str:
     )
     if target.kind == "local":
         return f"env -u TMUX {command}"
-    return shlex.join(ssh_command("-t", target.host or "", command))
+    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
 
 
 def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> None:
