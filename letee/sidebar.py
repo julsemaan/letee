@@ -37,6 +37,7 @@ ASCII_STATUS_ICONS = {
     "auth-required": "@", "failed": "x", "rejected": "!", "canceled": "-", "unknown": "?",
 }
 _PREFIX_ACTION_KEYS = {
+    "add": curses.KEY_F11,
     "remove": curses.KEY_F8,
     "kill": curses.KEY_F9,
     "alert": curses.KEY_F10,
@@ -47,8 +48,8 @@ _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 @dataclass(frozen=True)
 class Effect:
     kind: Literal[
-        "switch", "switch_pane", "add_switch", "create", "kill", "help",
-        "save_favorites", "status", "quit", "show_reconnecting", "show_missing",
+        "switch", "switch_pane", "add_switch", "create", "kill",
+        "save_favorites", "status", "show_reconnecting", "show_missing",
         "show_unavailable",
     ]
     target: Target | PaneTarget | None = None
@@ -671,8 +672,6 @@ def _transition(
         state.favorites[index], state.favorites[new_index] = state.favorites[new_index], state.favorites[index]
         direction = "up" if offset < 0 else "down"
         return Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()} {direction}")
-    if action in ("help", "quit"):
-        return Effect(action)
     return None
 
 
@@ -726,8 +725,6 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             sessions.kill(effect.target)
             if planned != favorites:
                 save_sessions(list(planned))
-        elif effect.kind == "help":
-            cockpit.show_help()
         elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
             cockpit.show_reconnecting(effect.target)
         elif effect.kind == "show_missing" and isinstance(effect.target, Target):
@@ -786,7 +783,7 @@ def _apply_effect(
         _set_status(state, effect.message, status_timeout)
     elif effect.kind == "status":
         _set_status(state, effect.message, status_timeout)
-    return effect.kind == "quit"
+    return False
 
 
 def _execute(effect: Effect, state: SidebarState, poller: DiscoveryPoller, status_timeout: float) -> bool:
@@ -1511,7 +1508,7 @@ def _draw_footer(
     elif adding:
         logical_rows = [f"{'Enter' if _ascii() else '↵'} select · Esc back" if not _ascii() else "Enter select  Esc back"]
     else:
-        logical_rows = [f"{'Enter' if _ascii() else '↵'} activate  ? help  q close"]
+        logical_rows = [f"{'Enter' if _ascii() else '↵'} activate"]
     width = max(1, w - 1)
     lines = [line for logical_row in logical_rows for line in (textwrap.wrap(logical_row, width=width) or [""])]
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
@@ -1716,21 +1713,22 @@ def run(stdscr: curses.window) -> None:
     def queue_effect(effect: Effect) -> bool:
         return actions.submit(effect, tuple(state.favorites))
 
-    def dispatch(effect: Effect) -> bool:
+    def dispatch(effect: Effect) -> None:
         nonlocal pending_navigation
         if effect.kind == "save_favorites":
-            return _execute(effect, state, poller, status_timeout)
-        if effect.kind in ("quit", "status"):
-            return _apply_effect(
+            _execute(effect, state, poller, status_timeout)
+            return
+        if effect.kind == "status":
+            _apply_effect(
                 EffectResult(effect, tuple(state.favorites)), state, poller, status_timeout
             )
+            return
         if not queue_effect(effect):
             show_status("another action is still running")
         elif effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
             pending_navigation = (effect.target, None)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             pending_navigation = (effect.target.target, effect.message or None)
-        return False
 
     def rebuild() -> None:
         nonlocal entries, agent_entries
@@ -1753,6 +1751,12 @@ def run(stdscr: curses.window) -> None:
         state.scroll_offset = None
 
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
+        if action == "add":
+            _open_add(state)
+            state.focused_region = "sessions"
+            curses.curs_set(0)
+            rebuild()
+            return None
         if state.add_view is not None:
             _reset_add(state)
             curses.curs_set(0)
@@ -1961,6 +1965,9 @@ def run(stdscr: curses.window) -> None:
                 key = 3
             if key == -1:
                 continue
+            # Tests use private sentinel; removed q cannot terminate loop.
+            if key is getattr(stdscr, "_letee_test_stop", None):
+                return
             if key in (curses.KEY_F6, curses.KEY_F7):
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
@@ -1968,8 +1975,7 @@ def run(stdscr: curses.window) -> None:
             if key in _PREFIX_ACTIONS:
                 effect = prefix_action(_PREFIX_ACTIONS[key], current_target)
                 if effect:
-                    if dispatch(effect):
-                        return
+                    dispatch(effect)
                     rebuild()
                 continue
             if state.add_view == "name":
@@ -2222,9 +2228,7 @@ def run(stdscr: curses.window) -> None:
                 continue
             selectable = _selectable(entries)
             effect: Effect | None = None
-            if key == ord("q"):
-                effect = _transition(state, "quit")
-            elif key in (ord("["), ord("]")):
+            if key in (ord("["), ord("]")):
                 h = stdscr.getmaxyx()[0]
                 footer_top = h - footer_height
                 session_top = 3 if state.filtering else 2
@@ -2238,9 +2242,6 @@ def run(stdscr: curses.window) -> None:
                     if key == ord("[")
                     else max(minimum_agent_rows, current - 1)
                 )
-            elif state.focused_region == "agents" and key in map(ord, "hl") and state.agent_selected_index == 0:
-                state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
-                rebuild()
             elif state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
                 state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
                 rebuild()
@@ -2293,10 +2294,6 @@ def run(stdscr: curses.window) -> None:
                     show_status("another action is still changing sessions")
                 else:
                     effect = _transition(state, "move_session_down")
-            elif key == ord("a"):
-                _open_add(state)
-                state.focused_region = "sessions"
-                rebuild()
             elif key == ord("r") and state.add_view is None and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target:
@@ -2304,13 +2301,6 @@ def run(stdscr: curses.window) -> None:
                         show_status("another action is still changing sessions")
                     else:
                         effect = _transition(state, "remove_session", entry.target)
-            elif key == ord("/"):
-                _open_add(state, "existing")
-                state.focused_region = "sessions"
-                rebuild()
-                curses.curs_set(1)
-            elif key == ord("?"):
-                effect = _transition(state, "help")
             elif key in (10, 13, curses.KEY_ENTER):
                 state.scroll_offset = None
                 if state.add_button_selected:
@@ -2351,8 +2341,7 @@ def run(stdscr: curses.window) -> None:
                     continue
                 effect = _transition(state, "kill", entry.target)
             if effect:
-                if dispatch(effect):
-                    return
+                dispatch(effect)
                 if effect.kind in ("switch", "create"):
                     curses.curs_set(0)
                 rebuild()

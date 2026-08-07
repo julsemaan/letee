@@ -147,15 +147,12 @@ letee -L <name> kill-server
 - `C-s 1`–`C-s 9`: switch directly to numbered tracked target
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
 - `[` / `]`: give Agents/Sessions region more rows for current run
-- `h` / `l`: cycle agent ordering mode (Priority / Session) when ordering row is selected
+- `Left` / `Right`: cycle agent ordering mode (Priority / Session) when ordering row is selected
 - `Enter`: switch selected session or exact agent pane, or activate selected Add row
-- `a`: open Add session menu from Sessions or Agents
 - `r`: remove selected target without killing it
 - `K` / `J`: move selected tracked target up/down without wrapping
 - `x`: kill and remove selected tracked session (asks first)
-- `/`: open existing-session search directly
-- `?`: open help in right pane
-- `q`: quit sidebar only
+- `Esc` / `Ctrl-C`: cancel prompts and filters
 
 `›` marks keyboard selection and left-pane focus; mint reverse highlight marks active session independently. Unfocused sidebar hides pointer, leaves sidebar colors unchanged, and keeps active session highlighted and visible.
 

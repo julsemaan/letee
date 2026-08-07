@@ -43,11 +43,12 @@ def test_cockpit_help(client: TmuxTestClient) -> None:
     assert "Session actions" in right or "Recovery" in right or "Examples" in right, \
         f"Right pane missing help sections\nRight:\n{right}"
 
-    # Sending ? respawns help (exercise the command, verify right pane still has content)
+    # Sending C-s ? respawns help (exercise the prefix command, verify right pane still has content)
+    client.send_special("C-s")
     client.send_keys("?")
     time.sleep(0.5)
     right2 = client.right_pane_text()
-    assert len(right2) > 50, f"Right pane should have help content after ?\nRight:\n{right2}"
+    assert len(right2) > 50, f"Right pane should have help content after C-s ?\nRight:\n{right2}"
 
 
 def test_cockpit_recovery(client: TmuxTestClient) -> None:
