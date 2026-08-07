@@ -142,7 +142,7 @@ def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
         assert sidebar.index("beta-agent") < sidebar.index("alpha-agent")
 
         client.tmux("run-shell", "letee focus-sidebar agents")
-        client.tmux("send-keys", "-t", "letee:cockpit.0", "l")
+        client.tmux("send-keys", "-t", "letee:cockpit.0", "Right")
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             sidebar = client.sidebar_text()

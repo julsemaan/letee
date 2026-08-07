@@ -99,8 +99,11 @@ from letee.sidebar import (
     _update_agent_alerts,
     _viewport,
     main,
-    run,
+    run as sidebar_run,
 )
+
+
+STOP = object()
 
 
 class FakeScreen:
@@ -108,6 +111,7 @@ class FakeScreen:
         self.calls = []
         self.keys = list(keys or [])
         self.key = ord("y")
+        self._letee_test_stop = STOP
         self.size = size
 
     def erase(self):
@@ -151,6 +155,10 @@ class FakeScreen:
 
     def timeout(self, *args):
         self.calls.append(("timeout", *args))
+
+
+def run(stdscr):
+    sidebar_run(stdscr)
 
 
 class SidebarViewModeTest(unittest.TestCase):
@@ -1388,7 +1396,7 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_agent_resize_keys_use_visible_default_as_baseline(self):
         def run_key(key):
-            screen = FakeScreen([ord(key), ord("q")], size=(24, 40))
+            screen = FakeScreen([ord(key), STOP], size=(24, 40))
             agent_rows = []
 
             def draw_spy(*args, **kwargs):
@@ -1566,7 +1574,7 @@ class SidebarDrawTest(unittest.TestCase):
         status = next(call for call in screen.calls if call[0] == "addnstr" and "killed local:work" in call[3])
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 6]
         self.assertEqual(status[1], 1)
-        self.assertEqual(footer, ["↵ activate  ? help  q close"])
+        self.assertEqual(footer, ["↵ activate"])
 
     def test_filter_status_renders_below_filter_input(self):
         screen = FakeScreen(size=(7, 30))
@@ -1587,8 +1595,8 @@ class SidebarDrawTest(unittest.TestCase):
     def test_sessions_and_agents_share_minimal_footer_with_ascii_fallback(self):
         removed_hints = ("Tab", "resize", "add", "remove", "kill", "reorder", "K/J", "[ / ]")
         for ascii_mode, expected in (
-            (False, ["↵ activate  ? help  q close"]),
-            (True, ["Enter activate  ? help  q close"]),
+            (False, ["↵ activate"]),
+            (True, ["Enter activate"]),
         ):
             footers = []
             for focused_region in ("sessions", "agents"):
@@ -1869,9 +1877,9 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_injected_region_keys_select_exact_region_and_tab_does_nothing(self):
         for keys, expected in (
-            ([curses.KEY_F7, ord("q")], "agents"),
-            ([curses.KEY_F7, curses.KEY_F6, ord("q")], "sessions"),
-            ([9, ord("q")], "sessions"),
+            ([curses.KEY_F7, STOP], "agents"),
+            ([curses.KEY_F7, curses.KEY_F6, STOP], "sessions"),
+            ([9, STOP], "sessions"),
         ):
             screen = FakeScreen(keys, size=(10, 40))
             with (
@@ -1887,8 +1895,74 @@ class SidebarDrawTest(unittest.TestCase):
 
             self.assertEqual(draw.call_args_list[-1].args[15], expected)
 
+    def test_removed_focused_keys_do_nothing(self):
+        for key in map(ord, "q?/a"):
+            with self.subTest(key=chr(key)):
+                screen = FakeScreen([key, STOP], size=(10, 40))
+                with (
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar._entries", return_value=[]),
+                    patch("letee.sidebar._bell_targets", return_value=set()),
+                    patch("letee.sidebar._current_target", return_value=None),
+                    patch("letee.sidebar._draw", return_value=(2, None)) as draw,
+                    patch.object(sidebar, "_transition", wraps=sidebar._transition) as transition,
+                ):
+                    run(screen)
+
+                self.assertEqual(screen.calls.count(("getch",)), 2)
+                self.assertFalse(any(call.args[11] for call in draw.call_args_list))
+                self.assertFalse(any(call.args[1] in ("help", "quit") for call in transition.call_args_list))
+
+    def test_removed_agent_ordering_keys_do_nothing(self):
+        for key in map(ord, "hl"):
+            with self.subTest(key=chr(key)):
+                screen = FakeScreen([curses.KEY_F7, key, STOP], size=(10, 40))
+                with (
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar._entries", return_value=[]),
+                    patch("letee.sidebar._bell_targets", return_value=set()),
+                    patch("letee.sidebar._current_target", return_value=None),
+                    patch("letee.sidebar._draw", return_value=(2, None)) as draw,
+                ):
+                    run(screen)
+
+                self.assertEqual(draw.call_args_list[-1].kwargs["agent_ordering"], "priority")
+
+    def test_left_and_right_cycle_agent_ordering(self):
+        for key, expected in ((curses.KEY_LEFT, "session"), (curses.KEY_RIGHT, "session")):
+            with self.subTest(key=key):
+                screen = FakeScreen([curses.KEY_F7, key, STOP], size=(10, 40))
+                with (
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar._entries", return_value=[]),
+                    patch("letee.sidebar._bell_targets", return_value=set()),
+                    patch("letee.sidebar._current_target", return_value=None),
+                    patch("letee.sidebar._draw", return_value=(2, None)) as draw,
+                ):
+                    run(screen)
+
+                self.assertEqual(draw.call_args_list[-1].kwargs["agent_ordering"], expected)
+
+    def test_f11_opens_add_menu(self):
+        screen = FakeScreen([curses.KEY_F11, STOP], size=(10, 40))
+
+        with (
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", return_value=(2, None)) as draw,
+        ):
+            run(screen)
+
+        self.assertTrue(any(call.args[11] for call in draw.call_args_list))
+
     def test_up_at_top_of_add_menu_does_not_select_hidden_add_button(self):
-        screen = FakeScreen([ord("a"), curses.KEY_UP, ord("q")])
+        screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, STOP])
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -1905,7 +1979,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertFalse(any(call.kwargs["add_button_selected"] for call in add_draws))
 
     def test_session_name_typing_handles_queued_keys_without_background_polling(self):
-        screen = FakeScreen([ord("a"), curses.KEY_ENTER, *map(ord, "fast"), 27, ord("q")])
+        screen = FakeScreen([curses.KEY_F11, curses.KEY_ENTER, *map(ord, "fast"), 27, STOP])
         poller = unittest.mock.Mock()
         poller.snapshot = snapshot()
         poller.tick.return_value = False
@@ -1924,7 +1998,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertLessEqual(pane_active.call_count, 1)
 
     def test_queued_input_is_handled_before_automatic_session_actions(self):
-        screen = FakeScreen([ord("q")])
+        screen = FakeScreen([STOP])
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
@@ -1936,7 +2010,7 @@ class SidebarDrawTest(unittest.TestCase):
         sync_active_session.assert_not_called()
 
     def test_run_sets_timeout_and_refreshes_on_timeout(self):
-        screen = FakeScreen([-1, ord("q")])
+        screen = FakeScreen([-1, STOP])
         calls = []
 
         with (
@@ -1959,7 +2033,7 @@ class SidebarDrawTest(unittest.TestCase):
             {},
         )
         poller.tick.return_value = False
-        screen = FakeScreen([-1, -1, ord("q")], size=(10, 40))
+        screen = FakeScreen([-1, -1, STOP], size=(10, 40))
         with (
             patch("letee.sidebar.DiscoveryPoller", return_value=poller),
             patch("letee.sidebar.curses.curs_set"),
@@ -1981,7 +2055,7 @@ class SidebarDrawTest(unittest.TestCase):
         poller = unittest.mock.Mock()
         poller.snapshot = SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)), {})
         poller.tick.return_value = False
-        screen = FakeScreen([-1, -1, -1, -1, ord("q")], size=(10, 40))
+        screen = FakeScreen([-1, -1, -1, -1, STOP], size=(10, 40))
         with (
             patch("letee.sidebar.DiscoveryPoller", return_value=poller),
             patch("letee.sidebar.curses.curs_set"), patch("letee.sidebar._init_colors"),
@@ -1994,7 +2068,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(draw.call_count, 2)
 
     def test_idle_ui_ticks_do_not_redraw_sidebar(self):
-        screen = FakeScreen([-1, -1, ord("q")])
+        screen = FakeScreen([-1, -1, STOP])
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -2009,7 +2083,7 @@ class SidebarDrawTest(unittest.TestCase):
         draw.assert_called_once()
 
     def test_rapid_ui_ticks_do_not_accelerate_cockpit_bell_polling(self):
-        screen = FakeScreen([-1, -1, -1, ord("q")])
+        screen = FakeScreen([-1, -1, -1, STOP])
         poller = unittest.mock.Mock()
         poller.snapshot = snapshot()
         poller.tick.return_value = False
@@ -2028,7 +2102,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertLessEqual(poller.tick.call_count, 4)
 
     def test_run_beeps_once_for_new_background_bell(self):
-        screen = FakeScreen([-1, -1, ord("q")])
+        screen = FakeScreen([-1, -1, STOP])
         target = Target("local", "work")
 
         with (
@@ -2044,7 +2118,7 @@ class SidebarDrawTest(unittest.TestCase):
         beep.assert_called_once_with()
 
     def test_switching_away_from_ringing_current_target_does_not_beep(self):
-        screen = FakeScreen([-1, ord("q")])
+        screen = FakeScreen([-1, STOP])
         ringing = Target("local", "a")
         current = Target("local", "b")
 
@@ -2074,7 +2148,7 @@ class SidebarDrawTest(unittest.TestCase):
             SourceSnapshot(True, (target,), frozenset(), agents=agents), {}
         )
         poller.tick.return_value = False
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(20, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(20, 30))
 
         with (
             patch("letee.sidebar.DiscoveryPoller", return_value=poller),
@@ -2099,7 +2173,7 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_click_then_hover_does_not_show_drag_target(self):
         target = Target("local", "one")
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
         drag_targets = []
 
         def draw_spy(*args, **kwargs):
@@ -2133,7 +2207,7 @@ class SidebarDrawTest(unittest.TestCase):
         entries = [Entry(str(i), "session", target, tracked=True) for i, target in enumerate(targets)]
         expected = (targets[1], targets[2], targets[0], targets[3])
         screen = FakeScreen(
-            [curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, curses.KEY_MOUSE, ord("q")],
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, curses.KEY_MOUSE, STOP],
             size=(10, 30),
         )
 
@@ -2174,7 +2248,7 @@ class SidebarDrawTest(unittest.TestCase):
         poller.tick.return_value = False
         release = threading.Event()
         active_targets = []
-        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, -1, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, -1, STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
             active_targets.append(args[7])
@@ -2210,7 +2284,7 @@ class SidebarDrawTest(unittest.TestCase):
         poller.tick.return_value = False
         release = threading.Event()
         active_agents = []
-        screen = FakeScreen([curses.KEY_F7, curses.KEY_DOWN, curses.KEY_ENTER, -1, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_F7, curses.KEY_DOWN, curses.KEY_ENTER, -1, STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
             active_agents.append(args[17])
@@ -2260,7 +2334,7 @@ class SidebarDrawTest(unittest.TestCase):
         )
         active_agents = []
         screen = FakeScreen(
-            [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_ENTER, -1, -1, ord("q")],
+            [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_ENTER, -1, -1, STOP],
             size=(14, 30),
         )
 
@@ -2293,7 +2367,7 @@ class SidebarDrawTest(unittest.TestCase):
         poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
         poller.tick.return_value = False
         release = threading.Event()
-        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, ord("K"), ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, ord("K"), STOP], size=(12, 30))
         timer = threading.Timer(0.05, release.set)
 
         with (
@@ -2323,7 +2397,7 @@ class SidebarDrawTest(unittest.TestCase):
             Entry("one", "session", first, tracked=True),
             Entry("two", "session", second, tracked=True),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -2378,7 +2452,7 @@ class SidebarDrawTest(unittest.TestCase):
                 -1,
                 curses.KEY_MOUSE,
                 curses.KEY_MOUSE,
-                ord("q"),
+                STOP,
             ],
             size=(12, 30),
         )
@@ -2423,7 +2497,7 @@ class SidebarDrawTest(unittest.TestCase):
                 curses.KEY_MOUSE,
                 curses.KEY_MOUSE,
                 curses.KEY_MOUSE,
-                ord("q"),
+                STOP,
             ],
             size=(12, 30),
         )
@@ -2475,7 +2549,7 @@ class SidebarDrawTest(unittest.TestCase):
             return False
 
         poller.tick.side_effect = tick
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, STOP], size=(12, 30))
 
         with (
             patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
@@ -2518,7 +2592,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         poller.tick.side_effect = tick
         screen = FakeScreen(
-            [curses.KEY_MOUSE, -1, -1, -1, -1, ord("q")], size=(12, 30)
+            [curses.KEY_MOUSE, -1, -1, -1, -1, STOP], size=(12, 30)
         )
 
         with (
@@ -2550,7 +2624,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_single_click_switches_tracked_session_after_press_release_events(self):
         target = Target("local", "one")
         entries = [Entry("one", "session", target, tracked=True)]
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -2577,7 +2651,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_press_release_selects_and_switches_untracked_session(self):
         target = Target("local", "one")
         entries = [Entry("one", "session", target)]
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -2603,7 +2677,7 @@ class SidebarDrawTest(unittest.TestCase):
         )
 
     def test_press_release_opens_add_button(self):
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -2628,7 +2702,7 @@ class SidebarDrawTest(unittest.TestCase):
             Entry("one", "session", Target("local", "one")),
             Entry("two", "session", Target("local", "two")),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(12, 30))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -2653,7 +2727,7 @@ class SidebarDrawTest(unittest.TestCase):
             Entry("one", "session", first, tracked=True),
             Entry("two", "session", second, tracked=True),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(12, 30))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -2710,7 +2784,7 @@ class SidebarDrawTest(unittest.TestCase):
         ]
         captured = []
         # j to move selection to entry 2, then wheel that no longer moves selection
-        screen = FakeScreen([ord("j"), curses.KEY_MOUSE, 10, ord("q")], size=(8, 30))
+        screen = FakeScreen([ord("j"), curses.KEY_MOUSE, 10, STOP], size=(8, 30))
 
         def draw_spy(*args, **kwargs):
             selected = args[2]
@@ -2737,7 +2811,7 @@ class SidebarDrawTest(unittest.TestCase):
         switch.assert_called_once_with(target_two, "attach")
 
     def test_malformed_mouse_event_is_ignored(self):
-        screen = FakeScreen([curses.KEY_MOUSE, ord("q")])
+        screen = FakeScreen([curses.KEY_MOUSE, STOP])
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -2754,7 +2828,7 @@ class SidebarDrawTest(unittest.TestCase):
         first = Target("local", "work")
         entries = [Entry("work", "session", first), Entry("old", "session", active)]
         selected = []
-        screen = FakeScreen([ord("q")])
+        screen = FakeScreen([STOP])
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -3005,7 +3079,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_uppercase_j_moves_selected_tracked_target_down_and_persists(self):
         first = Target("local", "first")
         second = Target("local", "second")
-        screen = FakeScreen([ord("J"), ord("q")], size=(10, 40))
+        screen = FakeScreen([ord("J"), STOP], size=(10, 40))
         selections = []
 
         with (
@@ -3026,7 +3100,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(selections[-1].tracked)
 
     def test_empty_session_list_opens_add_menu_and_ignores_remove_and_kill(self):
-        screen = FakeScreen([curses.KEY_ENTER, ord("r"), ord("x"), ord("q")], size=(8, 60))
+        screen = FakeScreen([curses.KEY_ENTER, ord("r"), ord("x"), STOP], size=(8, 60))
 
         with (
             patch("letee.discovery.local_snapshot", return_value=source("local")),
@@ -3045,7 +3119,7 @@ class SidebarDrawTest(unittest.TestCase):
         ))
 
     def test_kill_outside_session_rows_is_ignored(self):
-        screen = FakeScreen([ord("a"), ord("x"), ord("q")], size=(8, 60))
+        screen = FakeScreen([curses.KEY_F11, ord("x"), STOP], size=(8, 60))
 
         with (
             patch("letee.discovery.local_snapshot", return_value=source("local")),
@@ -3062,7 +3136,7 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_missing_session_kill_guides_removal(self):
         target = Target("local", "work")
-        screen = FakeScreen([ord("x"), ord("q")], size=(8, 60))
+        screen = FakeScreen([ord("x"), STOP], size=(8, 60))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -3081,7 +3155,7 @@ class SidebarDrawTest(unittest.TestCase):
         ))
 
     def test_cancelled_kill_has_no_redundant_status(self):
-        screen = FakeScreen([ord("x"), ord("n"), ord("q")], size=(8, 60))
+        screen = FakeScreen([ord("x"), ord("n"), STOP], size=(8, 60))
         target = Target("local", "work")
 
         with (
@@ -3100,7 +3174,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertFalse(any(call[0] == "addnstr" and "cancelled" in call[3] for call in screen.calls))
 
     def test_failed_kill_keeps_sidebar_open_and_shows_error_above_footer(self):
-        screen = FakeScreen([ord("x"), ord("y"), ord("q")], size=(8, 60))
+        screen = FakeScreen([ord("x"), ord("y"), STOP], size=(8, 60))
         target = Target("local", "work")
 
         with (
@@ -3119,7 +3193,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(error[1], 1)
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
         self.assertTrue(footer)
-        self.assertTrue(all(line == "↵ activate  ? help  q close" for line in footer))
+        self.assertTrue(all(line == "↵ activate" for line in footer))
 
 
 
@@ -3288,7 +3362,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             captured.append((selected, scroll_offset))
             return (2, None)
 
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(8, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -3317,7 +3391,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             captured.append((selected, scroll_offset))
             return (2, None)
 
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, ord("q")], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(8, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -3340,7 +3414,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         entries = [Entry(str(i), "session", Target("local", str(i)), tracked=True) for i in range(8)]
         captured = []
         mouse_events = [(0, 0, 0, 0, curses.BUTTON5_PRESSED)] * 10
-        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
             captured.append(args[12] if len(args) > 12 else None)
@@ -3367,7 +3441,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         captured = []
         poller = unittest.mock.Mock(snapshot=snapshot())
         poller.tick.side_effect = [False, True]
-        screen = FakeScreen([curses.KEY_MOUSE, -1, ord("q")], size=(12, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, -1, STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
             captured.append(args[12] if len(args) > 12 else None)
@@ -3397,7 +3471,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             (0, 0, 0, 0, curses.BUTTON4_PRESSED),
             (0, 0, 0, 0, curses.BUTTON5_PRESSED),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [ord("q")], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(8, 30))
 
         def draw_spy(*args, **kwargs):
             captured.append(args[12] if len(args) > 12 else None)
@@ -3431,7 +3505,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         screen = FakeScreen([
             curses.KEY_MOUSE,  # wheel to set scroll_offset
             ord("j"),          # j to reset scroll_offset
-            ord("q"),
+            STOP,
         ], size=(8, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -3461,7 +3535,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         screen = FakeScreen([
             curses.KEY_MOUSE,  # wheel to set scroll_offset
             ord("k"),          # k to reset scroll_offset
-            ord("q"),
+            STOP,
         ], size=(8, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -3490,7 +3564,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         screen = FakeScreen([
             curses.KEY_MOUSE,  # wheel to set scroll_offset
             10,                # Enter to reset
-            ord("q"),
+            STOP,
         ], size=(8, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
@@ -3814,19 +3888,10 @@ class PrefixActionTest(unittest.TestCase):
         data = snapshot(local=("stale", "active"))
 
         with patch.object(sidebar, "save_sessions") as save, patch.object(sidebar.sessions, "kill") as kill:
-            self._run([curses.KEY_F6, curses.KEY_F8, ord("q")], [stale, active], active, data)
+            self._run([curses.KEY_F6, curses.KEY_F8, STOP], [stale, active], active, data)
 
         save.assert_called_once_with((stale,))
         kill.assert_not_called()
-
-    def test_remove_prefix_exits_existing_session_search_before_targeting(self):
-        target = Target("local", "active")
-        data = snapshot(local=("active", "other"))
-
-        with patch.object(sidebar, "save_sessions") as save:
-            self._run([ord("/"), curses.KEY_F6, curses.KEY_F8, ord("q")], [target], target, data)
-
-        save.assert_called_once_with(())
 
     def test_kill_prefix_targets_active_session_and_confirms(self):
         stale = Target("local", "stale")
@@ -3834,7 +3899,7 @@ class PrefixActionTest(unittest.TestCase):
         data = snapshot(local=("stale", "active"))
 
         with patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
-            self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), ord("q")], [stale, active], active, data)
+            self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), STOP], [stale, active], active, data)
 
         kill.assert_called_once_with(active)
         save.assert_called_once_with([stale])
@@ -3844,7 +3909,7 @@ class PrefixActionTest(unittest.TestCase):
         data = snapshot(local=("active",))
 
         with patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
-            self._run([curses.KEY_F6, curses.KEY_F9, ord("n"), ord("q")], [target], target, data)
+            self._run([curses.KEY_F6, curses.KEY_F9, ord("n"), STOP], [target], target, data)
 
         kill.assert_not_called()
         save.assert_not_called()
@@ -3860,7 +3925,7 @@ class PrefixActionTest(unittest.TestCase):
             patch.object(sidebar, "_read_key") as read_key,
             patch.object(sidebar.sessions, "kill") as kill,
         ):
-            screen = self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), ord("q")], [target], target, data)
+            screen = self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), STOP], [target], target, data)
 
         read_key.assert_not_called()
         kill.assert_not_called()
@@ -3878,7 +3943,7 @@ class PrefixActionTest(unittest.TestCase):
         for current_target, expected_status in ((active, "not tracked"), (None, "no active session")):
             with self.subTest(current_target=current_target), patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
                 screen = self._run(
-                    [curses.KEY_F6, curses.KEY_F8, curses.KEY_F9, ord("q")],
+                    [curses.KEY_F6, curses.KEY_F8, curses.KEY_F9, STOP],
                     [tracked], current_target, data,
                 )
 
@@ -3903,7 +3968,7 @@ class PrefixActionTest(unittest.TestCase):
             return False
 
         with patch.object(sidebar.cockpit, "switch") as switch:
-            self._run([curses.KEY_F7, curses.KEY_F10, ord("q")], [target], None, data, seed_alerts=seed_alerts)
+            self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
 
         switch.assert_called_once_with(
             target, sidebar.sessions.pane_attach_command(second_pane), "second"
@@ -3914,7 +3979,7 @@ class PrefixActionTest(unittest.TestCase):
         data = snapshot(local=("work",))
 
         with patch.object(sidebar.cockpit, "switch") as switch:
-            screen = self._run([curses.KEY_F7, curses.KEY_F10, ord("q")], [target], None, data)
+            screen = self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data)
 
         switch.assert_not_called()
         message = next(
