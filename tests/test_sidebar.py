@@ -68,6 +68,109 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
+    def test_production_loop_restores_reconnected_active_ssh_session_without_input(self):
+        target = Target("ssh", "work", "dev")
+        connected = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
+        disconnected = snapshot(
+            remotes={"dev": source("ssh", sessions=("work",), host="dev", available=False)}
+        )
+        poller = unittest.mock.Mock(
+            snapshot=connected,
+            current_target=target,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        snapshots = iter((disconnected, connected, connected))
+
+        def tick(_now):
+            poller.snapshot = next(snapshots, poller.snapshot)
+            return True
+
+        poller.tick.side_effect = tick
+        actions = unittest.mock.Mock(busy=False)
+        actions.poll.return_value = None
+        screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
+        events = []
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.cockpit, "show_reconnecting", side_effect=lambda _: events.append("reconnecting")),
+            patch.object(sidebar.cockpit, "switch", side_effect=lambda *_: events.append("switch")) as switch,
+        ):
+            sidebar.run(screen)
+
+        self.assertEqual(events, ["reconnecting", "switch"])
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+
+    def test_busy_action_delays_automatic_restoration_until_runner_is_idle(self):
+        target = Target("ssh", "work", "dev")
+        connected = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
+        disconnected = snapshot(
+            remotes={"dev": source("ssh", sessions=("work",), host="dev", available=False)}
+        )
+        poller = unittest.mock.Mock(
+            snapshot=connected,
+            current_target=target,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        snapshots = iter((disconnected, connected, connected))
+
+        def tick(_now):
+            poller.snapshot = next(snapshots, poller.snapshot)
+            return True
+
+        poller.tick.side_effect = tick
+
+        class BusyRunner:
+            def __init__(self):
+                self.busy = False
+                self.poll_count = 0
+
+            def poll(self):
+                self.poll_count += 1
+                self.busy = self.poll_count == 2
+                return None
+
+            def close(self):
+                pass
+
+        actions = BusyRunner()
+        screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
+        events = []
+
+        def switch(*_args):
+            events.append(("switch", actions.busy))
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.cockpit, "show_reconnecting", side_effect=lambda _: events.append(("reconnecting", actions.busy))),
+            patch.object(sidebar.cockpit, "switch", side_effect=switch),
+        ):
+            sidebar.run(screen)
+
+        self.assertEqual(events, [("reconnecting", False), ("switch", False)])
+
 
 from letee.sidebar import (
     Effect,
@@ -2112,6 +2215,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._entries", return_value=[Entry("work", "session", target)]),
             patch("letee.sidebar._bell_targets", return_value={target}),
             patch("letee.sidebar._current_target", return_value=Target("local", "shell")),
+            patch("letee.sidebar.cockpit.show_unavailable"),
         ):
             run(screen)
 
@@ -2129,6 +2233,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._entries", return_value=[Entry("a", "session", ringing)]),
             patch("letee.sidebar._bell_targets", return_value={ringing}),
             patch("letee.sidebar._current_target", side_effect=[ringing, ringing, current]),
+            patch("letee.sidebar.cockpit.show_unavailable"),
         ):
             run(screen)
 
