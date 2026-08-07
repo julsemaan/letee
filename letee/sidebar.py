@@ -9,7 +9,6 @@ import textwrap
 import threading
 import time
 import unicodedata
-from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -227,14 +226,11 @@ def _sync_active_session(
     target: Target | None,
     snapshot: SessionSnapshot,
     interrupted: Target | None,
-    submit: Callable[[Effect], bool] | None = None,
 ) -> Target | None:
     if target is None:
         return None
 
     def run(effect: Effect) -> bool:
-        if submit is not None:
-            return bool(submit(effect))
         result = _perform_effect(effect, ())
         if result.error:
             raise SystemExit(result.error)
@@ -1898,9 +1894,9 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
-            if pending_key is None:
+            if pending_key is None and not actions.busy:
                 unavailable_target_shown = _sync_active_session(
-                    current_target, poller.snapshot, unavailable_target_shown, queue_effect
+                    current_target, poller.snapshot, unavailable_target_shown
                 )
             selectable = _selectable(entries)
             if selectable and state.selected_index not in selectable:
