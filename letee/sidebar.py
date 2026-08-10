@@ -54,6 +54,7 @@ class Effect:
     target: Target | PaneTarget | None = None
     favorites: tuple[Target, ...] | None = None
     message: str = ""
+    automatic: bool = False
 
 
 @dataclass
@@ -234,20 +235,39 @@ def _sync_active_session(
         result = _perform_effect(effect, ())
         if result.error:
             raise SystemExit(result.error)
-        return True
+        return not result.stale_navigation
+
+    def marker_after_submit(next_marker: Target | None) -> Target | None:
+        return interrupted if submit is not None else next_marker
 
     status = _target_status(target, snapshot)
     if status in ("connecting…", "reconnecting…"):
-        if interrupted != target and not run(Effect("show_reconnecting", target)):
+        if interrupted != target and not run(Effect("show_reconnecting", target, automatic=True)):
             return interrupted
-        return target
+        return marker_after_submit(target)
     if status is None and interrupted == target:
-        return interrupted if not run(Effect("switch", target)) else None
+        return interrupted if not run(Effect("switch", target, automatic=True)) else marker_after_submit(None)
     if status == "missing" and interrupted != target:
-        return target if run(Effect("show_missing", target)) else interrupted
+        return marker_after_submit(target) if run(Effect("show_missing", target, automatic=True)) else interrupted
     if status == "unavailable" and interrupted != target:
-        return target if run(Effect("show_unavailable", target)) else interrupted
+        return marker_after_submit(target) if run(Effect("show_unavailable", target, automatic=True)) else interrupted
     return interrupted if interrupted == target else None
+
+
+def _reconcile_active_session_effect(
+    unavailable_target_shown: Target | None,
+    result: EffectResult,
+) -> Target | None:
+    if result.error or result.stale_navigation or not result.effect.automatic:
+        return unavailable_target_shown
+    target = result.effect.target
+    if not isinstance(target, Target):
+        return unavailable_target_shown
+    if result.effect.kind in ("show_reconnecting", "show_missing", "show_unavailable"):
+        return target
+    if result.effect.kind == "switch":
+        return None
+    return unavailable_target_shown
 
 
 def _entries(
@@ -706,6 +726,13 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
     try:
+        if (
+            effect.automatic
+            and effect.kind in ("switch", "show_reconnecting", "show_missing", "show_unavailable")
+            and isinstance(effect.target, Target)
+            and cockpit.current_target() != effect.target
+        ):
+            return EffectResult(effect, planned, stale_navigation=True)
         if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
             if effect.kind == "add_switch" and planned != favorites:
                 save_sessions(list(planned))
@@ -918,7 +945,7 @@ class AsyncStatusPoller:
         return changed
 
     def observe_effect(self, result: EffectResult) -> None:
-        if result.error:
+        if result.error or result.stale_navigation:
             return
         target = result.effect.target
         if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
@@ -1830,6 +1857,9 @@ def run(stdscr: curses.window) -> None:
                     pending_navigation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
+                unavailable_target_shown = _reconcile_active_session_effect(
+                    unavailable_target_shown, result
+                )
                 poller.observe_effect(result)
                 rebuild()
             current_target = poller.current_target

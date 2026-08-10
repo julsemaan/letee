@@ -34,10 +34,160 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev")})))
         self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev", available=False)})))
 
+    def test_stale_missing_effect_does_not_replace_newer_live_session(self):
+        cached_target = Target("local", "a")
+        live_target = Target("local", "b")
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=live_target),
+            patch.object(sidebar.cockpit, "show_missing") as show_missing,
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            interrupted = sidebar._sync_active_session(
+                cached_target, snapshot(local=("b",)), None
+            )
+
+        self.assertIsNone(interrupted)
+        show_missing.assert_not_called()
+        switch.assert_not_called()
+
+    def test_matching_live_target_still_shows_missing_message(self):
+        target = Target("local", "a")
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "show_missing") as show_missing,
+        ):
+            interrupted = sidebar._sync_active_session(target, snapshot(local=("b",)), None)
+
+        self.assertEqual(interrupted, target)
+        show_missing.assert_called_once_with(target)
+
+    def test_stale_reconnecting_effect_is_dropped(self):
+        cached_target = Target("ssh", "a", "dev")
+        live_target = Target("local", "b")
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=live_target),
+            patch.object(sidebar.cockpit, "show_reconnecting") as show_reconnecting,
+        ):
+            interrupted = sidebar._sync_active_session(
+                cached_target,
+                snapshot(remotes={"dev": source("ssh", host="dev", available=False)}),
+                None,
+            )
+
+        self.assertIsNone(interrupted)
+        show_reconnecting.assert_not_called()
+
+    def test_stale_unavailable_effect_is_dropped(self):
+        cached_target = Target("local", "a")
+        live_target = Target("local", "b")
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=live_target),
+            patch.object(sidebar.cockpit, "show_unavailable") as show_unavailable,
+        ):
+            interrupted = sidebar._sync_active_session(
+                cached_target, snapshot(local_available=False), None
+            )
+
+        self.assertIsNone(interrupted)
+        show_unavailable.assert_not_called()
+
+    def test_stale_restore_does_not_switch_back_to_cached_session(self):
+        cached_target = Target("local", "a")
+        live_target = Target("local", "b")
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=live_target),
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            interrupted = sidebar._sync_active_session(
+                cached_target, snapshot(local=("a",)), cached_target
+            )
+
+        self.assertEqual(interrupted, cached_target)
+        switch.assert_not_called()
+
+    def test_stale_restore_result_does_not_update_sidebar_or_poller_target(self):
+        cached_target = Target("local", "a")
+        live_target = Target("local", "b")
+        state = SidebarState(selected_target=live_target)
+        poller = unittest.mock.Mock(current_target=live_target)
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=live_target),
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            result = sidebar._perform_effect(
+                Effect("switch", cached_target, automatic=True), ()
+            )
+
+        self.assertTrue(result.stale_navigation)
+        switch.assert_not_called()
+        sidebar._apply_effect(result, state, poller, 5)
+        poller.observe_effect(result)
+        self.assertEqual(state.selected_target, live_target)
+        self.assertEqual(poller.current_target, live_target)
+
+    def test_queued_stale_notification_does_not_mark_target(self):
+        target = Target("local", "cached")
+        live_target = Target("local", "live")
+        submitted = []
+
+        marker = sidebar._sync_active_session(
+            target,
+            snapshot(local=("live",)),
+            None,
+            lambda effect: submitted.append(effect) or True,
+        )
+        self.assertIsNone(marker)
+        effect = submitted[0]
+
+        with patch.object(sidebar.cockpit, "current_target", return_value=live_target):
+            result = sidebar._perform_effect(effect, ())
+
+        self.assertTrue(result.stale_navigation)
+        self.assertIsNone(sidebar._reconcile_active_session_effect(marker, result))
+        self.assertEqual(
+            sidebar._reconcile_active_session_effect(marker, sidebar.EffectResult(effect, ())),
+            target,
+        )
+
+    def test_queued_stale_restore_does_not_clear_target_marker(self):
+        target = Target("local", "cached")
+        live_target = Target("local", "live")
+        submitted = []
+
+        marker = sidebar._sync_active_session(
+            target,
+            snapshot(local=("cached",)),
+            target,
+            lambda effect: submitted.append(effect) or True,
+        )
+        self.assertEqual(marker, target)
+        effect = submitted[0]
+
+        with patch.object(sidebar.cockpit, "current_target", return_value=live_target):
+            result = sidebar._perform_effect(effect, ())
+
+        self.assertTrue(result.stale_navigation)
+        self.assertEqual(
+            sidebar._reconcile_active_session_effect(marker, result),
+            target,
+        )
+        self.assertIsNone(
+            sidebar._reconcile_active_session_effect(
+                marker, sidebar.EffectResult(effect, ())
+            )
+        )
+
     def test_active_missing_session_shows_missing_then_restores_session(self):
         target = Target("local", "work")
 
         with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
             patch.object(sidebar.cockpit, "show_missing") as show_missing,
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
@@ -53,6 +203,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         target = Target("ssh", "work", "dev")
 
         with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
             patch.object(sidebar.cockpit, "show_reconnecting") as show_reconnecting,
             patch.object(sidebar.cockpit, "switch") as switch,
         ):

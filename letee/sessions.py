@@ -29,7 +29,7 @@ MULTIPLEX_OPTIONS = (
 )
 INTERACTIVE_OPTIONS = (
     "-o", "ControlMaster=no",
-    "-o", "ControlPath=none",
+    "-o", "ControlPath=~/.ssh/letee-%C",
 )
 PERSIST_OPTIONS = (
     "-o", "ControlPersist=10m",
@@ -181,7 +181,7 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: boo
     if persistent_ssh is None:
         persistent_ssh = load_persistent_ssh()
     if interactive:
-        multiplex = INTERACTIVE_OPTIONS
+        multiplex = INTERACTIVE_OPTIONS if persistent_ssh else ()
         persist = ()
     else:
         multiplex = MULTIPLEX_OPTIONS if persistent_ssh else ()
