@@ -30,18 +30,31 @@ class SessionOperationsTest(unittest.TestCase):
             ("ssh", *shared, "-t", "dev", "remote command"),
         )
 
-    def test_ssh_command_interactive_disables_multiplexing(self):
+    def test_ssh_command_interactive_reuses_persistent_control_socket(self):
+        shared = (
+            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "AddKeysToAgent=yes",
+        )
+        command = ssh_command("-t", "dev", "remote command", persistent_ssh=True, interactive=True)
+        self.assertEqual(
+            command,
+            (
+                "ssh", *shared,
+                "-o", "ControlMaster=no", "-o", "ControlPath=~/.ssh/letee-%C",
+                "-t", "dev", "remote command",
+            ),
+        )
+        self.assertNotIn("ControlPersist=10m", command)
+        self.assertNotIn("ControlPath=none", command)
+
+    def test_ssh_command_interactive_without_persistence_leaves_multiplexing_to_ssh_config(self):
         shared = (
             "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
             "-o", "AddKeysToAgent=yes",
         )
         self.assertEqual(
-            ssh_command("-t", "dev", "remote command", persistent_ssh=True, interactive=True),
-            (
-                "ssh", *shared,
-                "-o", "ControlMaster=no", "-o", "ControlPath=none",
-                "-t", "dev", "remote command",
-            ),
+            ssh_command("-t", "dev", "remote command", persistent_ssh=False, interactive=True),
+            ("ssh", *shared, "-t", "dev", "remote command"),
         )
 
     def test_ssh_command_non_interactive_keeps_persist_options(self):
@@ -66,7 +79,7 @@ class SessionOperationsTest(unittest.TestCase):
         with patch("letee.sessions.load_persistent_ssh", return_value=True):
             self.assertEqual(
                 attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o ControlPath=none -t dev 'tmux -T clipboard new-session -A -s work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
             )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
@@ -76,10 +89,10 @@ class SessionOperationsTest(unittest.TestCase):
             "env -u TMUX tmux -S '/tmp/tmux socket' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
         )
         remote = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket")
-        with patch("letee.sessions.load_persistent_ssh", return_value=False):
+        with patch("letee.sessions.load_persistent_ssh", return_value=True):
             self.assertEqual(
                 pane_attach_command(remote),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o ControlPath=none -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
             )
 
     def test_kill_local_session_uses_default_server(self):
