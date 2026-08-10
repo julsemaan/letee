@@ -241,18 +241,37 @@ def _sync_active_session(
             raise SystemExit(result.error)
         return not result.stale_navigation
 
+    def marker_after_submit(next_marker: Target | None) -> Target | None:
+        return interrupted if submit is not None else next_marker
+
     status = _target_status(target, snapshot)
     if status in ("connecting…", "reconnecting…"):
         if interrupted != target and not run(Effect("show_reconnecting", target, automatic=True)):
             return interrupted
-        return target
+        return marker_after_submit(target)
     if status is None and interrupted == target:
-        return interrupted if not run(Effect("switch", target, automatic=True)) else None
+        return interrupted if not run(Effect("switch", target, automatic=True)) else marker_after_submit(None)
     if status == "missing" and interrupted != target:
-        return target if run(Effect("show_missing", target, automatic=True)) else interrupted
+        return marker_after_submit(target) if run(Effect("show_missing", target, automatic=True)) else interrupted
     if status == "unavailable" and interrupted != target:
-        return target if run(Effect("show_unavailable", target, automatic=True)) else interrupted
+        return marker_after_submit(target) if run(Effect("show_unavailable", target, automatic=True)) else interrupted
     return interrupted if interrupted == target else None
+
+
+def _reconcile_active_session_effect(
+    unavailable_target_shown: Target | None,
+    result: EffectResult,
+) -> Target | None:
+    if result.error or result.stale_navigation or not result.effect.automatic:
+        return unavailable_target_shown
+    target = result.effect.target
+    if not isinstance(target, Target):
+        return unavailable_target_shown
+    if result.effect.kind in ("show_reconnecting", "show_missing", "show_unavailable"):
+        return target
+    if result.effect.kind == "switch":
+        return None
+    return unavailable_target_shown
 
 
 def _entries(
@@ -1842,6 +1861,9 @@ def run(stdscr: curses.window) -> None:
                     pending_navigation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
+                unavailable_target_shown = _reconcile_active_session_effect(
+                    unavailable_target_shown, result
+                )
                 poller.observe_effect(result)
                 rebuild()
             current_target = poller.current_target

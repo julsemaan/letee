@@ -131,6 +131,58 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertEqual(state.selected_target, live_target)
         self.assertEqual(poller.current_target, live_target)
 
+    def test_queued_stale_notification_does_not_mark_target(self):
+        target = Target("local", "cached")
+        live_target = Target("local", "live")
+        submitted = []
+
+        marker = sidebar._sync_active_session(
+            target,
+            snapshot(local=("live",)),
+            None,
+            lambda effect: submitted.append(effect) or True,
+        )
+        self.assertIsNone(marker)
+        effect = submitted[0]
+
+        with patch.object(sidebar.cockpit, "current_target", return_value=live_target):
+            result = sidebar._perform_effect(effect, ())
+
+        self.assertTrue(result.stale_navigation)
+        self.assertIsNone(sidebar._reconcile_active_session_effect(marker, result))
+        self.assertEqual(
+            sidebar._reconcile_active_session_effect(marker, sidebar.EffectResult(effect, ())),
+            target,
+        )
+
+    def test_queued_stale_restore_does_not_clear_target_marker(self):
+        target = Target("local", "cached")
+        live_target = Target("local", "live")
+        submitted = []
+
+        marker = sidebar._sync_active_session(
+            target,
+            snapshot(local=("cached",)),
+            target,
+            lambda effect: submitted.append(effect) or True,
+        )
+        self.assertEqual(marker, target)
+        effect = submitted[0]
+
+        with patch.object(sidebar.cockpit, "current_target", return_value=live_target):
+            result = sidebar._perform_effect(effect, ())
+
+        self.assertTrue(result.stale_navigation)
+        self.assertEqual(
+            sidebar._reconcile_active_session_effect(marker, result),
+            target,
+        )
+        self.assertIsNone(
+            sidebar._reconcile_active_session_effect(
+                marker, sidebar.EffectResult(effect, ())
+            )
+        )
+
     def test_active_missing_session_shows_missing_then_restores_session(self):
         target = Target("local", "work")
 
