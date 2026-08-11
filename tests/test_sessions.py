@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import letee.sessions as sessions
 from letee.names import PaneTarget, Target
-from letee.sessions import attach_command, create, kill, pane_attach_command, ssh_command
+from letee.sessions import attach_command, create, kill, pane_attach_command, rename, ssh_command
 
 
 class SessionOperationsTest(unittest.TestCase):
@@ -153,6 +153,62 @@ class SessionOperationsTest(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_rename_local_session_returns_new_target(self):
+        old = Target("local", "work")
+        with (
+            patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/letee,1,0", "PATH": "x"}, clear=True),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            self.assertEqual(rename(old, "renamed"), Target("local", "renamed"))
+
+        run.assert_called_once_with(
+            ("tmux", "rename-session", "-t", "work", "renamed"),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={"PATH": "x"},
+        )
+
+    def test_rename_remote_session_uses_configured_persistence(self):
+        old = Target("ssh", "work", "dev")
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            self.assertEqual(rename(old, "renamed"), Target("ssh", "renamed", "dev"))
+
+        self.assertEqual(
+            run.call_args.args[0],
+            (
+                "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
+                "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
+                "dev", "tmux rename-session -t work renamed",
+            ),
+        )
+
+    def test_rename_failures_include_old_target(self):
+        error = subprocess.CalledProcessError(1, ["tmux"], stderr="permission denied\n")
+        with patch("letee.sessions.subprocess.run", side_effect=error):
+            with self.assertRaisesRegex(SystemExit, r"^rename local:work failed: permission denied$"):
+                rename(Target("local", "work"), "renamed")
+
+    def test_rename_timeout_includes_old_target(self):
+        with patch(
+            "letee.sessions.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["tmux"], 10),
+        ):
+            with self.assertRaisesRegex(SystemExit, r"^rename ssh:dev:work timed out$"):
+                rename(Target("ssh", "work", "dev"), "renamed")
+
+    def test_rename_validates_new_name_before_running_command(self):
+        with patch("letee.sessions.subprocess.run") as run:
+            with self.assertRaisesRegex(SystemExit, "Invalid session"):
+                rename(Target("local", "work"), "bad name")
+
+        run.assert_not_called()
 
     def test_command_failures_include_operation_and_target(self):
         error = subprocess.CalledProcessError(1, ["command"], stderr="permission denied\n")
