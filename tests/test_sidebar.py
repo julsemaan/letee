@@ -682,6 +682,85 @@ class AddFlowTest(unittest.TestCase):
             ("Existing session", "choice_existing"),
         ])
 
+    def test_add_title_renders_back_and_returns_hit_column(self):
+        screen = FakeScreen(size=(6, 40))
+
+        _, back_col = _draw(
+            screen,
+            sidebar._add_entries("choice", "", snapshot(), []),
+            0,
+            "",
+            "",
+            adding=True,
+        )
+
+        title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("‹ back", title)
+        self.assertEqual(back_col, 40 - sidebar._cell_width("‹ back"))
+
+    def test_name_title_renders_back_and_returns_hit_column(self):
+        screen = FakeScreen(size=(6, 40))
+
+        back_col = sidebar._draw_name(screen, SidebarState(add_view="name", creation_host=""))
+
+        title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("‹ back", title)
+        self.assertEqual(back_col, 40 - sidebar._cell_width("‹ back"))
+
+    def test_selected_add_title_uses_selection_pointer_for_back(self):
+        screen = FakeScreen(size=(6, 40))
+
+        _draw(
+            screen,
+            sidebar._add_entries("choice", "", snapshot(), []),
+            0,
+            "",
+            "",
+            adding=True,
+            add_button_selected=True,
+        )
+
+        title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("› back", title)
+        self.assertNotIn("‹ back", title)
+
+    def test_back_title_uses_ascii_label(self):
+        screen = FakeScreen(size=(6, 40))
+
+        with patch("letee.sidebar._ascii", return_value=True):
+            _, back_col = _draw(
+                screen,
+                sidebar._add_entries("choice", "", snapshot(), []),
+                0,
+                "",
+                "",
+                adding=True,
+            )
+
+        title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("< back", title)
+        self.assertNotIn("‹ back", title)
+        self.assertEqual(back_col, 40 - len("< back"))
+
+    def test_narrow_add_title_has_no_invisible_back_target(self):
+        screen = FakeScreen(size=(6, 5))
+
+        _, back_col = _draw(
+            screen,
+            sidebar._add_entries("choice", "", snapshot(), []),
+            0,
+            "",
+            "",
+            adding=True,
+        )
+
+        self.assertIsNone(back_col)
+        self.assertFalse(any("back" in call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0))
+
+        name_screen = FakeScreen(size=(6, 5))
+        self.assertIsNone(sidebar._draw_name(name_screen, SidebarState(add_view="name")))
+        self.assertFalse(any("back" in call[3] for call in name_screen.calls if call[0] == "addnstr" and call[1] == 0))
+
     def test_choices_have_icons_descriptions_and_distinct_colors(self):
         new = Entry("New session", "choice_new")
         existing = Entry("Existing session", "choice_existing")
@@ -798,7 +877,132 @@ class AddFlowTest(unittest.TestCase):
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
         self.assertTrue(any("* dev" in line for line in lines))
         self.assertTrue(any(line.startswith(" > ") for line in lines))
+        self.assertTrue(any("Esc back" in line for line in lines))
         self.assertTrue(any("Enter create" in line for line in lines))
+
+
+class AddMouseTest(unittest.TestCase):
+    def _run_mouse(self, keys, data, events):
+        screen = FakeScreen(keys, size=(14, 40))
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.DiscoveryPoller"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.curses.curs_set") as curs_set,
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar.curses.getmouse", side_effect=events),
+            patch("letee.sidebar._init_colors"),
+            patch.object(sidebar, "_add_back", wraps=sidebar._add_back) as add_back,
+        ):
+            run(screen)
+
+        return add_back, curs_set
+
+    @staticmethod
+    def _click_events():
+        return [
+            (0, 39, 0, 0, curses.BUTTON1_PRESSED),
+            (0, 39, 0, 0, curses.BUTTON1_RELEASED),
+        ]
+
+    def test_click_back_from_add_choice_returns_to_sessions(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_MOUSE, curses.KEY_MOUSE, STOP],
+            snapshot(),
+            self._click_events(),
+        )
+
+        add_back.assert_called_once()
+        self.assertIsNone(add_back.call_args.args[0].add_view)
+
+    def test_click_back_from_existing_returns_to_add_choice(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_DOWN, curses.KEY_ENTER, curses.KEY_MOUSE, curses.KEY_MOUSE, STOP],
+            snapshot(local=("running",)),
+            self._click_events(),
+        )
+
+        add_back.assert_called_once()
+        self.assertEqual(add_back.call_args.args[0].add_view, "choice")
+
+    def test_click_back_from_location_returns_to_add_choice(self):
+        data = snapshot(remotes={"dev": source("ssh", host="dev")})
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_ENTER, curses.KEY_MOUSE, curses.KEY_MOUSE, STOP],
+            data,
+            self._click_events(),
+        )
+
+        add_back.assert_called_once()
+        self.assertEqual(add_back.call_args.args[0].add_view, "choice")
+
+    def test_click_back_from_name_returns_to_location_with_multiple_locations(self):
+        data = snapshot(remotes={"dev": source("ssh", host="dev")})
+        add_back, curs_set = self._run_mouse(
+            [
+                curses.KEY_F11,
+                curses.KEY_ENTER,
+                curses.KEY_ENTER,
+                curses.KEY_MOUSE,
+                curses.KEY_MOUSE,
+                STOP,
+            ],
+            data,
+            self._click_events(),
+        )
+
+        add_back.assert_called_once()
+        self.assertEqual(add_back.call_args.args[0].add_view, "location")
+        self.assertEqual(curs_set.call_args, call(0))
+
+    def test_click_back_from_name_returns_to_choice_with_one_location(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_ENTER, curses.KEY_MOUSE, curses.KEY_MOUSE, STOP],
+            snapshot(),
+            self._click_events(),
+        )
+
+        add_back.assert_called_once()
+        self.assertEqual(add_back.call_args.args[0].add_view, "choice")
+
+    def test_mouse_press_alone_does_not_go_back(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_MOUSE, STOP],
+            snapshot(),
+            [(0, 39, 0, 0, curses.BUTTON1_PRESSED)],
+        )
+
+        add_back.assert_not_called()
+
+    def test_mouse_press_alone_does_not_go_back_from_name(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_ENTER, curses.KEY_MOUSE, STOP],
+            snapshot(),
+            [(0, 39, 0, 0, curses.BUTTON1_PRESSED)],
+        )
+
+        add_back.assert_not_called()
+
+    def test_up_selects_back_when_existing_view_has_no_sessions(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_DOWN, curses.KEY_ENTER, curses.KEY_UP, curses.KEY_ENTER, STOP],
+            snapshot(),
+            [],
+        )
+
+        add_back.assert_called_once()
+        self.assertEqual(add_back.call_args.args[0].add_view, "choice")
 
 
 class SidebarStateTest(unittest.TestCase):
@@ -2112,7 +2316,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertTrue(any(call.args[11] for call in draw.call_args_list))
 
-    def test_up_at_top_of_add_menu_does_not_select_hidden_add_button(self):
+    def test_up_at_top_of_add_menu_selects_back(self):
         screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, STOP])
 
         with (
@@ -2127,7 +2331,42 @@ class SidebarDrawTest(unittest.TestCase):
 
         add_draws = [call for call in draw.call_args_list if call.args[11]]
         self.assertTrue(add_draws)
-        self.assertFalse(any(call.kwargs["add_button_selected"] for call in add_draws))
+        self.assertTrue(any(call.kwargs["add_button_selected"] for call in add_draws))
+
+    def test_down_from_selected_back_returns_to_first_add_entry(self):
+        screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, curses.KEY_DOWN, STOP])
+
+        with (
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", return_value=(2, None)) as draw,
+        ):
+            run(screen)
+
+        add_draws = [call for call in draw.call_args_list if call.args[11]]
+        self.assertTrue(add_draws)
+        self.assertFalse(add_draws[-1].kwargs["add_button_selected"])
+        self.assertEqual(add_draws[-1].args[2], 0)
+
+    def test_enter_on_selected_back_returns_to_sessions(self):
+        screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, curses.KEY_ENTER, STOP])
+
+        with (
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", return_value=(2, None)),
+            patch.object(sidebar, "_add_back", wraps=sidebar._add_back) as add_back,
+        ):
+            run(screen)
+
+        add_back.assert_called_once()
+        self.assertIsNone(add_back.call_args.args[0].add_view)
 
     def test_session_name_typing_handles_queued_keys_without_background_polling(self):
         screen = FakeScreen([curses.KEY_F11, curses.KEY_ENTER, *map(ord, "fast"), 27, STOP])
