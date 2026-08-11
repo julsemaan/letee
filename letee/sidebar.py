@@ -736,7 +736,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             effect.automatic
             and effect.kind in ("switch", "show_reconnecting", "show_missing", "show_unavailable")
             and isinstance(effect.target, Target)
-            and cockpit.current_target() != effect.target
+            and _current_target() != effect.target
         ):
             return EffectResult(effect, planned, stale_navigation=True)
         if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
@@ -1960,10 +1960,16 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
-            if pending_key is None:
-                unavailable_target_shown = _sync_active_session(
-                    current_target, poller.snapshot, unavailable_target_shown, queue_effect
-                )
+            if pending_key is None and not actions.busy:
+                try:
+                    unavailable_target_shown = _sync_active_session(
+                        current_target,
+                        poller.snapshot,
+                        unavailable_target_shown,
+                        submit=queue_effect,
+                    )
+                except SystemExit as error:
+                    show_status(str(error))
             selectable = _selectable(entries)
             if selectable and state.selected_index not in selectable:
                 state.selected_index = selectable[0]
