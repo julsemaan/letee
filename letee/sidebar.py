@@ -9,6 +9,7 @@ import textwrap
 import threading
 import time
 import unicodedata
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -227,11 +228,14 @@ def _sync_active_session(
     target: Target | None,
     snapshot: SessionSnapshot,
     interrupted: Target | None,
+    submit: Callable[[Effect], bool] | None = None,
 ) -> Target | None:
     if target is None:
         return None
 
     def run(effect: Effect) -> bool:
+        if submit is not None:
+            return bool(submit(effect))
         result = _perform_effect(effect, ())
         if result.error:
             raise SystemExit(result.error)
@@ -730,7 +734,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             effect.automatic
             and effect.kind in ("switch", "show_reconnecting", "show_missing", "show_unavailable")
             and isinstance(effect.target, Target)
-            and cockpit.current_target() != effect.target
+            and _current_target() != effect.target
         ):
             return EffectResult(effect, planned, stale_navigation=True)
         if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
