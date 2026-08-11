@@ -19,7 +19,7 @@ Your sessions remain ordinary tmux sessions. Keep your terminal, tmux configurat
 - **See everything in one place**: local and remote sessions and their agents share one sidebar.
 - **Know what needs you**: live agent states, agent alerts, and tmux bells surface work that needs attention.
 - **Jump straight to the work**: select a session or go directly to an agent's exact tmux window and pane.
-- **Manage sessions without breaking focus**: find, create, track, reorder, remove, kill, or recreate sessions with the keyboard or mouse.
+- **Manage sessions without breaking focus**: find, create, track, rename, reorder, remove, kill, or recreate sessions with the keyboard or mouse.
 
 ## Quick start
 
