@@ -121,6 +121,7 @@ class StatusResult:
     current_agent: str | None
     pane_active: bool
     generation: int
+    refreshed: bool = False
 
 
 _COLOR: dict[str, int] = {}
@@ -940,6 +941,8 @@ class AsyncStatusPoller:
         self.current_agent: str | None = None
         self.pane_active = True
         self._generation = 0
+        self._refresh_pending = False
+        self._refresh_target: Target | None = None
         self._pending_agent: tuple[PaneTarget, str] | None = None
 
     def _sample(
@@ -977,6 +980,7 @@ class AsyncStatusPoller:
             current_agent,
             pane_active,
             generation,
+            any(command == "refresh" for command, _ in commands),
         )
 
     def tick(self, now: float) -> bool:
@@ -986,6 +990,19 @@ class AsyncStatusPoller:
             self._future = None
             changed = result.snapshot != self.snapshot
             self.snapshot = result.snapshot
+            if result.refreshed is True:
+                self._refresh_pending = any(
+                    command == "refresh" for command, _ in self._commands
+                )
+            if self._refresh_target is not None:
+                target = self._refresh_target
+                source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
+                if (
+                    target in self.snapshot.sessions
+                    or (result.refreshed is True and target.kind == "local")
+                    or (source is not None and not source.available)
+                ):
+                    self._refresh_target = None
             if result.generation == self._generation:
                 self.current_target = result.current_target
                 self.bell_target = result.bell_target
@@ -1027,12 +1044,18 @@ class AsyncStatusPoller:
                 return
             if self.current_target == target:
                 self.current_target = renamed
+                self._refresh_target = renamed
             if self.bell_target == target:
                 self.bell_target = renamed
             self._generation += 1
 
+    @property
+    def refresh_pending(self) -> bool:
+        return self._refresh_pending or self._refresh_target is not None
+
     def refresh(self) -> bool:
         self._commands.append(("refresh", None))
+        self._refresh_pending = True
         self._next_poll = 0.0
         return False
 
@@ -2016,7 +2039,7 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
-            if pending_key is None:
+            if pending_key is None and getattr(poller, "refresh_pending", False) is not True:
                 unavailable_target_shown = _sync_active_session(
                     current_target, poller.snapshot, unavailable_target_shown, queue_effect
                 )

@@ -1436,6 +1436,46 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertEqual(status.current_target, renamed)
         self.assertEqual(status.bell_target, renamed)
 
+    def test_status_poller_keeps_refresh_pending_until_renamed_remote_session_is_seen(self):
+        old = Target("ssh", "old", "dev")
+        renamed = Target("ssh", "renamed", "dev")
+        stale = snapshot(remotes={"dev": source("ssh", ("old",), host="dev")})
+        fresh = snapshot(remotes={"dev": source("ssh", ("renamed",), host="dev")})
+        poller = unittest.mock.Mock(snapshot=stale)
+        status = sidebar.AsyncStatusPoller(poller, old)
+        status._next_poll = float("inf")
+        try:
+            status.refresh()
+            status.observe_effect(
+                sidebar.EffectResult(Effect("rename", target=old, message="renamed"), (renamed,))
+            )
+
+            status._future = unittest.mock.Mock()
+            status._future.done.return_value = True
+            status._future.result.return_value = sidebar.StatusResult(
+                stale, renamed, None, None, True, status._generation
+            )
+            status.tick(0)
+            self.assertTrue(status.refresh_pending)
+
+            status._future = unittest.mock.Mock()
+            status._future.done.return_value = True
+            status._future.result.return_value = sidebar.StatusResult(
+                stale, renamed, None, None, True, status._generation, True
+            )
+            status.tick(0)
+            self.assertTrue(status.refresh_pending)
+
+            status._future = unittest.mock.Mock()
+            status._future.done.return_value = True
+            status._future.result.return_value = sidebar.StatusResult(
+                fresh, renamed, None, None, True, status._generation
+            )
+            status.tick(0)
+            self.assertFalse(status.refresh_pending)
+        finally:
+            status.close()
+
     def test_status_poller_keeps_switched_agent_until_focused_pane_is_confirmed(self):
         target = Target("local", "work")
         first_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
@@ -2289,6 +2329,41 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         sync_active_session.assert_not_called()
+
+    def test_rename_refresh_does_not_recover_active_session_from_stale_snapshot(self):
+        for old, renamed, stale in (
+            (
+                Target("local", "old"), Target("local", "renamed"),
+                snapshot(local=("old",)),
+            ),
+            (
+                Target("ssh", "old", "dev"), Target("ssh", "renamed", "dev"),
+                snapshot(remotes={"dev": source("ssh", ("old",), host="dev")}),
+            ),
+        ):
+            with self.subTest(kind=old.kind):
+                poller = unittest.mock.Mock(
+                    snapshot=stale, current_target=renamed,
+                    bell_target=None, current_agent=None, pane_active=True,
+                    refresh_pending=True,
+                )
+                poller.tick.return_value = False
+                screen = FakeScreen([-1, STOP], size=(10, 40))
+                with (
+                    patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+                    patch("letee.sidebar.DiscoveryPoller"),
+                    patch("letee.sidebar.load_hosts", return_value=[]),
+                    patch("letee.sidebar.load_sessions", return_value=[renamed]),
+                    patch("letee.sidebar._current_target", return_value=renamed),
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar._mouse_mask"),
+                    patch("letee.sidebar._draw", return_value=(2, None)),
+                    patch("letee.sidebar._sync_active_session") as sync_active_session,
+                ):
+                    run(screen)
+
+                sync_active_session.assert_not_called()
 
     def test_run_sets_timeout_and_refreshes_on_timeout(self):
         screen = FakeScreen([-1, STOP])
