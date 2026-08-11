@@ -219,6 +219,49 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
+    def test_reconnect_restore_failure_keeps_sidebar_running(self):
+        target = Target("ssh", "work", "dev")
+        connected = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
+        disconnected = snapshot(
+            remotes={"dev": source("ssh", sessions=("work",), host="dev", available=False)}
+        )
+        poller = unittest.mock.Mock(
+            snapshot=connected,
+            current_target=target,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        snapshots = iter((disconnected, connected, connected))
+
+        def tick(_now):
+            poller.snapshot = next(snapshots, poller.snapshot)
+            return True
+
+        poller.tick.side_effect = tick
+        actions = unittest.mock.Mock(busy=False)
+        actions.poll.return_value = None
+        screen = FakeScreen([-1, -1, -1, STOP], size=(12, 40))
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.cockpit, "show_reconnecting"),
+            patch.object(sidebar.cockpit, "switch", side_effect=OSError("tmux unavailable")) as switch,
+        ):
+            sidebar.run(screen)
+
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        self.assertEqual(draw.call_args_list[-1].args[3], "tmux unavailable")
+
     def test_production_loop_restores_reconnected_active_ssh_session_without_input(self):
         target = Target("ssh", "work", "dev")
         connected = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})

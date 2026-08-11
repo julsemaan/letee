@@ -1929,9 +1929,12 @@ def run(stdscr: curses.window) -> None:
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
             if pending_key is None and not actions.busy:
-                unavailable_target_shown = _sync_active_session(
-                    current_target, poller.snapshot, unavailable_target_shown
-                )
+                try:
+                    unavailable_target_shown = _sync_active_session(
+                        current_target, poller.snapshot, unavailable_target_shown
+                    )
+                except SystemExit as error:
+                    show_status(str(error))
             selectable = _selectable(entries)
             if selectable and state.selected_index not in selectable:
                 state.selected_index = selectable[0]
