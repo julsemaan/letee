@@ -1931,7 +1931,10 @@ def run(stdscr: curses.window) -> None:
             if pending_key is None and not actions.busy:
                 try:
                     unavailable_target_shown = _sync_active_session(
-                        current_target, poller.snapshot, unavailable_target_shown
+                        current_target,
+                        poller.snapshot,
+                        unavailable_target_shown,
+                        submit=queue_effect,
                     )
                 except SystemExit as error:
                     show_status(str(error))

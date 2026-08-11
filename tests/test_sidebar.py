@@ -239,9 +239,13 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             return True
 
         poller.tick.side_effect = tick
+        results = []
         actions = unittest.mock.Mock(busy=False)
-        actions.poll.return_value = None
-        screen = FakeScreen([-1, -1, -1, STOP], size=(12, 40))
+        actions.submit.side_effect = lambda effect, favorites: results.append(
+            sidebar._perform_effect(effect, favorites)
+        ) or True
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
+        screen = FakeScreen([-1, -1, -1, -1, STOP], size=(12, 40))
 
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
@@ -282,8 +286,12 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             return True
 
         poller.tick.side_effect = tick
+        results = []
         actions = unittest.mock.Mock(busy=False)
-        actions.poll.return_value = None
+        actions.submit.side_effect = lambda effect, favorites: results.append(
+            sidebar._perform_effect(effect, favorites)
+        ) or True
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
         screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
         events = []
 
@@ -305,6 +313,14 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
 
         self.assertEqual(events, ["reconnecting", "switch"])
         switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        observed = [call.args[0].effect for call in poller.observe_effect.call_args_list]
+        self.assertEqual(
+            observed,
+            [
+                Effect("show_reconnecting", target, automatic=True),
+                Effect("switch", target, automatic=True),
+            ],
+        )
 
     def test_busy_action_delays_automatic_restoration_until_runner_is_idle(self):
         target = Target("ssh", "work", "dev")
@@ -331,11 +347,16 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             def __init__(self):
                 self.busy = False
                 self.poll_count = 0
+                self.results = []
+
+            def submit(self, effect, favorites):
+                self.results.append(sidebar._perform_effect(effect, favorites))
+                return True
 
             def poll(self):
                 self.poll_count += 1
                 self.busy = self.poll_count == 2
-                return None
+                return self.results.pop(0) if self.results else None
 
             def close(self):
                 pass
@@ -1530,7 +1551,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         finally:
             status.close()
 
-    def test_status_poller_runs_discovery_and_tmux_reads_off_ui_thread(self):
+    def test_automatic_switch_drops_stale_in_flight_status_result(self):
         started = threading.Event()
         release = threading.Event()
         target = Target("local", "work")
@@ -1565,7 +1586,9 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 self.assertTrue(started.wait(1))
                 self.assertEqual(poller.snapshot.sessions, ())
                 poller.observe_effect(
-                    sidebar.EffectResult(Effect("switch", selected_target), ())
+                    sidebar.EffectResult(
+                        Effect("switch", selected_target, automatic=True), ()
+                    )
                 )
                 release.set()
                 deadline = time.monotonic() + 1
@@ -1573,6 +1596,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                     time.sleep(0.001)
                 self.assertEqual(poller.snapshot.sessions, (target,))
                 self.assertEqual(poller.current_target, selected_target)
+                self.assertEqual(poller._generation, 1)
                 self.assertIsNone(poller.bell_target)
                 self.assertIsNone(poller.current_agent)
                 self.assertTrue(poller.pane_active)
