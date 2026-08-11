@@ -707,6 +707,23 @@ class AddFlowTest(unittest.TestCase):
         self.assertIn("‹ back", title)
         self.assertEqual(back_col, 40 - sidebar._cell_width("‹ back"))
 
+    def test_selected_add_title_uses_selection_pointer_for_back(self):
+        screen = FakeScreen(size=(6, 40))
+
+        _draw(
+            screen,
+            sidebar._add_entries("choice", "", snapshot(), []),
+            0,
+            "",
+            "",
+            adding=True,
+            add_button_selected=True,
+        )
+
+        title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("› back", title)
+        self.assertNotIn("‹ back", title)
+
     def test_back_title_uses_ascii_label(self):
         screen = FakeScreen(size=(6, 40))
 
@@ -976,6 +993,16 @@ class AddMouseTest(unittest.TestCase):
         )
 
         add_back.assert_not_called()
+
+    def test_up_selects_back_when_existing_view_has_no_sessions(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_DOWN, curses.KEY_ENTER, curses.KEY_UP, curses.KEY_ENTER, STOP],
+            snapshot(),
+            [],
+        )
+
+        add_back.assert_called_once()
+        self.assertEqual(add_back.call_args.args[0].add_view, "choice")
 
 
 class SidebarStateTest(unittest.TestCase):
@@ -2289,7 +2316,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertTrue(any(call.args[11] for call in draw.call_args_list))
 
-    def test_up_at_top_of_add_menu_does_not_select_hidden_add_button(self):
+    def test_up_at_top_of_add_menu_selects_back(self):
         screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, STOP])
 
         with (
@@ -2304,7 +2331,42 @@ class SidebarDrawTest(unittest.TestCase):
 
         add_draws = [call for call in draw.call_args_list if call.args[11]]
         self.assertTrue(add_draws)
-        self.assertFalse(any(call.kwargs["add_button_selected"] for call in add_draws))
+        self.assertTrue(any(call.kwargs["add_button_selected"] for call in add_draws))
+
+    def test_down_from_selected_back_returns_to_first_add_entry(self):
+        screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, curses.KEY_DOWN, STOP])
+
+        with (
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", return_value=(2, None)) as draw,
+        ):
+            run(screen)
+
+        add_draws = [call for call in draw.call_args_list if call.args[11]]
+        self.assertTrue(add_draws)
+        self.assertFalse(add_draws[-1].kwargs["add_button_selected"])
+        self.assertEqual(add_draws[-1].args[2], 0)
+
+    def test_enter_on_selected_back_returns_to_sessions(self):
+        screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, curses.KEY_ENTER, STOP])
+
+        with (
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=[Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", return_value=(2, None)),
+            patch.object(sidebar, "_add_back", wraps=sidebar._add_back) as add_back,
+        ):
+            run(screen)
+
+        add_back.assert_called_once()
+        self.assertIsNone(add_back.call_args.args[0].add_view)
 
     def test_session_name_typing_handles_queued_keys_without_background_polling(self):
         screen = FakeScreen([curses.KEY_F11, curses.KEY_ENTER, *map(ord, "fast"), 27, STOP])

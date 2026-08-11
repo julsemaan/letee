@@ -405,6 +405,7 @@ def _select_location(state: SidebarState, host: str) -> None:
 
 
 def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
+    state.add_button_selected = False
     if state.add_view == "name":
         state.add_view = "location" if len(_available_locations(snapshot)) > 1 else "choice"
         state.creation_host = None
@@ -420,6 +421,7 @@ def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
 def _reset_add(state: SidebarState) -> None:
     state.add_view = None
     state.filtering = False
+    state.add_button_selected = False
     state.filter_text = ""
     state.creation_host = None
     state.creation_text = ""
@@ -1179,7 +1181,9 @@ def _mouse_cleanup() -> None:
         pass
 
 
-def _back_label() -> str:
+def _back_label(selected: bool = False) -> str:
+    if selected:
+        return f"{_icons()['selected']} back"
     return "< back" if _ascii() else "‹ back"
 
 
@@ -1189,18 +1193,21 @@ def _draw_back_title(
     left: str,
     attr: int,
     dimmed: bool,
+    selected: bool = False,
 ) -> int | None:
-    label = _back_label()
+    label = _back_label(selected)
     label_width = _cell_width(label)
     action_col = width - label_width
     title_attr = _fade(attr) if dimmed else attr
+    button_attr = _color("active") if selected and not dimmed else attr
+    button_attr = _fade(button_attr) if dimmed else button_attr
     if action_col < 0:
         title = _truncate_cells(left, width)
         stdscr.addnstr(0, 0, title + " " * max(0, width - _cell_width(title)), width, title_attr)
         return None
     title = _truncate_cells(left, action_col)
     stdscr.addnstr(0, 0, title + " " * max(0, action_col - _cell_width(title)), action_col, title_attr)
-    stdscr.addnstr(0, action_col, label, label_width, title_attr)
+    stdscr.addnstr(0, action_col, label, label_width, button_attr)
     return action_col
 
 
@@ -1231,7 +1238,7 @@ def _draw_title(
             button_attr = _color("active") if add_button_selected and not dimmed else attr
             stdscr.addnstr(0, add_col, label, _cell_width(label), _fade(button_attr) if dimmed else button_attr)
     else:
-        add_col = _draw_back_title(stdscr, width, left, attr, dimmed)
+        add_col = _draw_back_title(stdscr, width, left, attr, dimmed, add_button_selected)
     stdscr.redrawln(0, 1)
     return (min(width - 1, len(left)), add_col)
 
@@ -2346,20 +2353,30 @@ def run(stdscr: curses.window) -> None:
                         effect = Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
             elif state.focused_region == "agents" and key in map(ord, "rxKJ"):
                 effect = Effect("status", message="agent panes are automatic")
-            elif key in (curses.KEY_DOWN, ord("j")) and selectable:
+            elif key in (curses.KEY_DOWN, ord("j")) and (selectable or state.add_view is not None):
                 state.scroll_offset = None
                 if state.add_button_selected:
-                    state.add_button_selected = False
-                    state.selected_index = selectable[0]
-                    state.selected_target = entries[state.selected_index].target
-                    state.selected_tracked = entries[state.selected_index].tracked
+                    if selectable:
+                        state.add_button_selected = False
+                        state.selected_index = selectable[0]
+                        state.selected_target = entries[state.selected_index].target
+                        state.selected_tracked = entries[state.selected_index].tracked
+                elif not selectable:
+                    state.add_button_selected = True
                 else:
                     state.selected_index = selectable[(selectable.index(state.selected_index) + 1) % len(selectable)]
                     state.selected_target = entries[state.selected_index].target
                     state.selected_tracked = entries[state.selected_index].tracked
-            elif key in (curses.KEY_UP, ord("k")) and selectable:
+            elif key in (curses.KEY_UP, ord("k")) and (selectable or state.add_view is not None):
                 state.scroll_offset = None
-                if state.add_view is None and state.selected_index == selectable[0] and not state.add_button_selected:
+                if state.add_view is not None:
+                    if not state.add_button_selected and (not selectable or state.selected_index == selectable[0]):
+                        state.add_button_selected = True
+                    elif not state.add_button_selected:
+                        state.selected_index = selectable[(selectable.index(state.selected_index) - 1) % len(selectable)]
+                        state.selected_target = entries[state.selected_index].target
+                        state.selected_tracked = entries[state.selected_index].tracked
+                elif state.selected_index == selectable[0] and not state.add_button_selected:
                     state.add_button_selected = True
                 elif state.add_button_selected:
                     state.add_button_selected = False
@@ -2391,7 +2408,11 @@ def run(stdscr: curses.window) -> None:
                 state.scroll_offset = None
                 if state.add_button_selected:
                     state.add_button_selected = False
-                    _open_add(state)
+                    if state.add_view is None:
+                        _open_add(state)
+                    else:
+                        _add_back(state, poller.snapshot)
+                        curses.curs_set(0)
                     rebuild()
                     continue
                 if not entries:
