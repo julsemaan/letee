@@ -167,7 +167,7 @@ def _check_host(host: str, *, batch_mode: bool) -> bool:
         "true",
         persistent_ssh=False,
     )
-    kwargs: dict[str, object] = {"check": False}
+    kwargs: dict[str, object] = {"check": False, "timeout": 10}
     if batch_mode:
         env = os.environ.copy()
         env["SSH_ASKPASS_REQUIRE"] = "never"

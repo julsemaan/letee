@@ -383,11 +383,20 @@ class SSHPreparationTest(unittest.TestCase):
         self.assertIn(("-o", "ControlPath=none"), list(zip(command, command[1:])))
         self.assertNotIn("ControlMaster=auto", command)
         self.assertNotIn("ControlPath=~/.ssh/letee-%C", command)
-        self.assertEqual(run.call_args.kwargs, {"check": False})
+        self.assertEqual(run.call_args.kwargs, {"check": False, "timeout": 10})
 
     def test_preparation_returns_failure_for_ssh_failure(self):
         with patch("letee.sessions.subprocess.run", return_value=Mock(returncode=255)):
             self.assertFalse(sessions.prepare_host("prod"))
+
+    def test_preparation_returns_failure_on_timeout(self):
+        with patch(
+            "letee.sessions.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["ssh"], 10),
+        ) as run:
+            self.assertFalse(sessions.prepare_host("prod"))
+
+        self.assertEqual(run.call_args.kwargs["timeout"], 10)
 
     def test_probe_hosts_runs_checks_in_parallel_and_preserves_host_order(self):
         barrier = threading.Barrier(2)
@@ -411,6 +420,7 @@ class SSHPreparationTest(unittest.TestCase):
             self.assertEqual(call.kwargs["stdin"], subprocess.DEVNULL)
             self.assertEqual(call.kwargs["stdout"], subprocess.DEVNULL)
             self.assertEqual(call.kwargs["stderr"], subprocess.DEVNULL)
+            self.assertEqual(call.kwargs["timeout"], 10)
             self.assertEqual(call.kwargs["env"]["SSH_AUTH_SOCK"], "/tmp/agent")
             self.assertEqual(call.kwargs["env"]["SSH_ASKPASS_REQUIRE"], "never")
 
