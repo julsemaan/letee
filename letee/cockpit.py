@@ -306,13 +306,30 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
     for index, host in enumerate(hosts, 1):
         print(f"[{index}/{len(hosts)}] {host} — connecting...", flush=True)
 
+    groups = sessions.group_hosts(hosts)
+    results: dict[str, bool] = {}
+    for group in groups:
+        for host in group:
+            if host in results:
+                continue
+            host_ready = sessions.prepare_host(host)
+            results[host] = host_ready
+            if host_ready:
+                break
+
+    probe_hosts = [host for host in hosts if host not in results]
+    if probe_hosts:
+        probe_results = sessions.probe_hosts(probe_hosts)
+        results.update(zip(probe_hosts, probe_results))
+
     ready = 0
     failed: list[str] = []
-    probe_results = sessions.probe_hosts(hosts)
-    for index, (host, host_ready) in enumerate(zip(hosts, probe_results), 1):
-        if not host_ready:
+    for index, host in enumerate(hosts, 1):
+        host_ready = results.get(host, False)
+        if host in probe_hosts and not host_ready:
             print(f"[{index}/{len(hosts)}] {host} — retrying interactively...", flush=True)
             host_ready = sessions.prepare_host(host)
+            results[host] = host_ready
         if host_ready:
             ready += 1
             print(f"[{index}/{len(hosts)}] {host} — ready", flush=True)

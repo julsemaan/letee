@@ -281,6 +281,95 @@ class SSHAgentTest(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["SSH_AUTH_SOCK"], "/tmp/agent")
 
 
+class SSHGroupingTest(unittest.TestCase):
+    @staticmethod
+    def _config(*, agent=None, files=()):
+        lines = []
+        if agent is not None:
+            lines.append(f"identityagent {agent}")
+        lines.extend(f"identityfile {identity_file}" for identity_file in files)
+        return "\n".join(lines) + "\n"
+
+    def test_groups_hosts_with_same_effective_identity_agent(self):
+        configs = {
+            "dev": self._config(agent="/tmp/agent-a", files=("~/.ssh/dev",)),
+            "prod": self._config(agent="/tmp/agent-a", files=("~/.ssh/prod",)),
+            "staging": self._config(agent="/tmp/agent-b", files=("~/.ssh/dev",)),
+        }
+
+        def run(command, **kwargs):
+            return Mock(returncode=0, stdout=configs[command[-1]], stderr="")
+
+        with patch("letee.sessions.subprocess.run", side_effect=run):
+            self.assertEqual(
+                sessions.group_hosts(["dev", "prod", "staging"]),
+                [["dev", "prod"], ["staging"]],
+            )
+
+    def test_groups_hosts_without_agent_by_identity_files(self):
+        configs = {
+            "dev": self._config(files=("~/.ssh/shared",)),
+            "prod": self._config(files=("~/.ssh/shared",)),
+            "staging": self._config(files=("~/.ssh/other",)),
+        }
+
+        def run(command, **kwargs):
+            return Mock(returncode=0, stdout=configs[command[-1]], stderr="")
+
+        with patch.dict(sessions.os.environ, {}, clear=True), patch("letee.sessions.subprocess.run", side_effect=run):
+            self.assertEqual(
+                sessions.group_hosts(["dev", "prod", "staging"]),
+                [["dev", "prod"], ["staging"]],
+            )
+
+    def test_default_agent_from_environment_groups_hosts_without_explicit_identity_agent(self):
+        configs = {
+            "dev": self._config(files=("~/.ssh/dev",)),
+            "prod": self._config(files=("~/.ssh/prod",)),
+        }
+
+        def run(command, **kwargs):
+            return Mock(returncode=0, stdout=configs[command[-1]], stderr="")
+
+        with (
+            patch.dict(sessions.os.environ, {"SSH_AUTH_SOCK": "/tmp/default-agent"}, clear=True),
+            patch("letee.sessions.subprocess.run", side_effect=run),
+        ):
+            self.assertEqual(sessions.group_hosts(["dev", "prod"]), [["dev", "prod"]])
+
+    def test_config_lookup_failure_keeps_host_in_own_group(self):
+        def run(command, **kwargs):
+            return Mock(returncode=255, stdout="", stderr="bad config")
+
+        with patch("letee.sessions.subprocess.run", side_effect=run):
+            self.assertEqual(
+                sessions.group_hosts(["dev", "prod"]),
+                [["dev"], ["prod"]],
+            )
+
+    def test_config_lookup_exception_keeps_host_in_own_group(self):
+        with patch("letee.sessions.subprocess.run", side_effect=OSError("ssh missing")):
+            self.assertEqual(
+                sessions.group_hosts(["dev", "prod"]),
+                [["dev"], ["prod"]],
+            )
+
+    def test_identity_agent_environment_token_resolves_to_default_agent(self):
+        configs = {
+            host: self._config(agent="$SSH_AUTH_SOCK", files=(f"~/.ssh/{host}",))
+            for host in ("dev", "prod")
+        }
+
+        def run(command, **kwargs):
+            return Mock(returncode=0, stdout=configs[command[-1]], stderr="")
+
+        with (
+            patch.dict(sessions.os.environ, {"SSH_AUTH_SOCK": "/tmp/default-agent"}, clear=True),
+            patch("letee.sessions.subprocess.run", side_effect=run),
+        ):
+            self.assertEqual(sessions.group_hosts(["dev", "prod"]), [["dev", "prod"]])
+
+
 class SSHPreparationTest(unittest.TestCase):
     def test_prepares_host_without_multiplexing_and_keeps_prompt_streams(self):
         with patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0)) as run:
@@ -307,22 +396,23 @@ class SSHPreparationTest(unittest.TestCase):
             barrier.wait(timeout=5)
             return Mock(returncode=0 if command[-2] == "dev" else 255)
 
-        with patch("letee.sessions.subprocess.run", side_effect=run) as run_mock:
+        with (
+            patch.dict(sessions.os.environ, {"SSH_AUTH_SOCK": "/tmp/agent"}, clear=True),
+            patch("letee.sessions.subprocess.run", side_effect=run) as run_mock,
+        ):
             self.assertEqual(sessions.probe_hosts(["dev", "prod"]), [True, False])
+            self.assertNotIn("SSH_ASKPASS_REQUIRE", sessions.os.environ)
 
         self.assertEqual({call.args[0][-2] for call in run_mock.call_args_list}, {"dev", "prod"})
         for call in run_mock.call_args_list:
             command = call.args[0]
             self.assertIn(("-o", "BatchMode=yes"), list(zip(command, command[1:])))
-            self.assertEqual(
-                call.kwargs,
-                {
-                    "check": False,
-                    "stdin": subprocess.DEVNULL,
-                    "stdout": subprocess.DEVNULL,
-                    "stderr": subprocess.DEVNULL,
-                },
-            )
+            self.assertEqual(call.kwargs["check"], False)
+            self.assertEqual(call.kwargs["stdin"], subprocess.DEVNULL)
+            self.assertEqual(call.kwargs["stdout"], subprocess.DEVNULL)
+            self.assertEqual(call.kwargs["stderr"], subprocess.DEVNULL)
+            self.assertEqual(call.kwargs["env"]["SSH_AUTH_SOCK"], "/tmp/agent")
+            self.assertEqual(call.kwargs["env"]["SSH_ASKPASS_REQUIRE"], "never")
 
 
 if __name__ == "__main__":

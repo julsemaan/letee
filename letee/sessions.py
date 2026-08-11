@@ -169,16 +169,76 @@ def _check_host(host: str, *, batch_mode: bool) -> bool:
     )
     kwargs: dict[str, object] = {"check": False}
     if batch_mode:
+        env = os.environ.copy()
+        env["SSH_ASKPASS_REQUIRE"] = "never"
         kwargs.update(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
     try:
         result = subprocess.run(command, **kwargs)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def _ssh_config(host: str) -> tuple[str | None, tuple[str, ...]] | None:
+    try:
+        result = subprocess.run(
+            ("ssh", "-G", validate_host(host)),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    agent = None
+    identity_files: list[str] = []
+    for line in result.stdout.splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        option, value = parts
+        if option == "identityagent":
+            agent = value
+        elif option == "identityfile" and value != "none":
+            identity_files.append(os.path.expanduser(os.path.expandvars(value)))
+    return agent, tuple(identity_files)
+
+
+def _resolve_identity_agent(agent: str | None, default_agent: str | None) -> str | None:
+    if agent is None:
+        return default_agent
+    if not agent or agent == "none":
+        return None
+    if agent in ("SSH_AUTH_SOCK", "$SSH_AUTH_SOCK", "${SSH_AUTH_SOCK}"):
+        return default_agent
+    return os.path.expanduser(os.path.expandvars(agent))
+
+
+def group_hosts(hosts: Iterable[str]) -> list[list[str]]:
+    default_agent = os.environ.get("SSH_AUTH_SOCK")
+    grouped: dict[tuple[str, object], list[str]] = {}
+    for host in hosts:
+        config = _ssh_config(host)
+        if config is None:
+            key = ("host", host)
+        else:
+            agent, identity_files = config
+            resolved_agent = _resolve_identity_agent(agent, default_agent)
+            key = (
+                ("agent", resolved_agent)
+                if resolved_agent
+                else ("files", identity_files)
+            )
+        grouped.setdefault(key, []).append(host)
+    return list(grouped.values())
 
 
 def prepare_host(host: str) -> bool:
