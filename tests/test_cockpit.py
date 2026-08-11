@@ -6,19 +6,20 @@ from letee.names import Target
 
 
 class CockpitStartupTest(unittest.TestCase):
-    def test_agent_and_hosts_prepare_before_cockpit_creation(self):
+    def test_agent_setup_precedes_parallel_probe_and_cockpit_creation(self):
         events = []
 
-        def prepare(host):
-            events.append(("host", host))
-            return True
+        def probe(hosts):
+            events.append(("probe", tuple(hosts)))
+            return [True, True]
 
         with (
             patch.object(cockpit, "ensure_config"),
             patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
             patch.object(cockpit, "load_hosts", return_value=["dev", "prod"]),
             patch.object(cockpit.sessions, "ensure_ssh_agent", side_effect=lambda: events.append(("agent",)) or "/tmp/agent"),
-            patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
+            patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
+            patch.object(cockpit.sessions, "prepare_host") as prepare_host,
             patch.object(cockpit, "ensure_cockpit", side_effect=lambda: events.append(("cockpit",))),
             patch.object(cockpit, "_attach", return_value=0),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
@@ -26,27 +27,25 @@ class CockpitStartupTest(unittest.TestCase):
         ):
             self.assertEqual(cockpit.cockpit(), 0)
 
-        self.assertEqual(
-            events,
-            [("agent",), ("host", "dev"), ("host", "prod"), ("cockpit",)],
-        )
+        self.assertEqual(events, [("agent",), ("probe", ("dev", "prod")), ("cockpit",)])
+        prepare_host.assert_not_called()
 
-    def test_progress_is_flushed_before_each_blocking_host_check(self):
+    def test_all_connecting_statuses_print_before_parallel_probe(self):
         events = []
 
         def print_call(*args, **kwargs):
             events.append(("print", args[0], kwargs.get("flush")))
 
-        def prepare(host):
-            events.append(("ssh", host))
-            return True
+        def probe(hosts):
+            events.append(("probe", tuple(hosts)))
+            return [True, True]
 
         with (
             patch.object(cockpit, "ensure_config"),
             patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
-            patch.object(cockpit, "load_hosts", return_value=["dev"]),
+            patch.object(cockpit, "load_hosts", return_value=["dev", "prod"]),
             patch.object(cockpit.sessions, "ensure_ssh_agent", return_value="/tmp/agent"),
-            patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
+            patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
             patch.object(cockpit, "ensure_cockpit"),
             patch.object(cockpit, "_attach", return_value=0),
             patch("builtins.print", side_effect=print_call),
@@ -55,9 +54,17 @@ class CockpitStartupTest(unittest.TestCase):
         ):
             cockpit.cockpit()
 
-        ssh_index = events.index(("ssh", "dev"))
-        connecting = events[:ssh_index]
-        self.assertTrue(any(item[0] == "print" and "connecting" in item[1] and item[2] for item in connecting))
+        probe_index = events.index(("probe", ("dev", "prod")))
+        connecting = [
+            item[1]
+            for item in events[:probe_index]
+            if item[0] == "print" and "connecting" in item[1]
+        ]
+        self.assertEqual(connecting, [
+            "[1/2] dev — connecting...",
+            "[2/2] prod — connecting...",
+        ])
+        self.assertTrue(all(item[2] for item in events[:probe_index] if item[0] == "print"))
 
     def test_partial_failure_summary_contains_recovery_command(self):
         output = []
@@ -66,7 +73,8 @@ class CockpitStartupTest(unittest.TestCase):
             patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
             patch.object(cockpit, "load_hosts", return_value=["dev", "prod"]),
             patch.object(cockpit.sessions, "ensure_ssh_agent", return_value=None),
-            patch.object(cockpit.sessions, "prepare_host", side_effect=[True, False]),
+            patch.object(cockpit.sessions, "probe_hosts", return_value=[True, False]),
+            patch.object(cockpit.sessions, "prepare_host", return_value=False) as prepare_host,
             patch.object(cockpit, "ensure_cockpit"),
             patch.object(cockpit, "_attach", return_value=0),
             patch("builtins.print", side_effect=lambda *args, **kwargs: output.append(str(args[0]))),
@@ -75,20 +83,31 @@ class CockpitStartupTest(unittest.TestCase):
         ):
             self.assertEqual(cockpit.cockpit(), 0)
 
+        prepare_host.assert_called_once_with("prod")
         text = "\n".join(output)
         self.assertIn("SSH agent: unavailable", text)
         self.assertIn("SSH check complete: 1 ready, 1 failed.", text)
         self.assertIn("ssh prod", text)
         self.assertIn("Starting letee...", text)
 
-    def test_all_hosts_are_attempted_sequentially_after_agent_setup(self):
+    def test_only_failed_probes_retry_sequentially_after_agent_setup(self):
         order = []
+
+        def probe(hosts):
+            order.append(("probe", tuple(hosts)))
+            return [True, False, False]
+
+        def prepare(host):
+            order.append(("retry", host))
+            return host == "three"
+
         with (
             patch.object(cockpit, "ensure_config"),
             patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
             patch.object(cockpit, "load_hosts", return_value=["one", "two", "three"]),
             patch.object(cockpit.sessions, "ensure_ssh_agent", side_effect=lambda: order.append("agent") or "/tmp/agent"),
-            patch.object(cockpit.sessions, "prepare_host", side_effect=lambda host: order.append(host) or host != "two"),
+            patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
+            patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
             patch.object(cockpit, "ensure_cockpit", side_effect=lambda: order.append("cockpit")),
             patch.object(cockpit, "_attach", return_value=0),
             patch("builtins.print"),
@@ -97,7 +116,10 @@ class CockpitStartupTest(unittest.TestCase):
         ):
             cockpit.cockpit()
 
-        self.assertEqual(order, ["agent", "one", "two", "three", "cockpit"])
+        self.assertEqual(
+            order,
+            ["agent", ("probe", ("one", "two", "three")), ("retry", "two"), ("retry", "three"), "cockpit"],
+        )
 
     def test_no_hosts_skips_ssh_setup_silently(self):
         with (
@@ -124,6 +146,7 @@ class CockpitStartupTest(unittest.TestCase):
             patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
             patch.object(cockpit, "load_hosts", return_value=["dev"]),
             patch.object(cockpit.sessions, "ensure_ssh_agent") as ensure_agent,
+            patch.object(cockpit.sessions, "probe_hosts") as probe_hosts,
             patch.object(cockpit.sessions, "prepare_host") as prepare_host,
             patch.object(cockpit, "ensure_cockpit"),
             patch.object(cockpit, "_attach", return_value=0),
@@ -134,12 +157,14 @@ class CockpitStartupTest(unittest.TestCase):
             self.assertEqual(cockpit.cockpit(), 0)
 
         ensure_agent.assert_called_once_with()
+        probe_hosts.assert_not_called()
         prepare_host.assert_not_called()
         self.assertIn("not attached to a TTY", "\n".join(str(call.args[0]) for call in print_.call_args_list))
 
     def test_stdout_redirect_does_not_skip_interactive_ssh_checks(self):
         with (
             patch.object(cockpit.sessions, "ensure_ssh_agent", return_value="/tmp/agent"),
+            patch.object(cockpit.sessions, "probe_hosts", return_value=[False]) as probe_hosts,
             patch.object(cockpit.sessions, "prepare_host", return_value=True) as prepare_host,
             patch("builtins.print"),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
@@ -147,6 +172,7 @@ class CockpitStartupTest(unittest.TestCase):
         ):
             cockpit._prepare_remote_hosts(["dev"])
 
+        probe_hosts.assert_called_once_with(["dev"])
         prepare_host.assert_called_once_with("dev")
 
     def test_ctrl_c_prevents_cockpit_creation(self):
@@ -155,7 +181,8 @@ class CockpitStartupTest(unittest.TestCase):
             patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
             patch.object(cockpit, "load_hosts", return_value=["dev"]),
             patch.object(cockpit.sessions, "ensure_ssh_agent", return_value="/tmp/agent"),
-            patch.object(cockpit.sessions, "prepare_host", side_effect=KeyboardInterrupt),
+            patch.object(cockpit.sessions, "probe_hosts", side_effect=KeyboardInterrupt),
+            patch.object(cockpit.sessions, "prepare_host") as prepare_host,
             patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
             patch.object(cockpit, "_attach", return_value=0),
             patch("builtins.print"),
@@ -165,6 +192,7 @@ class CockpitStartupTest(unittest.TestCase):
             self.assertEqual(cockpit.cockpit(), 130)
 
         ensure_cockpit.assert_not_called()
+        prepare_host.assert_not_called()
 
 
 class CockpitLayoutTest(unittest.TestCase):

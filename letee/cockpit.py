@@ -303,11 +303,17 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
     else:
         print("SSH agent: unavailable; passphrases may repeat.", flush=True)
 
-    ready = 0
-    failed: list[str] = []
     for index, host in enumerate(hosts, 1):
         print(f"[{index}/{len(hosts)}] {host} — connecting...", flush=True)
-        if sessions.prepare_host(host):
+
+    ready = 0
+    failed: list[str] = []
+    probe_results = sessions.probe_hosts(hosts)
+    for index, (host, host_ready) in enumerate(zip(hosts, probe_results), 1):
+        if not host_ready:
+            print(f"[{index}/{len(hosts)}] {host} — retrying interactively...", flush=True)
+            host_ready = sessions.prepare_host(host)
+        if host_ready:
             ready += 1
             print(f"[{index}/{len(hosts)}] {host} — ready", flush=True)
         else:

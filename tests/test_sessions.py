@@ -3,6 +3,7 @@ import os
 import socket as unix_socket
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -299,11 +300,29 @@ class SSHPreparationTest(unittest.TestCase):
         with patch("letee.sessions.subprocess.run", return_value=Mock(returncode=255)):
             self.assertFalse(sessions.prepare_host("prod"))
 
-    def test_bootstrap_hosts_attempts_all_hosts_in_order(self):
-        with patch.object(sessions, "prepare_host", side_effect=[True, False]) as prepare:
-            self.assertEqual(sessions.bootstrap_hosts(["dev", "prod"]), [True, False])
+    def test_probe_hosts_runs_checks_in_parallel_and_preserves_host_order(self):
+        barrier = threading.Barrier(2)
 
-        self.assertEqual(prepare.call_args_list, [unittest.mock.call("dev"), unittest.mock.call("prod")])
+        def run(command, **kwargs):
+            barrier.wait(timeout=5)
+            return Mock(returncode=0 if command[-2] == "dev" else 255)
+
+        with patch("letee.sessions.subprocess.run", side_effect=run) as run_mock:
+            self.assertEqual(sessions.probe_hosts(["dev", "prod"]), [True, False])
+
+        self.assertEqual({call.args[0][-2] for call in run_mock.call_args_list}, {"dev", "prod"})
+        for call in run_mock.call_args_list:
+            command = call.args[0]
+            self.assertIn(("-o", "BatchMode=yes"), list(zip(command, command[1:])))
+            self.assertEqual(
+                call.kwargs,
+                {
+                    "check": False,
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL,
+                },
+            )
 
 
 if __name__ == "__main__":

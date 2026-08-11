@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
 import os
@@ -156,9 +157,9 @@ def ensure_ssh_agent() -> str | None:
     return None
 
 
-def prepare_host(host: str) -> bool:
+def _check_host(host: str, *, batch_mode: bool) -> bool:
     command = ssh_command(
-        "-o", "BatchMode=no",
+        "-o", f"BatchMode={'yes' if batch_mode else 'no'}",
         "-o", "ConnectTimeout=5",
         "-o", "ControlMaster=no",
         "-o", "ControlPath=none",
@@ -166,15 +167,31 @@ def prepare_host(host: str) -> bool:
         "true",
         persistent_ssh=False,
     )
+    kwargs: dict[str, object] = {"check": False}
+    if batch_mode:
+        kwargs.update(
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     try:
-        result = subprocess.run(command, check=False)
+        result = subprocess.run(command, **kwargs)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
 
 
-def bootstrap_hosts(hosts: Iterable[str]) -> list[bool]:
-    return [prepare_host(host) for host in hosts]
+def prepare_host(host: str) -> bool:
+    return _check_host(host, batch_mode=False)
+
+
+def _probe_host(host: str) -> bool:
+    return _check_host(host, batch_mode=True)
+
+
+def probe_hosts(hosts: Iterable[str]) -> list[bool]:
+    with ThreadPoolExecutor() as executor:
+        return list(executor.map(_probe_host, hosts))
 
 
 def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: bool = False) -> tuple[str, ...]:
