@@ -125,10 +125,12 @@ letee create local <session>
 letee create ssh <host> <session>
 letee kill local:<session>
 letee kill ssh:<host>:<session>
+letee rename local:<old-session> <new-session>
+letee rename ssh:<host>:<old-session> <new-session>
 letee -L <name> kill-server
 ```
 
-`-L <name>` applies to cockpit, tracked-session commands, and `kill-server`; `list-servers` discovers running verified letee servers only. Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay alive.
+`-L <name>` applies to cockpit, tracked-session commands, and `kill-server`; `list-servers` discovers running verified letee servers only. `rename` requires tracked targets and updates only selected server after tmux rename succeeds. Switching uses outer tmux `respawn-pane` on right pane. Real tmux sessions stay alive.
 
 ## Sidebar keys
 
@@ -149,6 +151,7 @@ letee -L <name> kill-server
 - `[` / `]`: give Agents/Sessions region more rows for current run
 - `Left` / `Right`: cycle agent ordering mode (Priority / Session) when ordering row is selected
 - `Enter`: switch selected session or exact agent pane, or activate selected Add row
+- `e`: rename selected available tracked session
 - `r`: remove selected target without killing it
 - `K` / `J`: move selected tracked target up/down without wrapping
 - `x`: kill and remove selected tracked session (asks first)
@@ -220,7 +223,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 ## Mouse controls
 
 - click session row: select and switch
-- right-click tracked session: open native tmux menu to remove it or kill it with confirmation; right-click does not switch sessions
+- right-click tracked session: open native tmux menu to rename, remove, or kill it with confirmation; right-click does not switch sessions
 - drag tracked session: reorder it; hovering `↑ more` or `↓ more` auto-scrolls, and leaving sidebar drops at current insertion line
 - click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - wheel over sidebar: navigate selectable session and host rows

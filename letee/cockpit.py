@@ -35,10 +35,11 @@ Navigation
 
 Session actions
   Enter  activate selected row
+  e      rename selected session
   r      remove selected session (session keeps running)
   K/J    move session up/down
   x      kill and remove selected session
-  Right-click  open session Remove/Kill menu
+  Right-click  open session Rename/Remove/Kill menu
 
 Agent actions
   j/k    navigate agents
@@ -379,6 +380,13 @@ def switch(target: Target, attach_command: str, agent_id: str | None = None) -> 
     tmux.tmux("select-pane", "-t", pane)
 
 
+def rename_target(old: Target, new: Target) -> None:
+    if current_target() == old:
+        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, new.format())
+    if bell_target() == old:
+        tmux.tmux("set-option", "-t", tmux.SESSION, BELL_TARGET_OPTION, new.format())
+
+
 def _tmux_supports_menu_mouse() -> bool:
     match = re.search(r"(\d+)\.(\d+)", tmux.out("-V", check=False))
     return bool(match and (int(match.group(1)), int(match.group(2))) >= (3, 5))
@@ -390,6 +398,7 @@ def show_session_menu(target: Target, x: int, y: int) -> None:
     mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
+        "Rename", "e", f"send-keys -t {pane} e",
         "Remove", "r", f"send-keys -t {pane} r",
         "Kill", "x", f"send-keys -t {pane} x y",
         timeout=None,

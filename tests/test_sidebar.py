@@ -241,8 +241,10 @@ from letee.sidebar import (
     _mouse_mask,
     _read_key,
     _reset_selection,
+    _rename_key,
     _selected_index,
     _should_auto_create,
+    _start_rename,
     _sync_agent_selection,
     _sync_selection,
     _transition,
@@ -846,6 +848,91 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(effect, Effect("create", Target("ssh", "work", "dev")))
 
+    def test_rename_editor_prefills_selected_session_name(self):
+        target = Target("local", "old")
+        state = SidebarState(selected_target=target, selected_tracked=True)
+
+        _start_rename(state, target)
+
+        self.assertEqual(
+            (state.add_view, state.rename_target, state.creation_host, state.creation_text),
+            ("name", target, "", "old"),
+        )
+
+    def test_rename_key_rejects_same_host_conflict_without_closing_editor(self):
+        old = Target("local", "old")
+        other = Target("local", "other")
+        state = SidebarState(
+            add_view="name", rename_target=old, creation_host="", creation_text="other"
+        )
+
+        with self.assertRaisesRegex(SystemExit, "already exists"):
+            _rename_key(state, 10, (old, other))
+
+        self.assertEqual((state.add_view, state.rename_target, state.creation_text), ("name", old, "other"))
+
+    def test_rename_key_allows_same_name_on_different_host(self):
+        old = Target("ssh", "old", "dev")
+        state = SidebarState(
+            add_view="name", rename_target=old, creation_host="dev", creation_text="work"
+        )
+
+        self.assertEqual(
+            _rename_key(state, 10, (old, Target("local", "work"))),
+            Effect("rename", target=old, message="work"),
+        )
+
+    def test_rename_key_unchanged_name_is_noop_and_closes_editor(self):
+        old = Target("local", "old")
+        state = SidebarState(
+            add_view="name", rename_target=old, creation_host="", creation_text="old"
+        )
+
+        self.assertIsNone(_rename_key(state, 10, (old,)))
+        self.assertIsNone(state.add_view)
+        self.assertIsNone(state.rename_target)
+
+    def test_successful_rename_replaces_favorite_selection_and_discovery_cache(self):
+        old = Target("local", "old")
+        renamed = Target("local", "new")
+        other = Target("local", "other")
+        state = SidebarState(
+            add_view="name", rename_target=old, creation_host="", creation_text="new",
+            selected_target=old, selected_tracked=True, favorites=[old, other],
+        )
+        poller = unittest.mock.Mock()
+        with (
+            patch.object(sidebar.sessions, "rename", return_value=renamed) as rename,
+            patch.object(sidebar, "save_sessions") as save,
+            patch.object(sidebar.cockpit, "rename_target") as rename_marker,
+        ):
+            _execute(Effect("rename", target=old, message="new"), state, poller, 5)
+
+        rename.assert_called_once_with(old, "new")
+        rename_marker.assert_called_once_with(old, renamed)
+        save.assert_called_once_with([renamed, other])
+        self.assertEqual(state.favorites, [renamed, other])
+        self.assertEqual(state.selected_target, renamed)
+        self.assertIsNone(state.add_view)
+        poller.assert_has_calls([call.discard(old), call.refresh()])
+
+    def test_failed_rename_keeps_editor_open_with_error(self):
+        old = Target("local", "old")
+        state = SidebarState(
+            add_view="name", rename_target=old, creation_host="", creation_text="new",
+            favorites=[old], selected_target=old, selected_tracked=True,
+        )
+        poller = unittest.mock.Mock()
+        with (
+            patch.object(sidebar.sessions, "rename", side_effect=SystemExit("rename failed")),
+            patch.object(sidebar, "save_sessions") as save,
+        ):
+            _execute(Effect("rename", target=old, message="new"), state, poller, 5)
+
+        save.assert_not_called()
+        self.assertEqual((state.add_view, state.rename_target, state.creation_text), ("name", old, "new"))
+        self.assertEqual(state.status, "rename failed")
+
     def test_reset_selection_uses_first_session_and_agent_ordering_row(self):
         first = Target("local", "first")
         state = SidebarState(
@@ -1332,6 +1419,22 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 status.close()
 
         self.assertEqual(result.current_agent, "focused")
+
+    def test_status_poller_updates_current_and_bell_targets_after_rename(self):
+        old = Target("local", "old")
+        renamed = Target("local", "new")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("old",)))
+        status = sidebar.AsyncStatusPoller(poller, old)
+        status.bell_target = old
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(Effect("rename", target=old, message="new"), (renamed,))
+            )
+        finally:
+            status.close()
+
+        self.assertEqual(status.current_target, renamed)
+        self.assertEqual(status.bell_target, renamed)
 
     def test_status_poller_keeps_switched_agent_until_focused_pane_is_confirmed(self):
         target = Target("local", "work")
@@ -2147,6 +2250,33 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(any(call[0] == "addnstr" and "fast" in call[3] for call in screen.calls))
         self.assertLessEqual(current_target.call_count, 2)
         self.assertLessEqual(pane_active.call_count, 1)
+
+    def test_e_opens_prefilled_editor_and_renames_selected_session(self):
+        old = Target("local", "old")
+        renamed = Target("local", "new")
+        screen = FakeScreen([ord("e"), curses.KEY_BACKSPACE, curses.KEY_BACKSPACE, curses.KEY_BACKSPACE, *map(ord, "new"), 10, STOP], size=(10, 40))
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("old",)), current_target=old, bell_target=None,
+            current_agent=None, pane_active=True,
+        )
+        poller.tick.return_value = False
+        with (
+            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[old]),
+            patch("letee.sidebar._current_target", return_value=old),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._mouse_mask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.sessions.rename", return_value=renamed) as rename,
+            patch("letee.sidebar.cockpit.rename_target"),
+            patch("letee.sidebar.save_sessions"),
+        ):
+            run(screen)
+
+        rename.assert_called_once_with(old, "new")
+        self.assertTrue(any(call[0] == "addnstr" and "Rename session" in call[3] for call in screen.calls))
+        self.assertTrue(any(call[0] == "addnstr" and "new" in call[3] for call in screen.calls))
 
     def test_queued_input_is_handled_before_automatic_session_actions(self):
         screen = FakeScreen([STOP])

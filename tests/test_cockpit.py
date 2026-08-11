@@ -486,6 +486,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_call.assert_called_once_with(
             "display-menu", "-O", "-T", "work@dev", "-x", "7", "-y", "4", "-t", "%1",
+            "Rename", "e", "send-keys -t %1 e",
             "Remove", "r", "send-keys -t %1 r",
             "Kill", "x", "send-keys -t %1 x y",
             timeout=None,
@@ -501,9 +502,28 @@ class CockpitLayoutTest(unittest.TestCase):
 
         tmux_call.assert_called_once_with(
             "display-menu", "-M", "-O", "-T", "work@localhost", "-x", "7", "-y", "4", "-t", "%1",
+            "Rename", "e", "send-keys -t %1 e",
             "Remove", "r", "send-keys -t %1 r",
             "Kill", "x", "send-keys -t %1 x y",
             timeout=None,
+        )
+
+    def test_rename_target_updates_active_and_bell_markers_without_switching(self):
+        old = Target("local", "old")
+        new = Target("local", "new")
+        with (
+            patch.object(cockpit, "current_target", return_value=old),
+            patch.object(cockpit, "bell_target", return_value=old),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.rename_target(old, new)
+
+        self.assertEqual(
+            tmux_call.call_args_list,
+            [
+                unittest.mock.call("set-option", "-t", "letee", cockpit.CURRENT_TARGET_OPTION, "local:new"),
+                unittest.mock.call("set-option", "-t", "letee", cockpit.BELL_TARGET_OPTION, "local:new"),
+            ],
         )
 
     def test_help_uses_configured_prefix(self):
@@ -524,6 +544,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Agent actions", command)
         self.assertIn("Left/Right  cycle ordering on selected ordering row", command)
         self.assertIn("Enter  activate selected row", command)
+        self.assertIn("e      rename selected session", command)
         self.assertNotIn("a      open Add session menu", command)
         self.assertNotIn("?      open help from sidebar", command)
         self.assertNotIn("q      quit sidebar only", command)
@@ -532,7 +553,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("n      open grouped local/SSH Add picker", command)
         self.assertIn("r      remove selected session", command)
         self.assertIn("x      kill and remove selected session", command)
-        self.assertIn("Right-click  open session Remove/Kill menu", command)
+        self.assertIn("Right-click  open session Rename/Remove/Kill menu", command)
         self.assertNotIn("f      star/unstar", command)
         self.assertNotIn("r      refresh", command)
         self.assertIn("C-x d  detach cockpit", command)
