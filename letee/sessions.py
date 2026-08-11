@@ -237,3 +237,24 @@ def kill(target: Target) -> None:
         _run("kill", target, ("tmux", "kill-session", "-t", target.session), env=_default_server_env())
     else:
         _run("kill", target, ssh_command(target.host or "", f"tmux kill-session -t {shlex.quote(target.session)}"))
+
+
+def rename(target: Target, new_name: str) -> Target:
+    renamed = Target(target.kind, new_name, target.host)
+    if target.kind == "local":
+        _run(
+            "rename",
+            target,
+            ("tmux", "rename-session", "-t", target.session, renamed.session),
+            env=_default_server_env(),
+        )
+    else:
+        _run(
+            "rename",
+            target,
+            ssh_command(
+                target.host or "",
+                f"tmux rename-session -t {shlex.quote(target.session)} {shlex.quote(renamed.session)}",
+            ),
+        )
+    return renamed
