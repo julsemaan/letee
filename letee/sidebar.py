@@ -1179,6 +1179,31 @@ def _mouse_cleanup() -> None:
         pass
 
 
+def _back_label() -> str:
+    return "< back" if _ascii() else "‹ back"
+
+
+def _draw_back_title(
+    stdscr: curses.window,
+    width: int,
+    left: str,
+    attr: int,
+    dimmed: bool,
+) -> int | None:
+    label = _back_label()
+    label_width = _cell_width(label)
+    action_col = width - label_width
+    title_attr = _fade(attr) if dimmed else attr
+    if action_col < 0:
+        title = _truncate_cells(left, width)
+        stdscr.addnstr(0, 0, title + " " * max(0, width - _cell_width(title)), width, title_attr)
+        return None
+    title = _truncate_cells(left, action_col)
+    stdscr.addnstr(0, 0, title + " " * max(0, action_col - _cell_width(title)), action_col, title_attr)
+    stdscr.addnstr(0, action_col, label, label_width, title_attr)
+    return action_col
+
+
 def _draw_title(
     stdscr: curses.window,
     w: int,
@@ -1206,8 +1231,7 @@ def _draw_title(
             button_attr = _color("active") if add_button_selected and not dimmed else attr
             stdscr.addnstr(0, add_col, label, _cell_width(label), _fade(button_attr) if dimmed else button_attr)
     else:
-        add_col = None
-        stdscr.addnstr(0, 0, left[:width].ljust(width), width, _fade(attr) if dimmed else attr)
+        add_col = _draw_back_title(stdscr, width, left, attr, dimmed)
     stdscr.redrawln(0, 1)
     return (min(width - 1, len(left)), add_col)
 
@@ -1546,14 +1570,14 @@ def _draw_footer(
     return len(lines)
 
 
-def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False) -> None:
+def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False) -> int | None:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     width = max(1, w)
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     ascii_mode = _ascii()
     title = " + New session" if ascii_mode else " ＋ New session"
-    stdscr.addnstr(0, 0, title[:width].ljust(width), width, _fade(attr) if dimmed else attr)
+    back_col = _draw_back_title(stdscr, width, title, attr, dimmed)
     host = "localhost" if state.creation_host == "" else (state.creation_host or "")
     host_icon = "*" if ascii_mode else ("●" if state.creation_host == "" else "◆")
     host_attr = _color("local" if state.creation_host == "" else "remote") or curses.A_BOLD
@@ -1568,13 +1592,14 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
         message = f" ! {state.status}" if ascii_mode and state.status else f" ✕ {state.status}" if state.status else " Letters, numbers, . _ -"
         message_attr = (_color("danger") or curses.A_BOLD) if state.status else (_color("hints") or curses.A_DIM)
         stdscr.addnstr(4, 0, _truncate_cells(message, width), width, _fade(message_attr) if dimmed else message_attr)
-    footer = "Esc cancel  Enter create" if ascii_mode else "Esc cancel · ↵ create"
+    footer = "Esc back  Enter create" if ascii_mode else "Esc back · ↵ create"
     footer_width = max(0, width - 1)
     stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
     if width > 1:
         stdscr.chgat(h - 1, width - 1, 1, _fade(attr) if dimmed else attr)
     stdscr.move(3, min(width - 1, _cell_width(prefix + visible)))
     stdscr.refresh()
+    return back_col
 
 
 def _draw(
@@ -1967,8 +1992,8 @@ def run(stdscr: curses.window) -> None:
             )
             if render_state != rendered:
                 if state.add_view == "name":
-                    _draw_name(stdscr, state, dimmed)
-                    footer_height, add_col = 1, None
+                    add_col = _draw_name(stdscr, state, dimmed)
+                    footer_height = 1
                 else:
                     drag_src_entry = _fav_to_entry_index(entries, state.drag_source_index) if state.drag_source_index is not None else None
                     drag_tgt_entry = _fav_to_entry_index(entries, state.drag_target_index) if state.drag_target_index is not None else None
@@ -2018,6 +2043,25 @@ def run(stdscr: curses.window) -> None:
                         curses.curs_set(0)
                         rebuild()
                         break
+                    elif key == curses.KEY_MOUSE:
+                        try:
+                            _, mouse_col, row, _, mouse_state = curses.getmouse()
+                        except (curses.error, TypeError, ValueError):
+                            pass
+                        else:
+                            if (
+                                isinstance(mouse_col, int)
+                                and isinstance(row, int)
+                                and isinstance(mouse_state, int)
+                                and row == 0
+                                and add_col is not None
+                                and add_col <= mouse_col < stdscr.getmaxyx()[1]
+                                and _mouse_activates(mouse_state)
+                            ):
+                                _add_back(state, poller.snapshot)
+                                curses.curs_set(0)
+                                rebuild()
+                                break
                     else:
                         try:
                             effect = _creation_key(state, key, poller.snapshot.sessions)
@@ -2032,11 +2076,13 @@ def run(stdscr: curses.window) -> None:
                                     dispatch(effect)
                                     rebuild()
                                     break
-                    _draw_name(stdscr, state, dimmed)
+                    add_col = _draw_name(stdscr, state, dimmed)
                     try:
                         key = stdscr.getch()
                     except KeyboardInterrupt:
                         key = 3
+                    if key is getattr(stdscr, "_letee_test_stop", None):
+                        return
                     if key == -1:
                         break
                 continue
@@ -2176,9 +2222,19 @@ def run(stdscr: curses.window) -> None:
                         finally:
                             _mouse_mask()
                     continue
-                if row == 0 and add_col is not None and isinstance(mouse_col, int) and mouse_col >= add_col:
+                if (
+                    row == 0
+                    and add_col is not None
+                    and isinstance(mouse_col, int)
+                    and 0 <= mouse_col < stdscr.getmaxyx()[1]
+                    and mouse_col >= add_col
+                ):
                     if _mouse_activates(mouse_state):
-                        _open_add(state)
+                        if state.add_view is None:
+                            _open_add(state)
+                        else:
+                            _add_back(state, poller.snapshot)
+                            curses.curs_set(0)
                         rebuild()
                     continue
                 else:
