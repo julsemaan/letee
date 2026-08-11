@@ -132,6 +132,27 @@ class ConfigTest(unittest.TestCase):
 
         self.assertEqual((Path(self.tempdir.name) / "sessions").read_text(), "ssh:dev:work\nlocal:notes\n")
 
+    def test_replace_session_preserves_order_and_removes_duplicates(self):
+        old = config.parse_target("local:old")
+        renamed = config.parse_target("local:new")
+        other = config.parse_target("ssh:dev:other")
+        config.save_sessions([old, renamed, other, renamed])
+
+        self.assertEqual(config.replace_session(old, renamed), [renamed, other])
+        self.assertEqual(config.load_sessions(), [renamed, other])
+
+    def test_replace_session_updates_only_current_server(self):
+        old = config.parse_target("local:old")
+        renamed = config.parse_target("local:new")
+        config.save_sessions([old], server="named")
+        config.set_server("default")
+        config.save_sessions([old])
+
+        config.replace_session(old, renamed)
+
+        self.assertEqual(config.load_sessions(), [renamed])
+        self.assertEqual(config.load_sessions(server="named"), [old])
+
     def test_named_server_sessions_are_isolated_under_servers(self):
         target = config.parse_target("local:work")
 

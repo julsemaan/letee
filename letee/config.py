@@ -131,3 +131,15 @@ def save_sessions(favorites: list[Target] | tuple[Target, ...], server: str | No
     path = sessions_path(server)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"{target.format()}\n" for target in favorites))
+
+
+def replace_session(old: Target, new: Target, server: str | None = None) -> list[Target]:
+    replaced: list[Target] = []
+    seen: set[Target] = set()
+    for target in load_sessions(server):
+        candidate = new if target == old else target
+        if candidate not in seen:
+            replaced.append(candidate)
+            seen.add(candidate)
+    save_sessions(replaced, server)
+    return replaced

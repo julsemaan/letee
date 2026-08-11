@@ -115,6 +115,57 @@ class MainTest(unittest.TestCase):
         kill.assert_called_once_with(target)
         save.assert_called_once_with([other])
 
+    def test_rename_tmux_then_replaces_tracked_target(self):
+        target = Target("ssh", "old", "dev")
+        renamed = Target("ssh", "new", "dev")
+        other = Target("local", "other")
+        with (
+            patch("letee.__main__.load_sessions", return_value=[target, other]),
+            patch("letee.__main__.sessions.rename", return_value=renamed) as rename,
+            patch("letee.__main__.config.replace_session") as replace,
+        ):
+            self.assertEqual(main(["rename", target.format(), "new"]), 0)
+
+        rename.assert_called_once_with(target, "new")
+        replace.assert_called_once_with(target, renamed)
+
+    def test_rename_rejects_untracked_target_without_touching_tmux(self):
+        target = Target("local", "work")
+        with (
+            patch("letee.__main__.load_sessions", return_value=[]),
+            patch("letee.__main__.sessions.rename") as rename,
+            patch("letee.__main__.config.replace_session") as replace,
+        ):
+            with self.assertRaisesRegex(SystemExit, r"^Session not tracked: local:work$"):
+                main(["rename", target.format(), "new"])
+
+        rename.assert_not_called()
+        replace.assert_not_called()
+
+    def test_rename_rejects_invalid_new_name_without_touching_tmux(self):
+        target = Target("local", "work")
+        with (
+            patch("letee.__main__.load_sessions", return_value=[target]),
+            patch("letee.__main__.sessions.rename") as rename,
+        ):
+            with self.assertRaisesRegex(SystemExit, "Invalid session"):
+                main(["rename", target.format(), "bad name"])
+
+        rename.assert_not_called()
+
+    def test_failed_rename_does_not_replace_tracked_target(self):
+        target = Target("local", "old")
+        with (
+            patch("letee.__main__.load_sessions", return_value=[target]),
+            patch("letee.__main__.sessions.rename", side_effect=SystemExit("rename failed")) as rename,
+            patch("letee.__main__.config.replace_session") as replace,
+        ):
+            with self.assertRaisesRegex(SystemExit, "^rename failed$"):
+                main(["rename", target.format(), "new"])
+
+        rename.assert_called_once_with(target, "new")
+        replace.assert_not_called()
+
     def test_create_ssh_rejects_option_like_hosts(self):
         for host in ("-V", "-F", "--help"):
             with self.subTest(host=host):

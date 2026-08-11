@@ -48,7 +48,7 @@ _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 @dataclass(frozen=True)
 class Effect:
     kind: Literal[
-        "switch", "switch_pane", "add_switch", "create", "kill",
+        "switch", "switch_pane", "add_switch", "create", "kill", "rename",
         "save_favorites", "status", "show_reconnecting", "show_missing",
         "show_unavailable",
     ]
@@ -65,6 +65,7 @@ class SidebarState:
     add_view: Literal["choice", "existing", "location", "name"] | None = None
     creation_host: str | None = None
     creation_text: str = ""
+    rename_target: Target | None = None
     selected_target: Target | None = None
     selected_index: int = 0
     selected_tracked: bool = False
@@ -120,6 +121,7 @@ class StatusResult:
     current_agent: str | None
     pane_active: bool
     generation: int
+    refreshed: bool = False
 
 
 _COLOR: dict[str, int] = {}
@@ -382,6 +384,7 @@ def _open_add(state: SidebarState, view: Literal["choice", "existing"] = "choice
     state.filter_text = ""
     state.creation_host = None
     state.creation_text = ""
+    state.rename_target = None
     state.selected_index = 0
     state.selected_target = None
     state.add_button_selected = False
@@ -400,13 +403,27 @@ def _start_new(state: SidebarState, snapshot: SessionSnapshot) -> None:
 def _select_location(state: SidebarState, host: str) -> None:
     state.creation_host = host
     state.creation_text = ""
+    state.rename_target = None
     state.add_view = "name"
     state.filtering = False
+
+
+def _start_rename(state: SidebarState, target: Target) -> None:
+    state.add_view = "name"
+    state.filtering = False
+    state.status = ""
+    state.status_deadline = None
+    state.creation_host = "" if target.kind == "local" else target.host
+    state.creation_text = target.session
+    state.rename_target = target
 
 
 def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
     state.add_button_selected = False
     if state.add_view == "name":
+        if state.rename_target is not None:
+            _reset_add(state)
+            return
         state.add_view = "location" if len(_available_locations(snapshot)) > 1 else "choice"
         state.creation_host = None
         state.creation_text = ""
@@ -425,6 +442,7 @@ def _reset_add(state: SidebarState) -> None:
     state.filter_text = ""
     state.creation_host = None
     state.creation_text = ""
+    state.rename_target = None
 
 
 _STATUS_RANK: dict[str, int] = {
@@ -708,11 +726,28 @@ def _set_status(
     state.status_deadline = time.monotonic() + timeout
 
 
+def _renamed_target(effect: Effect) -> Target | None:
+    if effect.kind != "rename" or not isinstance(effect.target, Target):
+        return None
+    return Target(effect.target.kind, effect.message, effect.target.host)
+
+
 def _planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[Target, ...]:
     if effect.kind in ("add_switch", "create") and isinstance(effect.target, Target):
         return favorites if effect.target in favorites else (*favorites, effect.target)
     if effect.kind == "kill" and isinstance(effect.target, Target):
         return tuple(target for target in favorites if target != effect.target)
+    if effect.kind == "rename" and isinstance(effect.target, Target):
+        renamed = _renamed_target(effect)
+        if renamed is not None:
+            planned: list[Target] = []
+            seen: set[Target] = set()
+            for target in favorites:
+                candidate = renamed if target == effect.target else target
+                if candidate not in seen:
+                    planned.append(candidate)
+                    seen.add(candidate)
+            return tuple(planned)
     if effect.kind == "save_favorites":
         return effect.favorites or ()
     return favorites
@@ -750,6 +785,14 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             if planned != favorites:
                 save_sessions(list(planned))
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
+        elif effect.kind == "rename" and isinstance(effect.target, Target):
+            renamed = _renamed_target(effect)
+            if renamed is None:
+                raise SystemExit("invalid rename effect")
+            sessions.rename(effect.target, renamed.session)
+            cockpit.rename_target(effect.target, renamed)
+            if planned != favorites:
+                save_sessions(list(planned))
         elif effect.kind == "kill" and isinstance(effect.target, Target):
             sessions.kill(effect.target)
             if planned != favorites:
@@ -778,6 +821,10 @@ def _apply_effect(
         if effect.kind == "create" and isinstance(effect.target, Target):
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.target.session
+        elif effect.kind == "rename" and isinstance(effect.target, Target):
+            state.rename_target = effect.target
+            state.creation_host = "" if effect.target.kind == "local" else effect.target.host
+            state.creation_text = effect.message
         _set_status(state, result.error, status_timeout)
         return False
     if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
@@ -801,6 +848,17 @@ def _apply_effect(
         state.pending_selection = effect.target
         poller.refresh()
         _set_status(state, f"added {effect.target.session}", status_timeout)
+    elif effect.kind == "rename" and isinstance(effect.target, Target):
+        renamed = _renamed_target(effect)
+        if renamed is None:
+            return False
+        state.favorites[:] = list(result.favorites)
+        if state.selected_target == effect.target:
+            state.selected_target = renamed
+        poller.discard(effect.target)
+        poller.refresh()
+        _reset_add(state)
+        _set_status(state, f"renamed {effect.target.session} to {renamed.session}", status_timeout)
     elif effect.kind == "kill" and isinstance(effect.target, Target):
         if effect.target in state.favorites:
             state.favorites.remove(effect.target)
@@ -833,7 +891,7 @@ class EffectRunner:
     @property
     def blocks_favorite_changes(self) -> bool:
         return self._effect is not None and self._effect.kind in (
-            "add_switch", "create", "kill"
+            "add_switch", "create", "kill", "rename"
         )
 
     def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
@@ -885,6 +943,8 @@ class AsyncStatusPoller:
         self.current_agent: str | None = None
         self.pane_active = True
         self._generation = 0
+        self._refresh_pending = False
+        self._refresh_target: Target | None = None
         self._pending_agent: tuple[PaneTarget, str] | None = None
 
     def _sample(
@@ -922,6 +982,7 @@ class AsyncStatusPoller:
             current_agent,
             pane_active,
             generation,
+            any(command == "refresh" for command, _ in commands),
         )
 
     def tick(self, now: float) -> bool:
@@ -931,6 +992,19 @@ class AsyncStatusPoller:
             self._future = None
             changed = result.snapshot != self.snapshot
             self.snapshot = result.snapshot
+            if result.refreshed is True:
+                self._refresh_pending = any(
+                    command == "refresh" for command, _ in self._commands
+                )
+            if self._refresh_target is not None:
+                target = self._refresh_target
+                source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
+                if (
+                    target in self.snapshot.sessions
+                    or (result.refreshed is True and target.kind == "local")
+                    or (source is not None and not source.available)
+                ):
+                    self._refresh_target = None
             if result.generation == self._generation:
                 self.current_target = result.current_target
                 self.bell_target = result.bell_target
@@ -966,9 +1040,24 @@ class AsyncStatusPoller:
                 (target, result.effect.message) if result.effect.message else None
             )
             self._generation += 1
+        elif result.effect.kind == "rename" and isinstance(target, Target):
+            renamed = _renamed_target(result.effect)
+            if renamed is None:
+                return
+            if self.current_target == target:
+                self.current_target = renamed
+                self._refresh_target = renamed
+            if self.bell_target == target:
+                self.bell_target = renamed
+            self._generation += 1
+
+    @property
+    def refresh_pending(self) -> bool:
+        return self._refresh_pending or self._refresh_target is not None
 
     def refresh(self) -> bool:
         self._commands.append(("refresh", None))
+        self._refresh_pending = True
         self._next_poll = 0.0
         return False
 
@@ -984,7 +1073,8 @@ class AsyncStatusPoller:
 def _creation_conflicts(state: SidebarState, existing_sessions: tuple[Target, ...]) -> bool:
     kind = "local" if state.creation_host == "" else "ssh"
     return any(
-        target.kind == kind
+        target != state.rename_target
+        and target.kind == kind
         and target.host == (None if kind == "local" else state.creation_host)
         and target.session == state.creation_text
         for target in existing_sessions
@@ -1003,10 +1093,15 @@ def _creation_key(
         state.creation_text = state.creation_text[:-1]
     elif key in (10, 13, curses.KEY_ENTER):
         name = validate_name(state.creation_text, "session")
-        host = state.creation_host
-        target = Target("local", name) if host == "" else Target("ssh", name, host)
         if _creation_conflicts(state, existing_sessions):
             raise SystemExit("Session already exists on this host")
+        if state.rename_target is not None:
+            if name == state.rename_target.session:
+                _reset_add(state)
+                return None
+            return Effect("rename", target=state.rename_target, message=name)
+        host = state.creation_host
+        target = Target("local", name) if host == "" else Target("ssh", name, host)
         state.creation_host = None
         state.creation_text = ""
         return Effect("create", target)
@@ -1015,6 +1110,16 @@ def _creation_key(
 
     state.status = "Session already exists on this host" if _creation_conflicts(state, existing_sessions) else ""
     return None
+
+
+def _rename_key(
+    state: SidebarState,
+    key: int,
+    existing_sessions: tuple[Target, ...] = (),
+) -> Effect | None:
+    if state.rename_target is None:
+        return None
+    return _creation_key(state, key, existing_sessions)
 
 
 def _read_key(stdscr: curses.window, prompt: str, filtering: bool = False) -> int:
@@ -1583,7 +1688,10 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     width = max(1, w)
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     ascii_mode = _ascii()
-    title = " + New session" if ascii_mode else " ＋ New session"
+    if state.rename_target is None:
+        title = " + New session" if ascii_mode else " ＋ New session"
+    else:
+        title = " e Rename session" if ascii_mode else " ✎ Rename session"
     back_col = _draw_back_title(stdscr, width, title, attr, dimmed)
     host = "localhost" if state.creation_host == "" else (state.creation_host or "")
     host_icon = "*" if ascii_mode else ("●" if state.creation_host == "" else "◆")
@@ -1599,7 +1707,10 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
         message = f" ! {state.status}" if ascii_mode and state.status else f" ✕ {state.status}" if state.status else " Letters, numbers, . _ -"
         message_attr = (_color("danger") or curses.A_BOLD) if state.status else (_color("hints") or curses.A_DIM)
         stdscr.addnstr(4, 0, _truncate_cells(message, width), width, _fade(message_attr) if dimmed else message_attr)
-    footer = "Esc back  Enter create" if ascii_mode else "Esc back · ↵ create"
+    if state.rename_target is None:
+        footer = "Esc back  Enter create" if ascii_mode else "Esc back · ↵ create"
+    else:
+        footer = "Esc cancel  Enter rename" if ascii_mode else "Esc cancel · ↵ rename"
     footer_width = max(0, width - 1)
     stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
     if width > 1:
@@ -1960,7 +2071,11 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
-            if pending_key is None and not actions.busy:
+            if (
+                pending_key is None
+                and not actions.busy
+                and getattr(poller, "refresh_pending", False) is not True
+            ):
                 try:
                     unavailable_target_shown = _sync_active_session(
                         current_target,
@@ -2077,7 +2192,11 @@ def run(stdscr: curses.window) -> None:
                                 break
                     else:
                         try:
-                            effect = _creation_key(state, key, poller.snapshot.sessions)
+                            effect = (
+                                _rename_key(state, key, poller.snapshot.sessions)
+                                if state.rename_target is not None
+                                else _creation_key(state, key, poller.snapshot.sessions)
+                            )
                         except SystemExit as error:
                             show_status(str(error))
                         else:
@@ -2089,6 +2208,10 @@ def run(stdscr: curses.window) -> None:
                                     dispatch(effect)
                                     rebuild()
                                     break
+                            elif state.add_view != "name":
+                                curses.curs_set(0)
+                                rebuild()
+                                break
                     add_col = _draw_name(stdscr, state, dimmed)
                     try:
                         key = stdscr.getch()
@@ -2403,6 +2526,16 @@ def run(stdscr: curses.window) -> None:
                     show_status("another action is still changing sessions")
                 else:
                     effect = _transition(state, "move_session_down")
+            elif key == ord("e") and state.add_view is None and state.focused_region == "sessions" and entries:
+                entry = entries[state.selected_index]
+                if entry.kind == "session" and entry.target and entry.tracked:
+                    if actions.blocks_favorite_changes:
+                        show_status("another action is still changing sessions")
+                    elif entry.unavailable_favorite:
+                        show_status("Session unavailable; rename a running session")
+                    else:
+                        _start_rename(state, entry.target)
+                        curses.curs_set(1)
             elif key == ord("r") and state.add_view is None and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target:

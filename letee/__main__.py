@@ -40,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     kill_parser = sub.add_parser("kill", help="kill target tmux session")
     kill_parser.add_argument("target")
 
+    rename_parser = sub.add_parser("rename", help="rename target tmux session")
+    rename_parser.add_argument("target")
+    rename_parser.add_argument("new_name")
+
     create = sub.add_parser("create", help="create target then switch")
     create_sub = create.add_subparsers(dest="create_kind", required=True)
     local = create_sub.add_parser("local", help="create local tmux session")
@@ -171,6 +175,14 @@ def main(argv: list[str] | None = None) -> int:
         if target in favorites:
             favorites.remove(target)
             save_sessions(favorites)
+        return 0
+    if args.command == "rename":
+        target = parse_target(args.target)
+        renamed = Target(target.kind, args.new_name, target.host)
+        if target not in load_sessions():
+            raise SystemExit(f"Session not tracked: {target.format()}")
+        renamed = sessions.rename(target, renamed.session)
+        config.replace_session(target, renamed)
         return 0
     if args.command == "create":
         target = Target("local", args.session) if args.create_kind == "local" else Target("ssh", args.session, args.host)
