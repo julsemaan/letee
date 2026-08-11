@@ -318,6 +318,7 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
                 break
 
     probe_hosts = [host for host in hosts if host not in results]
+    probe_host_set = set(probe_hosts)
     if probe_hosts:
         probe_results = sessions.probe_hosts(probe_hosts)
         results.update(zip(probe_hosts, probe_results))
@@ -326,7 +327,7 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
     failed: list[str] = []
     for index, host in enumerate(hosts, 1):
         host_ready = results.get(host, False)
-        if host in probe_hosts and not host_ready:
+        if host in probe_host_set and not host_ready:
             print(f"[{index}/{len(hosts)}] {host} — retrying interactively...", flush=True)
             host_ready = sessions.prepare_host(host)
             results[host] = host_ready
