@@ -226,6 +226,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 - right-click tracked session: open native tmux menu to rename, remove, or kill it with confirmation; right-click does not switch sessions
 - drag tracked session: reorder it; hovering `↑ more` or `↓ more` auto-scrolls, and leaving sidebar drops at current insertion line
 - click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
+- click `‹ back` (`< back` in ASCII mode) in Add-session top bar: go back one level, same as `Esc`
 - wheel over sidebar: navigate selectable session and host rows
 - right-pane mouse events: forwarded by outer tmux to mouse-aware applications
 - live border dragging: disabled so text selection can cross the sidebar divider without resizing it
