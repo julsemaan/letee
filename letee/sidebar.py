@@ -410,6 +410,8 @@ def _select_location(state: SidebarState, host: str) -> None:
 def _start_rename(state: SidebarState, target: Target) -> None:
     state.add_view = "name"
     state.filtering = False
+    state.status = ""
+    state.status_deadline = None
     state.creation_host = "" if target.kind == "local" else target.host
     state.creation_text = target.session
     state.rename_target = target
@@ -2418,7 +2420,7 @@ def run(stdscr: curses.window) -> None:
                     show_status("another action is still changing sessions")
                 else:
                     effect = _transition(state, "move_session_down")
-            elif key == ord("e") and state.add_view is None and entries:
+            elif key == ord("e") and state.add_view is None and state.focused_region == "sessions" and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target and entry.tracked:
                     if actions.blocks_favorite_changes:
