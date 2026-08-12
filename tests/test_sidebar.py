@@ -3616,6 +3616,143 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(mousemask.call_count, 2)
         switch.assert_not_called()
 
+    def test_right_click_agent_selects_exact_agent_without_switching(self):
+        target = Target("ssh", "work", "dev")
+        first = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        second = PaneTarget(target, "@2", "%2", "/tmp/tmux")
+        agents = (
+            AgentEntry(first, "first", "pi-one", "working"),
+            AgentEntry(second, "second", "pi-two", "working"),
+        )
+        data = SessionSnapshot(SourceSnapshot(True, (target,), frozenset(), agents=agents), {})
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(20, 30))
+        drawn = []
+        real_draw = sidebar._draw
+
+        def draw_spy(*args, **kwargs):
+            bound = inspect.signature(real_draw).bind(*args, **kwargs)
+            drawn.append(bound.arguments)
+            return real_draw(*args, **kwargs)
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask") as mousemask,
+            patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
+            patch(
+                "letee.sidebar.curses.getmouse",
+                return_value=(0, 7, 17, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+            ),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.show_agent_menu") as show_menu,
+            patch("letee.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+        ):
+            run(screen)
+
+        show_menu.assert_called_once_with("pi-two", second, 7, 17)
+        self.assertEqual(drawn[-1]["agent_selected"], 2)
+        self.assertEqual(mouse_cleanup.call_count, 2)
+        self.assertEqual(mousemask.call_count, 2)
+        switch.assert_not_called()
+
+    def test_right_click_agent_ignores_ordering_row_and_empty_space(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(24, 30))
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._mouse_cleanup"),
+            patch(
+                "letee.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 7, 15, 0, curses.BUTTON3_PRESSED),
+                    (0, 7, 22, 0, curses.BUTTON3_PRESSED),
+                ],
+            ),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.show_agent_menu") as show_menu,
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        show_menu.assert_not_called()
+        switch.assert_not_called()
+
+    def test_right_click_agent_ignores_invalid_coordinates(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(20, 30))
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._mouse_cleanup"),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, -1, 17, 0, curses.BUTTON3_PRESSED)),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.show_agent_menu") as show_menu,
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        show_menu.assert_not_called()
+        switch.assert_not_called()
+
     def test_location_click_target_enters_dedicated_name_view(self):
         state = SidebarState(add_view="location")
         sidebar._select_location(state, "")

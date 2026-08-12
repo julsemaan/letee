@@ -229,6 +229,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 
 - click session row: select and switch
 - right-click tracked session: open native tmux menu to rename, remove, or kill it with confirmation; right-click does not switch sessions
+- right-click agent: open native tmux `Kill` menu; confirmation sends `SIGTERM` to foreground process group while pane and shell survive; right-click does not switch session or agent pane
 - drag tracked session: reorder it; hovering `↑ more` or `↓ more` auto-scrolls, and leaving sidebar drops at current insertion line
 - click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - click `‹ back` (`< back` in ASCII mode) in Add-session top bar: go back one level, same as `Esc`

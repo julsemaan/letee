@@ -2419,6 +2419,28 @@ def run(stdscr: curses.window) -> None:
                     continue
                 right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
                 if right_click:
+                    if state.add_view is None and agent_entries and separator < row < footer_top:
+                        index = _entry_at_row(
+                            agent_entries, state.agent_selected_index, row, footer_top + 1, 0,
+                            separator + 1,
+                        )
+                        if (
+                            isinstance(mouse_col, int)
+                            and 0 <= mouse_col < stdscr.getmaxyx()[1]
+                            and index is not None
+                            and agent_entries[index].kind == "agent"
+                            and agent_entries[index].pane_target
+                        ):
+                            entry = agent_entries[index]
+                            state.focused_region = "agents"
+                            state.agent_selected_index = index
+                            state.selected_agent_key = (entry.pane_target, entry.agent_id)
+                            _mouse_cleanup()
+                            try:
+                                cockpit.show_agent_menu(entry.label, entry.pane_target, mouse_col, row)
+                            finally:
+                                _mouse_mask()
+                        continue
                     view_index = _view_index(entries, state.selected_index, current_target, not poller.pane_active)
                     index = _entry_at_row(
                         entries, view_index, row, separator + 1, 0,

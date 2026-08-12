@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import call, patch
 
 from letee import cockpit
-from letee.names import Target
+from letee.names import PaneTarget, Target
 
 
 class CockpitStartupTest(unittest.TestCase):
@@ -630,6 +630,36 @@ class CockpitLayoutTest(unittest.TestCase):
             timeout=None,
         )
 
+    def test_agent_menu_targets_sidebar_at_click_coordinates(self):
+        pane_target = PaneTarget(Target("ssh", "work", "dev"), "@2", "%8", "/tmp/tmux")
+        with (
+            patch.object(cockpit, "_option", return_value="%1"),
+            patch.object(cockpit.tmux, "out", return_value="tmux 3.4"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_agent_menu("pi", pane_target, 7, 4)
+
+        tmux_call.assert_called_once_with(
+            "display-menu", "-O", "-T", "pi@work", "-x", "7", "-y", "4", "-t", "%1",
+            "Kill", "x", "send-keys -t %1 x y",
+            timeout=None,
+        )
+
+    def test_agent_menu_enables_mouse_on_tmux_35_and_newer(self):
+        pane_target = PaneTarget(Target("local", "work"), "@2", "%8", "/tmp/tmux")
+        with (
+            patch.object(cockpit, "_option", return_value="%1"),
+            patch.object(cockpit.tmux, "out", return_value="tmux 3.6"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_agent_menu("pi", pane_target, 7, 4)
+
+        tmux_call.assert_called_once_with(
+            "display-menu", "-M", "-O", "-T", "pi@work", "-x", "7", "-y", "4", "-t", "%1",
+            "Kill", "x", "send-keys -t %1 x y",
+            timeout=None,
+        )
+
     def test_rename_target_updates_active_and_bell_markers_without_switching(self):
         old = Target("local", "old")
         new = Target("local", "new")
@@ -677,6 +707,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("r      remove selected session", command)
         self.assertIn("x      kill and remove selected session", command)
         self.assertIn("Right-click  open session Rename/Remove/Kill menu", command)
+        self.assertIn("Right-click  open agent Kill menu", command)
         self.assertNotIn("f      star/unstar", command)
         self.assertNotIn("r      refresh", command)
         self.assertIn("C-x d  detach cockpit", command)
