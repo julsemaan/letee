@@ -1197,7 +1197,10 @@ def _entry_at_row(
 
 
 def _mouse_activates(mouse_state: int) -> bool:
-    return bool(mouse_state & (getattr(curses, "BUTTON1_PRESSED", 0) or 0))
+    return bool(mouse_state & (
+        (getattr(curses, "BUTTON1_PRESSED", 0) or 0)
+        | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+    ))
 
 
 def _mouse_mask(motion: bool = False) -> None:

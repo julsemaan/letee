@@ -2094,10 +2094,10 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual(wrapper.call_count, 2)
 
-    def test_only_mouse_press_activates(self):
+    def test_mouse_press_and_synthesized_click_activate(self):
         self.assertTrue(_mouse_activates(curses.BUTTON1_PRESSED))
+        self.assertTrue(_mouse_activates(curses.BUTTON1_CLICKED))
         self.assertFalse(_mouse_activates(curses.BUTTON1_RELEASED))
-        self.assertFalse(_mouse_activates(curses.BUTTON1_CLICKED))
 
     def test_mouse_mask_enables_motion_only_for_move_mode(self):
         base = (
@@ -3315,7 +3315,7 @@ class SidebarDrawTest(unittest.TestCase):
         text = [call[3] for call in screen.calls if call[0] == "addnstr"]
         self.assertTrue(any("New session" in line for line in text))
 
-    def test_synthetic_click_without_press_does_not_switch_session(self):
+    def test_synthesized_short_click_switches_session(self):
         entries = [
             Entry("LOCAL", "header"),
             Entry("one", "session", Target("local", "one")),
@@ -3336,7 +3336,10 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_not_called()
+        target = Target("local", "two")
+        switch.assert_called_once_with(
+            target, "env -u TMUX tmux -T clipboard new-session -A -s two"
+        )
 
     def test_right_click_press_opens_menu_without_switching(self):
         first = Target("local", "one")
