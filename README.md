@@ -150,7 +150,6 @@ letee -L <name> kill-server
 - `C-s 1`–`C-s 9`: switch directly to numbered tracked target
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
 - `[` / `]`: give Agents/Sessions region more rows for current run
-- `Left` / `Right`: cycle agent ordering mode (Priority / Session) when ordering row is selected
 - `Enter`: switch selected session or exact agent pane, or activate selected Add row
 - `e`: rename selected available tracked session
 - `r`: remove selected target without killing it
@@ -158,9 +157,9 @@ letee -L <name> kill-server
 - `x`: kill and remove selected tracked session (asks first)
 - `Esc` / `Ctrl-C`: cancel prompts and filters
 
-`›` marks keyboard selection and left-pane focus; mint reverse highlight marks active session independently. Unfocused sidebar hides pointer, leaves sidebar colors unchanged, and keeps active session highlighted and visible.
+`›` marks keyboard selection and left-pane focus; mint reverse highlight marks active session independently. Unfocused sidebar hides pointer while preserving selection, viewport, colors, and active-session highlight.
 
-Normal sidebar lists sessions in persisted order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Tracked sessions persist in `~/.config/letee/sessions` for default server and `~/.config/letee/servers/<name>/sessions` for named servers. Config, hosts, prefix, dimensions, timeout, and SSH settings stay shared. Tracked sessions, ordering, active target, alerts, and cockpit panes stay isolated. `kill-server` removes only selected outer cockpit; tracked inner tmux sessions and persisted state survive. Same inner session may be tracked by multiple servers, so overlapping servers can show duplicate alerts. Prefix session actions use active right-pane target, never sidebar selection; missing or untracked targets show status and do nothing. `prefix+!` follows current Agents ordering, jumps to exact window/pane, and clears only selected alert after success. No alert shows `no agent alerts` in Agents and leaves right pane focused. Set `LETEE_ASCII=1` for text-only labels and ellipses.
+Normal sidebar lists sessions in persisted manual order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. Agents stay in tracked-session, numeric window, numeric pane, then agent-ID order; status and alerts never reorder rows. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Tracked sessions persist in `~/.config/letee/sessions` for default server and `~/.config/letee/servers/<name>/sessions` for named servers. Config, hosts, prefix, dimensions, timeout, and SSH settings stay shared. Tracked sessions, ordering, active target, alerts, and cockpit panes stay isolated. `kill-server` removes only selected outer cockpit; tracked inner tmux sessions and persisted state survive. Same inner session may be tracked by multiple servers, so overlapping servers can show duplicate alerts. Prefix session actions use active right-pane target, never sidebar selection; missing or untracked targets show status and do nothing. `prefix+!` follows stable Agents order, jumps to exact window/pane, and clears only selected alert after success. No alert shows `no agent alerts` in Agents and leaves right pane focused. Set `LETEE_ASCII=1` for text-only labels and ellipses.
 
 ## Agent discovery
 
@@ -227,10 +226,11 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 
 ## Mouse controls
 
-- click session row: select and switch
+- left-button press on session or agent row: select and switch immediately; release and incidental movement do nothing
 - right-click tracked session: open native tmux menu to rename, remove, or kill it with confirmation; right-click does not switch sessions
+- click tracked session's `↕` handle (`:` in ASCII mode), hover destination, then click destination row to move; source and insertion target highlight while moving
+- `Esc`, background click, or repeated source-handle click cancels move; hovering `↑ more` or `↓ more` auto-scrolls
 - right-click agent: open native tmux `Kill` menu; confirmation sends `SIGTERM` to foreground process group while pane and shell survive; right-click does not switch session or agent pane
-- drag tracked session: reorder it; hovering `↑ more` or `↓ more` auto-scrolls, and leaving sidebar drops at current insertion line
 - click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - click `‹ back` (`< back` in ASCII mode) in Add-session top bar: go back one level, same as `Esc`
 - wheel over sidebar: navigate selectable session and host rows
