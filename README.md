@@ -223,7 +223,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 
 - left-button press on session or agent row: select and switch immediately; release and incidental movement do nothing
 - right-click tracked session: open native tmux menu to rename, remove, or kill it with confirmation; right-click does not switch sessions
-- click tracked session's `↕` handle, hover destination, then click destination row to move; source and insertion target highlight while moving
+- click tracked session's `↕` handle (`:` in ASCII mode), hover destination, then click destination row to move; source and insertion target highlight while moving
 - `Esc`, background click, or repeated source-handle click cancels move; hovering `↑ more` or `↓ more` auto-scrolls
 - left-button press on `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - click `‹ back` (`< back` in ASCII mode) in Add-session top bar: go back one level, same as `Esc`
