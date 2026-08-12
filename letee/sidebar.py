@@ -1944,7 +1944,7 @@ def run(stdscr: curses.window) -> None:
                     edge = start if move_scroll_direction < 0 else end - 1
                     if entries[edge].tracked:
                         state.move_target = entries[edge].target
-                    next_move_scroll += MOVE_SCROLL_INTERVAL
+                    next_move_scroll = now + MOVE_SCROLL_INTERVAL
                 else:
                     move_scroll_direction = 0
                     next_move_scroll = None

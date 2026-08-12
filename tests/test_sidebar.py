@@ -3180,6 +3180,56 @@ class SidebarDrawTest(unittest.TestCase):
         save_sessions.assert_called_once_with((second, first))
         switch.assert_not_called()
 
+    def test_delayed_move_scroll_resets_deadline_from_current_time(self):
+        entries = [
+            Entry(str(index), "session", Target("local", str(index)), tracked=True)
+            for index in range(8)
+        ]
+        scroll_offsets = []
+        screen = FakeScreen(
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, STOP],
+            size=(14, 30),
+        )
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=tuple(str(index) for index in range(8))),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+            refresh_pending=False,
+        )
+        poller.tick.return_value = False
+
+        def draw_spy(*args, **kwargs):
+            bound = inspect.signature(_draw).bind(*args, **kwargs)
+            scroll_offsets.append(bound.arguments["scroll_offset"])
+            return (2, None)
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch(
+                "letee.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 28, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 6, 0, curses.REPORT_MOUSE_POSITION),
+                ],
+            ),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[entry.target for entry in entries]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.1, 1.0, 1.1]),
+        ):
+            run(screen)
+
+        self.assertEqual(scroll_offsets, [None, None, 1])
+
     def test_wheel_scroll_clears_move_target_until_next_motion(self):
         entries = [
             Entry(str(index), "session", Target("local", str(index)), tracked=True)
