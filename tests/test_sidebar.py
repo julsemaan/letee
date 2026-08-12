@@ -2108,7 +2108,10 @@ class SidebarDrawTest(unittest.TestCase):
             | curses.BUTTON4_PRESSED
             | getattr(curses, "BUTTON5_PRESSED", 0)
         )
-        with patch("letee.sidebar.curses.mousemask") as mousemask:
+        with (
+            patch("letee.sidebar.curses.mousemask") as mousemask,
+            patch("letee.sidebar.os.write"),
+        ):
             _mouse_mask()
             _mouse_mask(True)
 
