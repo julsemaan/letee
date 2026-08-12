@@ -769,7 +769,17 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
         return (error.stderr or error.stdout or "").strip() or f"exit status {error.returncode}"
     if isinstance(error, OSError):
         return error.strerror or str(error)
-    return str(error)
+    message = str(error)
+    if effect.kind == "kill_agent":
+        prefix = "kill agent "
+        marker = " failed: "
+        if message.startswith(prefix):
+            _, separator, reason = message.partition(marker)
+            if separator:
+                return reason
+            if message.endswith(" timed out"):
+                return "timed out"
+    return message
 
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:

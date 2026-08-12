@@ -778,7 +778,11 @@ class AgentSidebarTest(unittest.TestCase):
         )
         poller = unittest.mock.Mock()
 
-        with patch.object(sidebar.sessions, "kill_agent", side_effect=SystemExit("no foreground process")):
+        with patch.object(
+            sidebar.sessions,
+            "kill_agent",
+            side_effect=SystemExit("kill agent ssh:dev:work failed: no foreground process"),
+        ):
             _execute(Effect("kill_agent", pane, message="pi"), state, poller, 5)
 
         poller.refresh.assert_not_called()
