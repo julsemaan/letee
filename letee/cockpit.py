@@ -51,8 +51,8 @@ Agent actions
   Enter  switch to agent pane
   x      terminate selected agent with SIGTERM (confirm; pane and shell survive)
   Right-click  open agent Kill menu
+  Left/Right  cycle ordering on selected ordering row (Priority / Session)
   [ / ]  resize agent panel
-  Stable order: session, window, pane
 
 Recovery
   {prefix} d  detach cockpit
