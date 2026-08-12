@@ -4975,6 +4975,29 @@ class PrefixActionTest(unittest.TestCase):
 
         kill_agent.assert_not_called()
 
+    def test_rejected_agents_x_repaints_agent_status(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        statuses = []
+
+        def draw_spy(*args, **kwargs):
+            statuses.append((args[3], kwargs["status_region"]))
+            return 2, None
+
+        with patch.object(sidebar, "_draw", side_effect=draw_spy):
+            self._run(
+                [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_F10, ord("x"), ord("n"), STOP],
+                [target],
+                target,
+                data,
+            )
+
+        self.assertEqual(statuses.count(("no agent alerts", "agents")), 2)
+
     def test_agents_ordering_row_cannot_kill(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")

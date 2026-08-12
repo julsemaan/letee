@@ -2588,24 +2588,27 @@ def run(stdscr: curses.window) -> None:
                     if entry.kind == "agent" and entry.pane_target:
                         if actions.busy:
                             show_status("another action is still running", "agents")
-                        elif _read_key(
-                            stdscr,
-                            f"kill {entry.label} in {entry.pane_target.target.format()}? y/N",
-                            state.filtering,
-                            row=_agent_prompt_row(
+                        else:
+                            confirmation = _read_key(
                                 stdscr,
-                                footer_height,
-                                agent_entries,
-                                state.agent_rows,
+                                f"kill {entry.label} in {entry.pane_target.target.format()}? y/N",
                                 state.filtering,
-                            ),
-                        ) == ord("y"):
-                            effect = Effect(
-                                "kill_agent",
-                                entry.pane_target,
-                                message=entry.label,
-                                agent_id=entry.agent_id or "",
+                                row=_agent_prompt_row(
+                                    stdscr,
+                                    footer_height,
+                                    agent_entries,
+                                    state.agent_rows,
+                                    state.filtering,
+                                ),
                             )
+                            rendered = None
+                            if confirmation == ord("y"):
+                                effect = Effect(
+                                    "kill_agent",
+                                    entry.pane_target,
+                                    message=entry.label,
+                                    agent_id=entry.agent_id or "",
+                                )
             elif state.focused_region == "agents" and key in map(ord, "rKJ"):
                 effect = Effect("status", message="agent panes are automatic")
             elif key in (curses.KEY_DOWN, ord("j")) and (selectable or state.add_view is not None):
