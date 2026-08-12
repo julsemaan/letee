@@ -670,6 +670,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Agent actions", command)
         self.assertIn("Stable order: session, window, pane", command)
         self.assertIn("↕      start mouse move; hover destination, then click", command)
+        self.assertIn("Esc    cancel mouse move", command)
         self.assertNotIn("Left/Right", command)
         self.assertNotIn("Priority / Session", command)
         self.assertIn("Enter  activate selected row", command)
