@@ -23,7 +23,6 @@ from .names import PaneTarget, Target, validate_name
 
 UI_POLL_INTERVAL_MS = 50
 DRAG_SCROLL_INTERVAL = 0.2
-CLICK_FALLBACK_DELAY = 0.2
 LAYOUT_REPAIR_INTERVAL = 0.5
 STATUS_POLL_INTERVAL = 0.1
 UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -1869,10 +1868,9 @@ def run(stdscr: curses.window) -> None:
     drag_scroll_direction = 0
     next_drag_scroll: float | None = None
     drag_seen_active = False
-    drag_started_inactive = False
-    click_fallback_deadline: float | None = None
     pending_key: int | None = None
     pending_mouse: tuple[int, int, int, int, int] | None = None
+    ignore_left_release = False
     pane_was_active = poller.pane_active
     preserve_selection_on_focus_exit = False
     stdscr.timeout(UI_POLL_INTERVAL_MS)
@@ -1984,7 +1982,6 @@ def run(stdscr: curses.window) -> None:
 
     def finish_drag() -> bool:
         nonlocal drag_scroll_direction, next_drag_scroll, drag_seen_active
-        nonlocal drag_started_inactive, click_fallback_deadline
         source, target_index = state.drag_source_index, state.drag_target_index
         activate = target_index is None or source == target_index
         if source is not None and target_index is not None and not activate:
@@ -2004,8 +2001,6 @@ def run(stdscr: curses.window) -> None:
         drag_scroll_direction = 0
         next_drag_scroll = None
         drag_seen_active = False
-        drag_started_inactive = False
-        click_fallback_deadline = None
         return activate
 
     try:
@@ -2022,21 +2017,6 @@ def run(stdscr: curses.window) -> None:
             if state.drag_source_index is not None:
                 if poller.pane_active:
                     drag_seen_active = True
-                    if (
-                        drag_started_inactive
-                        and pending_key != curses.KEY_MOUSE
-                    ):
-                        # ponytail: missing releases are indistinguishable from a held click;
-                        # grace lets ordinary drag motion arrive before treating it as a click.
-                        if click_fallback_deadline is None:
-                            click_fallback_deadline = now + CLICK_FALLBACK_DELAY
-                        if now >= click_fallback_deadline:
-                            state.drag_target_index = None
-                            if finish_drag():
-                                preserve_selection_on_focus_exit = True
-                                effect = _transition(state, "switch")
-                                if effect is not None:
-                                    dispatch(effect)
                 elif drag_seen_active:
                     if finish_drag():
                         effect = _transition(state, "switch")
@@ -2273,8 +2253,12 @@ def run(stdscr: curses.window) -> None:
                 _b1_pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
                 _b1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
                 _b1_clicked = getattr(curses, "BUTTON1_CLICKED", 0) or 0
+                if mouse_state & _b1_pressed:
+                    ignore_left_release = False
+                elif ignore_left_release and mouse_state & (_b1_released | _b1_clicked):
+                    ignore_left_release = False
+                    continue
                 if state.drag_source_index is not None:
-                    click_fallback_deadline = None
                     if not isinstance(mouse_col, int) or not 0 <= mouse_col < stdscr.getmaxyx()[1] or not 0 <= row < h:
                         finish_drag()
                         continue
@@ -2427,17 +2411,19 @@ def run(stdscr: curses.window) -> None:
                     state.selected_index = index
                     state.selected_target = entries[index].target
                     state.selected_tracked = entries[index].tracked
-                    # Drag: press on tracked session starts drag
                     if mouse_state & _b1_pressed and entries[index].tracked:
-                        fav_idx = _entry_to_fav_index(entries, index)
-                        if fav_idx is not None:
-                            state.drag_source_index = fav_idx
-                            state.drag_target_index = None
-                            drag_seen_active = poller.pane_active
-                            drag_started_inactive = not pane_active_before_poll
-                            click_fallback_deadline = None
-                        continue
-                    if _mouse_activates(mouse_state):
+                        if not pane_active_before_poll:
+                            preserve_selection_on_focus_exit = True
+                            ignore_left_release = True
+                            key = curses.KEY_ENTER
+                        else:
+                            fav_idx = _entry_to_fav_index(entries, index)
+                            if fav_idx is not None:
+                                state.drag_source_index = fav_idx
+                                state.drag_target_index = None
+                                drag_seen_active = poller.pane_active
+                            continue
+                    elif _mouse_activates(mouse_state):
                         preserve_selection_on_focus_exit = True
                         key = curses.KEY_ENTER
                     else:
