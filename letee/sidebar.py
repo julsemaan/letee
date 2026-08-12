@@ -2476,7 +2476,6 @@ def run(stdscr: curses.window) -> None:
                                     rebuild()
                             continue
                         if _mouse_activates(mouse_state) and entry.pane_target:
-                            preserve_selection_on_focus_exit = True
                             dispatch(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""))
                         continue
                     index = _entry_at_row(
