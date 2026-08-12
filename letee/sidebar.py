@@ -1537,7 +1537,9 @@ def _draw_entries(
         if is_move_target:
             rule = "-" if _ascii() else "─"
             prompt = "Click to place "
-            lines = [(prompt + rule * max(0, w - len(prompt)))[:w], lines[0]]
+            destination_line = (prompt + rule * max(0, w - len(prompt)))[:w]
+            place_after = move_source_entry is not None and move_source_entry < idx
+            lines = [lines[0], destination_line] if place_after else [destination_line, lines[0]]
         base_attr = _entry_attr(entry, active_entry or active_agent, dimmed, move_source=is_move_source, move_target=is_move_target)
         slot_badge = ""
         slot_width = 0

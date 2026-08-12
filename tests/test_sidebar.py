@@ -2149,7 +2149,7 @@ class SidebarDrawTest(unittest.TestCase):
         marker = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "↓ more")
         self.assertEqual(marker[1], 4)
 
-    def test_move_target_keeps_visible_line_without_shifting_following_entries(self):
+    def test_downward_move_target_line_follows_destination_session(self):
         entries = [
             Entry(name, "session", Target("local", name), tracked=True, shortcut_slot=index)
             for index, name in enumerate(("one", "two", "three"), 1)
@@ -2161,7 +2161,8 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._ascii", return_value=False),
         ):
             sidebar._draw_entries(
-                screen, entries, 0, 9, 30, set(), None, move_target_entry=1
+                screen, entries, 0, 9, 30, set(), None,
+                move_source_entry=0, move_target_entry=1,
             )
 
         rows = {
@@ -2176,9 +2177,9 @@ class SidebarDrawTest(unittest.TestCase):
             for call in screen.calls
             if call[0] == "addnstr" and call[3].startswith("Click to place")
         ]
-        self.assertEqual(rows, {"one": 1, "two": 4, "three": 5})
+        self.assertEqual(rows, {"one": 1, "two": 3, "three": 5})
         self.assertEqual(target_attr, 123)
-        self.assertEqual(indicators, [(3, "Click to place " + "─" * 15, 123)])
+        self.assertEqual(indicators, [(4, "Click to place " + "─" * 15, 123)])
 
     def test_move_target_prompt_has_ascii_fallback(self):
         entry = Entry("work", "session", Target("local", "work"), tracked=True)
