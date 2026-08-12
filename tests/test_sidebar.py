@@ -2340,6 +2340,48 @@ class SidebarDrawTest(unittest.TestCase):
         marker = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "↓ more")
         self.assertEqual(marker[1], 4)
 
+    def test_reorder_handle_uses_reverse_video_in_color_and_monochrome(self):
+        entry = Entry("work", "session", Target("local", "work"), tracked=True)
+
+        for ascii_mode, handle in ((False, "↕"), (True, ":")):
+            for palette in ({"move": 123}, {}):
+                with self.subTest(ascii=ascii_mode, color=bool(palette)), patch(
+                    "letee.sidebar._ascii", return_value=ascii_mode
+                ), patch.dict("letee.sidebar._COLOR", palette, clear=True):
+                    screen = FakeScreen(size=(6, 30))
+                    sidebar._draw_entries(screen, [entry], 0, 5, 30, set(), None)
+
+                rendered = next(
+                    call for call in screen.calls
+                    if call[0] == "addnstr" and handle in call[3]
+                )
+                self.assertEqual(rendered[2], 27)
+                self.assertEqual(rendered[3], f" {handle} ")
+                self.assertEqual(rendered[4], 3)
+                self.assertTrue(rendered[5] & curses.A_BOLD)
+                self.assertTrue(rendered[5] & curses.A_REVERSE)
+
+    def test_move_mode_hides_reorder_handles(self):
+        entries = [
+            Entry("one", "session", Target("local", "one"), tracked=True),
+            Entry("two", "session", Target("local", "two"), tracked=True),
+        ]
+
+        for ascii_mode in (False, True):
+            with self.subTest(ascii=ascii_mode), patch(
+                "letee.sidebar._ascii", return_value=ascii_mode
+            ):
+                screen = FakeScreen(size=(8, 30))
+                sidebar._draw_entries(
+                    screen, entries, 0, 7, 30, set(), None,
+                    move_source_entry=0, move_target_entry=1,
+                )
+
+            handle_column = sidebar._move_handle_bounds(30)[0]
+            self.assertFalse(
+                any(call[0] == "addnstr" and call[2] == handle_column for call in screen.calls)
+            )
+
     def test_downward_move_target_line_follows_destination_session(self):
         entries = [
             Entry(name, "session", Target("local", name), tracked=True, shortcut_slot=index)
@@ -3358,6 +3400,28 @@ class SidebarDrawTest(unittest.TestCase):
 
         save_sessions.assert_called_once_with((second, first))
 
+    def test_adjacent_move_handle_columns_start_move(self):
+        target = Target("local", "one")
+        entry = Entry("one", "session", target, tracked=True)
+
+        for column in (27, 29):
+            with self.subTest(column=column):
+                screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(12, 30))
+                with (
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar.curses.getmouse", return_value=(0, column, 2, 0, curses.BUTTON1_PRESSED)),
+                    patch("letee.sidebar._mouse_mask") as mouse_mask,
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar.load_sessions", return_value=[target]),
+                    patch("letee.sidebar._entries", return_value=[entry]),
+                    patch("letee.sidebar._agent_entries", return_value=[]),
+                    patch("letee.sidebar._bell_targets", return_value=set()),
+                    patch("letee.sidebar._current_target", return_value=None),
+                ):
+                    run(screen)
+
+                self.assertIn(call(True), mouse_mask.call_args_list)
+
     def test_move_handle_then_destination_press_reorders_tracked_sessions(self):
         first = Target("local", "one")
         second = Target("local", "two")
@@ -4141,7 +4205,7 @@ class SidebarDrawTest(unittest.TestCase):
             _draw(screen, [entry], 0, "ok", "", current_target=target)
 
         rows = [call for call in screen.calls if call[0] == "addnstr" and call[1] in (2, 3)]
-        self.assertEqual([call[5] for call in rows if call[3] != "↕"], [123, 123])
+        self.assertEqual([call[5] for call in rows if "↕" not in call[3]], [123, 123])
         self.assertEqual(_entry_at_row([entry], 0, 2, 6, 1, top=2), 0)
         self.assertEqual(_entry_at_row([entry], 0, 3, 6, 1, top=2), 0)
 

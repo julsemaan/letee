@@ -23,6 +23,7 @@ from .names import PaneTarget, Target, validate_name
 
 UI_POLL_INTERVAL_MS = 50
 MOVE_SCROLL_INTERVAL = 0.2
+MOVE_HANDLE_WIDTH = 3
 LAYOUT_REPAIR_INTERVAL = 0.5
 STATUS_POLL_INTERVAL = 0.1
 UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -1287,6 +1288,19 @@ def _entry_at_row(
     return None
 
 
+def _move_handle_bounds(width: int) -> tuple[int, int]:
+    center = max(0, width - 2)
+    half_width = MOVE_HANDLE_WIDTH // 2
+    return max(0, center - half_width), min(max(0, width), center + half_width + 1)
+
+
+def _move_handle_hit(mouse_col: object, width: int) -> bool:
+    if not isinstance(mouse_col, int):
+        return False
+    start, end = _move_handle_bounds(width)
+    return start <= mouse_col < end
+
+
 def _mouse_activates(mouse_state: int) -> bool:
     return bool(mouse_state & (
         (getattr(curses, "BUTTON1_PRESSED", 0) or 0)
@@ -1621,7 +1635,11 @@ def _draw_entries(
         selected_entry = idx == selected
         active_entry = entry.target is not None and entry.target == current_target and entry.kind != "agent"
         active_agent = entry.kind == "agent" and entry.agent_id == active_agent_id
-        entry_width = max(0, w - 2) if entry.tracked else w
+        handle_start, handle_end = _move_handle_bounds(w)
+        entry_width = (
+            max(0, handle_start - 4 if entry.shortcut_slot is not None else handle_start)
+            if entry.tracked else w
+        )
         lines = _entry_lines(
             entry, selected_entry and not dimmed and selection_pointer_visible and pane_active, bell_targets, current_target, entry_width,
             creation_host, creation_text, now, agent_alerts, spinner_frame,
@@ -1652,7 +1670,7 @@ def _draw_entries(
                     slot_badge = f"[{entry.shortcut_slot}]"
                 slot_attr = _color("slot_active") if active_entry else _color("slot")
                 stdscr.addnstr(row, 0, slot_badge, w, slot_attr or curses.A_BOLD)
-                stdscr.addnstr(row, 3, " " + line, w - 3, attr)
+                stdscr.addnstr(row, 3, " " + line, max(0, handle_start - 3), attr)
             else:
                 stdscr.addnstr(row, 0, line, w, attr)
                 if entry.kind == "agent" and line_number == 0 and entry.status:
@@ -1663,10 +1681,19 @@ def _draw_entries(
                     column = line.rfind(entry.status)
                     if column >= 0:
                         stdscr.addnstr(row, column, entry.status, max(0, w - column), semantic_attr)
-            if entry.tracked and line_number == int(is_move_target):
+            if entry.tracked and move_source_entry is None and line_number == int(is_move_target):
                 handle = ":" if _ascii() else "↕"
-                handle_attr = _color("move") or curses.A_BOLD
-                stdscr.addnstr(row, max(0, w - 2), handle, 1, _fade(handle_attr) if dimmed else handle_attr)
+                handle_col = max(0, w - 2)
+                handle_text = (
+                    " " * max(0, handle_col - handle_start)
+                    + handle
+                    + " " * max(0, handle_end - handle_col - 1)
+                )
+                handle_attr = (_color("move") or 0) | curses.A_BOLD | curses.A_REVERSE
+                stdscr.addnstr(
+                    row, handle_start, handle_text, handle_end - handle_start,
+                    _fade(handle_attr) if dimmed else handle_attr,
+                )
             if entry.kind == "host" and entry.host == creation_host:
                 cursor = (row, min(w - 1, _cell_width(line)))
             row += 1
@@ -2252,7 +2279,9 @@ def run(stdscr: curses.window) -> None:
                     if _mouse_activates(mouse_state):
                         if index is None:
                             cancel_move()
-                        elif entries[index].target == state.move_source and mouse_col == stdscr.getmaxyx()[1] - 2:
+                        elif entries[index].target == state.move_source and _move_handle_hit(
+                            mouse_col, stdscr.getmaxyx()[1]
+                        ):
                             cancel_move()
                         elif entries[index].tracked and entries[index].target:
                             commit_move(entries[index].target)
@@ -2395,7 +2424,7 @@ def run(stdscr: curses.window) -> None:
                     if (
                         _mouse_activates(mouse_state)
                         and entries[index].tracked
-                        and mouse_col == stdscr.getmaxyx()[1] - 2
+                        and _move_handle_hit(mouse_col, stdscr.getmaxyx()[1])
                         and entries[index].target
                     ):
                         start_move(entries[index].target)
