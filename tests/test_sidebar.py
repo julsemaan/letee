@@ -2172,13 +2172,29 @@ class SidebarDrawTest(unittest.TestCase):
             call[5] for call in screen.calls if call[0] == "addnstr" and "two" in call[3]
         )
         indicators = [
-            (call[1], call[5])
+            (call[1], call[3], call[5])
             for call in screen.calls
-            if call[0] == "addnstr" and call[3] == "─" * 30
+            if call[0] == "addnstr" and call[3].startswith("Click to place")
         ]
         self.assertEqual(rows, {"one": 1, "two": 4, "three": 5})
         self.assertEqual(target_attr, 123)
-        self.assertEqual(indicators, [(3, 123)])
+        self.assertEqual(indicators, [(3, "Click to place " + "─" * 15, 123)])
+
+    def test_move_target_prompt_has_ascii_fallback(self):
+        entry = Entry("work", "session", Target("local", "work"), tracked=True)
+        screen = FakeScreen(size=(6, 30))
+
+        with patch("letee.sidebar._ascii", return_value=True):
+            sidebar._draw_entries(
+                screen, [entry], 0, 5, 30, set(), None, move_target_entry=0
+            )
+
+        prompt = next(
+            call[3]
+            for call in screen.calls
+            if call[0] == "addnstr" and call[3].startswith("Click to place")
+        )
+        self.assertEqual(prompt, "Click to place " + "-" * 15)
 
     def test_entry_at_row_ignores_non_selectable_and_non_entry_areas(self):
         entries = [
@@ -2196,6 +2212,22 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertIsNone(_entry_at_row(entries, 0, 3, 10, 1))  # spacer
         self.assertIsNone(_entry_at_row(entries, 3, 7, 8, 1))  # footer/down marker
 
+
+    def test_move_mode_keeps_normal_footer(self):
+        entry = Entry("work", "session", Target("local", "work"), tracked=True)
+        for ascii_mode, expected in ((False, "↵ activate"), (True, "Enter activate")):
+            screen = FakeScreen(size=(10, 60))
+            with self.subTest(ascii=ascii_mode), patch(
+                "letee.sidebar._ascii", return_value=ascii_mode
+            ):
+                _draw(screen, [entry], 0, "", "", agent_entries=[], move_source_entry=0)
+
+            footer = [
+                call[3].rstrip()
+                for call in screen.calls
+                if call[0] == "addnstr" and call[1] == 9
+            ]
+            self.assertEqual(footer, [expected])
 
     def test_footer_fills_terminal_width(self):
         screen = FakeScreen(size=(7, 60))
