@@ -4205,7 +4205,8 @@ class SidebarDrawTest(unittest.TestCase):
             _draw(screen, [entry], 0, "ok", "", current_target=target)
 
         rows = [call for call in screen.calls if call[0] == "addnstr" and call[1] in (2, 3)]
-        self.assertEqual([call[5] for call in rows if "↕" not in call[3]], [123, 123])
+        handle_column = sidebar._move_handle_bounds(30)[0]
+        self.assertEqual([call[5] for call in rows if call[2] != handle_column], [123, 123])
         self.assertEqual(_entry_at_row([entry], 0, 2, 6, 1, top=2), 0)
         self.assertEqual(_entry_at_row([entry], 0, 3, 6, 1, top=2), 0)
 
