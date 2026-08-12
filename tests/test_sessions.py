@@ -1,5 +1,7 @@
 from pathlib import Path
 import os
+import signal
+import sys
 import socket as unix_socket
 import subprocess
 import tempfile
@@ -9,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import letee.sessions as sessions
 from letee.names import PaneTarget, Target
-from letee.sessions import attach_command, create, kill, pane_attach_command, rename, ssh_command
+from letee.sessions import attach_command, create, kill, kill_agent, pane_attach_command, rename, ssh_command
 
 
 class SessionOperationsTest(unittest.TestCase):
@@ -95,6 +97,127 @@ class SessionOperationsTest(unittest.TestCase):
                 pane_attach_command(remote),
                 "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
             )
+
+    def test_kill_agent_local_signals_foreground_group_not_pane_shell(self):
+        pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
+        with (
+            patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/outer", "PATH": "x"}, clear=True),
+            patch(
+                "letee.sessions.subprocess.run",
+                side_effect=[Mock(stdout="123\t/dev/pts/7\n"), Mock(stdout="456\n")],
+            ) as run,
+            patch("letee.sessions.os.open") as open_tty,
+            patch("letee.sessions.os.tcgetpgrp") as tcgetpgrp,
+            patch("letee.sessions.os.getpgid", return_value=123) as getpgid,
+            patch("letee.sessions.os.killpg") as killpg,
+        ):
+            kill_agent(pane)
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ("tmux", "-S", "/tmp/tmux socket", "display-message", "-p", "-t", "%7", "#{pane_pid}\t#{pane_tty}"),
+                ("ps", "-o", "tpgid=", "-p", "123"),
+            ],
+        )
+        open_tty.assert_not_called()
+        tcgetpgrp.assert_not_called()
+        getpgid.assert_called_once_with(123)
+        killpg.assert_called_once_with(456, signal.SIGTERM)
+
+    def test_kill_agent_refuses_idle_pane_shell(self):
+        pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")
+        with (
+            patch(
+                "letee.sessions.subprocess.run",
+                side_effect=[Mock(stdout="123\t/dev/pts/7\n"), Mock(stdout="123\n")],
+            ),
+            patch("letee.sessions.os.getpgid", return_value=123),
+            patch("letee.sessions.os.killpg") as killpg,
+        ):
+            with self.assertRaisesRegex(SystemExit, "no foreground process"):
+                kill_agent(pane)
+
+        killpg.assert_not_called()
+
+    def test_remote_kill_helper_handles_python_dash_c_separator_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            for name, body in {
+                "tmux": "#!/bin/sh\nprintf '%s\\t/dev/null\\n' \"$PPID\"\n",
+                "ps": "#!/bin/sh\nprintf '0\\n'\n",
+            }.items():
+                command = directory_path / name
+                command.write_text(body)
+                command.chmod(0o700)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{directory}:{environment.get('PATH', '')}"
+
+            result = subprocess.run(
+                (
+                    sys.executable,
+                    "-c",
+                    sessions._KILL_AGENT_HELPER,
+                    "--",
+                    "/tmp/tmux-test",
+                    "%7",
+                ),
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "no foreground process\n")
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_kill_agent_remote_uses_persistent_ssh_and_quotes_helper_arguments(self):
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket; echo unsafe")
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            kill_agent(pane)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:1], ("ssh",))
+        self.assertIn(("-o", "ControlMaster=auto"), list(zip(command, command[1:])))
+        self.assertIn(("-o", "ControlPersist=10m"), list(zip(command, command[1:])))
+        self.assertEqual(command[-2], "dev")
+        self.assertIn("python3 -c", command[-1])
+        self.assertEqual(command[-1].count(" -- "), 1)
+        self.assertTrue(command[-1].endswith(" -- '/tmp/tmux socket; echo unsafe' %7"))
+        self.assertIn("/tmp/tmux socket; echo unsafe", command[-1])
+        self.assertNotIn("kill-pane", command[-1])
+
+    def test_kill_agent_tmux_lookup_failure_includes_operation_and_target(self):
+        pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")
+        error = subprocess.CalledProcessError(1, ["tmux"], stderr="pane disappeared\n")
+
+        with patch("letee.sessions.subprocess.run", side_effect=error):
+            with self.assertRaisesRegex(SystemExit, r"^kill agent local:work failed: pane disappeared$"):
+                kill_agent(pane)
+
+    def test_kill_agent_rejects_invalid_lookup_output(self):
+        pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")
+
+        with patch("letee.sessions.subprocess.run", return_value=Mock(stdout="not pane data")):
+            with self.assertRaisesRegex(SystemExit, r"^kill agent local:work failed: invalid pane information$"):
+                kill_agent(pane)
+
+    def test_kill_agent_signal_failure_includes_operation_and_target(self):
+        pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")
+        with (
+            patch(
+                "letee.sessions.subprocess.run",
+                side_effect=[Mock(stdout="123\t/dev/pts/7\n"), Mock(stdout="456\n")],
+            ),
+            patch("letee.sessions.os.getpgid", return_value=123),
+            patch("letee.sessions.os.killpg", side_effect=PermissionError(1, "not permitted")),
+        ):
+            with self.assertRaisesRegex(SystemExit, r"^kill agent local:work failed: not permitted$"):
+                kill_agent(pane)
 
     def test_kill_local_session_uses_default_server(self):
         with (

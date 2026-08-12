@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 
 from .config import ensure_config, load_hosts, load_prefix, load_sidebar_width
-from .names import DEFAULT_SERVER, Target, parse_target
+from .names import DEFAULT_SERVER, PaneTarget, Target, parse_target
 from . import sessions, tmux
 
 
@@ -49,6 +49,8 @@ Session actions
 Agent actions
   j/k    navigate agents
   Enter  switch to agent pane
+  x      terminate selected agent with SIGTERM (confirm; pane and shell survive)
+  Right-click  open agent Kill menu
   [ / ]  resize agent panel
   Stable order: session, window, pane
 
@@ -429,6 +431,17 @@ def show_session_menu(target: Target, x: int, y: int) -> None:
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
         "Rename", "e", f"send-keys -t {pane} e",
         "Remove", "r", f"send-keys -t {pane} r",
+        "Kill", "x", f"send-keys -t {pane} x y",
+        timeout=None,
+    )
+
+
+def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int) -> None:
+    pane = _option(SIDEBAR_PANE_OPTION)
+    title = f"{agent_name}@{pane_target.target.session}@{pane_target.target.host or 'localhost'}"
+    mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
+    tmux.tmux(
+        "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
         "Kill", "x", f"send-keys -t {pane} x y",
         timeout=None,
     )

@@ -662,6 +662,37 @@ class AgentSidebarTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("AGENTS ") for line in text))
         self.assertIn("  No active agents", text)
 
+    def test_empty_agent_message_stays_inside_narrow_pane(self):
+        screen = FakeScreen(size=(10, 12))
+
+        _draw(screen, [], 0, "", "", agent_entries=[])
+
+        message = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "No active" in call[3]
+        )
+        self.assertLessEqual(sidebar._cell_width(message[3]), 12)
+
+    def test_agent_status_message_is_single_bounded_line(self):
+        screen = FakeScreen(size=(10, 12))
+
+        _draw(
+            screen,
+            [],
+            0,
+            "failed\n" + "界" * 20,
+            "",
+            agent_entries=[Entry("", "order")],
+            status_region="agents",
+        )
+
+        message = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "failed" in call[3]
+        )
+        self.assertNotIn("\n", message[3])
+        self.assertLessEqual(sidebar._cell_width(message[3]), 12)
+
     def test_short_height_keeps_both_lines_of_first_agent_entry_visible(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%1", "/tmp/tmux", "shell")
@@ -694,6 +725,71 @@ class AgentSidebarTest(unittest.TestCase):
         switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work", "id")
         self.assertEqual(state.status, "")
         self.assertIsNone(state.status_deadline)
+
+    def test_kill_agent_refreshes_discovery_without_changing_favorites(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        state = SidebarState(
+            favorites=[target],
+            selected_target=target,
+            selected_agent_key=(pane, "id"),
+        )
+        poller = unittest.mock.Mock()
+
+        with patch.object(sidebar.sessions, "kill_agent") as kill_agent:
+            _execute(Effect("kill_agent", pane, message="pi"), state, poller, 5)
+
+        kill_agent.assert_called_once_with(pane)
+        poller.refresh.assert_called_once_with()
+        self.assertEqual(state.favorites, [target])
+        self.assertEqual(state.selected_target, target)
+        self.assertEqual(state.selected_agent_key, (pane, "id"))
+        self.assertEqual(state.status, "killed agent pi in local:work")
+        self.assertEqual(state.status_region, "agents")
+
+    def test_successful_agent_kill_hides_stale_status_record(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+        state = SidebarState(favorites=[target], selected_agent_key=(pane, "id"))
+        poller = unittest.mock.Mock()
+
+        with patch.object(sidebar.sessions, "kill_agent"):
+            _execute(Effect("kill_agent", pane, message="pi", agent_id="id"), state, poller, 5)
+
+        self.assertEqual(_agent_entries(data, [target], hidden_agents=state.hidden_agents), [])
+
+    def test_failed_agent_kill_preserves_selection_and_session(self):
+        target = Target("ssh", "work", "dev")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        state = SidebarState(
+            favorites=[target],
+            selected_target=target,
+            selected_agent_key=(pane, "id"),
+        )
+        poller = unittest.mock.Mock()
+
+        with patch.object(
+            sidebar.sessions,
+            "kill_agent",
+            side_effect=SystemExit("kill agent ssh:dev:work failed: no foreground process"),
+        ):
+            _execute(Effect("kill_agent", pane, message="pi"), state, poller, 5)
+
+        poller.refresh.assert_not_called()
+        self.assertEqual(state.favorites, [target])
+        self.assertEqual(state.selected_target, target)
+        self.assertEqual(state.selected_agent_key, (pane, "id"))
+        self.assertEqual(state.status, "no foreground process")
+        self.assertEqual(state.status_region, "agents")
 
     def test_agent_duration_uses_task_timestamp_then_runtime_fallback(self):
         now = datetime(2026, 6, 20, 16, 45, 30, tzinfo=timezone.utc)
@@ -976,6 +1072,55 @@ class AddFlowTest(unittest.TestCase):
         sidebar._add_back(state, snapshot(remotes={"dev": source("ssh", host="dev")}))
         self.assertEqual(state.add_view, "location")
 
+    def test_duplicate_name_warning_is_rendered_in_name_editor(self):
+        state = SidebarState(
+            add_view="name",
+            creation_host="dev",
+            creation_text="wor",
+            status="agent failed",
+            status_region="agents",
+            status_deadline=123.0,
+        )
+        existing = (Target("ssh", "work", "dev"),)
+
+        sidebar._creation_key(state, ord("k"), existing)
+        screen = FakeScreen(size=(7, 50))
+        sidebar._draw_name(screen, state)
+
+        self.assertTrue(
+            any(
+                call[0] == "addnstr" and "Session already exists on this host" in call[3]
+                for call in screen.calls
+            )
+        )
+        self.assertEqual(state.status, "Session already exists on this host")
+        self.assertEqual(state.status_region, "sessions")
+        self.assertIsNone(state.status_deadline)
+
+    def test_back_navigation_clears_warning_and_deadline(self):
+        state = SidebarState(
+            add_view="name",
+            creation_host="",
+            creation_text="work",
+            status="Session already exists on this host",
+            status_region="agents",
+            status_deadline=123.0,
+        )
+
+        sidebar._add_back(state, snapshot(local=("work",)))
+
+        self.assertEqual(state.add_view, "choice")
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
+
+    def test_opening_add_clears_prior_session_or_agent_status(self):
+        for region in ("sessions", "agents"):
+            with self.subTest(region=region):
+                state = SidebarState(status="stale", status_region=region, status_deadline=123.0)
+
+                sidebar._open_add(state)
+
+                self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
+
     def test_name_screen_uses_dedicated_row_and_cursor_at_narrow_width(self):
         screen = FakeScreen(size=(6, 16))
         state = SidebarState(add_view="name", creation_host="", creation_text="x" * 64)
@@ -1181,6 +1326,19 @@ class SidebarStateTest(unittest.TestCase):
         effect = _creation_key(state, 10, (Target("local", "work"),))
 
         self.assertEqual(effect, Effect("create", Target("ssh", "work", "dev")))
+
+    def test_live_name_validation_clears_stale_status_metadata(self):
+        state = SidebarState(
+            creation_host="dev",
+            creation_text="work",
+            status="agent failed",
+            status_region="agents",
+            status_deadline=123.0,
+        )
+
+        self.assertIsNone(_creation_key(state, curses.KEY_BACKSPACE, (Target("ssh", "work", "dev"),)))
+
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
 
     def test_rename_editor_prefills_selected_session_name(self):
         target = Target("local", "old")
@@ -1461,6 +1619,36 @@ class SidebarStateTest(unittest.TestCase):
         self.assertIsNone(state.pending_selection)
         self.assertEqual(state.status, "create failed")
         self.assertEqual((state.creation_host, state.creation_text), ("dev", "new"))
+
+    def test_create_error_does_not_leak_when_backing_out_of_add_flow(self):
+        target = Target("ssh", "new", "dev")
+        state = SidebarState(add_view="name", creation_host="dev", creation_text="new")
+        poller = unittest.mock.Mock()
+        with patch("letee.sidebar.sessions.create", side_effect=SystemExit("create failed")):
+            _execute(Effect("create", target=target), state, poller, 5)
+
+        self.assertEqual(state.status, "create failed")
+        sidebar._add_back(state, snapshot(local=("existing",)))
+
+        self.assertEqual(state.add_view, "choice")
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
+
+    def test_existing_session_error_does_not_leak_when_backing_to_add_choice(self):
+        target = Target("local", "work")
+        state = SidebarState(add_view="existing")
+        poller = unittest.mock.Mock()
+        with (
+            patch("letee.sidebar.save_sessions"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.cockpit.switch", side_effect=SystemExit("add failed")),
+        ):
+            _execute(Effect("add_switch", target=target), state, poller, 5)
+
+        self.assertEqual(state.status, "add failed")
+        sidebar._add_back(state, snapshot())
+
+        self.assertEqual(state.add_view, "choice")
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
 
     def test_pane_timeout_status_includes_action_and_session_target(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
@@ -2348,6 +2536,30 @@ class SidebarDrawTest(unittest.TestCase):
         prompt = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[3].strip())
         self.assertLessEqual(sidebar._cell_width(prompt[3]), 12)
         self.assertTrue(prompt[5] & curses.A_BOLD)
+
+    def test_agent_confirmation_row_matches_agents_divider(self):
+        entries = [Entry("pi", "agent", status="working")]
+        for filtering, agent_rows in ((False, None), (False, 8), (True, None), (True, 5)):
+            with self.subTest(filtering=filtering, agent_rows=agent_rows):
+                screen = FakeScreen(size=(20, 40))
+                footer_height, _ = _draw(
+                    screen,
+                    [],
+                    0,
+                    "",
+                    "",
+                    filtering=filtering,
+                    agent_entries=entries,
+                    agent_rows=agent_rows,
+                )
+                divider = next(
+                    call for call in screen.calls
+                    if call[0] == "addnstr" and call[3].startswith("AGENTS ")
+                )
+                self.assertEqual(
+                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_rows, filtering),
+                    divider[1] + 2,
+                )
 
     def test_add_button_cursor_does_not_replace_selected_session_slot(self):
         screen = FakeScreen(size=(7, 40))
@@ -3494,6 +3706,143 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(mousemask.call_count, 2)
         switch.assert_not_called()
 
+    def test_right_click_agent_selects_exact_agent_without_switching(self):
+        target = Target("ssh", "work", "dev")
+        first = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        second = PaneTarget(target, "@2", "%2", "/tmp/tmux")
+        agents = (
+            AgentEntry(first, "first", "pi-one", "working"),
+            AgentEntry(second, "second", "pi-two", "working"),
+        )
+        data = SessionSnapshot(SourceSnapshot(True, (target,), frozenset(), agents=agents), {})
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(20, 30))
+        drawn = []
+        real_draw = sidebar._draw
+
+        def draw_spy(*args, **kwargs):
+            bound = inspect.signature(real_draw).bind(*args, **kwargs)
+            drawn.append(bound.arguments)
+            return real_draw(*args, **kwargs)
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask") as mousemask,
+            patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
+            patch(
+                "letee.sidebar.curses.getmouse",
+                return_value=(0, 7, 15, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+            ),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.show_agent_menu") as show_menu,
+            patch("letee.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+        ):
+            run(screen)
+
+        show_menu.assert_called_once_with("pi-two", second, 7, 15)
+        self.assertEqual(drawn[-1]["agent_selected"], 1)
+        self.assertEqual(mouse_cleanup.call_count, 2)
+        self.assertEqual(mousemask.call_count, 2)
+        switch.assert_not_called()
+
+    def test_right_click_agent_ignores_divider_and_empty_space(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(24, 30))
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._mouse_cleanup"),
+            patch(
+                "letee.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 7, 14, 0, curses.BUTTON3_PRESSED),
+                    (0, 7, 22, 0, curses.BUTTON3_PRESSED),
+                ],
+            ),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.show_agent_menu") as show_menu,
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        show_menu.assert_not_called()
+        switch.assert_not_called()
+
+    def test_right_click_agent_ignores_invalid_coordinates(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(20, 30))
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch("letee.sidebar._mouse_cleanup"),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, -1, 17, 0, curses.BUTTON3_PRESSED)),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_hosts", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.show_agent_menu") as show_menu,
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        show_menu.assert_not_called()
+        switch.assert_not_called()
+
     def test_location_click_target_enters_dedicated_name_view(self):
         state = SidebarState(add_view="location")
         sidebar._select_location(state, "")
@@ -4446,6 +4795,86 @@ class PrefixActionTest(unittest.TestCase):
 
         kill.assert_not_called()
         save.assert_not_called()
+
+    def test_agents_x_confirms_and_dispatches_selected_pane(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+
+        with patch.object(sidebar.sessions, "kill_agent") as kill_agent, patch.object(sidebar, "save_sessions") as save:
+            screen = self._run([curses.KEY_F7, curses.KEY_DOWN, ord("x"), ord("y"), STOP], [target], target, data)
+
+        kill_agent.assert_called_once_with(pane)
+        save.assert_not_called()
+        prompt = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "kill pi in local:work? y/N" in call[3]
+        )
+        self.assertGreater(prompt[1], 1)
+
+    def test_rejected_agents_x_does_not_signal(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+
+        with patch.object(sidebar.sessions, "kill_agent") as kill_agent:
+            self._run([curses.KEY_F7, curses.KEY_DOWN, ord("x"), ord("n"), STOP], [target], target, data)
+
+        kill_agent.assert_not_called()
+
+    def test_rejected_agents_x_repaints_agent_status(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        statuses = []
+
+        def draw_spy(*args, **kwargs):
+            statuses.append((args[3], kwargs["status_region"]))
+            return 2, None
+
+        with patch.object(sidebar, "_draw", side_effect=draw_spy):
+            self._run(
+                [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_F10, ord("x"), ord("n"), STOP],
+                [target],
+                target,
+                data,
+            )
+
+        self.assertEqual(statuses.count(("no agent alerts", "agents")), 2)
+
+    def test_busy_agents_x_skips_confirmation(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+        actions.poll.return_value = None
+
+        with (
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "_read_key") as read_key,
+            patch.object(sidebar.sessions, "kill_agent") as kill_agent,
+        ):
+            self._run([curses.KEY_F7, curses.KEY_DOWN, ord("x"), ord("y"), STOP], [target], target, data)
+
+        read_key.assert_not_called()
+        kill_agent.assert_not_called()
 
     def test_busy_runner_skips_kill_confirmation(self):
         target = Target("local", "active")

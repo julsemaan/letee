@@ -139,6 +139,7 @@ letee -L <name> kill-server
 - `C-s a`: show sidebar and focus Agents; recreates sidebar if quit
 - `C-s r`: remove active right-pane session from letee without killing tmux session
 - `C-s x`: kill and remove active right-pane session after `y/N` confirmation
+- `x` while Agents is focused: terminate selected agent foreground job with `SIGTERM` after confirmation; pane and shell survive
 - `C-s !`: show Agents and jump to first alerted agent; no alert leaves right pane focused
 - `C-s w`: focus right pane
 - `C-s h`: hide/show sidebar; sidebar remains alive while hidden
@@ -213,7 +214,11 @@ Run `letee` — agents appear automatically in the Agents sidebar (`C-s a`).
 
 ### How agent discovery works
 
-Agent records are read from `$AGENT_STATUS_DIR`, `$XDG_STATE_HOME/agent-status`, or `~/.local/state/agent-status`, in that order. Local and remote running agents updated within 60 seconds are correlated by exact tmux socket and pane ID. Selecting agent navigates to exact server, window, and pane; active agent name and location remain orange independently of keyboard selection. Working agents show `for <duration>`; other states show no duration. Working durations prefer `task.status_timestamp` and fall back to `runtime.updated_at`; unusable optional timestamps omit duration. Each agent row starts with a semantic status icon; working agents use an animated Braille spinner. Focused selection replaces that icon with `›`, and moving focus away restores it. Status icon and text share semantic color; selection cursor stays orange. `LETEE_ASCII=1` uses ASCII icons, spinner frames, and `>` cursor. Attention states remain bold and idle/canceled remain dim without color. Agent second lines show `<session> · <window name>`; host stays available for targeting but is not rendered. Agents are discovered automatically, but only agents in tracked sessions appear. Agents cannot be added, removed, reordered, or killed as favorites.
+Agent records are read from `$AGENT_STATUS_DIR`, `$XDG_STATE_HOME/agent-status`, or `~/.local/state/agent-status`, in that order. Local and remote running agents updated within 60 seconds are correlated by exact tmux socket and pane ID. Selecting agent navigates to exact server, window, and pane; active agent name and location remain orange independently of keyboard selection. Working agents show `for <duration>`; other states show no duration. Working durations prefer `task.status_timestamp` and fall back to `runtime.updated_at`; unusable optional timestamps omit duration. Each agent row starts with a semantic status icon; working agents use an animated Braille spinner. Focused selection replaces that icon with `›`, and moving focus away restores it. Status icon and text share semantic color; selection cursor stays orange. `LETEE_ASCII=1` uses ASCII icons, spinner frames, and `>` cursor. Attention states remain bold and idle/canceled remain dim without color. Agent second lines show `<session> · <window name>`; host stays available for targeting but is not rendered. Agents are discovered automatically, but only agents in tracked sessions appear. Agents cannot be added, removed, or reordered as favorites.
+
+### Terminating agents
+
+Press `x` with Agents focused to terminate selected local or remote agent. Letee queries exact tmux socket and pane, sends `SIGTERM` to foreground process group, and leaves pane and interactive shell alive. Idle panes are protected: when foreground group is pane shell's group, letee refuses action instead of terminating shell.
 
 ### Agent alerts
 
@@ -225,7 +230,8 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 - right-click tracked session: open native tmux menu to rename, remove, or kill it with confirmation; right-click does not switch sessions
 - click tracked session's `↕` handle (`:` in ASCII mode), hover destination, then click destination row to move; source and insertion target highlight while moving
 - `Esc`, background click, or repeated source-handle click cancels move; hovering `↑ more` or `↓ more` auto-scrolls
-- left-button press on `＋ add`, Add choice, or available location row: activate same flow as `Enter`
+- right-click agent: open native tmux `Kill` menu; confirmation sends `SIGTERM` to foreground process group while pane and shell survive; right-click does not switch session or agent pane
+- click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - click `‹ back` (`< back` in ASCII mode) in Add-session top bar: go back one level, same as `Esc`
 - wheel over sidebar: navigate selectable session and host rows
 - right-pane mouse events: forwarded by outer tmux to mouse-aware applications
