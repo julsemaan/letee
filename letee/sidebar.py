@@ -1211,16 +1211,23 @@ def _mouse_mask(motion: bool = False) -> None:
     ]
     if motion:
         events.append(getattr(curses, "REPORT_MOUSE_POSITION", 0))
+
+    def set_motion_mode() -> None:
+        try:
+            import sys
+
+            os.write(sys.stdout.fileno(), b"\033[?1003h" if motion else b"\033[?1003l")
+        except Exception:
+            pass
+
+    if not motion:
+        set_motion_mode()
     try:
         curses.mousemask(sum(event for event in events if isinstance(event, int)))
     except curses.error:
         pass
-    try:
-        import sys
-
-        os.write(sys.stdout.fileno(), b"\033[?1003h" if motion else b"\033[?1003l")
-    except Exception:
-        pass
+    if motion:
+        set_motion_mode()
 
 
 def _mouse_cleanup() -> None:

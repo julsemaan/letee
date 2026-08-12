@@ -2114,6 +2114,16 @@ class SidebarDrawTest(unittest.TestCase):
 
         self.assertEqual(mousemask.call_args_list, [call(base), call(base | curses.REPORT_MOUSE_POSITION)])
 
+    def test_mouse_mask_restores_base_tracking_after_disabling_motion(self):
+        events = []
+        with (
+            patch("letee.sidebar.curses.mousemask", side_effect=lambda _: events.append("mask")),
+            patch("letee.sidebar.os.write", side_effect=lambda *_: events.append("disable")),
+        ):
+            _mouse_mask()
+
+        self.assertEqual(events, ["disable", "mask"])
+
     def test_mouse_mask_tolerates_missing_button5(self):
         with patch.object(curses, "BUTTON5_PRESSED", None), patch("letee.sidebar.curses.mousemask") as mousemask:
             _mouse_mask()
