@@ -130,7 +130,7 @@ def test_agent_alert_clears_on_select(client: TmuxTestClient) -> None:
         _cleanup(client, "dev")
 
 
-def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
+def test_agent_order_stays_stable_across_status_changes(client: TmuxTestClient) -> None:
     config, statuses = "/tmp/letee-e2e-agent-order", "/tmp/letee-e2e-agent-order-status"
     _setup(client, config, statuses, "alpha", "beta")
     try:
@@ -139,18 +139,14 @@ def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
         _wait_for_line(client, "alpha-agent", "working")
         _wait_for_line(client, "beta-agent", "failed")
         sidebar = client.sidebar_text()
-        assert sidebar.index("beta-agent") < sidebar.index("alpha-agent")
+        assert sidebar.index("alpha-agent") < sidebar.index("beta-agent")
 
-        client.tmux("run-shell", "letee focus-sidebar agents")
-        client.tmux("send-keys", "-t", "letee:cockpit.0", "Right")
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            sidebar = client.sidebar_text()
-            if "SESSION" in sidebar and sidebar.index("alpha-agent") < sidebar.index("beta-agent"):
-                break
-            time.sleep(0.1)
-        else:
-            raise AssertionError(f"Session ordering not applied\n{sidebar}")
+        _write_agent(client, statuses, "alpha", "alpha-agent", "failed", name="alpha-agent")
+        _write_agent(client, statuses, "beta", "beta-agent", "working", name="beta-agent")
+        _wait_for_line(client, "alpha-agent", "failed")
+        _wait_for_line(client, "beta-agent", "working")
+        sidebar = client.sidebar_text()
+        assert sidebar.index("alpha-agent") < sidebar.index("beta-agent")
     finally:
         _cleanup(client, "alpha", "beta")
 

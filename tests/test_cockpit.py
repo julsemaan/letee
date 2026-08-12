@@ -679,7 +679,11 @@ class CockpitLayoutTest(unittest.TestCase):
         )
 
     def test_help_uses_configured_prefix(self):
-        command = cockpit.help_command("C-x")
+        with (
+            patch.dict(cockpit.os.environ, {"LETEE_ASCII": "0"}),
+            patch.object(cockpit.locale, "getpreferredencoding", return_value="UTF-8"),
+        ):
+            command = cockpit.help_command("C-x")
 
         self.assertIn("C-x a  focus/open Agents", command)
         self.assertIn("C-x s  focus/open Sessions", command)
@@ -695,7 +699,11 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("K/J    move session up/down", command)
         self.assertIn("Agent actions", command)
         self.assertIn("x      terminate selected agent with SIGTERM", command)
-        self.assertIn("Left/Right  cycle ordering on selected ordering row", command)
+        self.assertIn("Stable order: session, window, pane", command)
+        self.assertIn("↕      start mouse move; hover destination, then click", command)
+        self.assertIn("Esc    cancel mouse move", command)
+        self.assertNotIn("Left/Right", command)
+        self.assertNotIn("Priority / Session", command)
         self.assertIn("Enter  activate selected row", command)
         self.assertIn("e      rename selected session", command)
         self.assertNotIn("a      open Add session menu", command)
@@ -715,6 +723,13 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x +  open Add session menu", command)
         self.assertTrue(command.endswith("; exec tail -f /dev/null"))
         self.assertNotIn("exec sh", command)
+
+    def test_help_uses_ascii_move_handle_when_requested(self):
+        with patch.dict(cockpit.os.environ, {"LETEE_ASCII": "1"}):
+            command = cockpit.help_command("C-x")
+
+        self.assertIn(":      start mouse move; hover destination, then click", command)
+        self.assertNotIn("↕      start mouse move; hover destination, then click", command)
 
     def test_new_cockpit_sets_configured_prefix_and_startup_help(self):
         calls = []

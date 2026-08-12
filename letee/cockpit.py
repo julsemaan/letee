@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import locale
 import os
 import re
 import shlex
@@ -18,6 +19,8 @@ def _truecolor_enabled() -> bool:
     return colorterm in ("truecolor", "24bit")
 
 def help_command(prefix: str) -> str:
+    ascii_mode = os.environ.get("LETEE_ASCII") == "1" or "utf" not in locale.getpreferredencoding(False).lower()
+    move_handle = ":" if ascii_mode else "↕"
     text = f"""letee
 
 Navigation
@@ -39,6 +42,8 @@ Session actions
   r      remove selected session (session keeps running)
   K/J    move session up/down
   x      kill and remove selected session
+  {move_handle}      start mouse move; hover destination, then click
+  Esc    cancel mouse move
   Right-click  open session Rename/Remove/Kill menu
 
 Agent actions
@@ -46,8 +51,8 @@ Agent actions
   Enter  switch to agent pane
   x      terminate selected agent with SIGTERM (confirm; pane and shell survive)
   Right-click  open agent Kill menu
-  Left/Right  cycle ordering on selected ordering row (Priority / Session)
   [ / ]  resize agent panel
+  Stable order: session, window, pane
 
 Recovery
   {prefix} d  detach cockpit
