@@ -663,6 +663,37 @@ class AgentSidebarTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("AGENTS ") for line in text))
         self.assertIn("  No active agents", text)
 
+    def test_empty_agent_message_stays_inside_narrow_pane(self):
+        screen = FakeScreen(size=(10, 12))
+
+        _draw(screen, [], 0, "", "", agent_entries=[])
+
+        message = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "No active" in call[3]
+        )
+        self.assertLessEqual(sidebar._cell_width(message[3]), 12)
+
+    def test_agent_status_message_is_single_bounded_line(self):
+        screen = FakeScreen(size=(10, 12))
+
+        _draw(
+            screen,
+            [],
+            0,
+            "failed\n" + "界" * 20,
+            "",
+            agent_entries=[Entry("", "order")],
+            status_region="agents",
+        )
+
+        message = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "failed" in call[3]
+        )
+        self.assertNotIn("\n", message[3])
+        self.assertLessEqual(sidebar._cell_width(message[3]), 12)
+
     def test_short_height_keeps_both_lines_of_first_agent_entry_visible(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%1", "/tmp/tmux", "shell")
@@ -716,6 +747,26 @@ class AgentSidebarTest(unittest.TestCase):
         self.assertEqual(state.selected_agent_key, (pane, "id"))
         self.assertEqual(state.status, "killed agent pi in local:work")
         self.assertEqual(state.status_region, "agents")
+
+    def test_successful_agent_kill_hides_stale_status_record(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+        state = SidebarState(favorites=[target], selected_agent_key=(pane, "id"))
+        poller = unittest.mock.Mock()
+
+        with patch.object(sidebar.sessions, "kill_agent"):
+            _execute(Effect("kill_agent", pane, message="pi", agent_id="id"), state, poller, 5)
+
+        self.assertEqual(_agent_entries(data, [target], hidden_agents=state.hidden_agents), [])
 
     def test_failed_agent_kill_preserves_selection_and_session(self):
         target = Target("ssh", "work", "dev")
@@ -4740,11 +4791,11 @@ class PrefixActionTest(unittest.TestCase):
 
         kill_agent.assert_called_once_with(pane)
         save.assert_not_called()
-        self.assertTrue(any(
-            "kill pi in local:work? y/N" in call[3]
-            for call in screen.calls
-            if call[0] == "addnstr"
-        ))
+        prompt = next(
+            call for call in screen.calls
+            if call[0] == "addnstr" and "kill pi in local:work? y/N" in call[3]
+        )
+        self.assertGreater(prompt[1], 1)
 
     def test_rejected_agents_x_does_not_signal(self):
         target = Target("local", "work")
