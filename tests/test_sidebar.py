@@ -3400,6 +3400,62 @@ class SidebarDrawTest(unittest.TestCase):
 
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one")
 
+    def test_short_click_then_move_to_another_session_switches_clicked_session(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        entries = [
+            Entry("one", "session", first, tracked=True),
+            Entry("two", "session", second, tracked=True),
+        ]
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one", "two")),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=False,
+        )
+
+        def tick(_now):
+            poller.pane_active = True
+            return False
+
+        poller.tick.side_effect = tick
+        screen = FakeScreen(
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, -1, -1, -1, STOP],
+            size=(12, 30),
+        )
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch(
+                "letee.sidebar.time.monotonic",
+                side_effect=[0, 0.1, 0.2, 0.5] + [1] * 20,
+            ),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch(
+                "letee.sidebar.curses.getmouse",
+                side_effect=[
+                    (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
+                ],
+            ),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
+            patch("letee.sidebar.save_sessions") as save_sessions,
+        ):
+            run(screen)
+
+        switch.assert_called_once_with(
+            first, "env -u TMUX tmux -T clipboard new-session -A -s one"
+        )
+        save_sessions.assert_not_called()
+
     def test_press_without_release_switches_after_sidebar_gains_focus(self):
         target = Target("local", "one")
         entries = [Entry("one", "session", target, tracked=True)]

@@ -2024,18 +2024,19 @@ def run(stdscr: curses.window) -> None:
                     drag_seen_active = True
                     if (
                         drag_started_inactive
-                        and state.drag_target_index is None
                         and pending_key != curses.KEY_MOUSE
                     ):
                         # ponytail: missing releases are indistinguishable from a held click;
                         # grace lets ordinary drag motion arrive before treating it as a click.
                         if click_fallback_deadline is None:
                             click_fallback_deadline = now + CLICK_FALLBACK_DELAY
-                        if now >= click_fallback_deadline and finish_drag():
-                            preserve_selection_on_focus_exit = True
-                            effect = _transition(state, "switch")
-                            if effect is not None:
-                                dispatch(effect)
+                        if now >= click_fallback_deadline:
+                            state.drag_target_index = None
+                            if finish_drag():
+                                preserve_selection_on_focus_exit = True
+                                effect = _transition(state, "switch")
+                                if effect is not None:
+                                    dispatch(effect)
                 elif drag_seen_active:
                     if finish_drag():
                         effect = _transition(state, "switch")
@@ -2074,6 +2075,8 @@ def run(stdscr: curses.window) -> None:
                 state.status = ""
                 state.status_deadline = None
             agent_alert = False
+            # tmux selects a clicked pane before forwarding MouseDown.
+            pane_active_before_poll = poller.pane_active
             if poller.tick(now):
                 current_target = poller.current_target
                 agent_alert = _update_agent_alerts(state, poller.snapshot, current_target)
@@ -2431,7 +2434,7 @@ def run(stdscr: curses.window) -> None:
                             state.drag_source_index = fav_idx
                             state.drag_target_index = None
                             drag_seen_active = poller.pane_active
-                            drag_started_inactive = not poller.pane_active
+                            drag_started_inactive = not pane_active_before_poll
                             click_fallback_deadline = None
                         continue
                     if _mouse_activates(mouse_state):
