@@ -39,13 +39,15 @@ Session actions
   r      remove selected session (session keeps running)
   K/J    move session up/down
   x      kill and remove selected session
+  ↕      start mouse move; hover destination, then click
+  Esc    cancel mouse move
   Right-click  open session Rename/Remove/Kill menu
 
 Agent actions
   j/k    navigate agents
   Enter  switch to agent pane
-  Left/Right  cycle ordering on selected ordering row (Priority / Session)
   [ / ]  resize agent panel
+  Stable order: session, window, pane
 
 Recovery
   {prefix} d  detach cockpit
