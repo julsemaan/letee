@@ -36,26 +36,53 @@ INTERACTIVE_OPTIONS = (
 PERSIST_OPTIONS = (
     "-o", "ControlPersist=10m",
 )
-_KILL_AGENT_HELPER = r'''import os,signal,subprocess,sys
+_KILL_AGENT_HELPER = r'''import os
+import signal
+import subprocess
+import sys
+
 try:
- socket_path,pane_id=sys.argv[2:]
- result=subprocess.run(("tmux","-S",socket_path,"display-message","-p","-t",pane_id,"#{pane_pid}\t#{pane_tty}"),check=True,capture_output=True,text=True,timeout=10,env={key:value for key,value in os.environ.items() if key != "TMUX"})
- pane_pid,pane_tty=result.stdout.strip().split("\t",1)
- pane_pid=int(pane_pid)
- if pane_pid <= 0:
-  raise ValueError("invalid pane PID")
- process=subprocess.run(("ps","-o","tpgid=","-p",str(pane_pid)),check=True,capture_output=True,text=True,timeout=10,env={key:value for key,value in os.environ.items() if key != "TMUX"})
- foreground_pgid=int(process.stdout.strip())
- pane_pgid=os.getpgid(pane_pid)
- if foreground_pgid <= 0 or foreground_pgid == pane_pgid:
-  raise RuntimeError("no foreground process")
- os.killpg(foreground_pgid,signal.SIGTERM)
+    socket_path, pane_id = sys.argv[2:]
+    result = subprocess.run(
+        (
+            "tmux",
+            "-S",
+            socket_path,
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_pid}\t#{pane_tty}",
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={key: value for key, value in os.environ.items() if key != "TMUX"},
+    )
+    pane_pid, pane_tty = result.stdout.strip().split("\t", 1)
+    pane_pid = int(pane_pid)
+    if pane_pid <= 0:
+        raise ValueError("invalid pane PID")
+    process = subprocess.run(
+        ("ps", "-o", "tpgid=", "-p", str(pane_pid)),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={key: value for key, value in os.environ.items() if key != "TMUX"},
+    )
+    foreground_pgid = int(process.stdout.strip())
+    pane_pgid = os.getpgid(pane_pid)
+    if foreground_pgid <= 0 or foreground_pgid == pane_pgid:
+        raise RuntimeError("no foreground process")
+    os.killpg(foreground_pgid, signal.SIGTERM)
 except subprocess.CalledProcessError as error:
- print((error.stderr or "").strip() or str(error),file=sys.stderr)
- raise SystemExit(1)
-except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
- print(error,file=sys.stderr)
- raise SystemExit(1)'''
+    print((error.stderr or "").strip() or str(error), file=sys.stderr)
+    raise SystemExit(1)
+except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+    print(error, file=sys.stderr)
+    raise SystemExit(1)'''
 
 
 def _agent_reachable(socket_path: str) -> bool | None:
