@@ -2211,6 +2211,8 @@ def run(stdscr: curses.window) -> None:
                             mouse_state = next_state
                     finally:
                         stdscr.timeout(UI_POLL_INTERVAL_MS)
+                    if state.move_source is not None:
+                        state.move_target = None
                     continue
                 right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
                 if right_click:
