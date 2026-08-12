@@ -1698,20 +1698,34 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             release.set()
             runner.close()
 
-    def test_effect_runner_rejects_navigation_behind_non_navigation(self):
+    def test_effect_runner_queues_navigation_behind_non_navigation(self):
         release = threading.Event()
         create = Effect("create", Target("local", "new"))
         switch = Effect("switch", Target("local", "one"))
+        performed = []
 
         def perform(effect, favorites):
-            release.wait(1)
+            performed.append(effect)
+            if effect == create:
+                release.wait(1)
             return sidebar.EffectResult(effect, favorites)
 
         runner = sidebar.EffectRunner()
         try:
             with patch("letee.sidebar._perform_effect", side_effect=perform):
                 self.assertTrue(runner.submit(create, ()))
-                self.assertFalse(runner.submit(switch, ()))
+                self.assertTrue(runner.submit(switch, ()))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+
+            self.assertEqual(performed, [create, switch])
+            self.assertEqual(len(results), 2)
+            self.assertFalse(any(result.stale_navigation for result in results))
         finally:
             release.set()
             runner.close()
@@ -2700,6 +2714,51 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertLessEqual(current_target.call_count, 2)
         self.assertLessEqual(pane_active.call_count, 1)
 
+    def test_name_editor_reaps_completed_action_before_handling_enter(self):
+        old = Target("local", "old")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+            refresh_pending=False,
+        )
+        poller.tick.return_value = False
+        actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+        completed = sidebar.EffectResult(Effect("switch", old), ())
+
+        def poll_action():
+            if actions.poll.call_count == 4:
+                actions.busy = False
+                return completed
+            return None
+
+        actions.poll.side_effect = poll_action
+        actions.submit.return_value = True
+        screen = FakeScreen([
+            curses.KEY_F11,
+            curses.KEY_ENTER,
+            *map(ord, "fast"),
+            curses.KEY_ENTER,
+            STOP,
+        ])
+
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.EffectRunner", return_value=actions),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._mouse_mask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[]),
+            patch("letee.sidebar._current_target", return_value=None),
+        ):
+            run(screen)
+
+        actions.submit.assert_called_once_with(
+            Effect("create", Target("local", "fast")), ()
+        )
+
     def test_e_opens_prefilled_editor_and_renames_selected_session(self):
         old = Target("local", "old")
         renamed = Target("local", "new")
@@ -3386,84 +3445,6 @@ class SidebarDrawTest(unittest.TestCase):
 
         switch.assert_called_once_with(
             target, "env -u TMUX tmux -T clipboard new-session -A -s one"
-        )
-
-    def test_press_without_release_switches_when_sidebar_was_already_active(self):
-        target = Target("local", "one")
-        poller = unittest.mock.Mock(
-            snapshot=snapshot(local=("one",)),
-            current_target=None,
-            bell_target=None,
-            current_agent=None,
-            pane_active=True,
-        )
-        poller.tick.return_value = False
-        screen = FakeScreen([curses.KEY_MOUSE, -1, -1, -1, STOP], size=(12, 30))
-
-        with (
-            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
-            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.1, 0.4] + [1] * 20),
-            patch("letee.sidebar.curses.curs_set"),
-            patch("letee.sidebar.curses.mousemask"),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON1_PRESSED)),
-            patch("letee.sidebar._init_colors"),
-            patch("letee.sidebar.load_sessions", return_value=[target]),
-            patch("letee.sidebar._entries", return_value=[Entry("one", "session", target, tracked=True)]),
-            patch("letee.sidebar._agent_entries", return_value=[]),
-            patch("letee.sidebar._bell_targets", return_value=set()),
-            patch("letee.sidebar._current_target", return_value=None),
-            patch("letee.sidebar.cockpit.switch") as switch,
-        ):
-            run(screen)
-
-        switch.assert_called_once_with(
-            target, "env -u TMUX tmux -T clipboard new-session -A -s one"
-        )
-
-    def test_agent_press_without_release_switches_after_sidebar_gains_focus(self):
-        target = Target("local", "work")
-        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
-        data = SessionSnapshot(
-            SourceSnapshot(
-                True,
-                (target,),
-                frozenset(),
-                agents=(AgentEntry(pane, "id", "pi", "idle"),),
-            ),
-            {},
-        )
-        poller = unittest.mock.Mock(
-            snapshot=data,
-            current_target=target,
-            bell_target=None,
-            current_agent=None,
-            pane_active=False,
-        )
-
-        def tick(_now):
-            if poller.tick.call_count >= 2:
-                poller.pane_active = True
-            return False
-
-        poller.tick.side_effect = tick
-        screen = FakeScreen([curses.KEY_MOUSE, -1, -1, -1, -1, STOP], size=(12, 30))
-
-        with (
-            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
-            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.1, 0.2, 0.5, 1, 1.5] + [2] * 20),
-            patch("letee.sidebar.curses.curs_set"),
-            patch("letee.sidebar.curses.mousemask"),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 9, 0, curses.BUTTON1_PRESSED)),
-            patch("letee.sidebar._init_colors"),
-            patch("letee.sidebar.load_sessions", return_value=[target]),
-            patch("letee.sidebar._bell_targets", return_value=set()),
-            patch("letee.sidebar._current_target", return_value=target),
-            patch("letee.sidebar.cockpit.switch") as switch,
-        ):
-            run(screen)
-
-        switch.assert_called_once_with(
-            target, sidebar.sessions.pane_attach_command(pane), "id"
         )
 
     def test_single_click_switches_tracked_session_after_press_release_events(self):

@@ -896,11 +896,7 @@ class EffectRunner:
 
     def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
         if self._future is not None:
-            if (
-                self._effect is not None
-                and self._effect.kind in ("switch", "switch_pane")
-                and effect.kind in ("switch", "switch_pane")
-            ):
+            if effect.kind in ("switch", "switch_pane"):
                 self._pending_navigation = (effect, favorites)
                 return True
             return False
@@ -920,7 +916,13 @@ class EffectRunner:
         self._pending_navigation = None
         self._effect = effect
         self._future = self._executor.submit(_perform_effect, effect, favorites)
-        return EffectResult(result.effect, result.favorites, result.error, stale_navigation=True)
+        return EffectResult(
+            result.effect,
+            result.favorites,
+            result.error,
+            stale_navigation=result.stale_navigation
+            or result.effect.kind in ("switch", "switch_pane"),
+        )
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=True)
@@ -1867,8 +1869,8 @@ def run(stdscr: curses.window) -> None:
     drag_scroll_direction = 0
     next_drag_scroll: float | None = None
     drag_seen_active = False
+    drag_started_inactive = False
     click_fallback_deadline: float | None = None
-    pending_click_effect: Effect | None = None
     pending_key: int | None = None
     pending_mouse: tuple[int, int, int, int, int] | None = None
     pane_was_active = poller.pane_active
@@ -1920,6 +1922,24 @@ def run(stdscr: curses.window) -> None:
         _sync_agent_selection(state, agent_entries)
         state.scroll_offset = None
 
+    def poll_action() -> bool:
+        nonlocal pending_navigation, unavailable_target_shown
+        result = actions.poll()
+        if result is None:
+            return False
+        if not result.stale_navigation and result.effect.kind in (
+            "switch", "add_switch", "switch_pane"
+        ):
+            pending_navigation = None
+        if _apply_effect(result, state, poller, status_timeout):
+            return True
+        unavailable_target_shown = _reconcile_active_session_effect(
+            unavailable_target_shown, result
+        )
+        poller.observe_effect(result)
+        rebuild()
+        return False
+
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
         if action == "add":
             _open_add(state)
@@ -1964,7 +1984,7 @@ def run(stdscr: curses.window) -> None:
 
     def finish_drag() -> bool:
         nonlocal drag_scroll_direction, next_drag_scroll, drag_seen_active
-        nonlocal click_fallback_deadline
+        nonlocal drag_started_inactive, click_fallback_deadline
         source, target_index = state.drag_source_index, state.drag_target_index
         activate = target_index is None or source == target_index
         if source is not None and target_index is not None and not activate:
@@ -1984,6 +2004,7 @@ def run(stdscr: curses.window) -> None:
         drag_scroll_direction = 0
         next_drag_scroll = None
         drag_seen_active = False
+        drag_started_inactive = False
         click_fallback_deadline = None
         return activate
 
@@ -1995,25 +2016,15 @@ def run(stdscr: curses.window) -> None:
                 pending_key = stdscr.getch()
                 pending_key = pending_key if pending_key != -1 else None
                 stdscr.timeout(UI_POLL_INTERVAL_MS)
-            result = actions.poll()
-            if result is not None:
-                if not result.stale_navigation and result.effect.kind in (
-                    "switch", "add_switch", "switch_pane"
-                ):
-                    pending_navigation = None
-                if _apply_effect(result, state, poller, status_timeout):
-                    return
-                unavailable_target_shown = _reconcile_active_session_effect(
-                    unavailable_target_shown, result
-                )
-                poller.observe_effect(result)
-                rebuild()
+            if poll_action():
+                return
             current_target = poller.current_target
             if state.drag_source_index is not None:
                 if poller.pane_active:
                     drag_seen_active = True
                     if (
-                        state.drag_target_index is None
+                        drag_started_inactive
+                        and state.drag_target_index is None
                         and pending_key != curses.KEY_MOUSE
                     ):
                         # ponytail: missing releases are indistinguishable from a held click;
@@ -2030,18 +2041,6 @@ def run(stdscr: curses.window) -> None:
                         effect = _transition(state, "switch")
                         if effect is not None:
                             dispatch(effect)
-            if (
-                pending_click_effect is not None
-                and poller.pane_active
-                and pending_key != curses.KEY_MOUSE
-            ):
-                if click_fallback_deadline is None:
-                    click_fallback_deadline = now + CLICK_FALLBACK_DELAY
-                if now >= click_fallback_deadline:
-                    effect, pending_click_effect = pending_click_effect, None
-                    click_fallback_deadline = None
-                    preserve_selection_on_focus_exit = True
-                    dispatch(effect)
             if (
                 state.drag_source_index is not None
                 and drag_scroll_direction
@@ -2173,6 +2172,8 @@ def run(stdscr: curses.window) -> None:
                 continue
             if state.add_view == "name":
                 while state.add_view == "name":
+                    if poll_action():
+                        return
                     if key in (curses.KEY_F6, curses.KEY_F7):
                         state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                         _reset_selection(state, entries, state.focused_region)
@@ -2200,6 +2201,8 @@ def run(stdscr: curses.window) -> None:
                                 curses.curs_set(0)
                                 rebuild()
                                 break
+                    elif key in (10, 13, curses.KEY_ENTER) and actions.busy:
+                        show_status("another action is still running")
                     else:
                         try:
                             effect = (
@@ -2211,14 +2214,11 @@ def run(stdscr: curses.window) -> None:
                             show_status(str(error))
                         else:
                             if effect:
-                                if actions.busy:
-                                    show_status("another action is still running")
-                                else:
-                                    curses.curs_set(0)
-                                    dispatch(effect)
-                                    rebuild()
-                                    break
-                            elif state.add_view != "name":
+                                curses.curs_set(0)
+                                dispatch(effect)
+                                rebuild()
+                                break
+                            if state.add_view != "name":
                                 curses.curs_set(0)
                                 rebuild()
                                 break
@@ -2233,8 +2233,6 @@ def run(stdscr: curses.window) -> None:
                         break
                 continue
             if key == curses.KEY_MOUSE:
-                pending_click_effect = None
-                click_fallback_deadline = None
                 try:
                     mouse_event = pending_mouse or curses.getmouse()
                     pending_mouse = None
@@ -2409,11 +2407,6 @@ def run(stdscr: curses.window) -> None:
                                     state.agent_ordering = "session"
                                     rebuild()
                             continue
-                        if mouse_state & _b1_pressed and entry.pane_target:
-                            pending_click_effect = Effect(
-                                "switch_pane", entry.pane_target, message=entry.agent_id or ""
-                            )
-                            continue
                         if mouse_state & (_b1_released | _b1_clicked) and entry.pane_target:
                             preserve_selection_on_focus_exit = True
                             dispatch(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""))
@@ -2438,6 +2431,7 @@ def run(stdscr: curses.window) -> None:
                             state.drag_source_index = fav_idx
                             state.drag_target_index = None
                             drag_seen_active = poller.pane_active
+                            drag_started_inactive = not poller.pane_active
                             click_fallback_deadline = None
                         continue
                     if _mouse_activates(mouse_state):
