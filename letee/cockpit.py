@@ -44,6 +44,7 @@ Session actions
 Agent actions
   j/k    navigate agents
   Enter  switch to agent pane
+  x      terminate selected agent with SIGTERM (confirm; pane and shell survive)
   Left/Right  cycle ordering on selected ordering row (Priority / Session)
   [ / ]  resize agent panel
 

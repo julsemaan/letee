@@ -7,6 +7,7 @@ import fcntl
 import os
 from pathlib import Path
 import shlex
+import signal
 import socket
 import stat
 import subprocess
@@ -35,6 +36,29 @@ INTERACTIVE_OPTIONS = (
 PERSIST_OPTIONS = (
     "-o", "ControlPersist=10m",
 )
+_KILL_AGENT_HELPER = r'''import os,signal,subprocess,sys
+socket_path,pane_id=sys.argv[1:]
+try:
+ result=subprocess.run(("tmux","-S",socket_path,"display-message","-p","-t",pane_id,"#{pane_pid}\t#{pane_tty}"),check=True,capture_output=True,text=True,timeout=10,env={key:value for key,value in os.environ.items() if key != "TMUX"})
+ pane_pid,pane_tty=result.stdout.strip().split("\t",1)
+ pane_pid=int(pane_pid)
+ if pane_pid <= 0:
+  raise ValueError("invalid pane PID")
+ fd=os.open(pane_tty,os.O_RDONLY|os.O_NOCTTY)
+ try:
+  foreground_pgid=os.tcgetpgrp(fd)
+ finally:
+  os.close(fd)
+ pane_pgid=os.getpgid(pane_pid)
+ if foreground_pgid <= 0 or foreground_pgid == pane_pgid:
+  raise RuntimeError("no foreground process")
+ os.killpg(foreground_pgid,signal.SIGTERM)
+except subprocess.CalledProcessError as error:
+ print((error.stderr or "").strip() or str(error),file=sys.stderr)
+ raise SystemExit(1)
+except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
+ print(error,file=sys.stderr)
+ raise SystemExit(1)'''
 
 
 def _agent_reachable(socket_path: str) -> bool | None:
@@ -292,14 +316,18 @@ def pane_attach_command(pane_target: PaneTarget) -> str:
     return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
 
 
-def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> None:
+def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> str:
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, timeout=10, **kwargs)
+        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=10, **kwargs)
     except subprocess.TimeoutExpired:
         raise SystemExit(f"{operation} {target.format()} timed out") from None
     except subprocess.CalledProcessError as error:
         reason = (error.stderr or "").strip() or f"exit status {error.returncode}"
         raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
+    except OSError as error:
+        reason = error.strerror or str(error)
+        raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
+    return result.stdout or ""
 
 
 def create(target: Target) -> None:
@@ -314,6 +342,64 @@ def kill(target: Target) -> None:
         _run("kill", target, ("tmux", "kill-session", "-t", target.session), env=_default_server_env())
     else:
         _run("kill", target, ssh_command(target.host or "", f"tmux kill-session -t {shlex.quote(target.session)}"))
+
+
+def _pane_process_info(pane_target: PaneTarget) -> tuple[int, str]:
+    target = pane_target.target
+    output = _run(
+        "kill agent",
+        target,
+        (
+            "tmux", "-S", pane_target.socket_path, "display-message", "-p",
+            "-t", pane_target.pane_id, "#{pane_pid}\t#{pane_tty}",
+        ),
+        env=_default_server_env(),
+    )
+    fields = output.strip().split("\t", 1)
+    if len(fields) != 2 or not fields[1]:
+        raise SystemExit(f"kill agent {target.format()} failed: invalid pane information")
+    try:
+        pane_pid = int(fields[0])
+    except ValueError:
+        raise SystemExit(f"kill agent {target.format()} failed: invalid pane PID") from None
+    if pane_pid <= 0:
+        raise SystemExit(f"kill agent {target.format()} failed: invalid pane PID")
+    return pane_pid, fields[1]
+
+
+def _kill_agent_local(pane_target: PaneTarget) -> None:
+    target = pane_target.target
+    pane_pid, pane_tty = _pane_process_info(pane_target)
+    try:
+        fd = os.open(pane_tty, os.O_RDONLY | os.O_NOCTTY)
+        try:
+            foreground_pgid = os.tcgetpgrp(fd)
+        finally:
+            os.close(fd)
+        pane_pgid = os.getpgid(pane_pid)
+    except OSError as error:
+        reason = error.strerror or str(error)
+        raise SystemExit(f"kill agent {target.format()} failed: {reason}") from None
+    if foreground_pgid <= 0 or foreground_pgid == pane_pgid:
+        raise SystemExit(f"kill agent {target.format()} failed: no foreground process")
+    try:
+        os.killpg(foreground_pgid, signal.SIGTERM)
+    except OSError as error:
+        reason = error.strerror or str(error)
+        raise SystemExit(f"kill agent {target.format()} failed: {reason}") from None
+
+
+def kill_agent(pane_target: PaneTarget) -> None:
+    target = pane_target.target
+    if target.kind == "local":
+        _kill_agent_local(pane_target)
+        return
+    command = (
+        "python3 -c "
+        f"{shlex.quote(_KILL_AGENT_HELPER)} -- "
+        f"{shlex.quote(pane_target.socket_path)} {shlex.quote(pane_target.pane_id)}"
+    )
+    _run("kill agent", target, ssh_command(target.host or "", command))
 
 
 def rename(target: Target, new_name: str) -> Target:

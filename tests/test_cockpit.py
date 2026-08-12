@@ -664,6 +664,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x ?  open help", command)
         self.assertIn("K/J    move session up/down", command)
         self.assertIn("Agent actions", command)
+        self.assertIn("x      terminate selected agent with SIGTERM", command)
         self.assertIn("Left/Right  cycle ordering on selected ordering row", command)
         self.assertIn("Enter  activate selected row", command)
         self.assertIn("e      rename selected session", command)

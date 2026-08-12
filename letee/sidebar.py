@@ -48,7 +48,7 @@ _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 @dataclass(frozen=True)
 class Effect:
     kind: Literal[
-        "switch", "switch_pane", "add_switch", "create", "kill", "rename",
+        "switch", "switch_pane", "add_switch", "create", "kill", "kill_agent", "rename",
         "save_favorites", "status", "show_reconnecting", "show_missing",
         "show_unavailable",
     ]
@@ -780,6 +780,8 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
+        elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
+            sessions.kill_agent(effect.target)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
             if planned != favorites:
@@ -825,7 +827,12 @@ def _apply_effect(
             state.rename_target = effect.target
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.message
-        _set_status(state, result.error, status_timeout)
+        _set_status(
+            state,
+            result.error,
+            status_timeout,
+            "agents" if effect.kind == "kill_agent" else "sessions",
+        )
         return False
     if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
         if not result.stale_navigation:
@@ -841,6 +848,15 @@ def _apply_effect(
         if not result.stale_navigation:
             state.selected_agent_key = completed_key
         state.agent_alerts.discard(completed_key)
+    elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
+        poller.refresh()
+        name = effect.message or "agent"
+        _set_status(
+            state,
+            f"killed agent {name} in {effect.target.target.format()}",
+            status_timeout,
+            "agents",
+        )
     elif effect.kind == "create" and isinstance(effect.target, Target):
         if effect.target not in state.favorites:
             state.favorites.append(effect.target)
@@ -2480,7 +2496,19 @@ def run(stdscr: curses.window) -> None:
                     entry = agent_entries[state.agent_selected_index]
                     if entry.pane_target:
                         effect = Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
-            elif state.focused_region == "agents" and key in map(ord, "rxKJ"):
+            elif state.focused_region == "agents" and key == ord("x"):
+                if agent_entries:
+                    entry = agent_entries[state.agent_selected_index]
+                    if entry.kind == "agent" and entry.pane_target:
+                        if actions.busy:
+                            show_status("another action is still running", "agents")
+                        elif _read_key(
+                            stdscr,
+                            f"kill {entry.label} in {entry.pane_target.target.format()}? y/N",
+                            state.filtering,
+                        ) == ord("y"):
+                            effect = Effect("kill_agent", entry.pane_target, message=entry.label)
+            elif state.focused_region == "agents" and key in map(ord, "rKJ"):
                 effect = Effect("status", message="agent panes are automatic")
             elif key in (curses.KEY_DOWN, ord("j")) and (selectable or state.add_view is not None):
                 state.scroll_offset = None

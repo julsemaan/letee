@@ -696,6 +696,47 @@ class AgentSidebarTest(unittest.TestCase):
         self.assertEqual(state.status, "")
         self.assertIsNone(state.status_deadline)
 
+    def test_kill_agent_refreshes_discovery_without_changing_favorites(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        state = SidebarState(
+            favorites=[target],
+            selected_target=target,
+            selected_agent_key=(pane, "id"),
+        )
+        poller = unittest.mock.Mock()
+
+        with patch.object(sidebar.sessions, "kill_agent") as kill_agent:
+            _execute(Effect("kill_agent", pane, message="pi"), state, poller, 5)
+
+        kill_agent.assert_called_once_with(pane)
+        poller.refresh.assert_called_once_with()
+        self.assertEqual(state.favorites, [target])
+        self.assertEqual(state.selected_target, target)
+        self.assertEqual(state.selected_agent_key, (pane, "id"))
+        self.assertEqual(state.status, "killed agent pi in local:work")
+        self.assertEqual(state.status_region, "agents")
+
+    def test_failed_agent_kill_preserves_selection_and_session(self):
+        target = Target("ssh", "work", "dev")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        state = SidebarState(
+            favorites=[target],
+            selected_target=target,
+            selected_agent_key=(pane, "id"),
+        )
+        poller = unittest.mock.Mock()
+
+        with patch.object(sidebar.sessions, "kill_agent", side_effect=SystemExit("no foreground process")):
+            _execute(Effect("kill_agent", pane, message="pi"), state, poller, 5)
+
+        poller.refresh.assert_not_called()
+        self.assertEqual(state.favorites, [target])
+        self.assertEqual(state.selected_target, target)
+        self.assertEqual(state.selected_agent_key, (pane, "id"))
+        self.assertEqual(state.status, "no foreground process")
+        self.assertEqual(state.status_region, "agents")
+
     def test_agent_duration_uses_task_timestamp_then_runtime_fallback(self):
         now = datetime(2026, 6, 20, 16, 45, 30, tzinfo=timezone.utc)
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
@@ -4680,6 +4721,77 @@ class PrefixActionTest(unittest.TestCase):
 
         kill.assert_not_called()
         save.assert_not_called()
+
+    def test_agents_x_confirms_and_dispatches_selected_pane(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (target,),
+                frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+
+        with patch.object(sidebar.sessions, "kill_agent") as kill_agent, patch.object(sidebar, "save_sessions") as save:
+            screen = self._run([curses.KEY_F7, curses.KEY_DOWN, ord("x"), ord("y"), STOP], [target], target, data)
+
+        kill_agent.assert_called_once_with(pane)
+        save.assert_not_called()
+        self.assertTrue(any(
+            "kill pi in local:work? y/N" in call[3]
+            for call in screen.calls
+            if call[0] == "addnstr"
+        ))
+
+    def test_rejected_agents_x_does_not_signal(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+
+        with patch.object(sidebar.sessions, "kill_agent") as kill_agent:
+            self._run([curses.KEY_F7, curses.KEY_DOWN, ord("x"), ord("n"), STOP], [target], target, data)
+
+        kill_agent.assert_not_called()
+
+    def test_agents_ordering_row_cannot_kill(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+
+        with patch.object(sidebar.sessions, "kill_agent") as kill_agent, patch.object(sidebar, "_read_key") as read_key:
+            self._run([curses.KEY_F7, ord("x"), ord("y"), STOP], [target], target, data)
+
+        kill_agent.assert_not_called()
+        read_key.assert_not_called()
+
+    def test_busy_agents_x_skips_confirmation(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+        actions.poll.return_value = None
+
+        with (
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "_read_key") as read_key,
+            patch.object(sidebar.sessions, "kill_agent") as kill_agent,
+        ):
+            self._run([curses.KEY_F7, curses.KEY_DOWN, ord("x"), ord("y"), STOP], [target], target, data)
+
+        read_key.assert_not_called()
+        kill_agent.assert_not_called()
 
     def test_busy_runner_skips_kill_confirmation(self):
         target = Target("local", "active")
