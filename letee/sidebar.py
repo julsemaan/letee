@@ -48,7 +48,7 @@ _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 @dataclass(frozen=True)
 class Effect:
     kind: Literal[
-        "switch", "switch_pane", "add_switch", "create", "kill", "rename",
+        "switch", "switch_pane", "add_switch", "create", "kill", "kill_agent", "rename",
         "save_favorites", "status", "show_reconnecting", "show_missing",
         "show_unavailable",
     ]
@@ -56,6 +56,7 @@ class Effect:
     favorites: tuple[Target, ...] | None = None
     message: str = ""
     automatic: bool = False
+    agent_id: str = ""
 
 
 @dataclass
@@ -79,6 +80,7 @@ class SidebarState:
     focused_region: Literal["sessions", "agents"] = "sessions"
     agent_selected_index: int = 0
     selected_agent_key: tuple[PaneTarget, str] | None = None
+    hidden_agents: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_states: dict[tuple[PaneTarget, str], str] = field(default_factory=dict)
     agent_idle_since: dict[tuple[PaneTarget, str], float] = field(default_factory=dict)
     agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
@@ -484,8 +486,10 @@ def _agent_entries(
     agent_ordering: str = "priority",
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     idle_since: dict[tuple[PaneTarget, str], float] | None = None,
+    hidden_agents: set[tuple[PaneTarget, str]] | None = None,
 ) -> list[Entry]:
     tracked = set(favorites)
+    hidden_agents = hidden_agents or set()
     entries = [
         Entry(
             agent.agent_name,
@@ -500,6 +504,7 @@ def _agent_entries(
         )
         for agent in snapshot.agents
         if agent.pane_target.target in tracked
+        and (agent.pane_target, agent.agent_id) not in hidden_agents
     ]
     entries.sort(key=lambda e: _agent_sort_key(e, favorites, agent_ordering, agent_alerts, idle_since))
     return entries
@@ -517,13 +522,16 @@ def _update_agent_alerts(
     snapshot: SessionSnapshot,
     current_target: Target | None,
     now: float | None = None,
+    hidden_agents: set[tuple[PaneTarget, str]] | None = None,
 ) -> bool:
     attention_states = {"idle", "completed", "input-required", "auth-required", "failed", "rejected", "canceled"}
     tracked = set(state.favorites)
+    hidden_agents = hidden_agents or set()
     agents = {
         (agent.pane_target, agent.agent_id): agent.task_state or "idle"
         for agent in snapshot.agents
         if agent.pane_target.target in tracked
+        and (agent.pane_target, agent.agent_id) not in hidden_agents
     }
     idle_agents = {key for key, status in agents.items() if status == "idle"}
     new_idle_agents = idle_agents.difference(state.agent_idle_since)
@@ -771,7 +779,17 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
         return (error.stderr or error.stdout or "").strip() or f"exit status {error.returncode}"
     if isinstance(error, OSError):
         return error.strerror or str(error)
-    return str(error)
+    message = str(error)
+    if effect.kind == "kill_agent":
+        prefix = "kill agent "
+        marker = " failed: "
+        if message.startswith(prefix):
+            _, separator, reason = message.partition(marker)
+            if separator:
+                return reason
+            if message.endswith(" timed out"):
+                return "timed out"
+    return message
 
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
@@ -790,6 +808,8 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             cockpit.switch(effect.target, sessions.attach_command(effect.target))
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
+        elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
+            sessions.kill_agent(effect.target)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
             if planned != favorites:
@@ -835,7 +855,12 @@ def _apply_effect(
             state.rename_target = effect.target
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.message
-        _set_status(state, result.error, status_timeout)
+        _set_status(
+            state,
+            result.error,
+            status_timeout,
+            "agents" if effect.kind == "kill_agent" else "sessions",
+        )
         return False
     if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
         if not result.stale_navigation:
@@ -851,6 +876,23 @@ def _apply_effect(
         if not result.stale_navigation:
             state.selected_agent_key = completed_key
         state.agent_alerts.discard(completed_key)
+    elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
+        agent_key = (effect.target, effect.agent_id)
+        if not effect.agent_id and state.selected_agent_key and state.selected_agent_key[0] == effect.target:
+            agent_key = state.selected_agent_key
+        if agent_key[1]:
+            state.hidden_agents.add(agent_key)
+            state.agent_alerts.discard(agent_key)
+            state.agent_states.pop(agent_key, None)
+            state.agent_idle_since.pop(agent_key, None)
+        poller.refresh()
+        name = effect.message or "agent"
+        _set_status(
+            state,
+            f"killed agent {name} in {effect.target.target.format()}",
+            status_timeout,
+            "agents",
+        )
     elif effect.kind == "create" and isinstance(effect.target, Target):
         if effect.target not in state.favorites:
             state.favorites.append(effect.target)
@@ -1134,9 +1176,44 @@ def _rename_key(
     return _creation_key(state, key, existing_sessions)
 
 
-def _read_key(stdscr: curses.window, prompt: str, filtering: bool = False) -> int:
-    _, w = stdscr.getmaxyx()
-    row = 2 if filtering else 1
+def _agent_layout(
+    height: int,
+    footer_height: int,
+    agent_entries: list[Entry],
+    agent_rows: int | None,
+    filtering: bool,
+) -> tuple[int, int, int, int]:
+    footer_top = height - footer_height
+    session_top = 3 if filtering else 2
+    minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
+    available = footer_top - session_top - 1
+    wanted = agent_rows if agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
+    agent_body = min(max(minimum_agent_rows, wanted), available - 1)
+    separator = footer_top - agent_body - 1
+    return footer_top, session_top, minimum_agent_rows, separator
+
+
+def _agent_prompt_row(
+    stdscr: curses.window,
+    footer_height: int,
+    agent_entries: list[Entry],
+    agent_rows: int | None,
+    filtering: bool,
+) -> int:
+    h, _ = stdscr.getmaxyx()
+    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_rows, filtering)
+    return max(0, min(h - 1, separator + 2))
+
+
+def _read_key(
+    stdscr: curses.window,
+    prompt: str,
+    filtering: bool = False,
+    row: int | None = None,
+) -> int:
+    h, w = stdscr.getmaxyx()
+    row = row if row is not None else (2 if filtering else 1)
+    row = max(0, min(h - 1, row))
     width = max(1, w)
     attr = (_color("danger") or 0) | curses.A_BOLD
     stdscr.timeout(-1)
@@ -1771,6 +1848,7 @@ def _draw(
         cursor = _draw_filter(stdscr, w, filter_text, dimmed)
     message_row = 2 if filtering else 1
     message_attr = _color("hints") or curses.A_DIM
+    status = status.replace("\r", " ").replace("\n", " ")
     if status_region == "agents" and status:
         message_attr = (_color("danger") or 0) | curses.A_BOLD
         message = _truncate_cells(f"{_icons()['unavailable']} {status}", max(1, w))
@@ -1796,19 +1874,15 @@ def _draw(
             stdscr.move(*cursor)
         stdscr.refresh()
         return footer_height, add_col
-    footer_top = h - footer_height
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
-    minimum_agent_rows = 4 if has_real_agents else 3
-    session_top = 3 if filtering else 2
+    footer_top, session_top, minimum_agent_rows, separator = _agent_layout(
+        h, footer_height, agents, agent_rows, filtering
+    )
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
         stdscr.refresh()
         return footer_height, add_col
-    available = footer_top - session_top - 1
-    wanted = agent_rows if agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-    agent_body = min(max(minimum_agent_rows, wanted), available - 1)
-    separator = footer_top - agent_body - 1
     creation_cursor = _draw_entries(
         stdscr, entries, selected, separator + 1, w, bell_targets or set(), current_target,
         dimmed or focused_region != "sessions", creation_host, creation_text, session_top, scroll_offset,
@@ -1835,7 +1909,8 @@ def _draw(
             spinner_frame=None, agent_ordering=agent_ordering,
             pane_active=pane_active,
         )
-        stdscr.addnstr(separator + 2, 0, "  No active agents", max(0, w - 1), curses.A_DIM)
+        empty_agents = _truncate_cells("  No active agents", max(1, w))
+        stdscr.addnstr(separator + 2, 0, empty_agents, max(1, w), curses.A_DIM)
     if status_region == "agents" and status:
         stdscr.addnstr(
             separator + 2, 0, message, max(1, w),
@@ -1859,13 +1934,16 @@ def run(stdscr: curses.window) -> None:
     poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
     actions = EffectRunner()
     entries = _entries(state.filter_text, poller.snapshot, state.favorites)
-    _update_agent_alerts(state, poller.snapshot, state.selected_target)
+    _update_agent_alerts(
+        state, poller.snapshot, state.selected_target, hidden_agents=state.hidden_agents
+    )
     agent_entries = _agent_entries(
         poller.snapshot,
         state.favorites,
         state.agent_ordering,
         state.agent_alerts,
         state.agent_idle_since,
+        state.hidden_agents,
     )
     agent_entries = [Entry("", "order")] + agent_entries
     _reset_selection(state, entries)
@@ -1914,6 +1992,8 @@ def run(stdscr: curses.window) -> None:
 
     def rebuild() -> None:
         nonlocal entries, agent_entries
+        known_agents = {(agent.pane_target, agent.agent_id) for agent in poller.snapshot.agents}
+        state.hidden_agents.intersection_update(known_agents)
         entries = (
             _add_entries(state.add_view, state.filter_text, poller.snapshot, state.favorites)
             if state.add_view in ("choice", "existing", "location")
@@ -1925,6 +2005,7 @@ def run(stdscr: curses.window) -> None:
             state.agent_ordering,
             state.agent_alerts,
             state.agent_idle_since,
+            state.hidden_agents,
         )
         # ponytail: order row is always index 0; rebuild prepends it so draw and navigation see same list
         agent_entries = [Entry("", "order")] + raw_agents
@@ -2051,14 +2132,11 @@ def run(stdscr: curses.window) -> None:
                 and now >= next_drag_scroll
             ):
                 h = stdscr.getmaxyx()[0]
-                footer_top = h - footer_height
-                session_top = 3 if state.filtering else 2
-                has_agents = any(entry.kind == "agent" for entry in agent_entries)
-                minimum_agent_rows = 4 if has_agents else 3
-                available = footer_top - session_top - 1
-                wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-                agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
-                separator = footer_top if state.add_view is not None else footer_top - agent_body - 1
+                footer_top, session_top, _, separator = _agent_layout(
+                    h, footer_height, agent_entries, state.agent_rows, state.filtering
+                )
+                if state.add_view is not None:
+                    separator = footer_top
                 view_index = _view_index(entries, state.selected_index, current_target, False)
                 start, end = _viewport(entries, view_index, separator - session_top + 2, state.scroll_offset)
                 can_scroll = start > 0 if drag_scroll_direction < 0 else end < len(entries)
@@ -2078,7 +2156,12 @@ def run(stdscr: curses.window) -> None:
             agent_alert = False
             if poller.tick(now):
                 current_target = poller.current_target
-                agent_alert = _update_agent_alerts(state, poller.snapshot, current_target)
+                agent_alert = _update_agent_alerts(
+                    state,
+                    poller.snapshot,
+                    current_target,
+                    hidden_agents=state.hidden_agents,
+                )
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
@@ -2259,14 +2342,11 @@ def run(stdscr: curses.window) -> None:
                     continue
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
-                footer_top = h - footer_height
-                session_top = 3 if state.filtering else 2
-                has_agents = any(e.kind == "agent" for e in agent_entries)
-                minimum_agent_rows = 4 if has_agents else 3
-                available = footer_top - session_top - 1
-                wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-                agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
-                separator = footer_top if state.add_view is not None else footer_top - agent_body - 1
+                footer_top, session_top, _, separator = _agent_layout(
+                    h, footer_height, agent_entries, state.agent_rows, state.filtering
+                )
+                if state.add_view is not None:
+                    separator = footer_top
                 # Drag: update target from mouse position on any event during drag
                 _b1_pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
                 _b1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
@@ -2351,6 +2431,28 @@ def run(stdscr: curses.window) -> None:
                     continue
                 right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
                 if right_click:
+                    if state.add_view is None and agent_entries and separator < row < footer_top:
+                        index = _entry_at_row(
+                            agent_entries, state.agent_selected_index, row, footer_top + 1, 0,
+                            separator + 1,
+                        )
+                        if (
+                            isinstance(mouse_col, int)
+                            and 0 <= mouse_col < stdscr.getmaxyx()[1]
+                            and index is not None
+                            and agent_entries[index].kind == "agent"
+                            and agent_entries[index].pane_target
+                        ):
+                            entry = agent_entries[index]
+                            state.focused_region = "agents"
+                            state.agent_selected_index = index
+                            state.selected_agent_key = (entry.pane_target, entry.agent_id)
+                            _mouse_cleanup()
+                            try:
+                                cockpit.show_agent_menu(entry.label, entry.pane_target, mouse_col, row)
+                            finally:
+                                _mouse_mask()
+                        continue
                     view_index = _view_index(entries, state.selected_index, current_target, not poller.pane_active)
                     index = _entry_at_row(
                         entries, view_index, row, separator + 1, 0,
@@ -2491,7 +2593,34 @@ def run(stdscr: curses.window) -> None:
                     entry = agent_entries[state.agent_selected_index]
                     if entry.pane_target:
                         effect = Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
-            elif state.focused_region == "agents" and key in map(ord, "rxKJ"):
+            elif state.focused_region == "agents" and key == ord("x"):
+                if agent_entries:
+                    entry = agent_entries[state.agent_selected_index]
+                    if entry.kind == "agent" and entry.pane_target:
+                        if actions.busy:
+                            show_status("another action is still running", "agents")
+                        else:
+                            confirmation = _read_key(
+                                stdscr,
+                                f"kill {entry.label} in {entry.pane_target.target.format()}? y/N",
+                                state.filtering,
+                                row=_agent_prompt_row(
+                                    stdscr,
+                                    footer_height,
+                                    agent_entries,
+                                    state.agent_rows,
+                                    state.filtering,
+                                ),
+                            )
+                            rendered = None
+                            if confirmation == ord("y"):
+                                effect = Effect(
+                                    "kill_agent",
+                                    entry.pane_target,
+                                    message=entry.label,
+                                    agent_id=entry.agent_id or "",
+                                )
+            elif state.focused_region == "agents" and key in map(ord, "rKJ"):
                 effect = Effect("status", message="agent panes are automatic")
             elif key in (curses.KEY_DOWN, ord("j")) and (selectable or state.add_view is not None):
                 state.scroll_offset = None
