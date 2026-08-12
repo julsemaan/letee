@@ -1013,6 +1013,55 @@ class AddFlowTest(unittest.TestCase):
         sidebar._add_back(state, snapshot(remotes={"dev": source("ssh", host="dev")}))
         self.assertEqual(state.add_view, "location")
 
+    def test_duplicate_name_warning_is_rendered_in_name_editor(self):
+        state = SidebarState(
+            add_view="name",
+            creation_host="dev",
+            creation_text="wor",
+            status="agent failed",
+            status_region="agents",
+            status_deadline=123.0,
+        )
+        existing = (Target("ssh", "work", "dev"),)
+
+        sidebar._creation_key(state, ord("k"), existing)
+        screen = FakeScreen(size=(7, 50))
+        sidebar._draw_name(screen, state)
+
+        self.assertTrue(
+            any(
+                call[0] == "addnstr" and "Session already exists on this host" in call[3]
+                for call in screen.calls
+            )
+        )
+        self.assertEqual(state.status, "Session already exists on this host")
+        self.assertEqual(state.status_region, "sessions")
+        self.assertIsNone(state.status_deadline)
+
+    def test_back_navigation_clears_warning_and_deadline(self):
+        state = SidebarState(
+            add_view="name",
+            creation_host="",
+            creation_text="work",
+            status="Session already exists on this host",
+            status_region="agents",
+            status_deadline=123.0,
+        )
+
+        sidebar._add_back(state, snapshot(local=("work",)))
+
+        self.assertEqual(state.add_view, "choice")
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
+
+    def test_opening_add_clears_prior_session_or_agent_status(self):
+        for region in ("sessions", "agents"):
+            with self.subTest(region=region):
+                state = SidebarState(status="stale", status_region=region, status_deadline=123.0)
+
+                sidebar._open_add(state)
+
+                self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
+
     def test_name_screen_uses_dedicated_row_and_cursor_at_narrow_width(self):
         screen = FakeScreen(size=(6, 16))
         state = SidebarState(add_view="name", creation_host="", creation_text="x" * 64)
@@ -1218,6 +1267,19 @@ class SidebarStateTest(unittest.TestCase):
         effect = _creation_key(state, 10, (Target("local", "work"),))
 
         self.assertEqual(effect, Effect("create", Target("ssh", "work", "dev")))
+
+    def test_live_name_validation_clears_stale_status_metadata(self):
+        state = SidebarState(
+            creation_host="dev",
+            creation_text="work",
+            status="agent failed",
+            status_region="agents",
+            status_deadline=123.0,
+        )
+
+        self.assertIsNone(_creation_key(state, curses.KEY_BACKSPACE, (Target("ssh", "work", "dev"),)))
+
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
 
     def test_rename_editor_prefills_selected_session_name(self):
         target = Target("local", "old")
@@ -1498,6 +1560,36 @@ class SidebarStateTest(unittest.TestCase):
         self.assertIsNone(state.pending_selection)
         self.assertEqual(state.status, "create failed")
         self.assertEqual((state.creation_host, state.creation_text), ("dev", "new"))
+
+    def test_create_error_does_not_leak_when_backing_out_of_add_flow(self):
+        target = Target("ssh", "new", "dev")
+        state = SidebarState(add_view="name", creation_host="dev", creation_text="new")
+        poller = unittest.mock.Mock()
+        with patch("letee.sidebar.sessions.create", side_effect=SystemExit("create failed")):
+            _execute(Effect("create", target=target), state, poller, 5)
+
+        self.assertEqual(state.status, "create failed")
+        sidebar._add_back(state, snapshot(local=("existing",)))
+
+        self.assertEqual(state.add_view, "choice")
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
+
+    def test_existing_session_error_does_not_leak_when_backing_to_add_choice(self):
+        target = Target("local", "work")
+        state = SidebarState(add_view="existing")
+        poller = unittest.mock.Mock()
+        with (
+            patch("letee.sidebar.save_sessions"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.cockpit.switch", side_effect=SystemExit("add failed")),
+        ):
+            _execute(Effect("add_switch", target=target), state, poller, 5)
+
+        self.assertEqual(state.status, "add failed")
+        sidebar._add_back(state, snapshot())
+
+        self.assertEqual(state.add_view, "choice")
+        self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
 
     def test_pane_timeout_status_includes_action_and_session_target(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
