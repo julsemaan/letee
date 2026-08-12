@@ -186,6 +186,8 @@ class SessionOperationsTest(unittest.TestCase):
         self.assertIn(("-o", "ControlPersist=10m"), list(zip(command, command[1:])))
         self.assertEqual(command[-2], "dev")
         self.assertIn("python3 -c", command[-1])
+        self.assertEqual(command[-1].count(" -- "), 1)
+        self.assertTrue(command[-1].endswith(" -- '/tmp/tmux socket; echo unsafe' %7"))
         self.assertIn("/tmp/tmux socket; echo unsafe", command[-1])
         self.assertNotIn("kill-pane", command[-1])
 
