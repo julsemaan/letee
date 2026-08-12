@@ -2120,14 +2120,11 @@ def run(stdscr: curses.window) -> None:
                 and now >= next_drag_scroll
             ):
                 h = stdscr.getmaxyx()[0]
-                footer_top = h - footer_height
-                session_top = 3 if state.filtering else 2
-                has_agents = any(entry.kind == "agent" for entry in agent_entries)
-                minimum_agent_rows = 4 if has_agents else 3
-                available = footer_top - session_top - 1
-                wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-                agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
-                separator = footer_top if state.add_view is not None else footer_top - agent_body - 1
+                footer_top, session_top, _, separator = _agent_layout(
+                    h, footer_height, agent_entries, state.agent_rows, state.filtering
+                )
+                if state.add_view is not None:
+                    separator = footer_top
                 view_index = _view_index(entries, state.selected_index, current_target, False)
                 start, end = _viewport(entries, view_index, separator - session_top + 2, state.scroll_offset)
                 can_scroll = start > 0 if drag_scroll_direction < 0 else end < len(entries)
@@ -2334,14 +2331,11 @@ def run(stdscr: curses.window) -> None:
                     continue
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
-                footer_top = h - footer_height
-                session_top = 3 if state.filtering else 2
-                has_agents = any(e.kind == "agent" for e in agent_entries)
-                minimum_agent_rows = 4 if has_agents else 3
-                available = footer_top - session_top - 1
-                wanted = state.agent_rows if state.agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-                agent_body = min(max(minimum_agent_rows, wanted), max(minimum_agent_rows, available - 1))
-                separator = footer_top if state.add_view is not None else footer_top - agent_body - 1
+                footer_top, session_top, _, separator = _agent_layout(
+                    h, footer_height, agent_entries, state.agent_rows, state.filtering
+                )
+                if state.add_view is not None:
+                    separator = footer_top
                 # Drag: update target from mouse position on any event during drag
                 _b1_pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
                 _b1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
