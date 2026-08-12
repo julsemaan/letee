@@ -640,7 +640,7 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit.show_agent_menu("pi", pane_target, 7, 4)
 
         tmux_call.assert_called_once_with(
-            "display-menu", "-O", "-T", "pi@work", "-x", "7", "-y", "4", "-t", "%1",
+            "display-menu", "-O", "-T", "pi@work@dev", "-x", "7", "-y", "4", "-t", "%1",
             "Kill", "x", "send-keys -t %1 x y",
             timeout=None,
         )
@@ -655,7 +655,7 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit.show_agent_menu("pi", pane_target, 7, 4)
 
         tmux_call.assert_called_once_with(
-            "display-menu", "-M", "-O", "-T", "pi@work", "-x", "7", "-y", "4", "-t", "%1",
+            "display-menu", "-M", "-O", "-T", "pi@work@localhost", "-x", "7", "-y", "4", "-t", "%1",
             "Kill", "x", "send-keys -t %1 x y",
             timeout=None,
         )

@@ -433,7 +433,7 @@ def show_session_menu(target: Target, x: int, y: int) -> None:
 
 def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
-    title = f"{agent_name}@{pane_target.target.session}"
+    title = f"{agent_name}@{pane_target.target.session}@{pane_target.target.host or 'localhost'}"
     mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
