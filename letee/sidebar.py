@@ -1225,8 +1225,12 @@ def _mouse_mask(motion: bool = False) -> None:
 
     if not motion:
         set_motion_mode()
+    mask = 0
+    for event in events:
+        if isinstance(event, int):
+            mask |= event
     try:
-        curses.mousemask(sum(event for event in events if isinstance(event, int)))
+        curses.mousemask(mask)
     except curses.error:
         pass
     if motion:
