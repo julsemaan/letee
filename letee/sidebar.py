@@ -379,6 +379,7 @@ def _add_entries(
 
 
 def _open_add(state: SidebarState, view: Literal["choice", "existing"] = "choice") -> None:
+    _clear_status(state)
     state.add_view = view
     state.filtering = view == "existing"
     state.filter_text = ""
@@ -391,6 +392,7 @@ def _open_add(state: SidebarState, view: Literal["choice", "existing"] = "choice
 
 
 def _start_new(state: SidebarState, snapshot: SessionSnapshot) -> None:
+    _clear_status(state)
     locations = _available_locations(snapshot)
     if len(locations) == 1:
         _select_location(state, locations[0][1])
@@ -401,6 +403,7 @@ def _start_new(state: SidebarState, snapshot: SessionSnapshot) -> None:
 
 
 def _select_location(state: SidebarState, host: str) -> None:
+    _clear_status(state)
     state.creation_host = host
     state.creation_text = ""
     state.rename_target = None
@@ -409,16 +412,16 @@ def _select_location(state: SidebarState, host: str) -> None:
 
 
 def _start_rename(state: SidebarState, target: Target) -> None:
+    _clear_status(state)
     state.add_view = "name"
     state.filtering = False
-    state.status = ""
-    state.status_deadline = None
     state.creation_host = "" if target.kind == "local" else target.host
     state.creation_text = target.session
     state.rename_target = target
 
 
 def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
+    _clear_status(state)
     state.add_button_selected = False
     if state.add_view == "name":
         if state.rename_target is not None:
@@ -436,6 +439,7 @@ def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
 
 
 def _reset_add(state: SidebarState) -> None:
+    _clear_status(state)
     state.add_view = None
     state.filtering = False
     state.add_button_selected = False
@@ -713,6 +717,12 @@ def _transition(
         direction = "up" if offset < 0 else "down"
         return Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()} {direction}")
     return None
+
+
+def _clear_status(state: SidebarState) -> None:
+    state.status = ""
+    state.status_deadline = None
+    state.status_region = "sessions"
 
 
 def _set_status(
@@ -1108,7 +1118,9 @@ def _creation_key(
     elif 32 <= key <= 126 and len(state.creation_text) < 64:
         state.creation_text += chr(key)
 
-    state.status = "Session already exists on this host" if _creation_conflicts(state, existing_sessions) else ""
+    _clear_status(state)
+    if _creation_conflicts(state, existing_sessions):
+        state.status = "Session already exists on this host"
     return None
 
 
@@ -2062,8 +2074,7 @@ def run(stdscr: curses.window) -> None:
                     drag_scroll_direction = 0
                     next_drag_scroll = None
             if state.status_deadline is not None and now >= state.status_deadline:
-                state.status = ""
-                state.status_deadline = None
+                _clear_status(state)
             agent_alert = False
             if poller.tick(now):
                 current_target = poller.current_target
