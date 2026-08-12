@@ -1867,8 +1867,8 @@ def run(stdscr: curses.window) -> None:
     drag_scroll_direction = 0
     next_drag_scroll: float | None = None
     drag_seen_active = False
-    drag_started_inactive = False
     click_fallback_deadline: float | None = None
+    pending_click_effect: Effect | None = None
     pending_key: int | None = None
     pending_mouse: tuple[int, int, int, int, int] | None = None
     pane_was_active = poller.pane_active
@@ -1964,7 +1964,7 @@ def run(stdscr: curses.window) -> None:
 
     def finish_drag() -> bool:
         nonlocal drag_scroll_direction, next_drag_scroll, drag_seen_active
-        nonlocal drag_started_inactive, click_fallback_deadline
+        nonlocal click_fallback_deadline
         source, target_index = state.drag_source_index, state.drag_target_index
         activate = target_index is None or source == target_index
         if source is not None and target_index is not None and not activate:
@@ -1984,7 +1984,6 @@ def run(stdscr: curses.window) -> None:
         drag_scroll_direction = 0
         next_drag_scroll = None
         drag_seen_active = False
-        drag_started_inactive = False
         click_fallback_deadline = None
         return activate
 
@@ -2014,8 +2013,7 @@ def run(stdscr: curses.window) -> None:
                 if poller.pane_active:
                     drag_seen_active = True
                     if (
-                        drag_started_inactive
-                        and state.drag_target_index is None
+                        state.drag_target_index is None
                         and pending_key != curses.KEY_MOUSE
                     ):
                         # ponytail: missing releases are indistinguishable from a held click;
@@ -2032,6 +2030,18 @@ def run(stdscr: curses.window) -> None:
                         effect = _transition(state, "switch")
                         if effect is not None:
                             dispatch(effect)
+            if (
+                pending_click_effect is not None
+                and poller.pane_active
+                and pending_key != curses.KEY_MOUSE
+            ):
+                if click_fallback_deadline is None:
+                    click_fallback_deadline = now + CLICK_FALLBACK_DELAY
+                if now >= click_fallback_deadline:
+                    effect, pending_click_effect = pending_click_effect, None
+                    click_fallback_deadline = None
+                    preserve_selection_on_focus_exit = True
+                    dispatch(effect)
             if (
                 state.drag_source_index is not None
                 and drag_scroll_direction
@@ -2223,6 +2233,8 @@ def run(stdscr: curses.window) -> None:
                         break
                 continue
             if key == curses.KEY_MOUSE:
+                pending_click_effect = None
+                click_fallback_deadline = None
                 try:
                     mouse_event = pending_mouse or curses.getmouse()
                     pending_mouse = None
@@ -2397,6 +2409,11 @@ def run(stdscr: curses.window) -> None:
                                     state.agent_ordering = "session"
                                     rebuild()
                             continue
+                        if mouse_state & _b1_pressed and entry.pane_target:
+                            pending_click_effect = Effect(
+                                "switch_pane", entry.pane_target, message=entry.agent_id or ""
+                            )
+                            continue
                         if mouse_state & (_b1_released | _b1_clicked) and entry.pane_target:
                             preserve_selection_on_focus_exit = True
                             dispatch(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""))
@@ -2421,7 +2438,6 @@ def run(stdscr: curses.window) -> None:
                             state.drag_source_index = fav_idx
                             state.drag_target_index = None
                             drag_seen_active = poller.pane_active
-                            drag_started_inactive = not poller.pane_active
                             click_fallback_deadline = None
                         continue
                     if _mouse_activates(mouse_state):
