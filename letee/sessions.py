@@ -37,18 +37,15 @@ PERSIST_OPTIONS = (
     "-o", "ControlPersist=10m",
 )
 _KILL_AGENT_HELPER = r'''import os,signal,subprocess,sys
-socket_path,pane_id=sys.argv[1:]
 try:
+ socket_path,pane_id=sys.argv[2:]
  result=subprocess.run(("tmux","-S",socket_path,"display-message","-p","-t",pane_id,"#{pane_pid}\t#{pane_tty}"),check=True,capture_output=True,text=True,timeout=10,env={key:value for key,value in os.environ.items() if key != "TMUX"})
  pane_pid,pane_tty=result.stdout.strip().split("\t",1)
  pane_pid=int(pane_pid)
  if pane_pid <= 0:
   raise ValueError("invalid pane PID")
- fd=os.open(pane_tty,os.O_RDONLY|os.O_NOCTTY)
- try:
-  foreground_pgid=os.tcgetpgrp(fd)
- finally:
-  os.close(fd)
+ process=subprocess.run(("ps","-o","tpgid=","-p",str(pane_pid)),check=True,capture_output=True,text=True,timeout=10,env={key:value for key,value in os.environ.items() if key != "TMUX"})
+ foreground_pgid=int(process.stdout.strip())
  pane_pgid=os.getpgid(pane_pid)
  if foreground_pgid <= 0 or foreground_pgid == pane_pgid:
   raise RuntimeError("no foreground process")
@@ -367,15 +364,24 @@ def _pane_process_info(pane_target: PaneTarget) -> tuple[int, str]:
     return pane_pid, fields[1]
 
 
+def _foreground_pgid(target: Target, pane_pid: int) -> int:
+    output = _run(
+        "kill agent",
+        target,
+        ("ps", "-o", "tpgid=", "-p", str(pane_pid)),
+        env=_default_server_env(),
+    )
+    try:
+        return int(output.strip())
+    except ValueError:
+        raise SystemExit(f"kill agent {target.format()} failed: invalid foreground process group") from None
+
+
 def _kill_agent_local(pane_target: PaneTarget) -> None:
     target = pane_target.target
-    pane_pid, pane_tty = _pane_process_info(pane_target)
+    pane_pid, _ = _pane_process_info(pane_target)
     try:
-        fd = os.open(pane_tty, os.O_RDONLY | os.O_NOCTTY)
-        try:
-            foreground_pgid = os.tcgetpgrp(fd)
-        finally:
-            os.close(fd)
+        foreground_pgid = _foreground_pgid(target, pane_pid)
         pane_pgid = os.getpgid(pane_pid)
     except OSError as error:
         reason = error.strerror or str(error)

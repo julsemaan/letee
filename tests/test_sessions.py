@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import signal
+import sys
 import socket as unix_socket
 import subprocess
 import tempfile
@@ -101,36 +102,36 @@ class SessionOperationsTest(unittest.TestCase):
         pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
         with (
             patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/outer", "PATH": "x"}, clear=True),
-            patch("letee.sessions.subprocess.run", return_value=Mock(stdout="123\t/dev/pts/7\n")) as run,
-            patch("letee.sessions.os.open", return_value=10) as open_tty,
-            patch("letee.sessions.os.close") as close_tty,
-            patch("letee.sessions.os.tcgetpgrp", return_value=456),
+            patch(
+                "letee.sessions.subprocess.run",
+                side_effect=[Mock(stdout="123\t/dev/pts/7\n"), Mock(stdout="456\n")],
+            ) as run,
+            patch("letee.sessions.os.open") as open_tty,
+            patch("letee.sessions.os.tcgetpgrp") as tcgetpgrp,
             patch("letee.sessions.os.getpgid", return_value=123) as getpgid,
             patch("letee.sessions.os.killpg") as killpg,
         ):
             kill_agent(pane)
 
-        run.assert_called_once_with(
-            ("tmux", "-S", "/tmp/tmux socket", "display-message", "-p", "-t", "%7", "#{pane_pid}\t#{pane_tty}"),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env={"PATH": "x"},
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ("tmux", "-S", "/tmp/tmux socket", "display-message", "-p", "-t", "%7", "#{pane_pid}\t#{pane_tty}"),
+                ("ps", "-o", "tpgid=", "-p", "123"),
+            ],
         )
-        open_tty.assert_called_once_with("/dev/pts/7", os.O_RDONLY | os.O_NOCTTY)
+        open_tty.assert_not_called()
+        tcgetpgrp.assert_not_called()
         getpgid.assert_called_once_with(123)
         killpg.assert_called_once_with(456, signal.SIGTERM)
-        close_tty.assert_called_once_with(10)
-        self.assertNotIn("kill-pane", run.call_args.args[0])
 
     def test_kill_agent_refuses_idle_pane_shell(self):
         pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")
         with (
-            patch("letee.sessions.subprocess.run", return_value=Mock(stdout="123\t/dev/pts/7\n")),
-            patch("letee.sessions.os.open", return_value=10),
-            patch("letee.sessions.os.close"),
-            patch("letee.sessions.os.tcgetpgrp", return_value=123),
+            patch(
+                "letee.sessions.subprocess.run",
+                side_effect=[Mock(stdout="123\t/dev/pts/7\n"), Mock(stdout="123\n")],
+            ),
             patch("letee.sessions.os.getpgid", return_value=123),
             patch("letee.sessions.os.killpg") as killpg,
         ):
@@ -138,6 +139,38 @@ class SessionOperationsTest(unittest.TestCase):
                 kill_agent(pane)
 
         killpg.assert_not_called()
+
+    def test_remote_kill_helper_handles_python_dash_c_separator_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            for name, body in {
+                "tmux": "#!/bin/sh\nprintf '%s\\t/dev/null\\n' \"$PPID\"\n",
+                "ps": "#!/bin/sh\nprintf '0\\n'\n",
+            }.items():
+                command = directory_path / name
+                command.write_text(body)
+                command.chmod(0o700)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{directory}:{environment.get('PATH', '')}"
+
+            result = subprocess.run(
+                (
+                    sys.executable,
+                    "-c",
+                    sessions._KILL_AGENT_HELPER,
+                    "--",
+                    "/tmp/tmux-test",
+                    "%7",
+                ),
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "no foreground process\n")
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_kill_agent_remote_uses_persistent_ssh_and_quotes_helper_arguments(self):
         pane = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket; echo unsafe")
@@ -174,10 +207,10 @@ class SessionOperationsTest(unittest.TestCase):
     def test_kill_agent_signal_failure_includes_operation_and_target(self):
         pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")
         with (
-            patch("letee.sessions.subprocess.run", return_value=Mock(stdout="123\t/dev/pts/7\n")),
-            patch("letee.sessions.os.open", return_value=10),
-            patch("letee.sessions.os.close"),
-            patch("letee.sessions.os.tcgetpgrp", return_value=456),
+            patch(
+                "letee.sessions.subprocess.run",
+                side_effect=[Mock(stdout="123\t/dev/pts/7\n"), Mock(stdout="456\n")],
+            ),
             patch("letee.sessions.os.getpgid", return_value=123),
             patch("letee.sessions.os.killpg", side_effect=PermissionError(1, "not permitted")),
         ):
