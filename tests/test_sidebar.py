@@ -2436,6 +2436,30 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertLessEqual(sidebar._cell_width(prompt[3]), 12)
         self.assertTrue(prompt[5] & curses.A_BOLD)
 
+    def test_agent_confirmation_row_matches_agents_divider(self):
+        entries = [Entry("pi", "agent", status="working")]
+        for filtering, agent_rows in ((False, None), (False, 8), (True, None), (True, 5)):
+            with self.subTest(filtering=filtering, agent_rows=agent_rows):
+                screen = FakeScreen(size=(20, 40))
+                footer_height, _ = _draw(
+                    screen,
+                    [],
+                    0,
+                    "",
+                    "",
+                    filtering=filtering,
+                    agent_entries=entries,
+                    agent_rows=agent_rows,
+                )
+                divider = next(
+                    call for call in screen.calls
+                    if call[0] == "addnstr" and call[3].startswith("AGENTS ")
+                )
+                self.assertEqual(
+                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_rows, filtering),
+                    divider[1] + 2,
+                )
+
     def test_add_button_cursor_does_not_replace_selected_session_slot(self):
         screen = FakeScreen(size=(7, 40))
         target = Target("local", "work")

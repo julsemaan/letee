@@ -1164,6 +1164,23 @@ def _rename_key(
     return _creation_key(state, key, existing_sessions)
 
 
+def _agent_layout(
+    height: int,
+    footer_height: int,
+    agent_entries: list[Entry],
+    agent_rows: int | None,
+    filtering: bool,
+) -> tuple[int, int, int, int]:
+    footer_top = height - footer_height
+    session_top = 3 if filtering else 2
+    minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
+    available = footer_top - session_top - 1
+    wanted = agent_rows if agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
+    agent_body = min(max(minimum_agent_rows, wanted), available - 1)
+    separator = footer_top - agent_body - 1
+    return footer_top, session_top, minimum_agent_rows, separator
+
+
 def _agent_prompt_row(
     stdscr: curses.window,
     footer_height: int,
@@ -1172,13 +1189,7 @@ def _agent_prompt_row(
     filtering: bool,
 ) -> int:
     h, _ = stdscr.getmaxyx()
-    footer_top = h - footer_height
-    session_top = 3 if filtering else 2
-    minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
-    available = footer_top - session_top - 1
-    wanted = agent_rows if agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-    agent_body = min(max(minimum_agent_rows, wanted), available - 1)
-    separator = footer_top - agent_body - 1
+    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_rows, filtering)
     return max(0, min(h - 1, separator + 2))
 
 
@@ -1851,19 +1862,15 @@ def _draw(
             stdscr.move(*cursor)
         stdscr.refresh()
         return footer_height, add_col
-    footer_top = h - footer_height
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
-    minimum_agent_rows = 4 if has_real_agents else 3
-    session_top = 3 if filtering else 2
+    footer_top, session_top, minimum_agent_rows, separator = _agent_layout(
+        h, footer_height, agents, agent_rows, filtering
+    )
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
         stdscr.refresh()
         return footer_height, add_col
-    available = footer_top - session_top - 1
-    wanted = agent_rows if agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
-    agent_body = min(max(minimum_agent_rows, wanted), available - 1)
-    separator = footer_top - agent_body - 1
     creation_cursor = _draw_entries(
         stdscr, entries, selected, separator + 1, w, bell_targets or set(), current_target,
         dimmed or focused_region != "sessions", creation_host, creation_text, session_top, scroll_offset,
