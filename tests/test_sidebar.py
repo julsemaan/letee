@@ -2358,8 +2358,9 @@ class SidebarDrawTest(unittest.TestCase):
                 self.assertEqual(rendered[2], 27)
                 self.assertEqual(rendered[3], f" {handle} ")
                 self.assertEqual(rendered[4], 3)
-                self.assertTrue(rendered[5] & curses.A_BOLD)
-                self.assertTrue(rendered[5] & curses.A_REVERSE)
+                self.assertEqual(
+                    rendered[5], palette.get("move", 0) | curses.A_BOLD | curses.A_REVERSE
+                )
 
     def test_move_mode_hides_reorder_handles(self):
         entries = [
