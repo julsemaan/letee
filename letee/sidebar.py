@@ -2178,7 +2178,7 @@ def run(stdscr: curses.window) -> None:
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
-                int(time.time()) if agent_entries else None,
+                int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
                 state.agent_ordering,
                 state.add_button_selected, state.move_source, state.move_target,
             )
