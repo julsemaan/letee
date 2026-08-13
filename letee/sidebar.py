@@ -82,8 +82,10 @@ class SidebarState:
     selected_agent_key: tuple[PaneTarget, str] | None = None
     hidden_agents: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_states: dict[tuple[PaneTarget, str], str] = field(default_factory=dict)
+    agent_idle_since: dict[tuple[PaneTarget, str], float] = field(default_factory=dict)
     agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_rows: int | None = None
+    agent_ordering: Literal["priority", "session"] = "priority"
     add_button_selected: bool = False
     move_source: Target | None = None
     move_target: Target | None = None
@@ -449,28 +451,51 @@ def _reset_add(state: SidebarState) -> None:
     state.rename_target = None
 
 
-def _numeric_tmux_id(value: str) -> tuple[int, int | str]:
+def _numeric_tmux_id(value: str | None) -> tuple[int, int | str]:
     try:
         return (0, int(value[1:]))
     except (AttributeError, TypeError, ValueError):
         return (1, value or "")
 
 
-def _agent_sort_key(entry: Entry, favorites: list[Target]) -> tuple:
+_STATUS_RANK: dict[str, int] = {
+    "input-required": 0, "auth-required": 0,
+    "failed": 1, "rejected": 1,
+    "completed": 2, "canceled": 2,
+    "working": 3, "submitted": 3,
+    "idle": 4,
+}
+
+
+def _agent_sort_key(
+    entry: Entry,
+    favorites: list[Target],
+    agent_ordering: Literal["priority", "session"] = "priority",
+    agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    idle_since: dict[tuple[PaneTarget, str], float] | None = None,
+) -> tuple:
     target = entry.target
-    session_index = favorites.index(target) if target in favorites else len(favorites)
+    session_index = favorites.index(target) if target and target in favorites else len(favorites)
     pane = entry.pane_target
-    return (
-        session_index,
-        _numeric_tmux_id(pane.window_id if pane else ""),
-        _numeric_tmux_id(pane.pane_id if pane else ""),
-        entry.agent_id or "",
-    )
+    window = _numeric_tmux_id(pane.window_id if pane else "")
+    pane_id = _numeric_tmux_id(pane.pane_id if pane else "")
+    agent_id = entry.agent_id or ""
+    if agent_ordering == "session":
+        return (session_index, window, pane_id, agent_id)
+
+    status_rank = _STATUS_RANK.get(entry.status, 5)
+    alert_rank = 0 if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else 1
+    idle_time = (idle_since or {}).get((entry.pane_target, agent_id)) if entry.status == "idle" else None
+    activity_rank = -idle_time if idle_time is not None else 0
+    return (alert_rank, status_rank, activity_rank, session_index, window, pane_id, agent_id)
 
 
 def _agent_entries(
     snapshot: SessionSnapshot,
     favorites: list[Target],
+    agent_ordering: Literal["priority", "session"] = "priority",
+    agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    idle_since: dict[tuple[PaneTarget, str], float] | None = None,
     hidden_agents: set[tuple[PaneTarget, str]] | None = None,
 ) -> list[Entry]:
     tracked = set(favorites)
@@ -491,7 +516,11 @@ def _agent_entries(
         if agent.pane_target.target in tracked
         and (agent.pane_target, agent.agent_id) not in hidden_agents
     ]
-    entries.sort(key=lambda entry: _agent_sort_key(entry, favorites))
+    entries.sort(
+        key=lambda entry: _agent_sort_key(
+            entry, favorites, agent_ordering, agent_alerts, idle_since
+        )
+    )
     return entries
 
 
@@ -506,6 +535,7 @@ def _update_agent_alerts(
     state: SidebarState,
     snapshot: SessionSnapshot,
     current_target: Target | None,
+    now: float | None = None,
     hidden_agents: set[tuple[PaneTarget, str]] | None = None,
 ) -> bool:
     attention_states = {"idle", "completed", "input-required", "auth-required", "failed", "rejected", "canceled"}
@@ -516,6 +546,13 @@ def _update_agent_alerts(
         for agent in snapshot.agents
         if agent.pane_target.target in tracked
         and (agent.pane_target, agent.agent_id) not in hidden_agents
+    }
+    idle_agents = {key for key, status in agents.items() if status == "idle"}
+    new_idle_agents = idle_agents.difference(state.agent_idle_since)
+    observed_at = (time.monotonic() if now is None else now) if new_idle_agents else 0.0
+    state.agent_idle_since = {
+        key: state.agent_idle_since.get(key, observed_at)
+        for key in idle_agents
     }
     active = {
         key
@@ -861,6 +898,7 @@ def _apply_effect(
             state.hidden_agents.add(agent_key)
             state.agent_alerts.discard(agent_key)
             state.agent_states.pop(agent_key, None)
+            state.agent_idle_since.pop(agent_key, None)
         poller.refresh()
         name = effect.message or "agent"
         _set_status(
@@ -1224,7 +1262,7 @@ def _bell_targets(
 
 
 def _entry_height(entry: Entry) -> int:
-    if entry.kind in ("choice_new", "choice_existing"):
+    if entry.kind in ("choice_new", "choice_existing", "order"):
         return 2
     return 2 if entry.tracked or entry.kind == "agent" else 1
 
@@ -1282,7 +1320,7 @@ def _entry_at_row(
     for index in range(start, end):
         if entry_row < _entry_height(entries[index]):
             return index if entries[index].kind in (
-                "session", "host", "agent", "choice_new", "choice_existing", "location"
+                "session", "host", "agent", "order", "choice_new", "choice_existing", "location"
             ) else None
         entry_row -= _entry_height(entries[index])
     return None
@@ -1467,6 +1505,7 @@ def _entry_lines(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
+    agent_ordering: Literal["priority", "session"] = "priority",
 ) -> list[str]:
     icon = _icons()
     pointer = icon["selected"] if selected else " "
@@ -1501,6 +1540,13 @@ def _entry_lines(
             host_icon = icon["local_header"] if entry.host == "" else icon["remote_header"]
             label = _truncate_cells(f"{host_icon} {entry.label}", max(0, width - _cell_width(suffix) - 1))
         return [_truncate(label + suffix, width)]
+    if entry.kind == "order":
+        pointer = icon["selected"] if selected else (" " if _ascii() else "⇅")
+        if _ascii():
+            line = f"{pointer} Order:  PRIORITY  SESSION"
+        else:
+            line = f"{pointer}  Priority  Session"
+        return [_truncate_cells(line, width), ""]
     if entry.kind == "agent":
         separator = " · "
         alert = " BELL" if _ascii() else " 🔔"
@@ -1572,6 +1618,8 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, move_source
         return _color("move") or curses.A_REVERSE
     if active:
         attr = _color("active") or curses.A_REVERSE
+    elif entry.kind == "order":
+        attr = _color("section") or curses.A_BOLD
     elif entry.kind == "section":
         attr = _color("section") or curses.A_BOLD
     elif entry.kind == "add":
@@ -1616,6 +1664,7 @@ def _draw_entries(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
+    agent_ordering: Literal["priority", "session"] = "priority",
     move_source_entry: int | None = None,
     move_target_entry: int | None = None,
     selection_pointer_visible: bool = True,
@@ -1642,7 +1691,7 @@ def _draw_entries(
         )
         lines = _entry_lines(
             entry, selected_entry and not dimmed and selection_pointer_visible and pane_active, bell_targets, current_target, entry_width,
-            creation_host, creation_text, now, agent_alerts, spinner_frame,
+            creation_host, creation_text, now, agent_alerts, spinner_frame, agent_ordering,
         )
         # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
         is_move_source = move_source_entry is not None and idx == move_source_entry
@@ -1694,6 +1743,20 @@ def _draw_entries(
                     row, handle_start, handle_text, handle_end - handle_start,
                     _fade(handle_attr) if dimmed else handle_attr,
                 )
+            if entry.kind == "order" and line_number == 0:
+                active_word = "SESSION" if agent_ordering == "session" else "PRIORITY"
+                if not _ascii():
+                    active_word = "Session" if agent_ordering == "session" else "Priority"
+                active_attr = _color("active") or curses.A_REVERSE
+                column = line.find(active_word)
+                if column >= 0:
+                    stdscr.addnstr(
+                        row,
+                        column,
+                        active_word,
+                        max(0, w - column),
+                        _fade(active_attr) if dimmed else active_attr,
+                    )
             if entry.kind == "host" and entry.host == creation_host:
                 cursor = (row, min(w - 1, _cell_width(line)))
             row += 1
@@ -1787,6 +1850,7 @@ def _draw(
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
+    agent_ordering: Literal["priority", "session"] = "priority",
     add_button_selected: bool = False,
     move_source_entry: int | None = None,
     move_target_entry: int | None = None,
@@ -1853,11 +1917,18 @@ def _draw(
             stdscr, agents, agent_selected, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
             active_agent_id=active_agent_id, now=now, agent_alerts=agent_alerts,
-            spinner_frame=spinner_frame, pane_active=pane_active,
+            spinner_frame=spinner_frame, agent_ordering=agent_ordering,
+            pane_active=pane_active,
         )
     else:
+        _draw_entries(
+            stdscr, agents, 0, footer_top + 1, w, set(), None,
+            dimmed or focused_region != "agents", top=separator + 1,
+            spinner_frame=None, agent_ordering=agent_ordering,
+            pane_active=pane_active,
+        )
         empty_agents = _truncate_cells("  No active agents", max(1, w))
-        stdscr.addnstr(separator + 1, 0, empty_agents, max(1, w), curses.A_DIM)
+        stdscr.addnstr(separator + 2, 0, empty_agents, max(1, w), curses.A_DIM)
     if status_region == "agents" and status:
         stdscr.addnstr(
             separator + 2, 0, message, max(1, w),
@@ -1884,8 +1955,13 @@ def run(stdscr: curses.window) -> None:
     _update_agent_alerts(
         state, poller.snapshot, state.selected_target, hidden_agents=state.hidden_agents
     )
-    agent_entries = _agent_entries(
-        poller.snapshot, state.favorites, hidden_agents=state.hidden_agents
+    agent_entries = [Entry("", "order")] + _agent_entries(
+        poller.snapshot,
+        state.favorites,
+        state.agent_ordering,
+        state.agent_alerts,
+        state.agent_idle_since,
+        state.hidden_agents,
     )
     _reset_selection(state, entries)
     cockpit_bell_target: Target | None = None
@@ -1944,8 +2020,13 @@ def run(stdscr: curses.window) -> None:
             if state.add_view in ("choice", "existing", "location")
             else _entries(state.filter_text, poller.snapshot, state.favorites)
         )
-        agent_entries = _agent_entries(
-            poller.snapshot, state.favorites, hidden_agents=state.hidden_agents
+        agent_entries = [Entry("", "order")] + _agent_entries(
+            poller.snapshot,
+            state.favorites,
+            state.agent_ordering,
+            state.agent_alerts,
+            state.agent_idle_since,
+            state.hidden_agents,
         )
         if state.move_source not in state.favorites or not any(
             entry.tracked and entry.target == state.move_source for entry in entries
@@ -2080,6 +2161,7 @@ def run(stdscr: curses.window) -> None:
                     state,
                     poller.snapshot,
                     current_target,
+                    now=now,
                     hidden_agents=state.hidden_agents,
                 )
                 scroll_offset = state.scroll_offset
@@ -2123,7 +2205,8 @@ def run(stdscr: curses.window) -> None:
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
                 state.focused_region, state.agent_rows, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
-                int(time.time()) if agent_entries else None,
+                int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
+                state.agent_ordering,
                 state.add_button_selected, state.move_source, state.move_target,
             )
             if render_state != rendered:
@@ -2139,7 +2222,8 @@ def run(stdscr: curses.window) -> None:
                         state.creation_host, state.creation_text, state.add_view is not None, state.scroll_offset,
                         agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_rows,
                         active_agent_id, agent_alerts=state.agent_alerts,
-                        spinner_frame=spinner_frame, add_button_selected=state.add_button_selected,
+                        spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
+                        add_button_selected=state.add_button_selected,
                         move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
                         pane_active=poller.pane_active, status_region=state.status_region,
                     )
@@ -2406,6 +2490,20 @@ def run(stdscr: curses.window) -> None:
                         state.agent_selected_index = index
                         entry = agent_entries[index]
                         state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
+                        if _mouse_activates(mouse_state) and entry.kind == "order":
+                            prefix = "> Order:  " if _ascii() else "›  "
+                            priority = "PRIORITY" if _ascii() else "Priority"
+                            session = "SESSION" if _ascii() else "Session"
+                            priority_start = _cell_width(prefix)
+                            session_start = priority_start + _cell_width(priority) + 2
+                            if isinstance(mouse_col, int):
+                                if priority_start <= mouse_col < priority_start + _cell_width(priority):
+                                    state.agent_ordering = "priority"
+                                    rebuild()
+                                elif session_start <= mouse_col < session_start + _cell_width(session):
+                                    state.agent_ordering = "session"
+                                    rebuild()
+                            continue
                         if _mouse_activates(mouse_state) and entry.pane_target:
                             dispatch(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""))
                         continue
@@ -2471,6 +2569,9 @@ def run(stdscr: curses.window) -> None:
                     if key == ord("[")
                     else max(minimum_agent_rows, current - 1)
                 )
+            elif state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
+                state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
+                rebuild()
             elif state.focused_region == "agents" and key in (curses.KEY_DOWN, ord("j")) and agent_entries:
                 state.agent_selected_index = (state.agent_selected_index + 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]
