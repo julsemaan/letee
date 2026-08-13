@@ -412,6 +412,7 @@ from letee.sidebar import (
     _selected_index,
     _should_auto_create,
     _start_rename,
+    _sync_agent_selection,
     _sync_selection,
     _transition,
     _execute,
@@ -2846,8 +2847,8 @@ class SidebarDrawTest(unittest.TestCase):
                 self.assertFalse(any(call.args[11] for call in draw.call_args_list))
                 self.assertFalse(any(call.args[1] in ("help", "quit") for call in transition.call_args_list))
 
-    def test_removed_agent_ordering_keys_do_nothing(self):
-        for key in (*map(ord, "hl"), curses.KEY_LEFT, curses.KEY_RIGHT):
+    def test_h_and_l_leave_agent_ordering_unchanged(self):
+        for key in map(ord, "hl"):
             with self.subTest(key=key):
                 screen = FakeScreen([curses.KEY_F7, key, STOP], size=(10, 40))
                 with (
@@ -2860,8 +2861,23 @@ class SidebarDrawTest(unittest.TestCase):
                 ):
                     run(screen)
 
-                self.assertEqual(draw.call_count, 2)
-                self.assertEqual(draw.call_args_list[-1].args[15], "agents")
+                self.assertEqual(draw.call_args_list[-1].kwargs["agent_ordering"], "priority")
+
+    def test_left_and_right_cycle_agent_ordering(self):
+        for key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            with self.subTest(key=key):
+                screen = FakeScreen([curses.KEY_F7, key, STOP], size=(10, 40))
+                with (
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar._entries", return_value=[]),
+                    patch("letee.sidebar._bell_targets", return_value=set()),
+                    patch("letee.sidebar._current_target", return_value=None),
+                    patch("letee.sidebar._draw", return_value=(2, None)) as draw,
+                ):
+                    run(screen)
+
+                self.assertEqual(draw.call_args_list[-1].kwargs["agent_ordering"], "session")
 
     def test_f11_opens_add_menu(self):
         screen = FakeScreen([curses.KEY_F11, STOP], size=(10, 40))
@@ -3173,8 +3189,8 @@ class SidebarDrawTest(unittest.TestCase):
             patch(
                 "letee.sidebar.curses.getmouse",
                 side_effect=[
-                    (0, 0, 15, 0, curses.BUTTON1_PRESSED),
-                    (0, 0, 15, 0, curses.BUTTON1_RELEASED),
+                    (0, 0, 17, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 17, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
             patch("letee.sidebar._init_colors"),
@@ -3804,7 +3820,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
             patch(
                 "letee.sidebar.curses.getmouse",
-                return_value=(0, 7, 15, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+                return_value=(0, 7, 17, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
             ),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_hosts", return_value=[]),
@@ -3816,8 +3832,8 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi-two", second, 7, 15)
-        self.assertEqual(drawn[-1]["agent_selected"], 1)
+        show_menu.assert_called_once_with("pi-two", second, 7, 17)
+        self.assertEqual(drawn[-1]["agent_selected"], 2)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
         switch.assert_not_called()
@@ -4741,7 +4757,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         self.assertIn(None, final_offsets)
 
 
-class AgentStableOrderingTest(unittest.TestCase):
+class AgentOrderingTest(unittest.TestCase):
     def _make_agent(self, target, window_id, pane_id, agent_id, status):
         pane = PaneTarget(target, window_id, pane_id, "/tmp/tmux")
         return Entry(
@@ -4764,7 +4780,7 @@ class AgentStableOrderingTest(unittest.TestCase):
 
         self.assertEqual(
             [entry.agent_id for entry in entries],
-            ["a", "z", "pane-ten", "window-two", "second"],
+            ["window-two", "second", "pane-ten", "a", "z"],
         )
 
     def test_status_and_alert_changes_never_reorder_agents(self):
@@ -4785,8 +4801,120 @@ class AgentStableOrderingTest(unittest.TestCase):
             )
             return [entry.agent_id for entry in _agent_entries(data, [target])]
 
-        self.assertEqual(ids("idle", "input-required"), ["first", "second"])
+        self.assertEqual(ids("idle", "input-required"), ["second", "first"])
         self.assertEqual(ids("failed", "working"), ["first", "second"])
+
+    def test_priority_mode_alerts_override_status(self):
+        target = Target("local", "work")
+        bell = self._make_agent(target, "@1", "%1", "bell", "idle")
+        urgent = self._make_agent(target, "@1", "%2", "urgent", "input-required")
+        entries = [bell, urgent]
+        entries.sort(key=lambda entry: _agent_sort_key(
+            entry, [target], "priority", {(bell.pane_target, "bell")},
+        ))
+        self.assertEqual([entry.agent_id for entry in entries], ["bell", "urgent"])
+
+    def test_session_mode_ignores_status_alerts_and_idle_recency(self):
+        first = Target("local", "first")
+        second = Target("local", "second")
+        entries = [
+            self._make_agent(second, "@1", "%1", "urgent", "input-required"),
+            self._make_agent(first, "@1", "%1", "idle", "idle"),
+        ]
+        entries.sort(key=lambda entry: _agent_sort_key(entry, [first, second], "session"))
+        self.assertEqual(
+            [(entry.target.session, entry.agent_id) for entry in entries],
+            [("first", "idle"), ("second", "urgent")],
+        )
+
+    def test_session_mode_uses_numeric_window_and_pane_ids(self):
+        target = Target("local", "work")
+        entries = [
+            self._make_agent(target, "@10", "%1", "window-ten", "idle"),
+            self._make_agent(target, "@2", "%10", "pane-ten", "idle"),
+            self._make_agent(target, "@2", "%2", "pane-two", "idle"),
+        ]
+        entries.sort(key=lambda entry: _agent_sort_key(entry, [target], "session"))
+        self.assertEqual([entry.agent_id for entry in entries], ["pane-two", "pane-ten", "window-ten"])
+
+        self.assertEqual(sidebar._numeric_tmux_id("window"), (1, "window"))
+        self.assertEqual(sidebar._numeric_tmux_id(None), (1, ""))
+
+    def test_idle_since_tracks_transitions_not_producer_timestamps(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        state = SidebarState(favorites=[target])
+
+        def data(status):
+            return SessionSnapshot(
+                SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", status),)),
+                {},
+            )
+
+        sidebar._update_agent_alerts(state, data("idle"), None, now=10)
+        sidebar._update_agent_alerts(state, data("idle"), None, now=20)
+        self.assertEqual(state.agent_idle_since, {(pane, "id"): 10})
+        sidebar._update_agent_alerts(state, data("working"), None, now=30)
+        sidebar._update_agent_alerts(state, data("idle"), None, now=40)
+        self.assertEqual(state.agent_idle_since, {(pane, "id"): 40})
+
+    def test_agent_entries_sort_by_selected_mode(self):
+        target = Target("local", "work")
+        first = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        second = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (), frozenset(), agents=(
+                AgentEntry(first, "first", "pi", "idle"),
+                AgentEntry(second, "second", "pi", "input-required"),
+            )),
+            {},
+        )
+        self.assertEqual([entry.agent_id for entry in _agent_entries(data, [target], "priority")], ["second", "first"])
+        self.assertEqual([entry.agent_id for entry in _agent_entries(data, [target], "session")], ["first", "second"])
+
+    def test_ordering_defaults_to_priority_and_preserves_agent_selection(self):
+        self.assertEqual(SidebarState().agent_ordering, "priority")
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        other_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        state = SidebarState(favorites=[target], agent_selected_index=1, selected_agent_key=(pane, "id"))
+        priority = [
+            Entry("", "order"),
+            Entry("other", "agent", target, pane_target=other_pane, agent_id="other", status="input-required"),
+            Entry("pi", "agent", target, pane_target=pane, agent_id="id", status="idle"),
+        ]
+        _sync_agent_selection(state, priority)
+        self.assertEqual((state.agent_selected_index, state.selected_agent_key), (2, (pane, "id")))
+        _sync_agent_selection(state, [priority[0], priority[2], priority[1]])
+        self.assertEqual((state.agent_selected_index, state.selected_agent_key), (1, (pane, "id")))
+
+    def test_ordering_row_is_two_rows_and_mouse_selectable(self):
+        order = Entry("", "order")
+        self.assertEqual(_entry_height(order), 2)
+        entries = [order, Entry("pi", "agent", Target("local", "work"), agent_id="id")]
+        self.assertEqual(_entry_at_row(entries, 0, 4, 9, 0, top=4), 0)
+        self.assertEqual(_entry_at_row(entries, 0, 6, 9, 0, top=4), 1)
+
+    def test_ordering_row_renders_in_unicode_and_ascii(self):
+        screen = FakeScreen(size=(10, 40))
+        _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], agent_ordering="priority")
+        text = [item[3] for item in screen.calls if item[0] == "addnstr"]
+        self.assertTrue(any("⇅" in line and "Priority" in line and "Session" in line for line in text))
+        with patch("letee.sidebar._ascii", return_value=True):
+            screen = FakeScreen(size=(10, 40))
+            _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], agent_ordering="session")
+        text = [item[3] for item in screen.calls if item[0] == "addnstr"]
+        order_line = next(line for line in text if "Order:" in line)
+        self.assertIn("PRIORITY", order_line)
+        self.assertIn("SESSION", order_line)
+        self.assertTrue(order_line.isascii())
+
+    def test_empty_agent_view_keeps_ordering_row(self):
+        screen = FakeScreen(size=(10, 40))
+        _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")])
+        text = [item[3] for item in screen.calls if item[0] == "addnstr"]
+        self.assertTrue(any("⇅" in line for line in text))
+        self.assertIn("  No active agents", text)
 
     def test_numeric_tmux_ids_sort_numerically(self):
         target = Target("local", "work")
@@ -4802,6 +4930,105 @@ class AgentStableOrderingTest(unittest.TestCase):
             [entry.agent_id for entry in entries],
             ["pane-two", "pane-ten", "window-ten"],
         )
+
+
+    def test_ordering_row_ignores_enter_and_kill(self):
+        screen = FakeScreen([curses.KEY_F7, curses.KEY_ENTER, ord("x"), STOP], size=(10, 40))
+        with (
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_read_key") as read_key,
+            patch.object(sidebar.sessions, "kill_agent") as kill_agent,
+        ):
+            run(screen)
+        read_key.assert_not_called()
+        kill_agent.assert_not_called()
+
+    def test_left_and_right_toggle_ordering_on_selected_row(self):
+        for key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            screen = FakeScreen([curses.KEY_F7, key, STOP], size=(10, 40))
+            with (
+                self.subTest(key=key),
+                patch.object(sidebar, "AsyncStatusPoller") as poller_type,
+                patch.object(sidebar, "load_hosts", return_value=[]),
+                patch.object(sidebar, "load_sessions", return_value=[]),
+                patch.object(sidebar, "_current_target", return_value=None),
+                patch.object(sidebar, "_init_colors"),
+                patch.object(sidebar, "_mouse_mask"),
+                patch.object(sidebar.curses, "curs_set"),
+                patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+            ):
+                poller = unittest.mock.Mock(
+                    snapshot=snapshot(), current_target=None, bell_target=None,
+                    current_agent=None, pane_active=True,
+                )
+                poller.tick.return_value = False
+                poller_type.return_value = poller
+                run(screen)
+            self.assertEqual(draw.call_args_list[-1].kwargs["agent_ordering"], "session")
+
+    def test_right_click_on_ordering_row_is_ignored(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        screen = FakeScreen([curses.KEY_F7, curses.KEY_MOUSE, STOP], size=(12, 40))
+        poller = unittest.mock.Mock(
+            snapshot=data, current_target=None, bell_target=None,
+            current_agent=None, pane_active=True,
+        )
+        poller.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar.curses, "getmouse", return_value=(0, 7, 6, 0, curses.BUTTON3_PRESSED)),
+            patch.object(sidebar.cockpit, "show_agent_menu") as show_menu,
+        ):
+            run(screen)
+        show_menu.assert_not_called()
+
+    def test_mouse_selects_session_ordering_label(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True, (), frozenset(),
+                agents=(AgentEntry(pane, "id", "pi", "working"),),
+            ),
+            {},
+        )
+        screen = FakeScreen([curses.KEY_F7, curses.KEY_MOUSE, STOP], size=(12, 40))
+        poller = unittest.mock.Mock(
+            snapshot=data, current_target=None, bell_target=None,
+            current_agent=None, pane_active=True,
+        )
+        poller.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+            patch.object(sidebar.curses, "getmouse", return_value=(0, 14, 6, 0, curses.BUTTON1_PRESSED)),
+        ):
+            run(screen)
+        self.assertEqual(draw.call_args_list[-1].kwargs["agent_ordering"], "session")
 
 
 class PrefixActionTest(unittest.TestCase):
@@ -4999,7 +5226,7 @@ class PrefixActionTest(unittest.TestCase):
             self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
 
         switch.assert_called_once_with(
-            target, sidebar.sessions.pane_attach_command(first_pane), "first"
+            target, sidebar.sessions.pane_attach_command(second_pane), "second"
         )
 
     def test_alert_prefix_without_alerts_shows_feedback_and_does_not_navigate(self):
