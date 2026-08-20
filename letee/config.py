@@ -9,8 +9,9 @@ from .names import DEFAULT_SERVER, Target, normalize_server, parse_target, valid
 DEFAULT_PREFIX = "C-s"
 DEFAULT_SIDEBAR_WIDTH = 40
 DEFAULT_STATUS_TIMEOUT = 5
+DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
-CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\npersistent_ssh = true\n'
+CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\n'
 WRAPPER_TEXT = """unbind C-b
 set -g status off
 set -g mouse on
@@ -87,6 +88,16 @@ def load_status_timeout() -> int:
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
         raise SystemExit(f"Invalid config {cfg}: status_timeout must be a positive integer")
     return timeout
+
+
+def load_agent_panel_resize_step() -> int:
+    cfg, data = _load_config()
+    step = data.get("agent_panel_resize_step", DEFAULT_AGENT_PANEL_RESIZE_STEP)
+    if isinstance(step, bool) or not isinstance(step, int) or not 1 <= step <= 100:
+        raise SystemExit(
+            f"Invalid config {cfg}: agent_panel_resize_step must be an integer from 1 through 100"
+        )
+    return step
 
 
 def load_persistent_ssh() -> bool:
