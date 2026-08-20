@@ -17,11 +17,18 @@ from typing import Literal
 
 from . import cockpit, sessions
 from .discovery import DiscoveryPoller, SessionSnapshot
-from .config import load_hosts, load_sessions, load_status_timeout, save_sessions
+from .config import (
+    load_agent_panel_resize_step,
+    load_hosts,
+    load_sessions,
+    load_status_timeout,
+    save_sessions,
+)
 from .names import PaneTarget, Target, validate_name
 
 
 UI_POLL_INTERVAL_MS = 50
+DEFAULT_AGENT_PANEL_PERCENTAGE = 40
 MOVE_SCROLL_INTERVAL = 0.2
 MOVE_HANDLE_WIDTH = 3
 LAYOUT_REPAIR_INTERVAL = 0.5
@@ -84,7 +91,7 @@ class SidebarState:
     agent_states: dict[tuple[PaneTarget, str], str] = field(default_factory=dict)
     agent_idle_since: dict[tuple[PaneTarget, str], float] = field(default_factory=dict)
     agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
-    agent_rows: int | None = None
+    agent_percentage: int = DEFAULT_AGENT_PANEL_PERCENTAGE
     agent_ordering: Literal["priority", "session"] = "priority"
     add_button_selected: bool = False
     move_source: Target | None = None
@@ -1194,14 +1201,14 @@ def _agent_layout(
     height: int,
     footer_height: int,
     agent_entries: list[Entry],
-    agent_rows: int | None,
+    agent_percentage: int,
     filtering: bool,
 ) -> tuple[int, int, int, int]:
     footer_top = height - footer_height
     session_top = 3 if filtering else 2
     minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
     available = footer_top - session_top - 1
-    wanted = agent_rows if agent_rows is not None else max(minimum_agent_rows, round(available * 0.4))
+    wanted = max(minimum_agent_rows, round(available * agent_percentage / 100))
     agent_body = min(max(minimum_agent_rows, wanted), available - 1)
     separator = footer_top - agent_body - 1
     return footer_top, session_top, minimum_agent_rows, separator
@@ -1211,11 +1218,11 @@ def _agent_prompt_row(
     stdscr: curses.window,
     footer_height: int,
     agent_entries: list[Entry],
-    agent_rows: int | None,
+    agent_percentage: int,
     filtering: bool,
 ) -> int:
     h, _ = stdscr.getmaxyx()
-    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_rows, filtering)
+    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_percentage, filtering)
     return max(0, min(h - 1, separator + 2))
 
 
@@ -1845,7 +1852,7 @@ def _draw(
     agent_entries: list[Entry] | None = None,
     agent_selected: int = 0,
     focused_region: str = "sessions",
-    agent_rows: int | None = None,
+    agent_percentage: int = DEFAULT_AGENT_PANEL_PERCENTAGE,
     active_agent_id: str | None = None,
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
@@ -1896,7 +1903,7 @@ def _draw(
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
     footer_top, session_top, minimum_agent_rows, separator = _agent_layout(
-        h, footer_height, agents, agent_rows, filtering
+        h, footer_height, agents, agent_percentage, filtering
     )
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
@@ -1947,6 +1954,7 @@ def run(stdscr: curses.window) -> None:
     curses.curs_set(0)
     _mouse_mask()
     status_timeout = load_status_timeout()
+    agent_panel_resize_step = load_agent_panel_resize_step()
     initial_target = _current_target()
     state = SidebarState(favorites=load_sessions(), selected_target=initial_target)
     poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
@@ -2134,7 +2142,7 @@ def run(stdscr: curses.window) -> None:
             ):
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
-                    h, footer_height, agent_entries, state.agent_rows, state.filtering
+                    h, footer_height, agent_entries, state.agent_percentage, state.filtering
                 )
                 if state.add_view is not None:
                     separator = footer_top
@@ -2203,7 +2211,7 @@ def run(stdscr: curses.window) -> None:
                 state.filtering, state.add_view, state.creation_host, state.creation_text,
                 frozenset(bell_targets), display_target, poller.pane_active, stdscr.getmaxyx(),
                 state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
-                state.focused_region, state.agent_rows, active_agent_id,
+                state.focused_region, state.agent_percentage, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
                 int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
                 state.agent_ordering,
@@ -2220,7 +2228,7 @@ def run(stdscr: curses.window) -> None:
                         stdscr, entries, state.selected_index, state.status, state.filter_text,
                         state.filtering, bell_targets, display_target, dimmed,
                         state.creation_host, state.creation_text, state.add_view is not None, state.scroll_offset,
-                        agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_rows,
+                        agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_percentage,
                         active_agent_id, agent_alerts=state.agent_alerts,
                         spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
                         add_button_selected=state.add_button_selected,
@@ -2336,7 +2344,7 @@ def run(stdscr: curses.window) -> None:
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
-                    h, footer_height, agent_entries, state.agent_rows, state.filtering
+                    h, footer_height, agent_entries, state.agent_percentage, state.filtering
                 )
                 if state.add_view is not None:
                     separator = footer_top
@@ -2556,18 +2564,14 @@ def run(stdscr: curses.window) -> None:
             selectable = _selectable(entries)
             effect: Effect | None = None
             if key in (ord("["), ord("]")):
-                h = stdscr.getmaxyx()[0]
-                footer_top = h - footer_height
-                session_top = 3 if state.filtering else 2
-                has_real_agents = any(entry.kind == "agent" for entry in agent_entries)
-                minimum_agent_rows = 4 if has_real_agents else 3
-                available = footer_top - session_top - 1
-                baseline = max(minimum_agent_rows, round(available * 0.4))
-                current = state.agent_rows if state.agent_rows is not None else baseline
-                state.agent_rows = (
-                    current + 1
-                    if key == ord("[")
-                    else max(minimum_agent_rows, current - 1)
+                state.agent_percentage = max(
+                    0,
+                    min(
+                        100,
+                        state.agent_percentage + (
+                            agent_panel_resize_step if key == ord("[") else -agent_panel_resize_step
+                        ),
+                    ),
                 )
             elif state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
                 state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
@@ -2600,7 +2604,7 @@ def run(stdscr: curses.window) -> None:
                                     stdscr,
                                     footer_height,
                                     agent_entries,
-                                    state.agent_rows,
+                                    state.agent_percentage,
                                     state.filtering,
                                 ),
                             )

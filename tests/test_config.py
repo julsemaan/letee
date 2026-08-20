@@ -23,7 +23,7 @@ class ConfigTest(unittest.TestCase):
     def test_fresh_config_contains_default_prefix(self):
         cfg, wrapper = config.ensure_config()
 
-        self.assertEqual(cfg.read_text(), 'hosts = []\nprefix = "C-s"\nsidebar_width = 40\nstatus_timeout = 5\npersistent_ssh = true\n')
+        self.assertEqual(cfg.read_text(), 'hosts = []\nprefix = "C-s"\nsidebar_width = 40\nstatus_timeout = 5\nagent_panel_resize_step = 5\npersistent_ssh = true\n')
         self.assertNotIn("prefix", wrapper.read_text())
         self.assertNotIn("send-prefix", wrapper.read_text())
         self.assertIn("set -g mouse on", wrapper.read_text())
@@ -81,6 +81,24 @@ class ConfigTest(unittest.TestCase):
                 self.write_config(f"status_timeout = {value}\n")
                 with self.assertRaisesRegex(SystemExit, "status_timeout must be a positive integer"):
                     config.load_status_timeout()
+
+    def test_agent_panel_resize_step_defaults_to_5_and_accepts_range(self):
+        self.write_config("hosts = []\n")
+        self.assertEqual(config.load_agent_panel_resize_step(), 5)
+
+        for value in (1, 5, 100):
+            with self.subTest(value=value):
+                self.write_config(f"agent_panel_resize_step = {value}\n")
+                self.assertEqual(config.load_agent_panel_resize_step(), value)
+
+    def test_invalid_agent_panel_resize_step_fails_clearly(self):
+        for value in ("true", "false", '"5"', "0", "-1", "101"):
+            with self.subTest(value=value):
+                self.write_config(f"agent_panel_resize_step = {value}\n")
+                with self.assertRaisesRegex(
+                    SystemExit, "agent_panel_resize_step must be an integer from 1 through 100"
+                ):
+                    config.load_agent_panel_resize_step()
 
     def test_persistent_ssh_defaults_enabled_and_accepts_booleans(self):
         self.write_config("hosts = []\n")

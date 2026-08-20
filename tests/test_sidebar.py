@@ -2214,46 +2214,100 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertNotIn("›", row[3])
         self.assertEqual(row[5], 45)
 
-    def test_agent_resize_keys_use_visible_default_as_baseline(self):
-        def run_key(key):
-            screen = FakeScreen([ord(key), STOP], size=(24, 40))
-            agent_rows = []
+    def test_default_agent_panel_uses_40_percent_of_available_height(self):
+        entries = [Entry("", "order")]
+        layout = sidebar._agent_layout(24, 1, entries, 40, False)
+        footer_top, session_top, _, separator = layout
+        available = footer_top - session_top - 1
 
-            def draw_spy(*args, **kwargs):
-                bound = inspect.signature(_draw).bind(*args, **kwargs)
-                agent_rows.append(bound.arguments.get("agent_rows"))
-                return _draw(*args, **kwargs)
+        self.assertEqual(SidebarState().agent_percentage, 40)
+        self.assertEqual(footer_top - separator - 1, round(available * 0.4))
 
-            poller = unittest.mock.Mock(
-                snapshot=snapshot(),
-                current_target=None,
-                bell_target=None,
-                current_agent=None,
-                pane_active=True,
-            )
-            poller.tick.return_value = False
-            with (
-                patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
-                patch("letee.sidebar.curses.curs_set"),
-                patch("letee.sidebar._mouse_mask"),
-                patch("letee.sidebar._init_colors"),
-                patch("letee.sidebar.load_sessions", return_value=[]),
-                patch("letee.sidebar._entries", return_value=[]),
-                patch("letee.sidebar._bell_targets", return_value=set()),
-                patch("letee.sidebar._current_target", return_value=None),
-                patch("letee.sidebar._draw", side_effect=draw_spy),
-            ):
-                run(screen)
+    def test_tall_to_small_resize_keeps_percentage_instead_of_rows(self):
+        entries = [Entry("", "order")]
+        tall = sidebar._agent_layout(30, 1, entries, 60, False)
+        small = sidebar._agent_layout(12, 1, entries, 60, False)
 
-            dividers = [
-                call[1]
-                for call in screen.calls
-                if call[0] == "addnstr" and call[3].startswith("AGENTS ")
-            ]
-            return agent_rows, dividers
+        self.assertEqual(tall[0] - tall[3] - 1, 16)
+        self.assertEqual(small[0] - small[3] - 1, 5)
 
-        self.assertEqual(run_key("["), ([None, 9], [14, 13]))
-        self.assertEqual(run_key("]"), ([None, 7], [14, 15]))
+    def test_small_to_tall_resize_expands_proportionally(self):
+        entries = [Entry("", "order")]
+        small = sidebar._agent_layout(12, 1, entries, 40, False)
+        tall = sidebar._agent_layout(30, 1, entries, 40, False)
+
+        self.assertEqual(small[0] - small[3] - 1, 3)
+        self.assertEqual(tall[0] - tall[3] - 1, 10)
+
+    def test_small_screen_does_not_use_stale_tall_panel_rows(self):
+        entries = [Entry("", "order")]
+        tall = sidebar._agent_layout(40, 1, entries, 80, False)
+        small = sidebar._agent_layout(12, 1, entries, 80, False)
+
+        self.assertGreater(tall[0] - tall[3] - 1, 20)
+        self.assertEqual(small[0] - small[3] - 1, 6)
+
+    def test_minimum_complete_agent_rows_remain_visible(self):
+        entries = [Entry("", "order"), Entry("pi", "agent")]
+        footer_top, _, minimum_agent_rows, separator = sidebar._agent_layout(20, 1, entries, 0, False)
+
+        self.assertEqual(minimum_agent_rows, 4)
+        self.assertGreaterEqual(footer_top - separator - 1, 4)
+
+    def test_maximum_panel_rows_leave_session_section_space(self):
+        entries = [Entry("", "order"), Entry("pi", "agent")]
+        footer_top, session_top, _, separator = sidebar._agent_layout(20, 1, entries, 100, False)
+
+        self.assertGreaterEqual(separator - session_top, 1)
+        self.assertLessEqual(footer_top - separator - 1, footer_top - session_top - 2)
+
+    def _run_agent_resize_keys(self, keys, resize_step=5):
+        screen = FakeScreen([*(ord(key) for key in keys), STOP], size=(24, 40))
+        percentages = []
+
+        def draw_spy(*args, **kwargs):
+            bound = inspect.signature(_draw).bind(*args, **kwargs)
+            percentages.append(bound.arguments.get("agent_percentage"))
+            return _draw(*args, **kwargs)
+
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        with (
+            patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+            patch("letee.sidebar.load_agent_panel_resize_step", return_value=resize_step),
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar._mouse_mask"),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar.load_sessions", return_value=[]),
+            patch("letee.sidebar._entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._draw", side_effect=draw_spy),
+        ):
+            run(screen)
+
+        return percentages
+
+    def test_agent_resize_keys_change_percentage_by_default_five_points(self):
+        self.assertEqual(self._run_agent_resize_keys("["), [40, 45])
+        self.assertEqual(self._run_agent_resize_keys("]"), [40, 35])
+
+    def test_agent_resize_keys_use_custom_configured_step(self):
+        self.assertEqual(self._run_agent_resize_keys("[", resize_step=12), [40, 52])
+
+    def test_repeated_resize_keys_stop_at_percentage_bounds(self):
+        increase = self._run_agent_resize_keys("[" * 30)
+        decrease = self._run_agent_resize_keys("]" * 30)
+
+        self.assertEqual(increase[-1], 100)
+        self.assertEqual(decrease[-1], 0)
+        self.assertTrue(all(0 <= percentage <= 100 for percentage in increase + decrease))
 
     def test_layout_maintainer_repairs_until_stopped(self):
         waits = []
@@ -2583,8 +2637,8 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_agent_confirmation_row_matches_agents_divider(self):
         entries = [Entry("pi", "agent", status="working")]
-        for filtering, agent_rows in ((False, None), (False, 8), (True, None), (True, 5)):
-            with self.subTest(filtering=filtering, agent_rows=agent_rows):
+        for filtering, agent_percentage in ((False, 40), (False, 80), (True, 40), (True, 50)):
+            with self.subTest(filtering=filtering, agent_percentage=agent_percentage):
                 screen = FakeScreen(size=(20, 40))
                 footer_height, _ = _draw(
                     screen,
@@ -2594,14 +2648,14 @@ class SidebarDrawTest(unittest.TestCase):
                     "",
                     filtering=filtering,
                     agent_entries=entries,
-                    agent_rows=agent_rows,
+                    agent_percentage=agent_percentage,
                 )
                 divider = next(
                     call for call in screen.calls
                     if call[0] == "addnstr" and call[3].startswith("AGENTS ")
                 )
                 self.assertEqual(
-                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_rows, filtering),
+                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_percentage, filtering),
                     divider[1] + 2,
                 )
 

@@ -76,12 +76,13 @@ hosts = ["my-remote-machine"]
 prefix = "C-s"
 sidebar_width = 40
 status_timeout = 5
+agent_panel_resize_step = 5
 persistent_ssh = true
 ```
 
 ### Prefix
 
-`prefix` accepts one non-empty, printable tmux key token without whitespace. `sidebar_width` sets left pane width in columns. `status_timeout` controls how many seconds sidebar feedback remains visible. Both numeric settings must be positive integers. Restart sidebar by rerunning `letee` after changing these values.
+`prefix` accepts one non-empty, printable tmux key token without whitespace. `sidebar_width` sets left pane width in columns. `status_timeout` controls how many seconds sidebar feedback remains visible. `agent_panel_resize_step` sets percentage points per `[` or `]` press and must be an integer from 1 through 100. Default step gives `40% → 45% → 50%`. Adjustment lasts for current sidebar process; rerun `letee` after changing configuration.
 
 `C-s` normally sends XOFF when terminal `IXON` flow control is enabled. Attached tmux disables flow control on outer tty, so outer prefix works without global `stty` changes. Readline, Emacs, or Vim `C-s` commands require `C-s C-s` to forward literal `C-s`; inner tty may still treat it as XOFF, in which case `C-q` resumes output.
 
@@ -149,7 +150,7 @@ letee -L <name> kill-server
 - `C-s C-s`: forward `C-s` to inner session
 - `C-s 1`–`C-s 9`: switch directly to numbered tracked target
 - `j` / `k` or arrows: move selection pointer (`›`) in focused region
-- `[` / `]`: give Agents/Sessions region more rows for current run
+- `[` / `]`: increase/decrease Agents share by configured percentage points for current run
 - `Left` / `Right`: cycle agent ordering mode (Priority / Session) when ordering row is selected
 - `Enter`: switch selected session or exact agent pane, or activate selected Add row
 - `e`: rename selected available tracked session
