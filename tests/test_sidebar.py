@@ -3645,7 +3645,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_sessions", return_value=[first, second]),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
+            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_, **__: release.wait(0.2)),
         ):
             run(screen)
 
@@ -3681,7 +3681,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_sessions", return_value=[target]),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(0.2)),
+            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_, **__: release.wait(0.2)),
         ):
             run(screen)
 
