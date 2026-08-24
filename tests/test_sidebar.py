@@ -1926,6 +1926,50 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertEqual(switches, [(first, False), (second, False)], display_targets)
         self.assertEqual(focuses, ["right"], display_targets)
 
+    def test_final_stale_navigation_clears_pending_target(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one", "two")),
+            current_target=first,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        result = sidebar.EffectResult(
+            Effect("switch", second, automatic=True), (), stale_navigation=True
+        )
+        actions = unittest.mock.Mock(
+            busy=False,
+            blocks_favorite_changes=False,
+            has_pending_navigation=False,
+        )
+        actions.submit.return_value = True
+        actions.poll.side_effect = [None, None, result]
+        display_targets = []
+        screen = FakeScreen([curses.KEY_DOWN, 10, STOP], size=(12, 30))
+
+        def draw(*args, **_kwargs):
+            display_targets.append(args[7])
+            return (2, None)
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[first, second]),
+            patch.object(sidebar, "_current_target", return_value=first),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", side_effect=draw),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+
+        self.assertEqual(display_targets[-1], first)
+
     def test_queued_input_is_processed_before_a_pending_navigation_is_polled(self):
         first = Target("local", "one")
         second = Target("local", "two")

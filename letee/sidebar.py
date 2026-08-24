@@ -2187,6 +2187,12 @@ def run(stdscr: curses.window) -> None:
                     if not result.error and pending_navigation == navigation:
                         pending_focus = navigation[0]
                     pending_navigation = None
+                elif (
+                    navigation is not None
+                    and pending_navigation == navigation
+                    and not actions.busy
+                ):
+                    pending_navigation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
                 unavailable_target_shown = _reconcile_active_session_effect(
