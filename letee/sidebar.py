@@ -821,7 +821,11 @@ def _navigation_target(effect: Effect) -> tuple[Target, str | None] | None:
     return None
 
 
-def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
+def _perform_effect(
+    effect: Effect,
+    favorites: tuple[Target, ...],
+    is_current: Callable[[], bool] | None = None,
+) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
     try:
         if (
@@ -843,7 +847,10 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 focus=False,
             )
         elif effect.kind == "focus":
-            cockpit.focus_right_pane()
+            if is_current is None:
+                cockpit.focus_right_pane()
+            elif cockpit.focus_right_pane(is_current) is False:
+                return EffectResult(effect, planned, stale_navigation=True)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
             sessions.kill_agent(effect.target)
         elif effect.kind == "create" and isinstance(effect.target, Target):
@@ -971,6 +978,7 @@ class EffectRunner:
         self._future: Future[EffectResult] | None = None
         self._effect: Effect | None = None
         self._pending_navigation: tuple[Effect, tuple[Target, ...]] | None = None
+        self._generation = 0
 
     @property
     def busy(self) -> bool:
@@ -986,6 +994,17 @@ class EffectRunner:
             "add_switch", "create", "kill", "rename"
         )
 
+    def _start(self, effect: Effect, favorites: tuple[Target, ...]) -> Future[EffectResult]:
+        generation = self._generation
+        if effect.kind == "focus":
+            return self._executor.submit(
+                _perform_effect,
+                effect,
+                favorites,
+                lambda: generation == self._generation,
+            )
+        return self._executor.submit(_perform_effect, effect, favorites)
+
     def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
         if self._future is not None:
             if (
@@ -996,11 +1015,12 @@ class EffectRunner:
                     "show_reconnecting", "show_missing", "show_unavailable",
                 )
             ):
+                self._generation += 1
                 self._pending_navigation = (effect, favorites)
                 return True
             return False
         self._effect = effect
-        self._future = self._executor.submit(_perform_effect, effect, favorites)
+        self._future = self._start(effect, favorites)
         return True
 
     def poll(self) -> EffectResult | None:
@@ -1014,7 +1034,7 @@ class EffectRunner:
         effect, favorites = self._pending_navigation
         self._pending_navigation = None
         self._effect = effect
-        self._future = self._executor.submit(_perform_effect, effect, favorites)
+        self._future = self._start(effect, favorites)
         return EffectResult(
             result.effect,
             result.favorites,

@@ -1917,7 +1917,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 patch.object(sidebar, "_draw", side_effect=draw_spy),
                 patch.object(sidebar, "_bell_targets", return_value=set()),
                 patch.object(sidebar.cockpit, "switch", side_effect=switch),
-                patch.object(sidebar.cockpit, "focus_right_pane", side_effect=lambda: focuses.append("right")),
+                patch.object(sidebar.cockpit, "focus_right_pane", side_effect=lambda _is_current=None: focuses.append("right")),
             ):
                 sidebar.run(screen)
         finally:
@@ -2026,7 +2026,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         switch = Effect("switch", Target("local", "two"))
         performed = []
 
-        def perform(effect, favorites):
+        def perform(effect, favorites, _is_current=None):
             performed.append(effect)
             if effect == focus:
                 started.set()
@@ -2050,6 +2050,42 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             self.assertEqual(performed, [focus, switch])
             self.assertTrue(results[0].stale_navigation)
             self.assertFalse(results[1].stale_navigation)
+        finally:
+            release.set()
+            runner.close()
+
+    def test_effect_runner_cancels_focus_before_selecting_after_new_navigation(self):
+        started = threading.Event()
+        release = threading.Event()
+        focus = Effect("focus", Target("local", "one"))
+        switch = Effect("switch", Target("local", "two"))
+
+        def require_right_pane():
+            started.set()
+            release.wait(1)
+            return "%2"
+
+        runner = sidebar.EffectRunner()
+        try:
+            with (
+                patch.object(sidebar.cockpit, "_require_right_pane", side_effect=require_right_pane),
+                patch.object(sidebar.cockpit.tmux, "tmux") as tmux_call,
+                patch.object(sidebar.cockpit, "switch"),
+            ):
+                self.assertTrue(runner.submit(focus, ()))
+                self.assertTrue(started.wait(1))
+                self.assertTrue(runner.submit(switch, ()))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+
+            self.assertTrue(results[0].stale_navigation)
+            self.assertFalse(results[1].stale_navigation)
+            tmux_call.assert_not_called()
         finally:
             release.set()
             runner.close()
@@ -2083,7 +2119,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         getch = screen.getch
         screen.getch = lambda: (time.sleep(0.002), getch())[1]
 
-        def perform(effect, favorites):
+        def perform(effect, favorites, _is_current=None):
             performed.append(effect)
             if effect == reconnect:
                 started.set()

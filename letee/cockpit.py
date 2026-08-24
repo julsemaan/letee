@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .config import ensure_config, load_hosts, load_prefix, load_sidebar_width
@@ -403,8 +404,12 @@ def _require_right_pane() -> str:
     return pane
 
 
-def focus_right_pane() -> None:
-    tmux.tmux("select-pane", "-t", _require_right_pane())
+def focus_right_pane(is_current: Callable[[], bool] | None = None) -> bool:
+    pane = _require_right_pane()
+    if is_current is not None and not is_current():
+        return False
+    tmux.tmux("select-pane", "-t", pane)
+    return True
 
 
 def switch(
