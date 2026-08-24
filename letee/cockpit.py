@@ -175,6 +175,10 @@ def _install_bindings(prefix: str, _sidebar_pane: str, right_pane: str) -> None:
 
 def _enable_mouse() -> None:
     tmux.tmux("set-option", "-t", tmux.SESSION, "mouse", "on")
+    tmux.tmux(
+        "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", r"\;", "send-keys", "-M", "-t", "="
+    )
+    tmux.tmux("bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "=")
     tmux.tmux("unbind-key", "-q", "-T", "root", "MouseDrag1Border")
 
 
@@ -399,7 +403,17 @@ def _require_right_pane() -> str:
     return pane
 
 
-def switch(target: Target, attach_command: str, agent_id: str | None = None) -> None:
+def focus_right_pane() -> None:
+    tmux.tmux("select-pane", "-t", _require_right_pane())
+
+
+def switch(
+    target: Target,
+    attach_command: str,
+    agent_id: str | None = None,
+    *,
+    focus: bool = True,
+) -> None:
     pane = _require_right_pane()
     tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
     if agent_id:
@@ -408,7 +422,8 @@ def switch(target: Target, attach_command: str, agent_id: str | None = None) -> 
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION)
     tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
     tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command)
-    tmux.tmux("select-pane", "-t", pane)
+    if focus:
+        focus_right_pane()
 
 
 def rename_target(old: Target, new: Target) -> None:

@@ -462,6 +462,10 @@ class CockpitLayoutTest(unittest.TestCase):
             tmux_call.call_args_list,
             [
                 unittest.mock.call("set-option", "-t", "letee", "mouse", "on"),
+                unittest.mock.call(
+                    "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", r"\;", "send-keys", "-M", "-t", "="
+                ),
+                unittest.mock.call("bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "="),
                 unittest.mock.call("unbind-key", "-q", "-T", "root", "MouseDrag1Border"),
             ],
         )
@@ -804,6 +808,27 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("select-pane", "-t", "%2"),
             ],
         )
+
+    def test_switch_can_replace_right_pane_without_focusing_it(self):
+        calls = []
+        target = cockpit.Target("local", "work")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)),
+        ):
+            cockpit.switch(target, "attach work", focus=False)
+
+        self.assertNotIn(("select-pane", "-t", "%2"), calls)
+        self.assertEqual(calls[-1], ("respawn-pane", "-k", "-t", "%2", "attach work"))
+
+    def test_focus_right_pane_selects_the_managed_right_pane(self):
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.focus_right_pane()
+
+        tmux_call.assert_called_once_with("select-pane", "-t", "%2")
 
     def test_agent_switch_persists_exact_agent_and_getter_recovers_it(self):
         calls = []

@@ -195,7 +195,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             restored = sidebar._sync_active_session(target, snapshot(local=("work",)), pending)
 
         show_missing.assert_called_once_with(target)
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), focus=False)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -215,7 +215,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
 
         show_reconnecting.assert_called_once_with(target)
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), focus=False)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -263,7 +263,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         ):
             sidebar.run(screen)
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), focus=False)
         self.assertEqual(draw.call_args_list[-1].args[3], "tmux unavailable")
 
     def test_production_loop_restores_reconnected_active_ssh_session_without_input(self):
@@ -307,12 +307,12 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             patch.object(sidebar, "_draw", return_value=(2, None)),
             patch.object(sidebar, "_bell_targets", return_value=set()),
             patch.object(sidebar.cockpit, "show_reconnecting", side_effect=lambda _: events.append("reconnecting")),
-            patch.object(sidebar.cockpit, "switch", side_effect=lambda *_: events.append("switch")) as switch,
+            patch.object(sidebar.cockpit, "switch", side_effect=lambda *_, **__: events.append("switch")) as switch,
         ):
             sidebar.run(screen)
 
         self.assertEqual(events, ["reconnecting", "switch"])
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), focus=False)
         observed = [call.args[0].effect for call in poller.observe_effect.call_args_list]
         self.assertEqual(
             observed,
@@ -365,7 +365,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
         events = []
 
-        def switch(*_args):
+        def switch(*_args, **_kwargs):
             events.append(("switch", actions.busy))
 
         with (
@@ -723,9 +723,43 @@ class AgentSidebarTest(unittest.TestCase):
         with patch("letee.sidebar.cockpit.switch") as switch:
             _execute(Effect("switch_pane", pane, message="id"), state, unittest.mock.Mock(), 5)
 
-        switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work", "id")
+        switch.assert_called_once_with(
+            pane.target,
+            "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work",
+            "id",
+            focus=False,
+        )
         self.assertEqual(state.status, "")
         self.assertIsNone(state.status_deadline)
+
+    def test_switch_effect_replaces_the_pane_without_focusing_right(self):
+        target = Target("local", "work")
+        with patch.object(sidebar.cockpit, "switch") as switch:
+            result = sidebar._perform_effect(Effect("switch", target), ())
+
+        self.assertFalse(result.error)
+        switch.assert_called_once_with(
+            target, sidebar.sessions.attach_command(target), focus=False
+        )
+
+    def test_focus_effect_selects_right_pane_in_the_action_worker(self):
+        target = Target("local", "work")
+        with patch.object(sidebar.cockpit, "focus_right_pane") as focus:
+            result = sidebar._perform_effect(Effect("focus", target), ())
+
+        self.assertFalse(result.error)
+        focus.assert_called_once_with()
+
+    def test_failed_switch_does_not_focus_right(self):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch.object(sidebar.cockpit, "switch", side_effect=OSError("connection refused")),
+            patch.object(sidebar.cockpit, "focus_right_pane") as focus,
+        ):
+            result = sidebar._perform_effect(Effect("switch", target), ())
+
+        self.assertEqual(result.error, "connection refused")
+        focus.assert_not_called()
 
     def test_kill_agent_refreshes_discovery_without_changing_favorites(self):
         target = Target("local", "work")
@@ -1551,7 +1585,7 @@ class SidebarStateTest(unittest.TestCase):
             self.assertFalse(_execute(Effect("create", target=target), state, poller, 5))
 
         create.assert_called_once_with(target)
-        switch.assert_called_once_with(target, "attach")
+        switch.assert_called_once_with(target, "attach", focus=False)
         self.assertEqual(state.pending_selection, target)
         poller.refresh.assert_called_once_with()
 
@@ -1586,7 +1620,7 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(state.favorites, [target])
         save.assert_called_once_with([target])
-        switch.assert_called_once_with(target, "attach")
+        switch.assert_called_once_with(target, "attach", focus=False)
         self.assertEqual(state.status, "")
         self.assertIsNone(state.status_deadline)
 
@@ -1832,6 +1866,150 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             release.set()
             runner.close()
 
+    def test_slow_switch_focuses_only_latest_clicked_target(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one", "two")),
+            current_target=first,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        release = threading.Event()
+        started = threading.Event()
+        switches = []
+        focuses = []
+        display_targets = []
+        screen = FakeScreen(
+            [10, curses.KEY_DOWN, 10, *([-1] * 30), STOP],
+            size=(12, 30),
+        )
+        getch = screen.getch
+        screen.getch = lambda: (time.sleep(0.001), getch())[1]
+
+        def switch(target, _command, *, focus=True):
+            switches.append((target, focus))
+            if target == first:
+                started.set()
+                release.wait(1)
+            if focus:
+                focuses.append(target)
+
+        def draw_spy(*args, **_kwargs):
+            display_targets.append(args[7])
+            if args[7] == second:
+                started.wait(1)
+                release.set()
+                time.sleep(0.01)
+            return (2, None)
+
+        try:
+            with (
+                patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                patch.object(sidebar, "load_hosts", return_value=[]),
+                patch.object(sidebar, "load_sessions", return_value=[first, second]),
+                patch.object(sidebar, "_current_target", return_value=first),
+                patch.object(sidebar, "_init_colors"),
+                patch.object(sidebar, "_mouse_mask"),
+                patch.object(sidebar.curses, "curs_set"),
+                patch.object(sidebar, "_draw", side_effect=draw_spy),
+                patch.object(sidebar, "_bell_targets", return_value=set()),
+                patch.object(sidebar.cockpit, "switch", side_effect=switch),
+                patch.object(sidebar.cockpit, "focus_right_pane", side_effect=lambda: focuses.append("right")),
+            ):
+                sidebar.run(screen)
+        finally:
+            release.set()
+
+        self.assertEqual(switches, [(first, False), (second, False)], display_targets)
+        self.assertEqual(focuses, ["right"], display_targets)
+
+    def test_queued_input_is_processed_before_a_pending_navigation_is_polled(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        events = []
+
+        class Runner:
+            busy = True
+            blocks_favorite_changes = False
+            has_pending_navigation = True
+
+            def submit(self, effect, _favorites):
+                events.append(("submit", effect))
+                self.has_pending_navigation = False
+                return True
+
+            def poll(self):
+                events.append(("poll",))
+                return None
+
+            def close(self):
+                pass
+
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one", "two")),
+            current_target=first,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_DOWN, 10, STOP], size=(12, 30))
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=Runner()),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[first, second]),
+            patch.object(sidebar, "_current_target", return_value=first),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+
+        self.assertEqual([event[0] for event in events], ["submit", "poll"])
+        self.assertEqual(events[0][1].target, second)
+
+    def test_effect_runner_allows_new_navigation_while_focus_is_finishing(self):
+        started = threading.Event()
+        release = threading.Event()
+        focus = Effect("focus", Target("local", "one"))
+        switch = Effect("switch", Target("local", "two"))
+        performed = []
+
+        def perform(effect, favorites):
+            performed.append(effect)
+            if effect == focus:
+                started.set()
+                release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(focus, ()))
+                self.assertTrue(started.wait(1))
+                self.assertTrue(runner.submit(switch, ()))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+
+            self.assertEqual(performed, [focus, switch])
+            self.assertTrue(results[0].stale_navigation)
+            self.assertFalse(results[1].stale_navigation)
+        finally:
+            release.set()
+            runner.close()
+
     def test_effect_runner_rejects_non_navigation_while_busy(self):
         release = threading.Event()
         switch = Effect("switch", Target("local", "one"))
@@ -1850,20 +2028,100 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             release.set()
             runner.close()
 
-    def test_effect_runner_rejects_navigation_behind_non_navigation(self):
+    def test_click_is_queued_while_reconnecting_effect_is_busy(self):
+        first = Target("ssh", "one", "dev")
+        second = Target("local", "two")
+        reconnect = Effect("show_reconnecting", first)
+        started = threading.Event()
         release = threading.Event()
-        create = Effect("create", Target("local", "new"))
-        switch = Effect("switch", Target("local", "one"))
+        performed = []
+        screen = FakeScreen([curses.KEY_MOUSE, *([-1] * 30), STOP], size=(12, 30))
+        getch = screen.getch
+        screen.getch = lambda: (time.sleep(0.002), getch())[1]
 
         def perform(effect, favorites):
-            release.wait(1)
+            performed.append(effect)
+            if effect == reconnect:
+                started.set()
+                release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        release_timer = threading.Timer(0.2, release.set)
+        try:
+            with patch.object(sidebar, "_perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(reconnect, ()))
+                self.assertTrue(started.wait(1))
+                release_timer.start()
+                poller = unittest.mock.Mock(
+                    snapshot=snapshot(
+                        local=("two",),
+                        remotes={"dev": source("ssh", host="dev", available=False)},
+                    ),
+                    current_target=first,
+                    bell_target=None,
+                    current_agent=None,
+                    pane_active=True,
+                )
+                poller.tick.return_value = False
+                def draw(*args, **_kwargs):
+                    if args[7] == second:
+                        release.set()
+                    return (2, None)
+
+                with (
+                    patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                    patch.object(sidebar, "EffectRunner", return_value=runner),
+                    patch.object(sidebar, "load_hosts", return_value=[]),
+                    patch.object(sidebar, "load_sessions", return_value=[second]),
+                    patch.object(sidebar, "_current_target", return_value=first),
+                    patch.object(sidebar, "_init_colors"),
+                    patch.object(sidebar, "_mouse_mask"),
+                    patch.object(sidebar.curses, "curs_set"),
+                    patch.object(
+                        sidebar.curses,
+                        "getmouse",
+                        return_value=(0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                    ),
+                    patch.object(sidebar, "_draw", side_effect=draw),
+                    patch.object(sidebar, "_bell_targets", return_value=set()),
+                ):
+                    sidebar.run(screen)
+        finally:
+            release.set()
+            release_timer.cancel()
+            runner.close()
+
+        self.assertIn(Effect("switch", second), performed)
+
+    def test_effect_runner_queues_navigation_behind_non_navigation(self):
+        release = threading.Event()
+        reconnect = Effect("show_reconnecting", Target("ssh", "one", "dev"))
+        switch = Effect("switch", Target("local", "one"))
+        performed = []
+
+        def perform(effect, favorites):
+            performed.append(effect)
+            if effect == reconnect:
+                release.wait(1)
             return sidebar.EffectResult(effect, favorites)
 
         runner = sidebar.EffectRunner()
         try:
             with patch("letee.sidebar._perform_effect", side_effect=perform):
-                self.assertTrue(runner.submit(create, ()))
-                self.assertFalse(runner.submit(switch, ()))
+                self.assertTrue(runner.submit(reconnect, ()))
+                self.assertTrue(runner.submit(switch, ()))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+
+            self.assertEqual(performed, [reconnect, switch])
+            self.assertFalse(results[0].stale_navigation)
+            self.assertFalse(results[1].stale_navigation)
         finally:
             release.set()
             runner.close()
@@ -3255,7 +3513,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(target, sidebar.sessions.pane_attach_command(second), "second")
+        switch.assert_called_once_with(target, sidebar.sessions.pane_attach_command(second), "second", focus=False)
 
     def test_body_press_activates_and_incidental_motion_does_not_start_move(self):
         target = Target("local", "one")
@@ -3314,7 +3572,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), focus=False)
 
     def test_slow_session_switch_marks_target_active_before_action_completes(self):
         first = Target("local", "one")
@@ -3459,7 +3717,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._current_target", return_value=second),
             patch("letee.sidebar._agent_entries", return_value=[]),
             patch("letee.sidebar._bell_targets", return_value=set()),
-            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
+            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_, **__: release.wait(1)),
             patch("letee.sidebar.save_sessions") as save_sessions,
         ):
             timer.start()
@@ -3732,7 +3990,32 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one")
+        switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one", focus=False)
+
+    def test_release_only_click_switches_tracked_session(self):
+        target = Target("local", "one")
+        entries = [Entry("one", "session", target, tracked=True)]
+        screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(12, 30))
+
+        with (
+            patch("letee.sidebar.curses.curs_set"),
+            patch("letee.sidebar.curses.mousemask"),
+            patch(
+                "letee.sidebar.curses.getmouse",
+                return_value=(0, 0, 2, 0, curses.BUTTON1_RELEASED),
+            ),
+            patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._entries", return_value=entries),
+            patch("letee.sidebar._agent_entries", return_value=[]),
+            patch("letee.sidebar._bell_targets", return_value=set()),
+            patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            run(screen)
+
+        switch.assert_called_once_with(
+            target, "env -u TMUX tmux -T clipboard new-session -A -s one", focus=False
+        )
 
     def test_press_release_selects_and_switches_untracked_session(self):
         target = Target("local", "one")
@@ -3759,7 +4042,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         switch.assert_called_once_with(
-            target, "env -u TMUX tmux -T clipboard new-session -A -s one"
+            target, "env -u TMUX tmux -T clipboard new-session -A -s one", focus=False
         )
 
     def test_press_release_opens_add_button(self):
@@ -3805,7 +4088,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         target = Target("local", "two")
         switch.assert_called_once_with(
-            target, "env -u TMUX tmux -T clipboard new-session -A -s two"
+            target, "env -u TMUX tmux -T clipboard new-session -A -s two", focus=False
         )
 
     def test_right_click_press_opens_menu_without_switching(self):
@@ -4033,7 +4316,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         # selection stays at index 2 ("two") after wheel, Enter switches to "two"
         target_two = Target("local", "two")
-        switch.assert_called_once_with(target_two, "attach")
+        switch.assert_called_once_with(target_two, "attach", focus=False)
 
     def test_malformed_mouse_event_is_ignored(self):
         screen = FakeScreen([curses.KEY_MOUSE, STOP])
@@ -5280,7 +5563,7 @@ class PrefixActionTest(unittest.TestCase):
             self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
 
         switch.assert_called_once_with(
-            target, sidebar.sessions.pane_attach_command(second_pane), "second"
+            target, sidebar.sessions.pane_attach_command(second_pane), "second", focus=False
         )
 
     def test_alert_prefix_without_alerts_shows_feedback_and_does_not_navigate(self):
