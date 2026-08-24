@@ -1306,6 +1306,18 @@ class AddMouseTest(unittest.TestCase):
 
         add_back.assert_called_once()
 
+    def test_name_drag_release_over_back_does_not_navigate(self):
+        add_back, _ = self._run_mouse(
+            [curses.KEY_F11, curses.KEY_ENTER, curses.KEY_MOUSE, curses.KEY_MOUSE, STOP],
+            snapshot(),
+            [
+                (0, 0, 1, 0, curses.BUTTON1_PRESSED),
+                (0, 39, 0, 0, curses.BUTTON1_RELEASED),
+            ],
+        )
+
+        add_back.assert_not_called()
+
     def test_up_selects_back_when_existing_view_has_no_sessions(self):
         add_back, _ = self._run_mouse(
             [curses.KEY_F11, curses.KEY_DOWN, curses.KEY_ENTER, curses.KEY_UP, curses.KEY_ENTER, STOP],
