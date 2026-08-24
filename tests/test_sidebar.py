@@ -2391,11 +2391,14 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                         Effect("switch", selected_target, automatic=True), ()
                     )
                 )
+                future = poller._future
                 release.set()
                 deadline = time.monotonic() + 1
-                while not poller.tick(1) and time.monotonic() < deadline:
+                while not future.done() and time.monotonic() < deadline:
                     time.sleep(0.001)
-                self.assertEqual(poller.snapshot.sessions, (target,))
+                self.assertTrue(future.done())
+                self.assertFalse(poller.tick(0))
+                self.assertEqual(poller.snapshot.sessions, ())
                 self.assertEqual(poller.current_target, selected_target)
                 self.assertEqual(poller._generation, 1)
                 self.assertIsNone(poller.bell_target)
