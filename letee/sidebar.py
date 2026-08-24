@@ -2367,15 +2367,18 @@ def run(stdscr: curses.window) -> None:
                                 isinstance(mouse_col, int)
                                 and isinstance(row, int)
                                 and isinstance(mouse_state, int)
-                                and row == 0
-                                and add_col is not None
-                                and add_col <= mouse_col < stdscr.getmaxyx()[1]
-                                and mouse_click_activates(mouse_state)
                             ):
-                                _add_back(state, poller.snapshot)
-                                curses.curs_set(0)
-                                rebuild()
-                                break
+                                mouse_activation = mouse_click_activates(mouse_state)
+                                if (
+                                    row == 0
+                                    and add_col is not None
+                                    and add_col <= mouse_col < stdscr.getmaxyx()[1]
+                                    and mouse_activation
+                                ):
+                                    _add_back(state, poller.snapshot)
+                                    curses.curs_set(0)
+                                    rebuild()
+                                    break
                     else:
                         try:
                             effect = (
