@@ -1318,6 +1318,18 @@ def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: i
     return best
 
 
+def _max_scroll_offset(entries: list[Entry], viewport_height: int) -> int:
+    body = max(1, viewport_height - 2)
+    row_offsets = [0]
+    for entry in entries:
+        row_offsets.append(row_offsets[-1] + _entry_height(entry))
+    total = row_offsets[-1]
+    for offset in range(len(entries)):
+        if total - row_offsets[offset] + int(offset > 0) <= body:
+            return offset
+    return max(0, len(entries) - 1)
+
+
 def _entry_at_row(
     entries: list[Entry], selected: int, row: int, height: int, footer_height: int, top: int = 1,
     scroll_offset: int | None = None,
@@ -2046,21 +2058,6 @@ def run(stdscr: curses.window) -> None:
             cancel_move()
         _sync_selection(state, entries)
         _sync_agent_selection(state, agent_entries)
-        if state.agent_scroll_offset is not None:
-            footer_top, _, _, separator = _agent_layout(
-                stdscr.getmaxyx()[0], footer_height, agent_entries,
-                state.agent_percentage, state.filtering,
-            )
-            viewport_height = footer_top - separator + 1
-            max_offset = 0
-            for offset in range(len(agent_entries)):
-                _, end = _viewport(
-                    agent_entries, state.agent_selected_index, viewport_height, offset
-                )
-                if end == len(agent_entries):
-                    max_offset = offset
-                    break
-            state.agent_scroll_offset = min(state.agent_scroll_offset, max_offset)
         state.scroll_offset = None
 
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
@@ -2225,6 +2222,15 @@ def run(stdscr: curses.window) -> None:
             dimmed = False
             working_agents = any(entry.status == "working" for entry in agent_entries)
             spinner_frame = _spinner_frame(now) if working_agents else None
+            if state.agent_scroll_offset is not None:
+                footer_top, _, _, separator = _agent_layout(
+                    stdscr.getmaxyx()[0], footer_height, agent_entries,
+                    state.agent_percentage, state.filtering,
+                )
+                state.agent_scroll_offset = min(
+                    state.agent_scroll_offset,
+                    _max_scroll_offset(agent_entries, footer_top - separator + 1),
+                )
             render_state = (
                 tuple(entries), state.selected_index, state.status, state.status_region, state.filter_text,
                 state.filtering, state.add_view, state.creation_host, state.creation_text,
@@ -2438,17 +2444,10 @@ def run(stdscr: curses.window) -> None:
                                 if mouse_state & wheel_up:
                                     scroll_offset = max(0, scroll_offset - 1)
                                 else:
-                                    body = max(1, viewport_height - 2)
-                                    row_offsets = [0]
-                                    for entry in scroll_entries:
-                                        row_offsets.append(row_offsets[-1] + _entry_height(entry))
-                                    total = row_offsets[-1]
-                                    max_offset = max(0, len(scroll_entries) - 1)
-                                    for i in range(len(scroll_entries)):
-                                        if total - row_offsets[i] + int(i > 0) <= body:
-                                            max_offset = i
-                                            break
-                                    scroll_offset = min(max_offset, scroll_offset + 1)
+                                    scroll_offset = min(
+                                        _max_scroll_offset(scroll_entries, viewport_height),
+                                        scroll_offset + 1,
+                                    )
                                 if over_agents:
                                     state.agent_scroll_offset = scroll_offset
                                 else:

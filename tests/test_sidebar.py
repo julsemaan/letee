@@ -5065,6 +5065,50 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         self.assertEqual(captured, [None, 4, 0])
 
+    def test_agent_panel_resize_clamps_agent_scroll_offset(self):
+        target, data = self._agent_data(6)
+        captured = []
+        draw_signature = inspect.signature(sidebar._draw)
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen(
+            [curses.KEY_MOUSE] * 4 + [ord("["), STOP],
+            size=(20, 40),
+        )
+
+        def draw_spy(*args, **kwargs):
+            bound = draw_signature.bind(*args, **kwargs)
+            captured.append((
+                bound.arguments["agent_percentage"],
+                bound.arguments["agent_scroll_offset"],
+            ))
+            return 2, None
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(
+                sidebar.curses,
+                "getmouse",
+                side_effect=[(0, 0, 14, 0, curses.BUTTON5_PRESSED)] * 4,
+            ),
+            patch.object(sidebar, "load_agent_panel_resize_step", return_value=60),
+            patch.object(sidebar, "_draw", side_effect=draw_spy),
+        ):
+            run(screen)
+
+        self.assertEqual(captured, [(40, None), (40, 4), (100, 0)])
+
 
 class AgentOrderingTest(unittest.TestCase):
     def _make_agent(self, target, window_id, pane_id, agent_id, status):
