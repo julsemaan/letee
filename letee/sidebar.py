@@ -2541,9 +2541,11 @@ def run(stdscr: curses.window) -> None:
                             session_start = priority_start + _cell_width(priority) + 2
                             if isinstance(mouse_col, int):
                                 if priority_start <= mouse_col < priority_start + _cell_width(priority):
+                                    state.agent_scroll_offset = None
                                     state.agent_ordering = "priority"
                                     rebuild()
                                 elif session_start <= mouse_col < session_start + _cell_width(session):
+                                    state.agent_scroll_offset = None
                                     state.agent_ordering = "session"
                                     rebuild()
                             continue

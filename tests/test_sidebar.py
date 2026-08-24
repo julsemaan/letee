@@ -5309,17 +5309,33 @@ class AgentOrderingTest(unittest.TestCase):
             run(screen)
         show_menu.assert_not_called()
 
-    def test_mouse_selects_session_ordering_label(self):
+    def test_mouse_ordering_resets_agent_scroll_offset(self):
         target = Target("local", "work")
-        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        panes = [PaneTarget(target, "@1", f"%{index}", "/tmp/tmux") for index in range(1, 4)]
         data = SessionSnapshot(
             SourceSnapshot(
                 True, (), frozenset(),
-                agents=(AgentEntry(pane, "id", "pi", "working"),),
+                agents=tuple(
+                    AgentEntry(pane, f"id-{index}", "pi", "working")
+                    for index, pane in enumerate(panes, 1)
+                ),
             ),
             {},
         )
-        screen = FakeScreen([curses.KEY_F7, curses.KEY_MOUSE, STOP], size=(12, 40))
+        captured = []
+        draw_signature = inspect.signature(sidebar._draw)
+
+        def draw_spy(*args, **kwargs):
+            bound = draw_signature.bind(*args, **kwargs)
+            captured.append((
+                bound.arguments["agent_scroll_offset"], bound.arguments["agent_ordering"]
+            ))
+            return 2, None
+
+        screen = FakeScreen(
+            [curses.KEY_F7, curses.KEY_MOUSE, -1, curses.KEY_MOUSE, -1, curses.KEY_MOUSE, STOP],
+            size=(12, 40),
+        )
         poller = unittest.mock.Mock(
             snapshot=data, current_target=None, bell_target=None,
             current_agent=None, pane_active=True,
@@ -5333,11 +5349,15 @@ class AgentOrderingTest(unittest.TestCase):
             patch.object(sidebar, "_init_colors"),
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar.curses, "curs_set"),
-            patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
-            patch.object(sidebar.curses, "getmouse", return_value=(0, 14, 6, 0, curses.BUTTON1_PRESSED)),
+            patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar.curses, "getmouse", side_effect=(
+                (0, 0, 8, 0, curses.BUTTON5_PRESSED),
+                (0, 0, 8, 0, curses.BUTTON4_PRESSED),
+                (0, 14, 6, 0, curses.BUTTON1_PRESSED),
+            )),
         ):
             run(screen)
-        self.assertEqual(draw.call_args_list[-1].kwargs["agent_ordering"], "session")
+        self.assertEqual(captured[-2:], [(0, "priority"), (None, "session")])
 
 
 class PrefixActionTest(unittest.TestCase):
