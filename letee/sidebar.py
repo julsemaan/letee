@@ -2047,9 +2047,20 @@ def run(stdscr: curses.window) -> None:
         _sync_selection(state, entries)
         _sync_agent_selection(state, agent_entries)
         if state.agent_scroll_offset is not None:
-            state.agent_scroll_offset = min(
-                state.agent_scroll_offset, max(0, len(agent_entries) - 1)
+            footer_top, _, _, separator = _agent_layout(
+                stdscr.getmaxyx()[0], footer_height, agent_entries,
+                state.agent_percentage, state.filtering,
             )
+            viewport_height = footer_top - separator + 1
+            max_offset = 0
+            for offset in range(len(agent_entries)):
+                _, end = _viewport(
+                    agent_entries, state.agent_selected_index, viewport_height, offset
+                )
+                if end == len(agent_entries):
+                    max_offset = offset
+                    break
+            state.agent_scroll_offset = min(state.agent_scroll_offset, max_offset)
         state.scroll_offset = None
 
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:

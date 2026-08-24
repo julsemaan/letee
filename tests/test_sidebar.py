@@ -5063,7 +5063,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         ):
             run(screen)
 
-        self.assertEqual(captured, [None, 4, 1])
+        self.assertEqual(captured, [None, 4, 0])
 
 
 class AgentOrderingTest(unittest.TestCase):
