@@ -176,7 +176,7 @@ def _install_bindings(prefix: str, _sidebar_pane: str, right_pane: str) -> None:
 def _enable_mouse() -> None:
     tmux.tmux("set-option", "-t", tmux.SESSION, "mouse", "on")
     tmux.tmux(
-        "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", r"\;", "send-keys", "-M", "-t", "="
+        "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", ";", "send-keys", "-M", "-t", "="
     )
     tmux.tmux("bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "=")
     tmux.tmux("unbind-key", "-q", "-T", "root", "MouseDrag1Border")

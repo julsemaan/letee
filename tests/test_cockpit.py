@@ -463,7 +463,7 @@ class CockpitLayoutTest(unittest.TestCase):
             [
                 unittest.mock.call("set-option", "-t", "letee", "mouse", "on"),
                 unittest.mock.call(
-                    "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", r"\;", "send-keys", "-M", "-t", "="
+                    "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", ";", "send-keys", "-M", "-t", "="
                 ),
                 unittest.mock.call("bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "="),
                 unittest.mock.call("unbind-key", "-q", "-T", "root", "MouseDrag1Border"),
