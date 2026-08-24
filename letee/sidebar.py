@@ -1090,22 +1090,22 @@ class AsyncStatusPoller:
         if self._future is not None and self._future.done():
             result = self._future.result()
             self._future = None
-            changed = result.snapshot != self.snapshot
-            self.snapshot = result.snapshot
             if result.refreshed is True:
                 self._refresh_pending = any(
                     command == "refresh" for command, _ in self._commands
                 )
-            if self._refresh_target is not None:
-                target = self._refresh_target
-                source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
-                if (
-                    target in self.snapshot.sessions
-                    or (result.refreshed is True and target.kind == "local")
-                    or (source is not None and not source.available)
-                ):
-                    self._refresh_target = None
             if result.generation == self._generation:
+                changed = result.snapshot != self.snapshot
+                self.snapshot = result.snapshot
+                if self._refresh_target is not None:
+                    target = self._refresh_target
+                    source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
+                    if (
+                        target in self.snapshot.sessions
+                        or (result.refreshed is True and target.kind == "local")
+                        or (source is not None and not source.available)
+                    ):
+                        self._refresh_target = None
                 self.current_target = result.current_target
                 self.bell_target = result.bell_target
                 if self._pending_agent is None:
