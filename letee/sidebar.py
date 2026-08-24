@@ -1019,7 +1019,7 @@ class EffectRunner:
             result.effect,
             result.favorites,
             result.error,
-            stale_navigation=result.effect.kind in ("switch", "switch_pane", "focus"),
+            stale_navigation=True,
         )
 
     def close(self) -> None:

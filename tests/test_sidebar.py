@@ -2138,9 +2138,9 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         self.assertIn(Effect("switch", second), performed)
 
-    def test_effect_runner_queues_navigation_behind_non_navigation(self):
+    def test_effect_runner_marks_queued_automatic_reconnecting_as_stale(self):
         release = threading.Event()
-        reconnect = Effect("show_reconnecting", Target("ssh", "one", "dev"))
+        reconnect = Effect("show_reconnecting", Target("ssh", "one", "dev"), automatic=True)
         switch = Effect("switch", Target("local", "one"))
         performed = []
 
@@ -2164,7 +2164,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                     time.sleep(0.001)
 
             self.assertEqual(performed, [reconnect, switch])
-            self.assertFalse(results[0].stale_navigation)
+            self.assertTrue(results[0].stale_navigation)
             self.assertFalse(results[1].stale_navigation)
         finally:
             release.set()
