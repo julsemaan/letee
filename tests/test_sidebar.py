@@ -4578,6 +4578,33 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         state = SidebarState()
         self.assertIsNone(state.scroll_offset)
 
+    def test_wheel_outside_list_regions_does_not_scroll_sessions(self):
+        entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
+
+        for row in (0, 7):
+            with self.subTest(row=row):
+                captured = []
+
+                def draw_spy(*args, **kwargs):
+                    captured.append(args[12] if len(args) > 12 else None)
+                    return (2, None)
+
+                screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(8, 30))
+                with (
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar.curses.mousemask"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar._entries", return_value=entries),
+                    patch("letee.sidebar._agent_entries", return_value=[]),
+                    patch("letee.sidebar._bell_targets", return_value=set()),
+                    patch("letee.sidebar._current_target", return_value=None),
+                    patch("letee.sidebar._draw", side_effect=draw_spy),
+                    patch("letee.sidebar.curses.getmouse", return_value=(0, 0, row, 0, curses.BUTTON5_PRESSED)),
+                ):
+                    run(screen)
+
+                self.assertEqual(captured, [None])
+
     def test_wheel_up_decrements_scroll_offset_not_selection(self):
         entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
         captured = []
@@ -4597,7 +4624,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON4_PRESSED)),
         ):
             run(screen)
 
@@ -4626,7 +4653,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON5_PRESSED)),
         ):
             run(screen)
 
@@ -4639,7 +4666,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
     def test_wheel_down_reaches_bottom_of_session_region(self):
         entries = [Entry(str(i), "session", Target("local", str(i)), tracked=True) for i in range(8)]
         captured = []
-        mouse_events = [(0, 0, 0, 0, curses.BUTTON5_PRESSED)] * 10
+        mouse_events = [(0, 0, 2, 0, curses.BUTTON5_PRESSED)] * 10
         screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
@@ -4683,7 +4710,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON5_PRESSED)),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON5_PRESSED)),
         ):
             run(screen)
 
@@ -4693,9 +4720,9 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         entries = [Entry(str(i), "session", Target("local", str(i))) for i in range(10)]
         captured = []
         mouse_events = [
-            (0, 0, 0, 0, curses.BUTTON4_PRESSED),
-            (0, 0, 0, 0, curses.BUTTON4_PRESSED),
-            (0, 0, 0, 0, curses.BUTTON5_PRESSED),
+            (0, 0, 2, 0, curses.BUTTON4_PRESSED),
+            (0, 0, 2, 0, curses.BUTTON4_PRESSED),
+            (0, 0, 2, 0, curses.BUTTON5_PRESSED),
         ]
         screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(8, 30))
 
@@ -4741,7 +4768,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON4_PRESSED)),
         ):
             run(screen)
 
@@ -4771,7 +4798,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON4_PRESSED)),
         ):
             run(screen)
 
@@ -4800,7 +4827,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 0, 0, curses.BUTTON4_PRESSED)),
+            patch("letee.sidebar.curses.getmouse", return_value=(0, 0, 2, 0, curses.BUTTON4_PRESSED)),
             patch("letee.sidebar.cockpit.switch"),
             patch("letee.sidebar.sessions.attach_command", return_value="attach"),
         ):

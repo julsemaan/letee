@@ -2405,41 +2405,43 @@ def run(stdscr: curses.window) -> None:
                             over_agents = (
                                 state.add_view is None and separator < row < footer_top
                             )
-                            scroll_entries = agent_entries if over_agents else entries
-                            selected = (
-                                state.agent_selected_index if over_agents else state.selected_index
-                            )
-                            viewport_height = (
-                                footer_top - separator + 1
-                                if over_agents
-                                else separator - session_top + 2
-                            )
-                            scroll_offset = (
-                                state.agent_scroll_offset if over_agents else state.scroll_offset
-                            )
-                            if scroll_offset is None:
-                                start, _ = _viewport(
-                                    scroll_entries, selected, viewport_height
+                            over_sessions = session_top <= row < separator
+                            if over_agents or over_sessions:
+                                scroll_entries = agent_entries if over_agents else entries
+                                selected = (
+                                    state.agent_selected_index if over_agents else state.selected_index
                                 )
-                                scroll_offset = start
-                            if mouse_state & wheel_up:
-                                scroll_offset = max(0, scroll_offset - 1)
-                            else:
-                                body = max(1, viewport_height - 2)
-                                row_offsets = [0]
-                                for entry in scroll_entries:
-                                    row_offsets.append(row_offsets[-1] + _entry_height(entry))
-                                total = row_offsets[-1]
-                                max_offset = max(0, len(scroll_entries) - 1)
-                                for i in range(len(scroll_entries)):
-                                    if total - row_offsets[i] + int(i > 0) <= body:
-                                        max_offset = i
-                                        break
-                                scroll_offset = min(max_offset, scroll_offset + 1)
-                            if over_agents:
-                                state.agent_scroll_offset = scroll_offset
-                            else:
-                                state.scroll_offset = scroll_offset
+                                viewport_height = (
+                                    footer_top - separator + 1
+                                    if over_agents
+                                    else separator - session_top + 2
+                                )
+                                scroll_offset = (
+                                    state.agent_scroll_offset if over_agents else state.scroll_offset
+                                )
+                                if scroll_offset is None:
+                                    start, _ = _viewport(
+                                        scroll_entries, selected, viewport_height
+                                    )
+                                    scroll_offset = start
+                                if mouse_state & wheel_up:
+                                    scroll_offset = max(0, scroll_offset - 1)
+                                else:
+                                    body = max(1, viewport_height - 2)
+                                    row_offsets = [0]
+                                    for entry in scroll_entries:
+                                        row_offsets.append(row_offsets[-1] + _entry_height(entry))
+                                    total = row_offsets[-1]
+                                    max_offset = max(0, len(scroll_entries) - 1)
+                                    for i in range(len(scroll_entries)):
+                                        if total - row_offsets[i] + int(i > 0) <= body:
+                                            max_offset = i
+                                            break
+                                    scroll_offset = min(max_offset, scroll_offset + 1)
+                                if over_agents:
+                                    state.agent_scroll_offset = scroll_offset
+                                else:
+                                    state.scroll_offset = scroll_offset
 
                             next_key = stdscr.getch()
                             if next_key != curses.KEY_MOUSE:
