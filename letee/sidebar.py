@@ -84,6 +84,7 @@ class SidebarState:
     status_deadline: float | None = None
     rang_bells: set[Target] = field(default_factory=set)
     scroll_offset: int | None = None
+    agent_scroll_offset: int | None = None
     focused_region: Literal["sessions", "agents"] = "sessions"
     agent_selected_index: int = 0
     selected_agent_key: tuple[PaneTarget, str] | None = None
@@ -644,6 +645,7 @@ def _reset_selection(
     if region in (None, "agents"):
         state.agent_selected_index = 0
         state.selected_agent_key = None
+        state.agent_scroll_offset = None
 
 
 def _sync_agent_selection(state: SidebarState, entries: list[Entry]) -> None:
@@ -710,6 +712,7 @@ def _select_alerted_agent(
     state.focused_region = "agents"
     state.agent_selected_index = index
     state.selected_agent_key = (entry.pane_target, entry.agent_id)
+    state.agent_scroll_offset = None
     return Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
 
 
@@ -1863,6 +1866,7 @@ def _draw(
     move_target_entry: int | None = None,
     pane_active: bool = True,
     status_region: str = "sessions",
+    agent_scroll_offset: int | None = None,
 ) -> tuple[int, int | None]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -1925,14 +1929,14 @@ def _draw(
             dimmed or focused_region != "agents", top=separator + 1,
             active_agent_id=active_agent_id, now=now, agent_alerts=agent_alerts,
             spinner_frame=spinner_frame, agent_ordering=agent_ordering,
-            pane_active=pane_active,
+            scroll_offset=agent_scroll_offset, pane_active=pane_active,
         )
     else:
         _draw_entries(
             stdscr, agents, 0, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
             spinner_frame=None, agent_ordering=agent_ordering,
-            pane_active=pane_active,
+            scroll_offset=agent_scroll_offset, pane_active=pane_active,
         )
         empty_agents = _truncate_cells("  No active agents", max(1, w))
         stdscr.addnstr(separator + 2, 0, empty_agents, max(1, w), curses.A_DIM)
@@ -2042,6 +2046,10 @@ def run(stdscr: curses.window) -> None:
             cancel_move()
         _sync_selection(state, entries)
         _sync_agent_selection(state, agent_entries)
+        if state.agent_scroll_offset is not None:
+            state.agent_scroll_offset = min(
+                state.agent_scroll_offset, max(0, len(agent_entries) - 1)
+            )
         state.scroll_offset = None
 
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
@@ -2210,8 +2218,8 @@ def run(stdscr: curses.window) -> None:
                 tuple(entries), state.selected_index, state.status, state.status_region, state.filter_text,
                 state.filtering, state.add_view, state.creation_host, state.creation_text,
                 frozenset(bell_targets), display_target, poller.pane_active, stdscr.getmaxyx(),
-                state.scroll_offset, tuple(agent_entries), state.agent_selected_index,
-                state.focused_region, state.agent_percentage, active_agent_id,
+                state.scroll_offset, state.agent_scroll_offset, tuple(agent_entries),
+                state.agent_selected_index, state.focused_region, state.agent_percentage, active_agent_id,
                 frozenset(state.agent_alerts), spinner_frame,
                 int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
                 state.agent_ordering,
@@ -2234,6 +2242,7 @@ def run(stdscr: curses.window) -> None:
                         add_button_selected=state.add_button_selected,
                         move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
                         pane_active=poller.pane_active, status_region=state.status_region,
+                        agent_scroll_offset=state.agent_scroll_offset,
                     )
                 rendered = render_state
             try:
@@ -2393,24 +2402,44 @@ def run(stdscr: curses.window) -> None:
                     stdscr.timeout(0)
                     try:
                         while True:
-                            viewport_height = separator - session_top + 2
-                            if state.scroll_offset is None:
-                                start, _ = _viewport(entries, state.selected_index, viewport_height)
-                                state.scroll_offset = start
+                            over_agents = (
+                                state.add_view is None and separator < row < footer_top
+                            )
+                            scroll_entries = agent_entries if over_agents else entries
+                            selected = (
+                                state.agent_selected_index if over_agents else state.selected_index
+                            )
+                            viewport_height = (
+                                footer_top - separator + 1
+                                if over_agents
+                                else separator - session_top + 2
+                            )
+                            scroll_offset = (
+                                state.agent_scroll_offset if over_agents else state.scroll_offset
+                            )
+                            if scroll_offset is None:
+                                start, _ = _viewport(
+                                    scroll_entries, selected, viewport_height
+                                )
+                                scroll_offset = start
                             if mouse_state & wheel_up:
-                                state.scroll_offset = max(0, state.scroll_offset - 1)
+                                scroll_offset = max(0, scroll_offset - 1)
                             else:
                                 body = max(1, viewport_height - 2)
                                 row_offsets = [0]
-                                for entry in entries:
+                                for entry in scroll_entries:
                                     row_offsets.append(row_offsets[-1] + _entry_height(entry))
                                 total = row_offsets[-1]
-                                max_offset = max(0, len(entries) - 1)
-                                for i in range(len(entries)):
+                                max_offset = max(0, len(scroll_entries) - 1)
+                                for i in range(len(scroll_entries)):
                                     if total - row_offsets[i] + int(i > 0) <= body:
                                         max_offset = i
                                         break
-                                state.scroll_offset = min(max_offset, state.scroll_offset + 1)
+                                scroll_offset = min(max_offset, scroll_offset + 1)
+                            if over_agents:
+                                state.agent_scroll_offset = scroll_offset
+                            else:
+                                state.scroll_offset = scroll_offset
 
                             next_key = stdscr.getch()
                             if next_key != curses.KEY_MOUSE:
@@ -2426,6 +2455,7 @@ def run(stdscr: curses.window) -> None:
                             if not next_state & (wheel_up | wheel_down):
                                 pending_key, pending_mouse = curses.KEY_MOUSE, next_mouse
                                 break
+                            row = next_row
                             mouse_state = next_state
                     finally:
                         stdscr.timeout(UI_POLL_INTERVAL_MS)
@@ -2438,7 +2468,7 @@ def run(stdscr: curses.window) -> None:
                     if state.add_view is None and agent_entries and separator < row < footer_top:
                         index = _entry_at_row(
                             agent_entries, state.agent_selected_index, row, footer_top + 1, 0,
-                            separator + 1,
+                            separator + 1, state.agent_scroll_offset,
                         )
                         if (
                             isinstance(mouse_col, int)
@@ -2491,7 +2521,10 @@ def run(stdscr: curses.window) -> None:
                     continue
                 else:
                     if separator < row < footer_top and state.add_view is None and agent_entries:
-                        index = _entry_at_row(agent_entries, state.agent_selected_index, row, footer_top + 1, 0, separator + 1)
+                        index = _entry_at_row(
+                            agent_entries, state.agent_selected_index, row, footer_top + 1, 0,
+                            separator + 1, state.agent_scroll_offset,
+                        )
                         if index is None:
                             continue
                         state.focused_region = "agents"
@@ -2574,13 +2607,16 @@ def run(stdscr: curses.window) -> None:
                     ),
                 )
             elif state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
+                state.agent_scroll_offset = None
                 state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
                 rebuild()
             elif state.focused_region == "agents" and key in (curses.KEY_DOWN, ord("j")) and agent_entries:
+                state.agent_scroll_offset = None
                 state.agent_selected_index = (state.agent_selected_index + 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]
                 state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
             elif state.focused_region == "agents" and key in (curses.KEY_UP, ord("k")) and agent_entries:
+                state.agent_scroll_offset = None
                 state.agent_selected_index = (state.agent_selected_index - 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]
                 state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None

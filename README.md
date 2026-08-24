@@ -235,7 +235,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 - right-click agent: open native tmux `Kill` menu; confirmation sends `SIGTERM` to foreground process group while pane and shell survive; right-click does not switch session or agent pane
 - click `＋ add`, Add choice, or available location row: activate same flow as `Enter`
 - click `‹ back` (`< back` in ASCII mode) in Add-session top bar: go back one level, same as `Esc`
-- wheel over sidebar: navigate selectable session and host rows
+- wheel over Sessions or Agents: scroll the region under the pointer without keyboard focus or changing selection
 - right-pane mouse events: forwarded by outer tmux to mouse-aware applications
 - live border dragging: disabled so text selection can cross the sidebar divider without resizing it
 
