@@ -4087,7 +4087,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one", focus=False)
 
-    def test_release_only_click_switches_tracked_session(self):
+    def test_release_without_sidebar_press_does_not_switch_tracked_session(self):
         target = Target("local", "one")
         entries = [Entry("one", "session", target, tracked=True)]
         screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(12, 30))
@@ -4108,9 +4108,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(
-            target, "env -u TMUX tmux -T clipboard new-session -A -s one", focus=False
-        )
+        switch.assert_not_called()
 
     def test_press_release_selects_and_switches_untracked_session(self):
         target = Target("local", "one")
