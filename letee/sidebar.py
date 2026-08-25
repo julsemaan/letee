@@ -2052,7 +2052,9 @@ def run(stdscr: curses.window) -> None:
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
     pending_navigation: tuple[Target, str | None] | None = None
+    pending_navigation_generation: int | None = None
     pending_focus: Target | None = None
+    focus_generation = 0
     rendered: tuple[object, ...] | None = None
     footer_height = 0
     add_col: int | None = None
@@ -2069,17 +2071,19 @@ def run(stdscr: curses.window) -> None:
         _set_status(state, message, status_timeout, region)
 
     def queue_effect(effect: Effect) -> bool:
-        nonlocal pending_focus, pending_navigation
+        nonlocal pending_focus, pending_navigation, pending_navigation_generation
         submitted = actions.submit(effect, tuple(state.favorites))
         navigation = _navigation_target(effect)
         if submitted and navigation is not None:
             pending_focus = None
             pending_navigation = navigation
+            pending_navigation_generation = focus_generation
         return submitted
 
     def cancel_focus() -> None:
-        nonlocal pending_focus
+        nonlocal pending_focus, focus_generation
         pending_focus = None
+        focus_generation += 1
         actions.cancel_focus()
 
     def cancel_focus_for_mouse(mouse_state: int, activated: bool) -> None:
@@ -2248,15 +2252,21 @@ def run(stdscr: curses.window) -> None:
             if result is not None:
                 navigation = _navigation_target(result.effect)
                 if navigation is not None and not result.stale_navigation:
-                    if not result.error and pending_navigation == navigation:
+                    if (
+                        not result.error
+                        and pending_navigation == navigation
+                        and pending_navigation_generation == focus_generation
+                    ):
                         pending_focus = navigation[0]
                     pending_navigation = None
+                    pending_navigation_generation = None
                 elif (
                     navigation is not None
                     and pending_navigation == navigation
                     and not actions.busy
                 ):
                     pending_navigation = None
+                    pending_navigation_generation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
                 unavailable_target_shown = _reconcile_active_session_effect(
