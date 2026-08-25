@@ -2170,11 +2170,13 @@ def run(stdscr: curses.window) -> None:
         if mouse_state & pressed:
             mouse_button_down = True
             return True
-        if mouse_state & (clicked | released):
+        if mouse_state & clicked:
             if mouse_button_down:
                 mouse_button_down = False
                 return False
             return True
+        if mouse_state & released:
+            mouse_button_down = False
         return False
 
     try:
