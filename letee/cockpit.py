@@ -174,12 +174,14 @@ def _install_bindings(prefix: str, _sidebar_pane: str, right_pane: str) -> None:
         tmux.tmux("bind-key", str(slot), "run-shell", _letee_command("switch-session", str(slot)))
 
 
-def _enable_mouse() -> None:
+def _enable_mouse(sidebar_pane: str) -> None:
     tmux.tmux("set-option", "-t", tmux.SESSION, "mouse", "on")
     tmux.tmux(
         "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", ";", "send-keys", "-M", "-t", "="
     )
-    tmux.tmux("bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "=")
+    tmux.tmux(
+        "bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "=", ";", "send-keys", "-M", "-t", sidebar_pane
+    )
     tmux.tmux("unbind-key", "-q", "-T", "root", "MouseDrag1Border")
 
 
@@ -242,7 +244,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     tmux.tmux("set-option", "-t", tmux.SESSION, "prefix", prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "status", "off")
     tmux.tmux("set-option", "-s", "escape-time", "0")
-    _enable_mouse()
+    _enable_mouse(left)
     _enable_clipboard()
     _enable_truecolor()
     _install_bindings(prefix, left, right)
