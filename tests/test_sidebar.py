@@ -1878,6 +1878,37 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             release.set()
             runner.close()
 
+    def test_effect_runner_discards_error_from_stale_navigation(self):
+        release = threading.Event()
+        first = Effect("switch", Target("local", "one"))
+        latest = Effect("switch", Target("local", "two"))
+
+        def perform(effect, favorites):
+            if effect == first:
+                release.wait(1)
+                return sidebar.EffectResult(effect, favorites, error="switch failed")
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(first, ()))
+                self.assertTrue(runner.submit(latest, ()))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+
+            self.assertEqual(results[0].error, "")
+            self.assertTrue(results[0].stale_navigation)
+            self.assertFalse(results[1].error)
+        finally:
+            release.set()
+            runner.close()
+
     def test_slow_switch_focuses_only_latest_clicked_target(self):
         first = Target("local", "one")
         second = Target("local", "two")

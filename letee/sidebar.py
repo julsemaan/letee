@@ -1055,7 +1055,6 @@ class EffectRunner:
         return EffectResult(
             result.effect,
             result.favorites,
-            result.error,
             stale_navigation=True,
         )
 
