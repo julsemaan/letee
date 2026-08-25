@@ -1982,6 +1982,49 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         self.assertEqual(display_targets[-1], first)
 
+    def test_sidebar_input_cancels_deferred_focus(self):
+        target = Target("local", "one")
+        actions = unittest.mock.Mock(
+            busy=False,
+            blocks_favorite_changes=False,
+            has_pending_navigation=False,
+        )
+        actions.submit.return_value = True
+        actions.poll.side_effect = [
+            None,
+            sidebar.EffectResult(Effect("switch", target), (target,)),
+            None,
+        ]
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one",)),
+            current_target=target,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([10, curses.KEY_F11, -1, STOP], size=(12, 30))
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+
+        actions.cancel_focus.assert_called()
+        self.assertEqual(
+            [call.args[0] for call in actions.submit.call_args_list],
+            [Effect("switch", target)],
+        )
+
     def test_queued_input_is_processed_before_a_pending_navigation_is_polled(self):
         first = Target("local", "one")
         second = Target("local", "two")
@@ -1996,6 +2039,9 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 events.append(("submit", effect))
                 self.has_pending_navigation = False
                 return True
+
+            def cancel_focus(self):
+                pass
 
             def poll(self):
                 events.append(("poll",))
@@ -2097,6 +2143,39 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
             self.assertTrue(results[0].stale_navigation)
             self.assertFalse(results[1].stale_navigation)
+            tmux_call.assert_not_called()
+        finally:
+            release.set()
+            runner.close()
+
+    def test_effect_runner_cancels_in_flight_focus_on_sidebar_input(self):
+        started = threading.Event()
+        release = threading.Event()
+        focus = Effect("focus", Target("local", "one"))
+
+        def require_right_pane():
+            started.set()
+            release.wait(1)
+            return "%2"
+
+        runner = sidebar.EffectRunner()
+        try:
+            with (
+                patch.object(sidebar.cockpit, "_require_right_pane", side_effect=require_right_pane),
+                patch.object(sidebar.cockpit.tmux, "tmux") as tmux_call,
+            ):
+                self.assertTrue(runner.submit(focus, ()))
+                self.assertTrue(started.wait(1))
+                runner.cancel_focus()
+                release.set()
+                deadline = time.monotonic() + 1
+                result = None
+                while result is None and time.monotonic() < deadline:
+                    result = runner.poll()
+                    time.sleep(0.001)
+
+            self.assertIsNotNone(result)
+            self.assertTrue(result.stale_navigation)
             tmux_call.assert_not_called()
         finally:
             release.set()

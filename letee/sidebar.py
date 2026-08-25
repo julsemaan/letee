@@ -991,6 +991,9 @@ class EffectRunner:
     def has_pending_navigation(self) -> bool:
         return self._pending_navigation is not None
 
+    def cancel_focus(self) -> None:
+        self._generation += 1
+
     @property
     def blocks_favorite_changes(self) -> bool:
         return self._effect is not None and self._effect.kind in (
@@ -2064,6 +2067,19 @@ def run(stdscr: curses.window) -> None:
             pending_navigation = navigation
         return submitted
 
+    def cancel_focus() -> None:
+        nonlocal pending_focus
+        pending_focus = None
+        actions.cancel_focus()
+
+    def cancel_focus_for_mouse(mouse_state: int, activated: bool) -> None:
+        release_or_click = (
+            (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+            | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+        )
+        if activated or not mouse_state & release_or_click:
+            cancel_focus()
+
     def dispatch(effect: Effect) -> None:
         if effect.kind == "save_favorites":
             _execute(effect, state, poller, status_timeout)
@@ -2365,6 +2381,8 @@ def run(stdscr: curses.window) -> None:
             # Tests use private sentinel; removed q cannot terminate loop.
             if key is getattr(stdscr, "_letee_test_stop", None):
                 return
+            if key != curses.KEY_MOUSE:
+                cancel_focus()
             if key in (curses.KEY_F6, curses.KEY_F7):
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
@@ -2397,6 +2415,7 @@ def run(stdscr: curses.window) -> None:
                                 and isinstance(mouse_state, int)
                             ):
                                 mouse_activation = mouse_click_activates(mouse_state)
+                                cancel_focus_for_mouse(mouse_state, mouse_activation)
                                 if (
                                     row == 0
                                     and add_col is not None
@@ -2438,6 +2457,8 @@ def run(stdscr: curses.window) -> None:
                         return
                     if key == -1:
                         break
+                    if key != curses.KEY_MOUSE:
+                        cancel_focus()
                 continue
             if key == curses.KEY_MOUSE:
                 try:
@@ -2460,6 +2481,7 @@ def run(stdscr: curses.window) -> None:
                 )
                 if state.move_source is None and mouse_state & motion and not mouse_state & button_bits:
                     continue
+                cancel_focus_for_mouse(mouse_state, mouse_activation)
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
