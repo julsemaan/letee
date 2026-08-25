@@ -10,6 +10,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -828,6 +829,7 @@ def _perform_effect(
     effect: Effect,
     favorites: tuple[Target, ...],
     is_current: Callable[[], bool] | None = None,
+    focus_lock: AbstractContextManager[object] | None = None,
 ) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
     try:
@@ -852,7 +854,7 @@ def _perform_effect(
         elif effect.kind == "focus":
             if is_current is None:
                 cockpit.focus_right_pane()
-            elif cockpit.focus_right_pane(is_current) is False:
+            elif cockpit.focus_right_pane(is_current, focus_lock) is False:
                 return EffectResult(effect, planned, stale_navigation=True)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
             sessions.kill_agent(effect.target)
@@ -981,6 +983,7 @@ class EffectRunner:
         self._future: Future[EffectResult] | None = None
         self._effect: Effect | None = None
         self._pending_navigation: tuple[Effect, tuple[Target, ...]] | None = None
+        self._focus_lock = threading.Lock()
         self._generation = 0
 
     @property
@@ -992,7 +995,8 @@ class EffectRunner:
         return self._pending_navigation is not None
 
     def cancel_focus(self) -> None:
-        self._generation += 1
+        with self._focus_lock:
+            self._generation += 1
 
     @property
     def blocks_favorite_changes(self) -> bool:
@@ -1000,47 +1004,54 @@ class EffectRunner:
             "add_switch", "create", "kill", "rename"
         )
 
-    def _start(self, effect: Effect, favorites: tuple[Target, ...]) -> Future[EffectResult]:
-        generation = self._generation
+    def _start(
+        self,
+        effect: Effect,
+        favorites: tuple[Target, ...],
+        generation: int,
+    ) -> Future[EffectResult]:
         if effect.kind == "focus":
             return self._executor.submit(
                 _perform_effect,
                 effect,
                 favorites,
                 lambda: generation == self._generation,
+                self._focus_lock,
             )
         return self._executor.submit(_perform_effect, effect, favorites)
 
     def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
-        if self._future is not None:
-            if (
-                effect.kind in ("switch", "switch_pane")
-                and self._effect is not None
-                and self._effect.kind in (
-                    "switch", "switch_pane", "focus",
-                    "show_reconnecting", "show_missing", "show_unavailable",
-                )
-            ):
-                self._generation += 1
-                self._pending_navigation = (effect, favorites)
-                return True
-            return False
-        self._effect = effect
-        self._future = self._start(effect, favorites)
-        return True
+        with self._focus_lock:
+            if self._future is not None:
+                if (
+                    effect.kind in ("switch", "switch_pane")
+                    and self._effect is not None
+                    and self._effect.kind in (
+                        "switch", "switch_pane", "focus",
+                        "show_reconnecting", "show_missing", "show_unavailable",
+                    )
+                ):
+                    self._generation += 1
+                    self._pending_navigation = (effect, favorites)
+                    return True
+                return False
+            self._effect = effect
+            self._future = self._start(effect, favorites, self._generation)
+            return True
 
     def poll(self) -> EffectResult | None:
         if self._future is None or not self._future.done():
             return None
         result = self._future.result()
-        if self._pending_navigation is None:
-            self._future = None
-            self._effect = None
-            return result
-        effect, favorites = self._pending_navigation
-        self._pending_navigation = None
-        self._effect = effect
-        self._future = self._start(effect, favorites)
+        with self._focus_lock:
+            if self._pending_navigation is None:
+                self._future = None
+                self._effect = None
+                return result
+            effect, favorites = self._pending_navigation
+            self._pending_navigation = None
+            self._effect = effect
+            self._future = self._start(effect, favorites, self._generation)
         return EffectResult(
             result.effect,
             result.favorites,

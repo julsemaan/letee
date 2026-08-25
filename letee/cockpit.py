@@ -7,6 +7,7 @@ import shlex
 import shutil
 import sys
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 
 from .config import ensure_config, load_hosts, load_prefix, load_sidebar_width
@@ -406,11 +407,16 @@ def _require_right_pane() -> str:
     return pane
 
 
-def focus_right_pane(is_current: Callable[[], bool] | None = None) -> bool:
+def focus_right_pane(
+    is_current: Callable[[], bool] | None = None,
+    focus_lock: AbstractContextManager[object] | None = None,
+) -> bool:
     pane = _require_right_pane()
-    if is_current is not None and not is_current():
-        return False
-    tmux.tmux("select-pane", "-t", pane)
+    context = focus_lock if focus_lock is not None else nullcontext()
+    with context:
+        if is_current is not None and not is_current():
+            return False
+        tmux.tmux("select-pane", "-t", pane)
     return True
 
 
