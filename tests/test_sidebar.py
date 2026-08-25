@@ -1973,6 +1973,70 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertEqual(switches, [(first, False), (second, False)], display_targets)
         self.assertEqual(focuses, ["right"], display_targets)
 
+    def test_sidebar_input_during_switch_suppresses_deferred_focus(self):
+        target = Target("local", "one")
+        started = threading.Event()
+        release = threading.Event()
+        switches = []
+        focuses = []
+        screen = FakeScreen([10, curses.KEY_F11, *([-1] * 30), STOP], size=(12, 30))
+        original_getch = screen.getch
+
+        def getch():
+            key = original_getch()
+            if key == curses.KEY_F11:
+                self.assertTrue(started.wait(1))
+            time.sleep(0.002)
+            return key
+
+        screen.getch = getch
+
+        def switch(_target, _command, *, focus=True):
+            switches.append((_target, focus))
+            if not started.is_set():
+                started.set()
+                release.wait(1)
+
+        runner = sidebar.EffectRunner()
+        original_cancel_focus = runner.cancel_focus
+
+        def cancel_focus():
+            original_cancel_focus()
+            if started.is_set():
+                release.set()
+
+        runner.cancel_focus = cancel_focus
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one",)),
+            current_target=target,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+
+        try:
+            with (
+                patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                patch.object(sidebar, "EffectRunner", return_value=runner),
+                patch.object(sidebar, "load_hosts", return_value=[]),
+                patch.object(sidebar, "load_sessions", return_value=[target]),
+                patch.object(sidebar, "_current_target", return_value=target),
+                patch.object(sidebar, "_init_colors"),
+                patch.object(sidebar, "_mouse_mask"),
+                patch.object(sidebar.curses, "curs_set"),
+                patch.object(sidebar, "_draw", return_value=(2, None)),
+                patch.object(sidebar, "_bell_targets", return_value=set()),
+                patch.object(sidebar.cockpit, "switch", side_effect=switch),
+                patch.object(sidebar.cockpit, "focus_right_pane", side_effect=lambda *_args: focuses.append("right")),
+            ):
+                sidebar.run(screen)
+        finally:
+            release.set()
+
+        self.assertEqual(switches, [(target, False)])
+        self.assertEqual(focuses, [])
+
     def test_final_stale_navigation_clears_pending_target(self):
         first = Target("local", "one")
         second = Target("local", "two")
