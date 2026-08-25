@@ -1929,7 +1929,11 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 patch.object(sidebar, "_draw", side_effect=draw_spy),
                 patch.object(sidebar, "_bell_targets", return_value=set()),
                 patch.object(sidebar.cockpit, "switch", side_effect=switch),
-                patch.object(sidebar.cockpit, "focus_right_pane", side_effect=lambda _is_current=None: focuses.append("right")),
+                patch.object(
+                    sidebar.cockpit,
+                    "focus_right_pane",
+                    side_effect=lambda _is_current=None, _focus_lock=None: focuses.append("right"),
+                ),
             ):
                 sidebar.run(screen)
         finally:
@@ -2084,7 +2088,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         switch = Effect("switch", Target("local", "two"))
         performed = []
 
-        def perform(effect, favorites, _is_current=None):
+        def perform(effect, favorites, _is_current=None, _focus_lock=None):
             performed.append(effect)
             if effect == focus:
                 started.set()
@@ -2146,6 +2150,63 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             tmux_call.assert_not_called()
         finally:
             release.set()
+            runner.close()
+
+    def test_effect_runner_serializes_focus_check_and_selection(self):
+        checked = threading.Event()
+        release_check = threading.Event()
+        submitted = threading.Event()
+        selected = threading.Event()
+        events = []
+        focus = Effect("focus", Target("local", "one"))
+        switch = Effect("switch", Target("local", "two"))
+        original_focus = sidebar.cockpit.focus_right_pane
+
+        def delayed_focus(is_current=None, focus_lock=None):
+            def delayed_check():
+                current = is_current()
+                events.append("checked")
+                checked.set()
+                release_check.wait(1)
+                return current
+
+            if focus_lock is None:
+                return original_focus(delayed_check)
+            return original_focus(delayed_check, focus_lock)
+
+        def submit_navigation(runner):
+            runner.submit(switch, ())
+            events.append("submitted")
+            submitted.set()
+
+        runner = sidebar.EffectRunner()
+        submit_thread = threading.Thread(target=submit_navigation, args=(runner,))
+        try:
+            with (
+                patch.object(sidebar.cockpit, "_require_right_pane", return_value="%2"),
+                patch.object(sidebar.cockpit, "focus_right_pane", side_effect=delayed_focus),
+                patch.object(
+                    sidebar.cockpit.tmux,
+                    "tmux",
+                    side_effect=lambda *args: (
+                        events.append("selected"), selected.set()
+                    ) if args[0] == "select-pane" else None,
+                ),
+            ):
+                self.assertTrue(runner.submit(focus, ()))
+                self.assertTrue(checked.wait(1))
+                submit_thread.start()
+                timer = threading.Timer(0.1, release_check.set)
+                timer.start()
+                self.assertTrue(submitted.wait(1))
+                timer.join(1)
+                self.assertTrue(selected.wait(1))
+
+            self.assertLess(events.index("selected"), events.index("submitted"))
+        finally:
+            release_check.set()
+            if submit_thread.is_alive():
+                submit_thread.join(1)
             runner.close()
 
     def test_effect_runner_cancels_in_flight_focus_on_sidebar_input(self):
@@ -2210,7 +2271,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         getch = screen.getch
         screen.getch = lambda: (time.sleep(0.002), getch())[1]
 
-        def perform(effect, favorites, _is_current=None):
+        def perform(effect, favorites, _is_current=None, _focus_lock=None):
             performed.append(effect)
             if effect == reconnect:
                 started.set()
