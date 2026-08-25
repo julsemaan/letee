@@ -3695,6 +3695,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_sessions", return_value=[first, second]),
+            patch("letee.sidebar._current_target", return_value=first),
             patch("letee.sidebar._draw", side_effect=draw_spy),
             patch("letee.sidebar.cockpit.switch", side_effect=lambda *_, **__: release.wait(0.2)),
         ):
@@ -3731,6 +3732,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
             patch("letee.sidebar.cockpit.switch", side_effect=lambda *_, **__: release.wait(0.2)),
         ):
@@ -3785,6 +3787,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar._current_target", return_value=target),
             patch(
                 "letee.sidebar._draw",
                 side_effect=lambda *args, **kwargs: active_agents.append(args[17]) or (2, None),
@@ -4710,6 +4713,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar.load_hosts", return_value=[]),
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar.sessions.kill") as kill,
         ):
             run(screen)
@@ -4729,6 +4733,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar.load_hosts", return_value=[]),
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
+            patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar.sessions.kill") as kill,
         ):
             run(screen)
