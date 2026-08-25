@@ -5310,6 +5310,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             target,
             sidebar.sessions.pane_attach_command(second),
             "agent-2",
+            focus=False,
         )
 
     def test_right_click_maps_scrolled_agent_row_to_visible_agent(self):
