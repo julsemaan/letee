@@ -362,7 +362,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
         install_right_pane_reset.assert_called_once_with("%1", "%2")
-        enable_mouse.assert_called_once_with()
+        enable_mouse.assert_called_once_with("%1")
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
         install_bindings.assert_called_once_with("C-x", "%1", "%2")
@@ -400,7 +400,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_bell_hook.assert_called_once_with()
         install_right_pane_reset.assert_called_once_with("%1", "%1")
         install_bindings.assert_called_once_with("C-x", "%1", "%1")
-        enable_mouse.assert_called_once_with()
+        enable_mouse.assert_called_once_with("%1")
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
         self.assertEqual(
@@ -454,9 +454,9 @@ class CockpitLayoutTest(unittest.TestCase):
             check=False,
         )
 
-    def test_enable_mouse_sets_runtime_option_without_live_border_dragging(self):
+    def test_enable_mouse_forwards_release_to_sidebar_and_release_pane(self):
         with patch.object(cockpit.tmux, "tmux") as tmux_call:
-            cockpit._enable_mouse()
+            cockpit._enable_mouse("%1")
 
         self.assertEqual(
             tmux_call.call_args_list,
@@ -465,7 +465,9 @@ class CockpitLayoutTest(unittest.TestCase):
                 unittest.mock.call(
                     "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", ";", "send-keys", "-M", "-t", "="
                 ),
-                unittest.mock.call("bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "="),
+                unittest.mock.call(
+                    "bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "=", ";", "send-keys", "-M", "-t", "%1"
+                ),
                 unittest.mock.call("unbind-key", "-q", "-T", "root", "MouseDrag1Border"),
             ],
         )
@@ -786,7 +788,7 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             cockpit.ensure_cockpit()
 
-        enable_mouse.assert_called_once_with()
+        enable_mouse.assert_called_once_with("%1")
         enable_clipboard.assert_called_once_with()
 
     def test_switch_uses_valid_right_pane_and_supplied_attach_command(self):
