@@ -8,6 +8,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 WINDOW_ID_RE = re.compile(r"^@\d+$")
 PANE_ID_RE = re.compile(r"^%\d+$")
 DEFAULT_SERVER = "default"
+SOCKET_GENERATION = "v1"
 
 
 def validate_name(value: str, label: str = "name") -> str:
@@ -35,6 +36,11 @@ def normalize_server(value: str | None) -> str:
 
 
 def server_socket(value: str | None) -> str:
+    server = normalize_server(value)
+    return f"letee-{SOCKET_GENERATION}" if server == DEFAULT_SERVER else f"letee-{SOCKET_GENERATION}-{server}"
+
+
+def legacy_server_socket(value: str | None) -> str:
     server = normalize_server(value)
     return "letee" if server == DEFAULT_SERVER else f"letee-{server}"
 

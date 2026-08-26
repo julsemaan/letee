@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import platform
 import shlex
+import stat
 import subprocess
 
 from .names import DEFAULT_SERVER, normalize_server, server_socket
@@ -10,6 +13,45 @@ SERVER = DEFAULT_SERVER
 SOCKET = server_socket(SERVER)
 SESSION = "letee"
 WINDOW = "cockpit"
+VENDOR_ROOT = Path(__file__).resolve().parent / "_vendor" / "tmux"
+_ARCHITECTURES = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def _platform_directory() -> str | None:
+    system = platform.system().lower()
+    if system == "linux":
+        family = "linux"
+    elif system == "darwin":
+        version = platform.mac_ver()[0]
+        try:
+            major = int(version.split(".", 1)[0])
+        except (IndexError, ValueError):
+            return None
+        if major < 15:
+            return None
+        family = "macos"
+    else:
+        return None
+    architecture = _ARCHITECTURES.get(platform.machine().lower())
+    return f"{family}-{architecture}" if architecture else None
+
+
+def bundled_tmux_path() -> Path | None:
+    directory = _platform_directory()
+    if directory is None:
+        return None
+    path = VENDOR_ROOT / directory / "tmux"
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return None
+    if stat.S_ISREG(mode) and mode & 0o111:
+        return path
+    return None
+
+
+def tmux_executable() -> str:
+    return str(path) if (path := bundled_tmux_path()) else "tmux"
 
 
 def set_server(server: str | None) -> str:
@@ -26,7 +68,7 @@ def tmux(
     config: Path | None = None,
     timeout: float | None = 5,
 ) -> subprocess.CompletedProcess[str]:
-    cmd = ["tmux", "-L", SOCKET]
+    cmd = [tmux_executable(), "-L", SOCKET]
     if config is not None:
         cmd += ["-f", str(config)]
     cmd += list(args)

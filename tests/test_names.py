@@ -1,13 +1,24 @@
 import unittest
 
-from letee.names import PaneTarget, Target, normalize_server, server_socket, validate_server
+from letee.names import (
+    PaneTarget,
+    Target,
+    legacy_server_socket,
+    normalize_server,
+    server_socket,
+    validate_server,
+)
 
 
 class ServerNameTest(unittest.TestCase):
-    def test_default_and_named_servers_map_to_outer_socket_names(self):
+    def test_default_and_named_servers_map_to_private_outer_socket_names(self):
         self.assertEqual(normalize_server(None), "default")
-        self.assertEqual(server_socket("default"), "letee")
-        self.assertEqual(server_socket("work"), "letee-work")
+        self.assertEqual(server_socket("default"), "letee-v1")
+        self.assertEqual(server_socket("work"), "letee-v1-work")
+
+    def test_legacy_server_socket_names_remain_available_for_cleanup(self):
+        self.assertEqual(legacy_server_socket("default"), "letee")
+        self.assertEqual(legacy_server_socket("work"), "letee-work")
 
     def test_server_names_use_safe_name_format(self):
         for value in ("work", "personal_1", "prod.dev-2"):

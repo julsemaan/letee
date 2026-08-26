@@ -33,7 +33,7 @@ class TmuxTestClient:
 
     def _tmux_cmd(self, *args: str) -> list[str]:
         """Build the tmux command list."""
-        return ["docker", "exec", self.container, "tmux", "-L", "letee"] + list(args)
+        return ["docker", "exec", self.container, "tmux", "-L", "letee-v1"] + list(args)
 
     def tmux(self, *args: str) -> str:
         """Run tmux command, return stdout (or stderr on failure)."""

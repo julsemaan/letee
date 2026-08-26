@@ -402,7 +402,8 @@ def ensure_cockpit(*, restart_sidebar: bool = False) -> None:
 
 
 def _attach() -> int:
-    attach_cmd = f"tmux -L {shlex.quote(tmux.SOCKET)} attach -d -t {TARGET}"
+    executable = tmux.tmux_executable()
+    attach_cmd = shlex.join((executable, "-L", tmux.SOCKET, "attach", "-d", "-t", TARGET))
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(f"Cockpit ready. Attach from a real terminal: {attach_cmd}")
         return 0
@@ -413,8 +414,10 @@ def _attach() -> int:
     if tty == "/dev/tty":
         print(f"Cockpit ready. Current fd is /dev/tty; tmux refuses it. Run: {attach_cmd}")
         return 0
-    cmd = ["tmux", "-L", tmux.SOCKET, "attach-session", "-d", "-t", TARGET]
-    os.execvp("tmux", cmd)
+    cmd = [executable, "-L", tmux.SOCKET, "attach-session", "-d", "-t", TARGET]
+    if shutil.which("script"):
+        os.execvp("script", ["script", "-q", "-c", shlex.join(cmd), "/dev/null"])
+    os.execvp(executable, cmd)
     return 0
 
 

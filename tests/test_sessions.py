@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import tomllib
 import re
 import shlex
 import signal
@@ -781,8 +782,8 @@ class TmuxOverlayFileTest(unittest.TestCase):
 
     def test_package_ships_the_overlay_file(self):
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-        self.assertIn('[tool.setuptools.package-data]', pyproject.read_text())
-        self.assertIn('letee = ["tmux-overlay.conf"]', pyproject.read_text())
+        package_data = tomllib.loads(pyproject.read_text())["tool"]["setuptools"]["package-data"]
+        self.assertIn("tmux-overlay.conf", package_data["letee"])
         self.assertTrue(sessions.OVERLAY_FILE.exists())
         self.assertEqual(sessions.OVERLAY_FILE.name, "tmux-overlay.conf")
 
