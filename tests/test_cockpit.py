@@ -505,10 +505,10 @@ class CockpitLayoutTest(unittest.TestCase):
             [
                 ("unbind-key", "-a", "-T", "prefix"),
                 (
-                    "bind-key", "-n", "MouseDown1Pane", "if-shell", "-F", "-t", "=",
-                    "#{==:#{pane_id},%1}",
-                    r"send-keys -M -t = \; select-pane -t =",
-                    r"select-pane -t = \; send-keys -M",
+                    "bind-key", "-n", "MouseDown1Pane",
+                    "if-shell -F -t = '#{==:#{pane_id},%1}' "
+                    "{ send-keys -M -t = ; select-pane -t = } "
+                    "{ select-pane -t = ; send-keys -M }",
                 ),
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "d", "detach-client"),
@@ -536,9 +536,12 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._install_bindings("C-x", "%sidebar", "%right")
 
         binding = next(call for call in calls if call[:3] == ("bind-key", "-n", "MouseDown1Pane"))
-        self.assertEqual(binding[7], "#{==:#{pane_id},%sidebar}")
-        self.assertLess(binding[8].index("send-keys -M"), binding[8].index("select-pane"))
-        self.assertLess(binding[9].index("select-pane"), binding[9].index("send-keys -M"))
+        self.assertEqual(
+            binding[3],
+            "if-shell -F -t = '#{==:#{pane_id},%sidebar}' "
+            "{ send-keys -M -t = ; select-pane -t = } "
+            "{ select-pane -t = ; send-keys -M }",
+        )
 
     def test_named_bindings_propagate_server_to_generated_commands(self):
         cockpit.tmux.set_server("work")
