@@ -1118,7 +1118,9 @@ class EffectRunner:
         return {
             "runner_busy": self._future is not None,
             "runner_active_effect": self._effect.kind if self._effect else None,
+            "runner_active_action_id": self._action_id,
             "runner_pending_effect": pending.kind if pending else None,
+            "runner_pending_action_id": self._pending_navigation[2] if self._pending_navigation else None,
         }
 
     def _start(
@@ -1221,6 +1223,7 @@ class EffectRunner:
                         action_id=old_action_id,
                         input_id=old_input_id,
                         status="superseded",
+                        stale_navigation=True,
                         superseded_by_action_id=action_id,
                         **self._state_trace(),
                     )
@@ -2493,9 +2496,15 @@ def run(stdscr: curses.window) -> None:
         row: int | None = None,
     ) -> int:
         if debug.enabled:
+            if row is None:
+                return _read_key(
+                    stdscr, prompt, filtering, input_callback=trace_input
+                )
             return _read_key(
                 stdscr, prompt, filtering, row, input_callback=trace_input
             )
+        if row is None:
+            return _read_key(stdscr, prompt, filtering)
         return _read_key(stdscr, prompt, filtering, row)
 
     def queue_effect(effect: Effect, input_id: str | None = None) -> bool:
@@ -2891,6 +2900,7 @@ def run(stdscr: curses.window) -> None:
                     else:
                         mouse_event = curses.getmouse()
                     _, mouse_col, row, _, mouse_state = mouse_event
+                    input_id = mouse_input_id
                 except (curses.error, TypeError, ValueError) as error:
                     debug.emit(
                         "mouse_received",
