@@ -5858,6 +5858,34 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertEqual(requested["input_id"], "input-click")
         self.assertEqual(requested["target"], target.format())
 
+    def test_mouse_diagnostics_capture_curses_and_tmux_state(self):
+        def query(*args, **kwargs):
+            if args[:2] == ("show-options", "-qv"):
+                return {
+                    "mouse": "on",
+                    "focus-follows-mouse": "off",
+                    "focus-events": "on",
+                }[args[4]]
+            if args[:3] == ("list-keys", "-T", "root"):
+                return "bind-key MouseDown1Pane select-pane -t = \\; send-keys -M"
+            return "xterm-kitty"
+
+        with (
+            patch.object(sidebar.curses, "has_mouse", return_value=True, create=True),
+            patch.object(sidebar.curses, "tigetstr", return_value=bytes((0x1B, 91, 77)), create=True),
+            patch.object(sidebar.cockpit.tmux, "out", side_effect=query),
+        ):
+            state = sidebar._mouse_diagnostics((7, 3))
+
+        self.assertTrue(state["curses_has_mouse"])
+        self.assertEqual(state["terminfo_kmous"], "1b5b4d")
+        self.assertEqual(state["requested_mouse_mask"], 7)
+        self.assertEqual(state["supported_mouse_mask"], 3)
+        self.assertEqual(state["tmux_mouse"], "on")
+        self.assertEqual(state["tmux_focus_follows_mouse"], "off")
+        self.assertTrue(state["tmux_mouse_down1_pane_binding"]["selects_pane"])
+        self.assertTrue(state["tmux_mouse_down1_pane_binding"]["forwards_mouse"])
+
 
 if __name__ == "__main__":
     unittest.main()

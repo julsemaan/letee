@@ -204,6 +204,82 @@ def _mouse_button_flags(mouse_state: int) -> dict[str, bool]:
     }
 
 
+def _tmux_query(*args: str) -> str | None:
+    try:
+        value = cockpit.tmux.out(*args, check=False)
+    except (OSError, SystemExit, subprocess.SubprocessError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _mouse_diagnostics(
+    mouse_mask: tuple[int, int | None] | None = None,
+) -> dict[str, object]:
+    try:
+        has_mouse = bool(curses.has_mouse())
+    except (AttributeError, curses.error, TypeError, ValueError):
+        has_mouse = None
+    capabilities: dict[str, str | None] = {}
+    for name in ("kmous", "XM"):
+        try:
+            value = curses.tigetstr(name)
+        except (AttributeError, curses.error, TypeError, ValueError):
+            value = None
+        if isinstance(value, bytes):
+            capabilities[name] = value.hex()
+        elif value is None:
+            capabilities[name] = None
+        else:
+            capabilities[name] = str(value)
+
+    def option(name: str) -> str | None:
+        value = _tmux_query(
+            "show-options", "-qv", "-t", cockpit.tmux.SESSION, name
+        )
+        return value if value is not None else _tmux_query(
+            "show-options", "-qv", "-g", name
+        )
+
+    options = {
+        name: option(name)
+        for name in ("mouse", "focus-follows-mouse", "focus-events")
+    }
+    binding = _tmux_query("list-keys", "-T", "root", "MouseDown1Pane")
+    result: dict[str, object] = {
+        "curses_has_mouse": has_mouse,
+        "terminfo_kmous": capabilities["kmous"],
+        "terminfo_xm": capabilities["XM"],
+        "mouse_constants": {
+            name: getattr(curses, name, None)
+            for name in (
+                "BUTTON1_PRESSED",
+                "BUTTON1_RELEASED",
+                "BUTTON1_CLICKED",
+                "BUTTON1_DOUBLE_CLICKED",
+                "BUTTON1_TRIPLE_CLICKED",
+                "REPORT_MOUSE_POSITION",
+            )
+        },
+        "tmux_mouse": options["mouse"],
+        "tmux_focus_follows_mouse": options["focus-follows-mouse"],
+        "tmux_focus_events": options["focus-events"],
+        "tmux_client_termname": _tmux_query(
+            "display-message", "-p", "#{client_termname}"
+        ),
+        "tmux_mouse_down1_pane_binding": {
+            "present": bool(binding),
+            "selects_pane": bool(binding and "select-pane" in binding),
+            "forwards_mouse": bool(
+                binding and ("send-keys -M" in binding or "send -M" in binding)
+            ),
+        },
+    }
+    if mouse_mask is not None:
+        result["requested_mouse_mask"] = mouse_mask[0]
+        result["supported_mouse_mask"] = mouse_mask[1]
+    return result
+
+
 def _visible_entry_trace(
     entries: list[Entry],
     selected: int,
@@ -2340,6 +2416,7 @@ def run(stdscr: curses.window) -> None:
             screen_width=width,
             requested_mouse_mask=requested_mask,
             supported_mouse_mask=supported_mask,
+            mouse_debug=_mouse_diagnostics(mouse_mask_result),
             current_target=_trace_target(initial_target),
             pane_active=poller.pane_active,
         )
@@ -2822,6 +2899,7 @@ def run(stdscr: curses.window) -> None:
                                 raw=None,
                                 decoded_button_flags={},
                                 decode_error=type(error).__name__,
+                                mouse_debug=_mouse_diagnostics(mouse_mask_result),
                                 mode="name",
                             )
                             trace_mouse_decision(
@@ -2918,6 +2996,7 @@ def run(stdscr: curses.window) -> None:
                         raw=None,
                         decoded_button_flags={},
                         decode_error=type(error).__name__,
+                        mouse_debug=_mouse_diagnostics(mouse_mask_result),
                     )
                     trace_mouse_decision(
                         mouse_input_id, "malformed_event", None, reason="getmouse_failed"
@@ -3133,6 +3212,7 @@ def run(stdscr: curses.window) -> None:
                                     raw=None,
                                     decoded_button_flags={},
                                     decode_error=type(error).__name__,
+                                    mouse_debug=_mouse_diagnostics(mouse_mask_result),
                                 )
                                 trace_mouse_decision(
                                     next_input_id, "malformed_event", None,

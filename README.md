@@ -257,7 +257,7 @@ letee -L work kill-server
 LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-click-debug.jsonl" letee -L work
 ```
 
-After reproducing the missed click, stop or detach letee and preserve the log.
+The startup record and any ncurses mouse decode failure include the relevant tmux and terminal mouse state. After reproducing the missed click, stop or detach letee and preserve the log.
 
 ## Clipboard
 
