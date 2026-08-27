@@ -504,6 +504,12 @@ class CockpitLayoutTest(unittest.TestCase):
             calls,
             [
                 ("unbind-key", "-a", "-T", "prefix"),
+                (
+                    "bind-key", "-n", "MouseDown1Pane", "if-shell", "-F", "-t", "=",
+                    "#{==:#{pane_id},%1}",
+                    r"send-keys -M -t = \; select-pane -t =",
+                    r"select-pane -t = \; send-keys -M",
+                ),
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "d", "detach-client"),
                 ("bind-key", "h", "resize-pane", "-Z", "-t", "%2"),
@@ -523,6 +529,17 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_mouse_binding_uses_sidebar_id_and_preserves_branch_order(self):
+        calls = []
+
+        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+            cockpit._install_bindings("C-x", "%sidebar", "%right")
+
+        binding = next(call for call in calls if call[:3] == ("bind-key", "-n", "MouseDown1Pane"))
+        self.assertEqual(binding[7], "#{==:#{pane_id},%sidebar}")
+        self.assertLess(binding[8].index("send-keys -M"), binding[8].index("select-pane"))
+        self.assertLess(binding[9].index("select-pane"), binding[9].index("send-keys -M"))
+
     def test_named_bindings_propagate_server_to_generated_commands(self):
         cockpit.tmux.set_server("work")
         self.addCleanup(cockpit.tmux.set_server, None)
@@ -531,8 +548,8 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2")
 
-        self.assertEqual(calls[5], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
-        self.assertEqual(calls[13], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
+        self.assertEqual(calls[6], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
+        self.assertEqual(calls[14], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
 
     def test_focus_sidebar_recreates_selects_and_injects_region_key(self):
         with (
@@ -779,7 +796,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_layout_hooks"),
             patch.object(cockpit, "_install_bell_hook"),
             patch.object(cockpit, "_install_right_pane_reset"),
-            patch.object(cockpit, "_install_bindings"),
+            patch.object(cockpit, "_install_bindings") as install_bindings,
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
             patch.object(cockpit, "_enable_truecolor"),
@@ -788,6 +805,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
+        install_bindings.assert_called_once_with("C-x", "%1", "%2")
 
     def test_switch_uses_valid_right_pane_and_supplied_attach_command(self):
         calls = []

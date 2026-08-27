@@ -156,8 +156,14 @@ def _install_layout_hooks(left: str, sidebar_width: int) -> None:
     tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x {sidebar_width}")
 
 
-def _install_bindings(prefix: str, _sidebar_pane: str, right_pane: str) -> None:
+def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("unbind-key", "-a", "-T", "prefix")
+    tmux.tmux(
+        "bind-key", "-n", "MouseDown1Pane", "if-shell", "-F", "-t", "=",
+        f"#{{==:#{{pane_id}},{sidebar_pane}}}",
+        r"send-keys -M -t = \; select-pane -t =",
+        r"select-pane -t = \; send-keys -M",
+    )
     tmux.tmux("bind-key", prefix, "send-prefix")
     tmux.tmux("bind-key", "d", "detach-client")
     tmux.tmux("bind-key", "h", "resize-pane", "-Z", "-t", right_pane)
