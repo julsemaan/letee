@@ -54,7 +54,12 @@ class DiagnosticsTest(unittest.TestCase):
             lines = Path(tempdir, "trace.jsonl").read_text().splitlines()
 
         records = [json.loads(line) for line in lines]
+        required = {
+            "timestamp_utc", "monotonic_ns", "run_id", "event_id",
+            "pid", "thread", "server", "event",
+        }
         self.assertEqual(len(records), 100)
+        self.assertTrue(all(required <= record.keys() for record in records))
         self.assertEqual({record["value"] for record in records}, set(range(100)))
         self.assertEqual(len({record["event_id"] for record in records}), 100)
 

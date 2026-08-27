@@ -5699,6 +5699,15 @@ class SidebarDiagnosticsTest(unittest.TestCase):
             sidebar.run(screen)
 
         records = self.records()
+        startup = next(record for record in records if record["event"] == "sidebar_startup")
+        self.assertEqual(
+            (startup["letee_version"], startup["screen_height"], startup["screen_width"]),
+            (sidebar.__version__, 12, 30),
+        )
+        self.assertEqual(
+            (startup["requested_mouse_mask"], startup["supported_mouse_mask"], startup["tmux_version"]),
+            (0, 0, "tmux 3.4"),
+        )
         input_record = next(record for record in records if record["event"] == "input_received" and record["key_name"] == "KEY_MOUSE")
         related = [record for record in records if record.get("input_id") == input_record["input_id"]]
         mapped = next(record for record in related if record["event"] == "mouse_mapped")
