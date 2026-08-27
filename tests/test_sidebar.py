@@ -5817,12 +5817,37 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         ]
         action_ids = [record["action_id"] for record in submitted]
         self.assertEqual(len(action_ids), len(set(action_ids)))
-        superseded = next(
+        superseded = [
             record for record in self.records()
             if record["event"] == "effect_result" and record["status"] == "superseded"
-        )
-        self.assertNotEqual(superseded["action_id"], superseded["superseded_by_action_id"])
+        ]
+        self.assertEqual(len(superseded), 2)
+        self.assertTrue(all(record["action_id"] != record["superseded_by_action_id"] for record in superseded))
+        self.assertEqual({record["input_id"] for record in superseded}, {"input-one", "input-two"})
         self.assertEqual([effect.target.session for effect in performed], ["one", "three"])
+
+    def test_action_context_reaches_cockpit_switch(self):
+        target = Target("local", "work")
+        runner = sidebar.EffectRunner()
+        try:
+            with (
+                patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
+                patch.object(sidebar.cockpit.tmux, "tmux"),
+            ):
+                self.assertTrue(runner.submit(Effect("switch", target), (), input_id="input-click"))
+                deadline = time.monotonic() + 1
+                result = None
+                while result is None and time.monotonic() < deadline:
+                    result = runner.poll()
+                    time.sleep(0.001)
+        finally:
+            runner.close()
+
+        submitted = next(record for record in self.records() if record["event"] == "effect_submitted")
+        requested = next(record for record in self.records() if record["event"] == "switch_requested")
+        self.assertEqual(requested["action_id"], submitted["action_id"])
+        self.assertEqual(requested["input_id"], "input-click")
+        self.assertEqual(requested["target"], target.format())
 
 
 if __name__ == "__main__":

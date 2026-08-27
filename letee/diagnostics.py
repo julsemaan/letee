@@ -90,8 +90,13 @@ class Diagnostics:
                     return
                 if self._file is not None:
                     try:
-                        self._file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-                        self._file.write("\n")
+                        line = json.dumps(
+                            record,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            default=str,
+                        ) + "\n"
+                        self._file.write(line)
                         self._file.flush()
                     except (OSError, ValueError):
                         pass

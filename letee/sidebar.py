@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
 
-from . import cockpit, diagnostics, sessions
+from . import __version__, cockpit, diagnostics, sessions
 from .discovery import DiscoveryPoller, SessionSnapshot
 from .config import (
     load_agent_panel_resize_step,
@@ -156,12 +156,18 @@ def _trace_entry(entry: Entry | None, index: int | None = None) -> dict[str, obj
 
 
 def _trace_effect(effect: Effect) -> dict[str, object]:
-    return {
+    fields: dict[str, object] = {
         "effect": effect.kind,
         "target": _trace_target(effect.target),
         "automatic": effect.automatic,
         "source": "automatic" if effect.automatic else "user",
     }
+    if isinstance(effect.target, PaneTarget):
+        fields.update(
+            window_id=effect.target.window_id,
+            pane_id=effect.target.pane_id,
+        )
+    return fields
 
 
 def _key_name(key: int) -> str:
@@ -209,8 +215,9 @@ def _visible_entry_trace(
     content_height = height - footer_height - top + 1
     start, end = _viewport(entries, selected, content_height, scroll_offset)
     return [
-        _trace_entry(entry, index)  # type: ignore[misc]
+        trace
         for index, entry in enumerate(entries[start:end], start)
+        if (trace := _trace_entry(entry, index)) is not None
     ]
 
 
@@ -940,6 +947,11 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         elif effect.kind == "save_favorites":
             save_sessions(planned)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
+        diagnostics.log(
+            "effect_error",
+            **_trace_effect(effect),
+            error_type=type(error).__name__,
+        )
         return EffectResult(effect, planned, _effect_error(effect, error))
     return EffectResult(effect, planned)
 
@@ -1065,7 +1077,7 @@ def _execute(
     status_timeout: float,
     input_id: str | None = None,
 ) -> bool:
-    debug = diagnostics.get_diagnostics()
+    debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
     action_id = debug.new_action_id()
     debug.emit(
         "effect_requested",
@@ -1127,7 +1139,7 @@ class EffectRunner:
         action_id: str | None,
         input_id: str | None,
     ) -> EffectResult:
-        debug = diagnostics.get_diagnostics()
+        debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         started = time.monotonic_ns()
         with debug.context(action_id=action_id, input_id=input_id):
             debug.emit(
@@ -1139,12 +1151,22 @@ class EffectRunner:
             try:
                 result = _perform_effect(effect, favorites)
             except BaseException as error:
+                duration_ms = (time.monotonic_ns() - started) / 1_000_000
                 debug.emit(
                     "effect_worker_error",
                     **_trace_effect(effect),
                     action_id=action_id,
                     input_id=input_id,
                     error_type=type(error).__name__,
+                )
+                debug.emit(
+                    "effect_worker_completed",
+                    **_trace_effect(effect),
+                    action_id=action_id,
+                    input_id=input_id,
+                    duration_ms=duration_ms,
+                    error=True,
+                    stale_navigation=False,
                 )
                 raise
             debug.emit(
@@ -1176,7 +1198,7 @@ class EffectRunner:
         favorites: tuple[Target, ...],
         input_id: str | None = None,
     ) -> bool:
-        debug = diagnostics.get_diagnostics()
+        debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         action_id = debug.new_action_id()
         debug.emit(
             "effect_requested",
@@ -1191,6 +1213,17 @@ class EffectRunner:
                 and self._effect.kind in ("switch", "switch_pane")
                 and effect.kind in ("switch", "switch_pane")
             ):
+                if self._pending_navigation is not None:
+                    old_effect, _, old_action_id, old_input_id = self._pending_navigation
+                    debug.emit(
+                        "effect_result",
+                        **_trace_effect(old_effect),
+                        action_id=old_action_id,
+                        input_id=old_input_id,
+                        status="superseded",
+                        superseded_by_action_id=action_id,
+                        **self._state_trace(),
+                    )
                 self._pending_navigation = (effect, favorites, action_id, input_id)
                 debug.emit(
                     "effect_submitted",
@@ -1231,7 +1264,7 @@ class EffectRunner:
     def poll(self) -> EffectResult | None:
         if self._future is None or not self._future.done():
             return None
-        debug = diagnostics.get_diagnostics()
+        debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         action_id = self._action_id
         input_id = self._input_id
         try:
@@ -1257,6 +1290,7 @@ class EffectRunner:
                 action_id=action_id,
                 input_id=input_id,
                 status="stale" if result.stale_navigation else "ready",
+                stale_navigation=result.stale_navigation,
                 error=bool(result.error),
                 **self._state_trace(),
             )
@@ -1271,6 +1305,7 @@ class EffectRunner:
             action_id=action_id,
             input_id=input_id,
             status="superseded",
+            stale_navigation=True,
             error=bool(result.error),
             superseded_by_action_id=next_action_id,
             **self._state_trace(),
@@ -2288,7 +2323,7 @@ def run(stdscr: curses.window) -> None:
         height, width = stdscr.getmaxyx()
         debug.emit(
             "sidebar_startup",
-            letee_version=__import__("letee").__version__,
+            letee_version=__version__,
             python_version=platform.python_version(),
             ncurses_version=str(
                 getattr(curses, "ncurses_version", getattr(curses, "version", "unknown"))

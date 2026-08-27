@@ -474,17 +474,15 @@ def switch(
             raise
         debug.emit(f"switch_{kind}", **fields, stage=name, status="completed")
 
-    stage(
-        "marker_update",
-        "current_target_marker",
-        lambda: (
-            tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format()),
+    def update_markers() -> None:
+        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
+        if agent_id:
             tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_AGENT_OPTION, agent_id)
-            if agent_id
-            else tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION),
-            tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION),
-        ),
-    )
+        else:
+            tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION)
+        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
+
+    stage("marker_update", "current_target_marker", update_markers)
     stage(
         "respawn",
         "right_pane_respawn",
