@@ -2377,6 +2377,8 @@ def run(stdscr: curses.window) -> None:
     def trace_input(key: object) -> str | None:
         if key == -1 or not isinstance(key, int) or key is getattr(stdscr, "_letee_test_stop", None):
             return None
+        if not debug.enabled:
+            return None
         input_id = debug.new_input_id()
         debug.emit(
             "input_received",
@@ -2391,6 +2393,8 @@ def run(stdscr: curses.window) -> None:
         return input_id
 
     def trace_transitions(current_target: Target | None) -> None:
+        if not debug.enabled:
+            return
         nonlocal last_current_target, last_pane_active, last_focused_region
         if current_target != last_current_target:
             debug.emit(
@@ -2460,6 +2464,8 @@ def run(stdscr: curses.window) -> None:
         index: int | None,
         entry: Entry | None,
     ) -> None:
+        if not debug.enabled:
+            return
         debug.emit(
             "mouse_mapped",
             input_id=input_id,
@@ -2478,6 +2484,8 @@ def run(stdscr: curses.window) -> None:
         mouse_col: object = None,
         **fields: object,
     ) -> None:
+        if not debug.enabled:
+            return
         debug.emit(
             "mouse_decision",
             input_id=input_id,
