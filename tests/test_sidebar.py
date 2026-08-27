@@ -5723,7 +5723,7 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertEqual(applied["selected_target"], target.format())
         self.assertEqual(completed["target"], target.format())
 
-    def _run_mouse_trace(self, mouse_events, keys=None, poller=None):
+    def _run_mouse_trace(self, mouse_events, keys=None, poller=None, collect_records=True):
         target = Target("local", "one")
         poller = poller or unittest.mock.Mock(
             snapshot=snapshot(local=("one",)),
@@ -5745,9 +5745,10 @@ class SidebarDiagnosticsTest(unittest.TestCase):
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar.curses, "getmouse", side_effect=mouse_events),
             patch.object(sidebar.cockpit.tmux, "out", return_value="tmux 3.4"),
+            patch.object(sidebar.cockpit, "switch") as switch,
         ):
             sidebar.run(screen)
-        return self.records()
+        return self.records() if collect_records else switch
 
     def test_ignored_mouse_events_record_their_reason(self):
         records = self._run_mouse_trace([
@@ -5765,7 +5766,7 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertIn(("malformed_event", "invalid_row_or_state"), decisions)
         self.assertIn(("empty_row", None), decisions)
 
-    def test_failed_mouse_followed_by_release_records_recovery_candidate(self):
+    def test_failed_mouse_followed_by_release_activates_mapped_target(self):
         records = self._run_mouse_trace(
             [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],
             keys=[curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
@@ -5781,6 +5782,46 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertEqual((candidate["release_row"], candidate["release_column"]), (2, 7))
         self.assertEqual(candidate["region_hint"], "sessions")
         self.assertLess(candidate["failure_age_ms"], 1_000)
+        effects = [record for record in records if record["event"] == "effect_requested"]
+        self.assertEqual(len(effects), 1)
+        self.assertEqual((effects[0]["effect"], effects[0]["target"]), ("switch", "local:one"))
+
+    def test_failed_mouse_release_recovers_without_debug_logging(self):
+        with patch.dict(os.environ, {}, clear=True):
+            switch = self._run_mouse_trace(
+                [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],
+                keys=[curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
+                collect_records=False,
+            )
+
+        switch.assert_called_once()
+
+    def test_failed_mouse_release_on_move_handle_is_not_recovered(self):
+        records = self._run_mouse_trace(
+            [curses.error(), (0, 29, 2, 0, curses.BUTTON1_RELEASED)],
+            keys=[curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
+        )
+
+        self.assertTrue(any(record["event"] == "mouse_recovery_candidate" for record in records))
+        self.assertFalse(any(record["event"] == "effect_requested" for record in records))
+
+    def test_failed_mouse_release_after_intervening_key_is_not_recovered(self):
+        records = self._run_mouse_trace(
+            [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],
+            keys=[curses.KEY_MOUSE, ord("j"), curses.KEY_MOUSE, -1, STOP],
+        )
+
+        self.assertFalse(any(record["event"] == "mouse_recovery_candidate" for record in records))
+        self.assertFalse(any(record["event"] == "effect_requested" for record in records))
+
+    def test_failed_mouse_release_after_recovery_window_is_not_recovered(self):
+        with patch.object(sidebar, "MOUSE_RECOVERY_WINDOW", 0):
+            records = self._run_mouse_trace(
+                [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],
+                keys=[curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
+            )
+
+        self.assertFalse(any(record["event"] == "mouse_recovery_candidate" for record in records))
         self.assertFalse(any(record["event"] == "effect_requested" for record in records))
 
     def test_focus_transition_is_recorded_without_mouse_input(self):

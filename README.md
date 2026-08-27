@@ -257,7 +257,7 @@ letee -L work kill-server
 LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-click-debug.jsonl" letee -L work
 ```
 
-The startup record and any ncurses mouse decode failure include the relevant tmux and terminal mouse state. A `mouse_recovery_candidate` record links a failed mouse decode to a later button release without changing click handling. After reproducing the missed click, stop or detach letee and preserve the log.
+The startup record and any ncurses mouse decode failure include the relevant tmux and terminal mouse state. A `mouse_recovery_candidate` record links a failed mouse decode to a later button release. Eligible candidates are replayed as left-button activations for sidebar rows. After reproducing the missed click, stop or detach letee and preserve the log.
 
 ## Clipboard
 

@@ -2473,8 +2473,7 @@ def run(stdscr: curses.window) -> None:
 
     def remember_mouse_failure(input_id: str | None) -> None:
         nonlocal failed_mouse
-        if debug.enabled:
-            failed_mouse = (input_id, time.monotonic_ns(), poller.pane_active)
+        failed_mouse = (input_id, time.monotonic_ns(), poller.pane_active)
 
     def clear_mouse_failure() -> None:
         nonlocal failed_mouse
@@ -2486,15 +2485,15 @@ def run(stdscr: curses.window) -> None:
         row: object,
         mouse_col: object,
         mouse_state: int,
-    ) -> None:
+    ) -> bool:
         nonlocal failed_mouse
         if failed_mouse is None:
-            return
+            return False
         failure_input_id, failure_at, failure_pane_active = failed_mouse
         failed_mouse = None
         age_ms = (time.monotonic_ns() - failure_at) / 1_000_000
         if age_ms > MOUSE_RECOVERY_WINDOW * 1_000:
-            return
+            return False
         debug.emit(
             "mouse_recovery_candidate",
             input_id=release_input_id,
@@ -2509,6 +2508,7 @@ def run(stdscr: curses.window) -> None:
             release_mouse_state=mouse_state,
             release_button_flags=_mouse_button_flags(mouse_state),
         )
+        return True
 
     def trace_transitions(current_target: Target | None) -> None:
         if not debug.enabled:
@@ -3110,17 +3110,36 @@ def run(stdscr: curses.window) -> None:
                     mouse_state,
                     layout,
                 )
-                if mouse_state & (getattr(curses, "BUTTON1_RELEASED", 0) or 0):
+                recovered_mouse = False
+                region_hint: str | None = None
+                button1_released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
+                if button1_released and mouse_state == button1_released:
                     region_hint = (
                         "agents" if state.add_view is None and separator < row < footer_top
                         else "sessions" if session_top <= row < separator
                         else None
                     )
-                    trace_mouse_recovery_candidate(
+                    recovered_mouse = trace_mouse_recovery_candidate(
                         mouse_input_id, region_hint, row, mouse_col, mouse_state
                     )
                 else:
                     clear_mouse_failure()
+                if recovered_mouse and state.add_view is None and state.move_source is None:
+                    activation_bits = (
+                        (getattr(curses, "BUTTON1_PRESSED", 0) or 0)
+                        | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+                    )
+                    if region_hint == "sessions":
+                        recovery_index = _entry_at_row(
+                            entries, state.selected_index, row, separator + 1, 0,
+                            3 if state.filtering else 2, state.scroll_offset,
+                        )
+                        if recovery_index is not None and not _move_handle_hit(
+                            mouse_col, stdscr.getmaxyx()[1]
+                        ):
+                            mouse_state |= activation_bits
+                    elif region_hint == "agents":
+                        mouse_state |= activation_bits
                 if state.move_source is None and mouse_state & motion and not mouse_state & button_bits:
                     trace_mouse_decision(
                         mouse_input_id, "ignored_motion", row, mouse_col, reason="not_moving"
