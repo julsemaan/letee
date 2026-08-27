@@ -1,11 +1,15 @@
 import curses
 import inspect
+import json
+import os
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import call, patch
 
 import letee.sidebar as sidebar
@@ -5649,6 +5653,176 @@ class PrefixActionTest(unittest.TestCase):
             _execute(Effect("switch_pane", pane, message="agent"), state, unittest.mock.Mock(), 5)
 
         self.assertEqual(state.agent_alerts, {(pane, "agent")})
+
+
+class SidebarDiagnosticsTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.tempdir.name) / "sidebar.jsonl"
+        self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
+        self.env.start()
+
+    def tearDown(self):
+        sidebar.diagnostics.close()
+        self.env.stop()
+        self.tempdir.cleanup()
+
+    def records(self):
+        sidebar.diagnostics.flush()
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def test_mouse_press_trace_correlates_receive_map_submit_and_completion(self):
+        target = Target("local", "one")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one",)),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen([curses.KEY_MOUSE, -1, STOP], size=(12, 30))
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask", return_value=(0, 0)),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar.curses, "getmouse", return_value=(0, 0, 2, 0, curses.BUTTON1_PRESSED)),
+            patch.object(sidebar.cockpit.tmux, "out", return_value="tmux 3.4"),
+            patch.object(sidebar.cockpit, "switch"),
+        ):
+            sidebar.run(screen)
+
+        records = self.records()
+        input_record = next(record for record in records if record["event"] == "input_received" and record["key_name"] == "KEY_MOUSE")
+        related = [record for record in records if record.get("input_id") == input_record["input_id"]]
+        mapped = next(record for record in related if record["event"] == "mouse_mapped")
+        submitted = next(record for record in related if record["event"] == "effect_submitted")
+        completed = next(record for record in records if record["event"] == "effect_worker_completed")
+        applied = next(record for record in records if record["event"] == "effect_applied")
+
+        self.assertEqual(mapped["target"], target.format())
+        self.assertEqual(mapped["row"], 2)
+        self.assertTrue(submitted["accepted"])
+        self.assertEqual(submitted["action_id"], completed["action_id"])
+        self.assertEqual(completed["action_id"], applied["action_id"])
+        self.assertEqual(applied["selected_target"], target.format())
+        self.assertEqual(completed["target"], target.format())
+
+    def _run_mouse_trace(self, mouse_events, keys=None, poller=None):
+        target = Target("local", "one")
+        poller = poller or unittest.mock.Mock(
+            snapshot=snapshot(local=("one",)),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen(keys or [*(curses.KEY_MOUSE for _ in mouse_events), -1, STOP], size=(12, 30))
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask", return_value=(0, 0)),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar.curses, "getmouse", side_effect=mouse_events),
+            patch.object(sidebar.cockpit.tmux, "out", return_value="tmux 3.4"),
+        ):
+            sidebar.run(screen)
+        return self.records()
+
+    def test_ignored_mouse_events_record_their_reason(self):
+        records = self._run_mouse_trace([
+            (0, 0, 2, 0, curses.BUTTON1_RELEASED),
+            (0, 0, 2, 0, "bad"),
+            (0, 0, 1, 0, curses.BUTTON1_PRESSED),
+        ])
+
+        decisions = [
+            (record["decision"], record.get("reason"))
+            for record in records
+            if record["event"] == "mouse_decision"
+        ]
+        self.assertIn(("ignored_release", "release_without_press"), decisions)
+        self.assertIn(("malformed_event", "invalid_row_or_state"), decisions)
+        self.assertIn(("empty_row", None), decisions)
+
+    def test_focus_transition_is_recorded_without_mouse_input(self):
+        target = Target("local", "one")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("one",)),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+
+        def tick(_now):
+            poller.current_target = target
+            poller.pane_active = False
+            return False
+
+        poller.tick.side_effect = tick
+        records = self._run_mouse_trace([], keys=[-1, STOP], poller=poller)
+
+        current = [record for record in records if record["event"] == "current_target_transition"]
+        focus = [record for record in records if record["event"] == "pane_focus_transition"]
+        self.assertEqual(len(current), 1)
+        self.assertEqual((current[0]["previous_target"], current[0]["current_target"]), (None, target.format()))
+        self.assertEqual(len(focus), 1)
+        self.assertEqual((focus[0]["previous_active"], focus[0]["current_active"]), (True, False))
+
+    def test_queued_navigation_actions_keep_distinct_ids(self):
+        release = threading.Event()
+        first = Effect("switch", Target("local", "one"))
+        middle = Effect("switch", Target("local", "two"))
+        latest = Effect("switch", Target("local", "three"))
+        performed = []
+
+        def perform(effect, favorites):
+            performed.append(effect)
+            if effect == first:
+                release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch.object(sidebar, "_perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(first, (), input_id="input-one"))
+                self.assertTrue(runner.submit(middle, (), input_id="input-two"))
+                self.assertTrue(runner.submit(latest, (), input_id="input-three"))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+        finally:
+            release.set()
+            runner.close()
+
+        submitted = [
+            record for record in self.records()
+            if record["event"] == "effect_submitted"
+        ]
+        action_ids = [record["action_id"] for record in submitted]
+        self.assertEqual(len(action_ids), len(set(action_ids)))
+        superseded = next(
+            record for record in self.records()
+            if record["event"] == "effect_result" and record["status"] == "superseded"
+        )
+        self.assertNotEqual(superseded["action_id"], superseded["superseded_by_action_id"])
+        self.assertEqual([effect.target.session for effect in performed], ["one", "three"])
 
 
 if __name__ == "__main__":

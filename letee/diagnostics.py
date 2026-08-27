@@ -111,6 +111,9 @@ class Diagnostics:
     def new_action_id(self) -> str | None:
         return self.new_id("action")
 
+    def context_values(self) -> dict[str, str]:
+        return dict(_CONTEXT.get())
+
     @contextmanager
     def context(
         self,

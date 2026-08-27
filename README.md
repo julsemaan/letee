@@ -241,6 +241,24 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 
 Tmux mouse capture may require holding `Shift` for terminal-native text selection.
 
+## Debug logging
+
+Set `LETEE_DEBUG_LOG` to a file path to write opt-in JSONL diagnostics. Logging is off when the variable is unset.
+
+```sh
+letee kill-server
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/click-debug.jsonl" letee
+```
+
+For a named server:
+
+```sh
+letee -L work kill-server
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-click-debug.jsonl" letee -L work
+```
+
+After reproducing the missed click, stop or detach letee and preserve the log.
+
 ## Clipboard
 
 Native tmux copy mode forwards copied text through nested sessions using OSC 52. Physical terminal must support and enable OSC 52 clipboard access. letee declares inner clients as `clipboard` capable and sets outer server option `set-clipboard on`; inner tmux configuration remains unchanged, including explicit `set-clipboard off`.

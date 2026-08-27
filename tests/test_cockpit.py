@@ -1,7 +1,11 @@
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import call, patch
 
-from letee import cockpit
+from letee import cockpit, diagnostics
 from letee.names import PaneTarget, Target
 
 
@@ -982,6 +986,70 @@ class CockpitLayoutTest(unittest.TestCase):
                 ),
             ],
         )
+
+
+class CockpitDiagnosticsTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.tempdir.name) / "cockpit.jsonl"
+        self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
+        self.env.start()
+
+    def tearDown(self):
+        diagnostics.close()
+        self.env.stop()
+        self.tempdir.cleanup()
+
+    def records(self):
+        diagnostics.flush()
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def test_switch_records_each_stage_without_attach_command(self):
+        target = Target("local", "work")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux"),
+        ):
+            cockpit.switch(target, "attach work")
+
+        records = self.records()
+        stages = [
+            (record["event"], record.get("stage"), record.get("status"))
+            for record in records
+            if record["event"].startswith("switch_")
+        ]
+        self.assertEqual(
+            stages,
+            [
+                ("switch_requested", None, None),
+                ("switch_marker_update", "current_target_marker", "started"),
+                ("switch_marker_update", "current_target_marker", "completed"),
+                ("switch_respawn", "right_pane_respawn", "started"),
+                ("switch_respawn", "right_pane_respawn", "completed"),
+                ("switch_focus", "right_pane_focus", "started"),
+                ("switch_focus", "right_pane_focus", "completed"),
+                ("switch_completed", None, None),
+            ],
+        )
+        self.assertTrue(all(record["target"] == target.format() for record in records if record["event"].startswith("switch_")))
+        self.assertTrue(all(record["right_pane"] == "%2" for record in records if record["event"].startswith("switch_")))
+        self.assertNotIn("attach work", self.log_path.read_text())
+
+    def test_switch_failure_records_failed_stage(self):
+        target = Target("local", "work")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux", side_effect=OSError("denied")),
+            self.assertRaises(OSError),
+        ):
+            cockpit.switch(target, "attach work")
+
+        failed = [
+            record for record in self.records()
+            if record["event"] == "switch_error"
+        ]
+        self.assertEqual(failed[0]["stage"], "current_target_marker")
+        self.assertEqual(failed[0]["error_type"], "OSError")
 
 
 if __name__ == "__main__":
