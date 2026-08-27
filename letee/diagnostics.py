@@ -68,10 +68,10 @@ class Diagnostics:
             try:
                 os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
                 self._file = os.fdopen(fd, "a", encoding="utf-8", buffering=1)
-            except BaseException:
+            except Exception:
                 os.close(fd)
                 raise
-        except OSError:
+        except (OSError, ValueError):
             return
         self._queue = queue.Queue()
         self._writer = threading.Thread(
@@ -98,7 +98,7 @@ class Diagnostics:
                         ) + "\n"
                         self._file.write(line)
                         self._file.flush()
-                    except (OSError, ValueError):
+                    except Exception:
                         pass
             finally:
                 self._queue.task_done()
