@@ -1270,11 +1270,13 @@ class EffectRunner:
         debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         action_id = self._action_id
         input_id = self._input_id
+        active_effect = self._effect
         try:
             result = self._future.result()
         except BaseException as error:
             debug.emit(
                 "effect_result",
+                **(_trace_effect(active_effect) if active_effect else {}),
                 action_id=action_id,
                 input_id=input_id,
                 status="error",
