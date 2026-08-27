@@ -5765,6 +5765,24 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertIn(("malformed_event", "invalid_row_or_state"), decisions)
         self.assertIn(("empty_row", None), decisions)
 
+    def test_failed_mouse_followed_by_release_records_recovery_candidate(self):
+        records = self._run_mouse_trace(
+            [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],
+            keys=[curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
+        )
+
+        candidates = [
+            record for record in records if record["event"] == "mouse_recovery_candidate"
+        ]
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate["failed_input_id"], "input-1")
+        self.assertEqual(candidate["release_input_id"], "input-2")
+        self.assertEqual((candidate["release_row"], candidate["release_column"]), (2, 7))
+        self.assertEqual(candidate["region_hint"], "sessions")
+        self.assertLess(candidate["failure_age_ms"], 1_000)
+        self.assertFalse(any(record["event"] == "effect_requested" for record in records))
+
     def test_focus_transition_is_recorded_without_mouse_input(self):
         target = Target("local", "one")
         poller = unittest.mock.Mock(

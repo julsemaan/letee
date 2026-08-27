@@ -32,6 +32,7 @@ UI_POLL_INTERVAL_MS = 50
 DEFAULT_AGENT_PANEL_PERCENTAGE = 40
 MOVE_SCROLL_INTERVAL = 0.2
 MOVE_HANDLE_WIDTH = 3
+MOUSE_RECOVERY_WINDOW = 1.0
 LAYOUT_REPAIR_INTERVAL = 0.5
 STATUS_POLL_INTERVAL = 0.1
 UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -2446,6 +2447,7 @@ def run(stdscr: curses.window) -> None:
     pending_input_id: str | None = None
     pending_mouse: tuple[int, int, int, int, int] | None = None
     pending_mouse_input_id: str | None = None
+    failed_mouse: tuple[str | None, int, bool] | None = None
     last_current_target = initial_target
     last_pane_active = poller.pane_active
     last_focused_region = state.focused_region
@@ -2468,6 +2470,45 @@ def run(stdscr: curses.window) -> None:
             pane_active=poller.pane_active,
         )
         return input_id
+
+    def remember_mouse_failure(input_id: str | None) -> None:
+        nonlocal failed_mouse
+        if debug.enabled:
+            failed_mouse = (input_id, time.monotonic_ns(), poller.pane_active)
+
+    def clear_mouse_failure() -> None:
+        nonlocal failed_mouse
+        failed_mouse = None
+
+    def trace_mouse_recovery_candidate(
+        release_input_id: str | None,
+        region_hint: str | None,
+        row: object,
+        mouse_col: object,
+        mouse_state: int,
+    ) -> None:
+        nonlocal failed_mouse
+        if failed_mouse is None:
+            return
+        failure_input_id, failure_at, failure_pane_active = failed_mouse
+        failed_mouse = None
+        age_ms = (time.monotonic_ns() - failure_at) / 1_000_000
+        if age_ms > MOUSE_RECOVERY_WINDOW * 1_000:
+            return
+        debug.emit(
+            "mouse_recovery_candidate",
+            input_id=release_input_id,
+            failed_input_id=failure_input_id,
+            release_input_id=release_input_id,
+            failure_age_ms=age_ms,
+            failure_pane_active=failure_pane_active,
+            release_pane_active=poller.pane_active,
+            region_hint=region_hint,
+            release_row=row,
+            release_column=mouse_col,
+            release_mouse_state=mouse_state,
+            release_button_flags=_mouse_button_flags(mouse_state),
+        )
 
     def trace_transitions(current_target: Target | None) -> None:
         if not debug.enabled:
@@ -2868,6 +2909,8 @@ def run(stdscr: curses.window) -> None:
             # Tests use private sentinel; removed q cannot terminate loop.
             if key is getattr(stdscr, "_letee_test_stop", None):
                 return
+            if key != curses.KEY_MOUSE:
+                clear_mouse_failure()
             if key in (curses.KEY_F6, curses.KEY_F7):
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
@@ -2893,6 +2936,7 @@ def run(stdscr: curses.window) -> None:
                             mouse_event = curses.getmouse()
                             _, mouse_col, row, _, mouse_state = mouse_event
                         except (curses.error, TypeError, ValueError) as error:
+                            remember_mouse_failure(input_id)
                             debug.emit(
                                 "mouse_received",
                                 input_id=input_id,
@@ -2920,6 +2964,12 @@ def run(stdscr: curses.window) -> None:
                                 ),
                                 layout={"mode": "name"},
                             )
+                            if isinstance(mouse_state, int) and mouse_state & (getattr(curses, "BUTTON1_RELEASED", 0) or 0):
+                                trace_mouse_recovery_candidate(
+                                    input_id, "name", row, mouse_col, mouse_state
+                                )
+                            else:
+                                clear_mouse_failure()
                             valid_back = (
                                 isinstance(mouse_col, int)
                                 and isinstance(row, int)
@@ -2990,6 +3040,7 @@ def run(stdscr: curses.window) -> None:
                     _, mouse_col, row, _, mouse_state = mouse_event
                     input_id = mouse_input_id
                 except (curses.error, TypeError, ValueError) as error:
+                    remember_mouse_failure(mouse_input_id)
                     debug.emit(
                         "mouse_received",
                         input_id=mouse_input_id,
@@ -3013,6 +3064,12 @@ def run(stdscr: curses.window) -> None:
                         decoded_button_flags={},
                         decode_error="invalid_row_or_state",
                     )
+                    if isinstance(mouse_state, int) and mouse_state & (getattr(curses, "BUTTON1_RELEASED", 0) or 0):
+                        trace_mouse_recovery_candidate(
+                            mouse_input_id, None, row, mouse_col, mouse_state
+                        )
+                    else:
+                        clear_mouse_failure()
                     trace_mouse_decision(
                         mouse_input_id, "malformed_event", row, mouse_col,
                         reason="invalid_row_or_state",
@@ -3053,6 +3110,17 @@ def run(stdscr: curses.window) -> None:
                     mouse_state,
                     layout,
                 )
+                if mouse_state & (getattr(curses, "BUTTON1_RELEASED", 0) or 0):
+                    region_hint = (
+                        "agents" if state.add_view is None and separator < row < footer_top
+                        else "sessions" if session_top <= row < separator
+                        else None
+                    )
+                    trace_mouse_recovery_candidate(
+                        mouse_input_id, region_hint, row, mouse_col, mouse_state
+                    )
+                else:
+                    clear_mouse_failure()
                 if state.move_source is None and mouse_state & motion and not mouse_state & button_bits:
                     trace_mouse_decision(
                         mouse_input_id, "ignored_motion", row, mouse_col, reason="not_moving"
@@ -3206,6 +3274,7 @@ def run(stdscr: curses.window) -> None:
                                 next_mouse = curses.getmouse()
                                 _, next_col, next_row, _, next_state = next_mouse
                             except (curses.error, TypeError, ValueError) as error:
+                                remember_mouse_failure(next_input_id)
                                 debug.emit(
                                     "mouse_received",
                                     input_id=next_input_id,
