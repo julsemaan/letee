@@ -956,6 +956,9 @@ def _effect_state_trace(state: SidebarState) -> dict[str, object]:
 
 
 def _log_effect_applied(result: EffectResult, state: SidebarState) -> None:
+    state_trace = _effect_state_trace(state)
+    if result.error:
+        state_trace["status"] = "<error>"
     diagnostics.log(
         "effect_applied",
         **_trace_effect(result.effect),
@@ -963,7 +966,7 @@ def _log_effect_applied(result: EffectResult, state: SidebarState) -> None:
         input_id=result.input_id,
         error=bool(result.error),
         stale_navigation=result.stale_navigation,
-        **_effect_state_trace(state),
+        **state_trace,
     )
 
 
@@ -1522,6 +1525,7 @@ def _read_key(
     prompt: str,
     filtering: bool = False,
     row: int | None = None,
+    input_callback: Callable[[int], object] | None = None,
 ) -> int:
     h, w = stdscr.getmaxyx()
     row = row if row is not None else (2 if filtering else 1)
@@ -1533,7 +1537,10 @@ def _read_key(
         stdscr.addnstr(row, 0, " " * width, width)
         stdscr.addnstr(row, 0, _truncate_cells(prompt, width), width, attr)
         stdscr.refresh()
-        return stdscr.getch()
+        key = stdscr.getch()
+        if input_callback is not None:
+            input_callback(key)
+        return key
     finally:
         stdscr.addnstr(row, 0, " " * width, width)
         stdscr.refresh()
@@ -2445,6 +2452,17 @@ def run(stdscr: curses.window) -> None:
     ) -> None:
         _set_status(state, message, status_timeout, region)
 
+    def read_prompt(
+        prompt: str,
+        filtering: bool = False,
+        row: int | None = None,
+    ) -> int:
+        if debug.enabled:
+            return _read_key(
+                stdscr, prompt, filtering, row, input_callback=trace_input
+            )
+        return _read_key(stdscr, prompt, filtering, row)
+
     def queue_effect(effect: Effect, input_id: str | None = None) -> bool:
         if input_id is None:
             return actions.submit(effect, tuple(state.favorites))
@@ -2529,7 +2547,7 @@ def run(stdscr: curses.window) -> None:
             if actions.busy:
                 show_status("another action is still running")
                 return None
-            if _read_key(stdscr, f"kill {current_target.format()}? y/N", state.filtering) != ord("y"):
+            if read_prompt(f"kill {current_target.format()}? y/N", state.filtering) != ord("y"):
                 return None
             return _transition(state, "kill", current_target)
         state.focused_region = "agents"
@@ -3367,8 +3385,7 @@ def run(stdscr: curses.window) -> None:
                         if actions.busy:
                             show_status("another action is still running", "agents")
                         else:
-                            confirmation = _read_key(
-                                stdscr,
+                            confirmation = read_prompt(
                                 f"kill {entry.label} in {entry.pane_target.target.format()}? y/N",
                                 state.filtering,
                                 row=_agent_prompt_row(
@@ -3490,7 +3507,7 @@ def run(stdscr: curses.window) -> None:
                 if entry.unavailable_favorite:
                     show_status("Session already missing; press r to remove")
                     continue
-                if _read_key(stdscr, f"kill {entry.target.format()}? y/N", state.filtering) != ord("y"):
+                if read_prompt(f"kill {entry.target.format()}? y/N", state.filtering) != ord("y"):
                     continue
                 effect = _transition(state, "kill", entry.target)
             if effect:
