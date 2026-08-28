@@ -5804,6 +5804,20 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertIn(("malformed_event", "invalid_row_or_state"), decisions)
         self.assertIn(("empty_row", None), decisions)
 
+    def test_wheel_outside_list_regions_records_ignored_decision(self):
+        records = self._run_mouse_trace([
+            (0, 4, 0, 0, curses.BUTTON5_PRESSED),
+        ])
+
+        decision = next(
+            record for record in records
+            if record["event"] == "mouse_decision"
+        )
+        self.assertEqual(
+            (decision["decision"], decision["row"], decision["column"], decision["direction"]),
+            ("ignored_wheel", 0, 4, "down"),
+        )
+
     def test_failed_mouse_followed_by_release_activates_mapped_target(self):
         records = self._run_mouse_trace(
             [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],

@@ -3285,6 +3285,14 @@ def run(stdscr: curses.window) -> None:
                                     region="agents" if over_agents else "sessions" if over_sessions else None,
                                     direction="up" if mouse_state & wheel_up else "down",
                                 )
+                            else:
+                                trace_mouse_decision(
+                                    mouse_input_id,
+                                    "ignored_wheel",
+                                    row,
+                                    mouse_col,
+                                    direction="up" if mouse_state & wheel_up else "down",
+                                )
 
                             next_key = stdscr.getch()
                             next_input_id = trace_input(next_key)
