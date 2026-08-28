@@ -3026,6 +3026,8 @@ def run(stdscr: curses.window) -> None:
                         return
                     if key == -1:
                         break
+                    if key != curses.KEY_MOUSE:
+                        clear_mouse_failure()
                 continue
             if key == curses.KEY_MOUSE:
                 mouse_input_id = input_id

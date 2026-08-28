@@ -5818,6 +5818,15 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertFalse(any(record["event"] == "mouse_recovery_candidate" for record in records))
         self.assertFalse(any(record["event"] == "effect_requested" for record in records))
 
+    def test_failed_mouse_release_after_name_confirmation_is_not_recovered(self):
+        records = self._run_mouse_trace(
+            [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],
+            keys=[ord("e"), curses.KEY_MOUSE, 10, curses.KEY_MOUSE, STOP],
+        )
+
+        self.assertFalse(any(record["event"] == "mouse_recovery_candidate" for record in records))
+        self.assertFalse(any(record["event"] == "effect_requested" for record in records))
+
     def test_failed_mouse_release_after_recovery_window_is_not_recovered(self):
         with patch.object(sidebar, "MOUSE_RECOVERY_WINDOW", 0):
             records = self._run_mouse_trace(
