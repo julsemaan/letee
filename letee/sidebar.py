@@ -2943,7 +2943,7 @@ def run(stdscr: curses.window) -> None:
                                 raw=None,
                                 decoded_button_flags={},
                                 decode_error=type(error).__name__,
-                                mouse_debug=_mouse_diagnostics(mouse_mask_result),
+                                mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
                                 mode="name",
                             )
                             trace_mouse_decision(
@@ -3047,7 +3047,7 @@ def run(stdscr: curses.window) -> None:
                         raw=None,
                         decoded_button_flags={},
                         decode_error=type(error).__name__,
-                        mouse_debug=_mouse_diagnostics(mouse_mask_result),
+                        mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
                     )
                     trace_mouse_decision(
                         mouse_input_id, "malformed_event", None, reason="getmouse_failed"
@@ -3300,7 +3300,7 @@ def run(stdscr: curses.window) -> None:
                                     raw=None,
                                     decoded_button_flags={},
                                     decode_error=type(error).__name__,
-                                    mouse_debug=_mouse_diagnostics(mouse_mask_result),
+                                    mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
                                 )
                                 trace_mouse_decision(
                                     next_input_id, "malformed_event", None,

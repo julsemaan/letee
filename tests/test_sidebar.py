@@ -5787,7 +5787,10 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertEqual((effects[0]["effect"], effects[0]["target"]), ("switch", "local:one"))
 
     def test_failed_mouse_release_recovers_without_debug_logging(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(sidebar, "_mouse_diagnostics") as mouse_diagnostics,
+        ):
             switch = self._run_mouse_trace(
                 [curses.error(), (0, 7, 2, 0, curses.BUTTON1_RELEASED)],
                 keys=[curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
@@ -5795,6 +5798,7 @@ class SidebarDiagnosticsTest(unittest.TestCase):
             )
 
         switch.assert_called_once()
+        mouse_diagnostics.assert_not_called()
 
     def test_failed_mouse_release_on_move_handle_is_not_recovered(self):
         records = self._run_mouse_trace(
