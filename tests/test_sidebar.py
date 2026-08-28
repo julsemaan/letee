@@ -892,12 +892,50 @@ class AgentAlertTest(unittest.TestCase):
         self.assertEqual(self.state.agent_alerts, set())
         self.assertEqual(self.state.agent_states, {})
 
-    def test_successful_exact_pane_switch_clears_alert(self):
+    def test_successful_exact_pane_switch_clears_alert_after_focus_update(self):
         key = (self.pane, "id")
         self.state.agent_alerts.add(key)
         with patch("letee.sidebar.cockpit.switch"):
             _execute(Effect("switch_pane", self.pane, message="id"), self.state, unittest.mock.Mock(), 5)
+
+        self.assertIn(key, self.state.agent_alerts)
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True,
+                (self.target,),
+                frozenset(),
+                focused_panes=frozenset({self.pane}),
+            ),
+            {},
+        )
+        _update_agent_alerts(self.state, data, self.target)
         self.assertNotIn(key, self.state.agent_alerts)
+
+    def test_switching_alerted_agent_defers_priority_reorder_until_focus_update(self):
+        first_pane = PaneTarget(self.target, "@1", "%1", "/tmp/tmux")
+        second_pane = PaneTarget(self.target, "@1", "%2", "/tmp/tmux")
+        agents = (
+            AgentEntry(first_pane, "first", "pi", "completed"),
+            AgentEntry(second_pane, "second", "pi", "input-required"),
+        )
+        data = SessionSnapshot(
+            SourceSnapshot(True, (self.target,), frozenset(), agents=agents),
+            {},
+        )
+        key = (first_pane, "first")
+        state = SidebarState(favorites=[self.target], agent_alerts={key})
+
+        self.assertEqual(
+            [entry.agent_id for entry in _agent_entries(data, [self.target], agent_alerts=state.agent_alerts)],
+            ["first", "second"],
+        )
+        with patch("letee.sidebar.cockpit.switch"):
+            _execute(Effect("switch_pane", first_pane, message="first"), state, unittest.mock.Mock(), 5)
+
+        self.assertEqual(
+            [entry.agent_id for entry in _agent_entries(data, [self.target], agent_alerts=state.agent_alerts)],
+            ["first", "second"],
+        )
 
     def test_agent_alert_marker_has_unicode_and_ascii_forms(self):
         entry = Entry("pi", "agent", self.target, pane_target=self.pane, agent_id="id", status="completed")

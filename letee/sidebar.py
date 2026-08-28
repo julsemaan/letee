@@ -1095,7 +1095,8 @@ def _apply_effect(
         completed_key = (effect.target, effect.message)
         if not result.stale_navigation:
             state.selected_agent_key = completed_key
-        state.agent_alerts.discard(completed_key)
+        else:
+            state.agent_alerts.discard(completed_key)
     elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
         agent_key = (effect.target, effect.agent_id)
         if not effect.agent_id and state.selected_agent_key and state.selected_agent_key[0] == effect.target:
