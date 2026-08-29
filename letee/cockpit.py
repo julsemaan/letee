@@ -9,7 +9,16 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .config import ensure_config, load_hosts, load_prefix, load_sidebar_width
+from .config import (
+    DEFAULT_KEYBINDINGS,
+    DEFAULT_SIDEBAR_KEYBINDINGS,
+    ensure_config,
+    load_hosts,
+    load_keybindings,
+    load_prefix,
+    load_sidebar_keybindings,
+    load_sidebar_width,
+)
 from .names import DEFAULT_SERVER, PaneTarget, Target, parse_target
 from . import diagnostics, sessions, tmux
 
@@ -19,47 +28,78 @@ def _truecolor_enabled() -> bool:
     colorterm = os.environ.get("COLORTERM", "").lower()
     return colorterm in ("truecolor", "24bit")
 
-def help_command(prefix: str) -> str:
+
+def _split_prefix_value(value: str) -> tuple[bool, str]:
+    if len(value) >= 7 and value[:7].lower() == "prefix+":
+        return True, value[7:]
+    return False, value
+
+
+def _display_key(prefix: str, value: str) -> str:
+    has_pref, eff = _split_prefix_value(value)
+    return f"{prefix} {eff}" if has_pref else eff
+
+
+def _bind_key(key_value: str, *command: str) -> None:
+    has_pref, eff = _split_prefix_value(key_value)
+    if has_pref:
+        tmux.tmux("bind-key", eff, *command)
+    else:
+        tmux.tmux("bind-key", "-n", eff, *command)
+
+def help_command(prefix: str, keybindings: dict[str, str] | None = None, sidebar_keybindings: dict[str, str] | None = None) -> str:
     ascii_mode = os.environ.get("LETEE_ASCII") == "1" or "utf" not in locale.getpreferredencoding(False).lower()
     move_handle = ":" if ascii_mode else "↕"
+    if keybindings is None:
+        try:
+            keybindings = load_keybindings()
+        except SystemExit:
+            keybindings = DEFAULT_KEYBINDINGS
+    if sidebar_keybindings is None:
+        try:
+            sidebar_keybindings = load_sidebar_keybindings()
+        except SystemExit:
+            sidebar_keybindings = DEFAULT_SIDEBAR_KEYBINDINGS
+    kb = keybindings
+    skb = sidebar_keybindings
     text = f"""letee
 
 Navigation
-  {prefix} a  focus/open Agents
-  {prefix} s  focus/open Sessions
-  {prefix} +  add session
-  {prefix} r  remove active session
-  {prefix} x  kill and remove active session (confirm)
-  {prefix} !  jump to first alerted agent
-  {prefix} w  focus right pane
-  {prefix} h  hide/show sidebar
-  {prefix} q  quit cockpit
+  {_display_key(prefix, kb["focus_agents"])}  focus/open Agents
+  {_display_key(prefix, kb["focus_sessions"])}  focus/open Sessions
+  {_display_key(prefix, kb["add_session"])}  add session
+  {_display_key(prefix, kb["remove_active"])}  remove active session
+  {_display_key(prefix, kb["kill_active"])}  kill and remove active session (confirm)
+  {_display_key(prefix, kb["jump_alert"])}  jump to first alerted agent
+  {_display_key(prefix, kb["focus_right"])}  focus right pane
+  {_display_key(prefix, kb["toggle_sidebar"])}  hide/show sidebar
+  {_display_key(prefix, kb["quit"])}  quit cockpit
   {prefix} 1-9  switch session
-  {prefix} ?  open help
+  {_display_key(prefix, kb["help"])}  open help
 
 Session actions
   Enter  activate selected row
-  e      rename selected session
-  r      remove selected session (session keeps running)
-  K/J    move session up/down
-  x      kill and remove selected session
+  {skb["rename"]}      rename selected session
+  {skb["remove"]}      remove selected session (session keeps running)
+  {skb["move_up"]}/{skb["move_down"]}    move session up/down
+  {skb["kill"]}      kill and remove selected session
   {move_handle}      start mouse move; hover destination, then click
   Esc    cancel mouse move
   Right-click  open session Rename/Remove/Kill menu
 
 Agent actions
-  j/k    navigate agents
+  {skb["navigate_down"]}/{skb["navigate_up"]}    navigate agents
   Enter  switch to agent pane
-  x      terminate selected agent with SIGTERM (confirm; pane and shell survive)
+  {skb["kill"]}      terminate selected agent with SIGTERM (confirm; pane and shell survive)
   Right-click  open agent Kill menu
   Left/Right  cycle ordering on selected ordering row (Priority / Session)
-  [ / ]  resize agent panel
+  {skb["resize_inc"]} / {skb["resize_dec"]}  resize agent panel
 
 Recovery
-  {prefix} d  detach cockpit
-  {prefix} s  restart/focus Sessions
-  {prefix} a  restart/focus Agents
-  {prefix} +  open Add session menu
+  {_display_key(prefix, kb["detach"])}  detach cockpit
+  {_display_key(prefix, kb["focus_sessions"])}  restart/focus Sessions
+  {_display_key(prefix, kb["focus_agents"])}  restart/focus Agents
+  {_display_key(prefix, kb["add_session"])}  open Add session menu
   Esc/Ctrl-C  cancel prompts/filter
 
 Examples
@@ -156,7 +196,14 @@ def _install_layout_hooks(left: str, sidebar_width: int) -> None:
     tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x {sidebar_width}")
 
 
-def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
+def _install_bindings(
+    prefix: str,
+    sidebar_pane: str,
+    right_pane: str,
+    keybindings: dict[str, str] | None = None,
+) -> None:
+    if keybindings is None:
+        keybindings = load_keybindings()
     tmux.tmux("unbind-key", "-a", "-T", "prefix")
     tmux.tmux(
         "bind-key", "-n", "MouseDown1Pane",
@@ -165,17 +212,17 @@ def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
         "{ select-pane -t = ; send-keys -M }",
     )
     tmux.tmux("bind-key", prefix, "send-prefix")
-    tmux.tmux("bind-key", "d", "detach-client")
-    tmux.tmux("bind-key", "h", "resize-pane", "-Z", "-t", right_pane)
-    tmux.tmux("bind-key", "q", "kill-session", "-t", tmux.SESSION)
-    tmux.tmux("bind-key", "a", "run-shell", _focus_sidebar_command("agents"))
-    tmux.tmux("bind-key", "s", "run-shell", _focus_sidebar_command("sessions"))
-    tmux.tmux("bind-key", "+", "run-shell", _focus_sidebar_command("add"))
-    tmux.tmux("bind-key", "r", "run-shell", _focus_sidebar_command("remove"))
-    tmux.tmux("bind-key", "x", "run-shell", _focus_sidebar_command("kill"))
-    tmux.tmux("bind-key", "!", "run-shell", _focus_sidebar_command("alert"))
-    tmux.tmux("bind-key", "w", "select-pane", "-t", right_pane)
-    tmux.tmux("bind-key", "?", "respawn-pane", "-k", "-t", right_pane, help_command(prefix))
+    _bind_key(keybindings["detach"], "detach-client")
+    _bind_key(keybindings["toggle_sidebar"], "resize-pane", "-Z", "-t", right_pane)
+    _bind_key(keybindings["quit"], "kill-session", "-t", tmux.SESSION)
+    _bind_key(keybindings["focus_agents"], "run-shell", _focus_sidebar_command("agents"))
+    _bind_key(keybindings["focus_sessions"], "run-shell", _focus_sidebar_command("sessions"))
+    _bind_key(keybindings["add_session"], "run-shell", _focus_sidebar_command("add"))
+    _bind_key(keybindings["remove_active"], "run-shell", _focus_sidebar_command("remove"))
+    _bind_key(keybindings["kill_active"], "run-shell", _focus_sidebar_command("kill"))
+    _bind_key(keybindings["jump_alert"], "run-shell", _focus_sidebar_command("alert"))
+    _bind_key(keybindings["focus_right"], "select-pane", "-t", right_pane)
+    _bind_key(keybindings["help"], "respawn-pane", "-k", "-t", right_pane, help_command(prefix, keybindings))
     for slot in range(1, 10):
         tmux.tmux("bind-key", str(slot), "run-shell", _letee_command("switch-session", str(slot)))
 
@@ -252,7 +299,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
 
 def _build(prefix: str, sidebar_width: int) -> None:
     _, wrapper = ensure_config()
-    help_cmd = help_command(prefix)
+    help_cmd = help_command(prefix, load_keybindings())
     if _window_exists():
         tmux.tmux("kill-window", "-t", TARGET, check=False)
     if tmux.tmux("has-session", "-t", tmux.SESSION, check=False).returncode != 0:
@@ -522,11 +569,15 @@ def show_session_menu(target: Target, x: int, y: int) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
     title = f"{target.session}@{target.host or 'localhost'}"
     mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
+    try:
+        skb = load_sidebar_keybindings()
+    except SystemExit:
+        skb = DEFAULT_SIDEBAR_KEYBINDINGS
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
-        "Rename", "e", f"send-keys -t {pane} e",
-        "Remove", "r", f"send-keys -t {pane} r",
-        "Kill", "x", f"send-keys -t {pane} x y",
+        "Rename", skb["rename"], f"send-keys -t {pane} {skb['rename']}",
+        "Remove", skb["remove"], f"send-keys -t {pane} {skb['remove']}",
+        "Kill", skb["kill"], f"send-keys -t {pane} {skb['kill']} y",
         timeout=None,
     )
 
@@ -535,9 +586,13 @@ def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int) ->
     pane = _option(SIDEBAR_PANE_OPTION)
     title = f"{agent_name}@{pane_target.target.session}@{pane_target.target.host or 'localhost'}"
     mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
+    try:
+        skb = load_sidebar_keybindings()
+    except SystemExit:
+        skb = DEFAULT_SIDEBAR_KEYBINDINGS
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
-        "Kill", "x", f"send-keys -t {pane} x y",
+        "Kill", skb["kill"], f"send-keys -t {pane} {skb['kill']} y",
         timeout=None,
     )
 

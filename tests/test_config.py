@@ -195,5 +195,110 @@ class ConfigTest(unittest.TestCase):
         ))
 
 
+class KeybindingConfigTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.env = patch.dict("letee.config.os.environ", {"LETEE_CONFIG_DIR": self.tempdir.name}, clear=True)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        config.set_server("default")
+
+    def write_config(self, text):
+        path = Path(self.tempdir.name) / "config.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def test_keybindings_default_without_table(self):
+        self.write_config("hosts = []\n")
+        self.assertEqual(config.load_keybindings(), config.DEFAULT_KEYBINDINGS)
+        self.assertEqual(config.load_sidebar_keybindings(), config.DEFAULT_SIDEBAR_KEYBINDINGS)
+
+    def test_partial_override_merges_with_defaults(self):
+        self.write_config('[keybindings]\nfocus_agents = "C-a"\n')
+        result = config.load_keybindings()
+        self.assertEqual(result["focus_agents"], "C-a")
+        self.assertEqual(result["focus_sessions"], "prefix+s")
+        self.assertEqual(len(result), len(config.DEFAULT_KEYBINDINGS))
+        self.write_config('[sidebar_keybindings]\nrename = "R"\n')
+        sresult = config.load_sidebar_keybindings()
+        self.assertEqual(sresult["rename"], "R")
+        self.assertEqual(sresult["remove"], "r")
+
+    def test_prefix_form_is_accepted_and_preserved(self):
+        self.write_config('[keybindings]\nfocus_agents = "prefix+C-a"\n')
+        result = config.load_keybindings()
+        self.assertEqual(result["focus_agents"], "prefix+C-a")
+        self.write_config('[keybindings]\nfocus_agents = "prefix+a"\n')
+        self.assertEqual(config.load_keybindings()["focus_agents"], "prefix+a")
+        # plain without prefix is global binding
+        self.write_config('[keybindings]\nfocus_agents = "C-a"\n')
+        self.assertEqual(config.load_keybindings()["focus_agents"], "C-a")
+
+    def test_existing_config_without_tables_remains_valid(self):
+        self.write_config('hosts = []\nprefix = "C-s"\nsidebar_width = 40\n')
+        # should not raise
+        self.assertEqual(config.load_keybindings()["quit"], "prefix+q")
+        self.assertEqual(config.load_sidebar_keybindings()["navigate_down"], "j")
+
+    def test_unknown_outer_action_fails(self):
+        self.write_config('[keybindings]\nunknown_action = "a"\n')
+        with self.assertRaisesRegex(SystemExit, "unknown"):
+            config.load_keybindings()
+
+    def test_unknown_sidebar_action_fails(self):
+        self.write_config('[sidebar_keybindings]\nunknown = "a"\n')
+        with self.assertRaisesRegex(SystemExit, "unknown"):
+            config.load_sidebar_keybindings()
+
+    def test_duplicate_outer_binding_fails(self):
+        self.write_config('[keybindings]\nfocus_agents = "z"\nfocus_sessions = "z"\n')
+        with self.assertRaisesRegex(SystemExit, "duplicate"):
+            config.load_keybindings()
+
+    def test_duplicate_sidebar_binding_fails(self):
+        self.write_config('[sidebar_keybindings]\nrename = "x"\nremove = "x"\n')
+        with self.assertRaisesRegex(SystemExit, "duplicate"):
+            config.load_sidebar_keybindings()
+
+    def test_reserved_numeric_slots_are_rejected(self):
+        for slot in ("1", "5", "9"):
+            with self.subTest(slot=slot):
+                self.write_config(f'[keybindings]\nfocus_agents = "{slot}"\n')
+                with self.assertRaisesRegex(SystemExit, "reserved"):
+                    config.load_keybindings()
+
+    def test_prefix_conflict_is_rejected(self):
+        self.write_config('prefix = "C-a"\n[keybindings]\nfocus_agents = "C-a"\n')
+        with self.assertRaisesRegex(SystemExit, "conflicts with prefix"):
+            config.load_keybindings()
+        # default that conflicts with new prefix also fails
+        self.write_config('prefix = "a"\n')
+        with self.assertRaisesRegex(SystemExit, "conflicts with prefix"):
+            config.load_keybindings()
+
+    def test_invalid_tmux_tokens_are_rejected(self):
+        for token in ('"C-"', '""', '"C x"', '"invalid"'):
+            with self.subTest(token=token):
+                self.write_config(f"[keybindings]\nfocus_agents = {token}\n")
+                with self.assertRaisesRegex(SystemExit, "tmux key token"):
+                    config.load_keybindings()
+
+    def test_sidebar_single_character_validation(self):
+        for value in ('"ab"', '""', '" "', '"\\t"'):
+            with self.subTest(value=value):
+                self.write_config(f"[sidebar_keybindings]\nrename = {value}\n")
+                with self.assertRaisesRegex(SystemExit, "single-character"):
+                    config.load_sidebar_keybindings()
+        # valid single chars pass
+        self.write_config('[sidebar_keybindings]\nrename = "R"\n')
+        self.assertEqual(config.load_sidebar_keybindings()["rename"], "R")
+
+    def test_sidebar_reserved_slots_rejected(self):
+        self.write_config('[sidebar_keybindings]\nrename = "1"\n')
+        with self.assertRaisesRegex(SystemExit, "reserved"):
+            config.load_sidebar_keybindings()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 import tomllib
 
@@ -12,6 +13,56 @@ DEFAULT_STATUS_TIMEOUT = 5
 DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
 CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\n'
+
+DEFAULT_KEYBINDINGS: dict[str, str] = {
+    "focus_agents": "prefix+a",
+    "focus_sessions": "prefix+s",
+    "add_session": "prefix++",
+    "remove_active": "prefix+r",
+    "kill_active": "prefix+x",
+    "jump_alert": "prefix+!",
+    "focus_right": "prefix+w",
+    "toggle_sidebar": "prefix+h",
+    "quit": "prefix+q",
+    "help": "prefix+?",
+    "detach": "prefix+d",
+}
+DEFAULT_SIDEBAR_KEYBINDINGS: dict[str, str] = {
+    "navigate_down": "j",
+    "navigate_up": "k",
+    "rename": "e",
+    "remove": "r",
+    "kill": "x",
+    "move_up": "K",
+    "move_down": "J",
+    "resize_inc": "[",
+    "resize_dec": "]",
+}
+# ponytail: simple regex covers common tmux tokens; extend only if real configs need Space/Enter etc.
+_TMUX_TOKEN_RE = re.compile(r"^(?:(?:C|M|S)-)*(?:[A-Za-z0-9]|[!@#$%^&*()_+\-=\[\]{};':\",./<>?`~|\\]|F[0-9]{1,2})$")
+_RESERVED_SLOTS = {str(n) for n in range(1, 10)}
+_KEYBINDING_ALIASES = {
+    "agents": "focus_agents",
+    "sessions": "focus_sessions",
+    "add": "add_session",
+    "remove": "remove_active",
+    "kill": "kill_active",
+    "alert": "jump_alert",
+    "right": "focus_right",
+    "toggle": "toggle_sidebar",
+    "hide": "toggle_sidebar",
+    "hide_sidebar": "toggle_sidebar",
+}
+_SIDEBAR_ALIASES = {
+    "down": "navigate_down",
+    "up": "navigate_up",
+    "reorder_up": "move_up",
+    "reorder_down": "move_down",
+    "increase": "resize_inc",
+    "decrease": "resize_dec",
+    "resize_increase": "resize_inc",
+    "resize_decrease": "resize_dec",
+}
 WRAPPER_TEXT = """unbind C-b
 set -g status off
 set -g mouse on
@@ -64,6 +115,94 @@ def _load_config() -> tuple[Path, dict]:
         return cfg, tomllib.loads(cfg.read_text())
     except tomllib.TOMLDecodeError as e:
         raise SystemExit(f"Invalid config TOML {cfg}: {e}") from e
+
+
+def _validate_tmux_token(token: str) -> bool:
+    return bool(token and token.isprintable() and not any(c.isspace() for c in token) and _TMUX_TOKEN_RE.match(token))
+
+
+def _split_prefix(value: str) -> tuple[bool, str]:
+    if len(value) >= 7 and value[:7].lower() == "prefix+":
+        return True, value[7:]
+    return False, value
+
+
+def _effective_token(value: str, *, sidebar: bool) -> str:
+    if sidebar:
+        return value
+    _, eff = _split_prefix(value)
+    return eff
+
+
+def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str, defaults: dict[str, str], *, sidebar: bool) -> dict[str, str]:
+    raw = data.get(block_name, {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise SystemExit(f"Invalid config {cfg}: [{block_name}] must be a table")
+    aliases = _SIDEBAR_ALIASES if sidebar else _KEYBINDING_ALIASES
+    normalized: dict[str, str] = {}
+    for key, value in raw.items():
+        canon = aliases.get(key, key)
+        if canon not in defaults:
+            raise SystemExit(f"Invalid config {cfg}: unknown {block_name} action {key!r}")
+        if canon in normalized:
+            raise SystemExit(f"Invalid config {cfg}: duplicate {block_name} action {canon!r} via alias {key!r}")
+        normalized[canon] = value
+    raw = normalized
+    merged: dict[str, str] = {**defaults}
+    for action, value in raw.items():
+        if not isinstance(value, str):
+            kind = "single-character key" if sidebar else "tmux key token"
+            raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} must be a {kind}")
+        if sidebar:
+            if len(value) != 1 or not value.isprintable() or value.isspace():
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} must be a single-character key")
+            eff = _effective_token(value, sidebar=True)
+            if eff in _RESERVED_SLOTS:
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is reserved (session slots 1 through 9)")
+        else:
+            has_pref, eff = _split_prefix(value)
+            # for backwards compat, plain "a" without prefix+ is treated as legacy prefix binding
+            # but new explicit "prefix+" vs plain without prefix distinguishes table; validation uses effective token
+            if not eff:
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is not a valid tmux key token")
+            if not _validate_tmux_token(eff):
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is not a valid tmux key token")
+            if eff in _RESERVED_SLOTS:
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is reserved (session slots 1 through 9)")
+            if eff == prefix:
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} conflicts with prefix {prefix!r}")
+        merged[action] = value
+    # duplicate bindings (full string including prefix+ counts separately)
+    seen: dict[str, str] = {}
+    for action, token in merged.items():
+        if token in seen:
+            raise SystemExit(f"Invalid config {cfg}: duplicate binding {token!r} for {seen[token]!r} and {action!r} in [{block_name}]")
+        seen[token] = action
+    # prefix conflicts for defaults that equal prefix even if not overridden
+    if not sidebar:
+        for action, token in merged.items():
+            _, eff = _split_prefix(token)
+            if eff == prefix and action not in raw:
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {token!r} conflicts with prefix {prefix!r}")
+    return merged
+
+
+def load_keybindings() -> dict[str, str]:
+    cfg, data = _load_config()
+    prefix = data.get("prefix", DEFAULT_PREFIX)
+    if not isinstance(prefix, str) or not prefix or not prefix.isprintable() or any(char.isspace() for char in prefix):
+        raise SystemExit(f"Invalid config {cfg}: prefix must be a non-empty, printable, whitespace-free string")
+    return _load_keybindings_block(data, cfg, prefix, "keybindings", DEFAULT_KEYBINDINGS, sidebar=False)
+
+
+def load_sidebar_keybindings() -> dict[str, str]:
+    cfg, data = _load_config()
+    prefix = data.get("prefix", DEFAULT_PREFIX)
+    if not isinstance(prefix, str) or not prefix or not prefix.isprintable() or any(char.isspace() for char in prefix):
+        raise SystemExit(f"Invalid config {cfg}: prefix must be a non-empty, printable, whitespace-free string")
+    return _load_keybindings_block(data, cfg, prefix, "sidebar_keybindings", DEFAULT_SIDEBAR_KEYBINDINGS, sidebar=True)
 
 
 def load_prefix() -> str:

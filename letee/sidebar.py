@@ -22,6 +22,7 @@ from .config import (
     load_agent_panel_resize_step,
     load_hosts,
     load_sessions,
+    load_sidebar_keybindings,
     load_status_timeout,
     save_sessions,
 )
@@ -2415,6 +2416,7 @@ def run(stdscr: curses.window) -> None:
     mouse_mask_result = _mouse_mask()
     status_timeout = load_status_timeout()
     agent_panel_resize_step = load_agent_panel_resize_step()
+    sidebar_keys = load_sidebar_keybindings()
     initial_target = _current_target()
     state = SidebarState(favorites=load_sessions(), selected_target=initial_target)
     poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
@@ -3607,13 +3609,13 @@ def run(stdscr: curses.window) -> None:
                 continue
             selectable = _selectable(entries)
             effect: Effect | None = None
-            if key in (ord("["), ord("]")):
+            if key in (ord(sidebar_keys["resize_inc"]), ord(sidebar_keys["resize_dec"])):
                 state.agent_percentage = max(
                     0,
                     min(
                         100,
                         state.agent_percentage + (
-                            agent_panel_resize_step if key == ord("[") else -agent_panel_resize_step
+                            agent_panel_resize_step if key == ord(sidebar_keys["resize_inc"]) else -agent_panel_resize_step
                         ),
                     ),
                 )
@@ -3621,12 +3623,12 @@ def run(stdscr: curses.window) -> None:
                 state.agent_scroll_offset = None
                 state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
                 rebuild()
-            elif state.focused_region == "agents" and key in (curses.KEY_DOWN, ord("j")) and agent_entries:
+            elif state.focused_region == "agents" and key in (curses.KEY_DOWN, ord(sidebar_keys["navigate_down"])) and agent_entries:
                 state.agent_scroll_offset = None
                 state.agent_selected_index = (state.agent_selected_index + 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]
                 state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
-            elif state.focused_region == "agents" and key in (curses.KEY_UP, ord("k")) and agent_entries:
+            elif state.focused_region == "agents" and key in (curses.KEY_UP, ord(sidebar_keys["navigate_up"])) and agent_entries:
                 state.agent_scroll_offset = None
                 state.agent_selected_index = (state.agent_selected_index - 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]
@@ -3636,7 +3638,7 @@ def run(stdscr: curses.window) -> None:
                     entry = agent_entries[state.agent_selected_index]
                     if entry.pane_target:
                         effect = Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
-            elif state.focused_region == "agents" and key == ord("x"):
+            elif state.focused_region == "agents" and key == ord(sidebar_keys["kill"]):
                 if agent_entries:
                     entry = agent_entries[state.agent_selected_index]
                     if entry.kind == "agent" and entry.pane_target:
@@ -3662,9 +3664,9 @@ def run(stdscr: curses.window) -> None:
                                     message=entry.label,
                                     agent_id=entry.agent_id or "",
                                 )
-            elif state.focused_region == "agents" and key in map(ord, "rKJ"):
+            elif state.focused_region == "agents" and key in (ord(sidebar_keys["remove"]), ord(sidebar_keys["move_up"]), ord(sidebar_keys["move_down"])):
                 effect = Effect("status", message="agent panes are automatic")
-            elif key in (curses.KEY_DOWN, ord("j")) and (selectable or state.add_view is not None):
+            elif key in (curses.KEY_DOWN, ord(sidebar_keys["navigate_down"])) and (selectable or state.add_view is not None):
                 state.scroll_offset = None
                 if state.add_button_selected:
                     if selectable:
@@ -3678,7 +3680,7 @@ def run(stdscr: curses.window) -> None:
                     state.selected_index = selectable[(selectable.index(state.selected_index) + 1) % len(selectable)]
                     state.selected_target = entries[state.selected_index].target
                     state.selected_tracked = entries[state.selected_index].tracked
-            elif key in (curses.KEY_UP, ord("k")) and (selectable or state.add_view is not None):
+            elif key in (curses.KEY_UP, ord(sidebar_keys["navigate_up"])) and (selectable or state.add_view is not None):
                 state.scroll_offset = None
                 if state.add_view is not None:
                     if not state.add_button_selected and (not selectable or state.selected_index == selectable[0]):
@@ -3698,17 +3700,17 @@ def run(stdscr: curses.window) -> None:
                     state.selected_index = selectable[(selectable.index(state.selected_index) - 1) % len(selectable)]
                     state.selected_target = entries[state.selected_index].target
                     state.selected_tracked = entries[state.selected_index].tracked
-            elif key == ord("K"):
+            elif key == ord(sidebar_keys["move_up"]):
                 if actions.blocks_favorite_changes:
                     show_status("another action is still changing sessions")
                 else:
                     effect = _transition(state, "move_session_up")
-            elif key == ord("J"):
+            elif key == ord(sidebar_keys["move_down"]):
                 if actions.blocks_favorite_changes:
                     show_status("another action is still changing sessions")
                 else:
                     effect = _transition(state, "move_session_down")
-            elif key == ord("e") and state.add_view is None and state.focused_region == "sessions" and entries:
+            elif key == ord(sidebar_keys["rename"]) and state.add_view is None and state.focused_region == "sessions" and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target and entry.tracked:
                     if actions.blocks_favorite_changes:
@@ -3718,7 +3720,7 @@ def run(stdscr: curses.window) -> None:
                     else:
                         _start_rename(state, entry.target)
                         curses.curs_set(1)
-            elif key == ord("r") and state.add_view is None and entries:
+            elif key == ord(sidebar_keys["remove"]) and state.add_view is None and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target:
                     if actions.blocks_favorite_changes:
@@ -3756,7 +3758,7 @@ def run(stdscr: curses.window) -> None:
                     continue
                 if entry.target:
                     effect = _transition(state, "add_switch" if state.add_view == "existing" else "switch", entry.target)
-            elif key == ord("x"):
+            elif key == ord(sidebar_keys["kill"]):
                 if not entries:
                     continue
                 entry = entries[state.selected_index]

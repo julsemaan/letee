@@ -88,6 +88,51 @@ persistent_ssh = true
 
 To restore old prefix, set `prefix = "C-g"` and rerun `letee`.
 
+### Keybindings
+
+Two tables customize the outer prefix layer and the sidebar list layer. Partial tables merge with defaults; omitted keys keep default values.
+
+```toml
+[keybindings]
+focus_agents = "prefix+a"
+focus_sessions = "prefix+s"
+add_session = "prefix++"
+remove_active = "prefix+r"
+kill_active = "prefix+x"
+jump_alert = "prefix+!"
+focus_right = "prefix+w"
+toggle_sidebar = "prefix+h"
+quit = "prefix+q"
+help = "prefix+?"
+detach = "prefix+d"
+
+[sidebar_keybindings]
+navigate_down = "j"
+navigate_up = "k"
+rename = "e"
+remove = "r"
+kill = "x"
+move_up = "K"
+move_down = "J"
+resize_inc = "["
+resize_dec = "]"
+```
+
+Outer `[keybindings]` values are tmux key tokens such as `a`, `+`, `C-a`, `M-x`, or `F1`. Prefix with `prefix+` to require the outer prefix (for example `prefix+a` means `C-s` + `a` when `prefix = "C-s"`; `prefix+C-a` means prefix + `C-a`). Values without `prefix+` bind globally without the prefix (for example `C-a` alone triggers without `C-s`, using `bind-key -n`). Sidebar `[sidebar_keybindings]` keys are single printable characters such as `j` or `[`.
+
+Fixed input stays fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys (`F6`–`F11`), and session slots `1` through `9`.
+
+Validation rules:
+
+- **Known action names.** Unknown keys in either table fail with an error that names the offending action.
+- **Duplicate bindings.** Two actions in the same table may not use the same key.
+- **Reserved numeric slots.** Outer bindings may not use `1` through `9`.
+- **Prefix conflicts.** Outer bindings may not use the effective key that equals the configured `prefix` value (for example `prefix+C-s` with `prefix = "C-s"`).
+- **Tmux key tokens.** Outer bindings must be a non-empty, printable, whitespace-free tmux key token such as `a`, `+`, `C-a`, or `F1`, optionally prefixed with `prefix+` (for example `prefix+a`, `prefix+C-a`).
+- **Single-character sidebar keys.** Sidebar bindings must be exactly one printable character.
+
+Bindings load once at startup. After editing `~/.config/letee/config.toml`, rerun `letee` to apply outer and sidebar changes; sidebar changes also require a sidebar restart, which `letee` does automatically when it recreates the cockpit.
+
 ### Remote hosts
 
 Hosts are SSH aliases only. Keep host-specific users, ports, keys, proxies, IPv6, and other connection settings in `~/.ssh/config`.
