@@ -116,6 +116,7 @@ RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
 CURRENT_AGENT_OPTION = "@letee_current_agent"
 BELL_TARGET_OPTION = "@letee_bell_target"
+ROOT_KEYS_OPTION = "@letee_root_keys"
 NO_COCKPIT = "No valid letee. Run: letee"
 
 
@@ -201,6 +202,13 @@ def _install_bindings(
 ) -> None:
     if keybindings is None:
         keybindings = load_keybindings()
+    try:
+        old_raw = _option(ROOT_KEYS_OPTION)
+    except Exception:
+        old_raw = ""
+    old_keys = [k for k in old_raw.split(",") if k] if old_raw else []
+    for key in old_keys:
+        tmux.tmux("unbind-key", "-q", "-T", "root", key)
     tmux.tmux("unbind-key", "-a", "-T", "prefix")
     tmux.tmux(
         "bind-key", "-n", "MouseDown1Pane",
@@ -222,6 +230,11 @@ def _install_bindings(
     _bind_key(keybindings["help"], "respawn-pane", "-k", "-t", right_pane, help_command(prefix, keybindings))
     for slot in range(1, 10):
         tmux.tmux("bind-key", str(slot), "run-shell", _letee_command("switch-session", str(slot)))
+    new_root_keys = [_split_prefix_value(v)[1] for v in keybindings.values() if not _split_prefix_value(v)[0]]
+    if new_root_keys:
+        tmux.tmux("set-option", "-t", tmux.SESSION, ROOT_KEYS_OPTION, ",".join(new_root_keys))
+    elif old_keys:
+        tmux.tmux("set-option", "-t", tmux.SESSION, ROOT_KEYS_OPTION, "")
 
 
 def _enable_mouse() -> None:

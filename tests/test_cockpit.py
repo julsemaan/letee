@@ -497,7 +497,7 @@ class CockpitLayoutTest(unittest.TestCase):
     def test_bindings_replace_outer_prefix_table_with_letee_shortcuts(self):
         calls = []
 
-        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2")
 
         self.assertEqual(
@@ -548,7 +548,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.addCleanup(cockpit.tmux.set_server, None)
         calls = []
 
-        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2")
 
         self.assertEqual(calls[6], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
@@ -1088,7 +1088,7 @@ class CockpitKeybindingTest(unittest.TestCase):
             "detach": "prefix+C-k",
         }
         calls = []
-        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
         # check each custom effective key appears in prefix table binds (without -n)
         for eff in ("C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h", "C-i", "C-j", "C-k"):
@@ -1116,7 +1116,7 @@ class CockpitKeybindingTest(unittest.TestCase):
             "detach": "C-k",
         }
         calls = []
-        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
         # global binds use -n flag
         for eff in ("C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h", "C-i", "C-j", "C-k"):
