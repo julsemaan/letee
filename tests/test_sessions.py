@@ -770,7 +770,7 @@ class TmuxOverlayFileTest(unittest.TestCase):
 
     def test_repeated_application_is_safe(self):
         for line in self.commands:
-            self.assertRegex(line, r"^set -g \S+ .+$")
+            self.assertRegex(line, r"^set -(g|s) \S+ .+$")
 
     def test_package_ships_the_overlay_file(self):
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
