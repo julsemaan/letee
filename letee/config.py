@@ -174,12 +174,14 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
             if eff == prefix:
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} conflicts with prefix {prefix!r}")
         merged[action] = value
-    # duplicate bindings (full string including prefix+ counts separately)
-    seen: dict[str, str] = {}
+    # duplicate bindings: normalized, table-sensitive (prefix+ lowercased; `a` vs `prefix+a` remain distinct)
+    seen: dict[tuple[bool, str], str] = {}
     for action, token in merged.items():
-        if token in seen:
-            raise SystemExit(f"Invalid config {cfg}: duplicate binding {token!r} for {seen[token]!r} and {action!r} in [{block_name}]")
-        seen[token] = action
+        has_pref, eff = _split_prefix(token) if not sidebar else (False, token)
+        identity = (has_pref, eff)
+        if identity in seen:
+            raise SystemExit(f"Invalid config {cfg}: duplicate binding {token!r} for {seen[identity]!r} and {action!r} in [{block_name}]")
+        seen[identity] = action
     # prefix conflicts for defaults that equal prefix even if not overridden
     if not sidebar:
         for action, token in merged.items():
