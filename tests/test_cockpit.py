@@ -29,7 +29,7 @@ class CockpitStartupTest(unittest.TestCase):
             patch.object(cockpit.sessions, "group_hosts", side_effect=lambda hosts: events.append(("groups", tuple(hosts))) or [["dev", "prod"]]),
             patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
             patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
-            patch.object(cockpit, "ensure_cockpit", side_effect=lambda: events.append(("cockpit",))),
+            patch.object(cockpit, "ensure_cockpit", side_effect=lambda **kwargs: events.append(("cockpit",))),
             patch.object(cockpit, "_attach", return_value=0),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
@@ -46,6 +46,18 @@ class CockpitStartupTest(unittest.TestCase):
                 ("cockpit",),
             ],
         )
+
+    def test_cockpit_requests_sidebar_restart_on_top_level_rerun(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=[]),
+            patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
+            patch.object(cockpit, "_attach", return_value=0),
+        ):
+            self.assertEqual(cockpit.cockpit(), 0)
+
+        ensure_cockpit.assert_called_once_with(restart_sidebar=True)
 
     def test_warmup_failure_tries_next_host_in_group(self):
         order = []
@@ -197,7 +209,7 @@ class CockpitStartupTest(unittest.TestCase):
             patch.object(cockpit.sessions, "group_hosts", side_effect=lambda hosts: order.append(("groups", tuple(hosts))) or [["one", "two", "three"]]),
             patch.object(cockpit.sessions, "prepare_host", side_effect=lambda host: True if host == "one" else prepare(host)),
             patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
-            patch.object(cockpit, "ensure_cockpit", side_effect=lambda: order.append("cockpit")),
+            patch.object(cockpit, "ensure_cockpit", side_effect=lambda **kwargs: order.append("cockpit")),
             patch.object(cockpit, "_attach", return_value=0),
             patch("builtins.print"),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
@@ -414,6 +426,28 @@ class CockpitLayoutTest(unittest.TestCase):
                 unittest.mock.call("set-option", "-t", "letee", "status", "off"),
                 unittest.mock.call("set-option", "-s", "escape-time", "0"),
             ],
+        )
+
+    def test_existing_cockpit_restarts_sidebar_when_requested(self):
+        with (
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(
+                cockpit,
+                "_option",
+                side_effect=lambda name: {
+                    cockpit.SIDEBAR_PANE_OPTION: "%1",
+                    cockpit.RIGHT_PANE_OPTION: "%2",
+                }.get(name, ""),
+            ),
+            patch.object(cockpit, "load_prefix", return_value="C-x"),
+            patch.object(cockpit, "load_sidebar_width", return_value=52),
+            patch.object(cockpit, "_configure_cockpit"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.ensure_cockpit(restart_sidebar=True)
+
+        tmux_call.assert_called_once_with(
+            "respawn-pane", "-k", "-t", "%1", cockpit._sidebar_command()
         )
 
     def test_layout_hook_repins_sidebar_after_window_resize(self):

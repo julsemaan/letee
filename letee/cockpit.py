@@ -321,13 +321,15 @@ def _build(prefix: str, sidebar_width: int) -> None:
     _configure_cockpit(left, right, prefix, sidebar_width)
 
 
-def ensure_cockpit() -> None:
+def ensure_cockpit(*, restart_sidebar: bool = False) -> None:
     prefix = load_prefix()
     sidebar_width = load_sidebar_width()
     if _valid():
         left = _option(SIDEBAR_PANE_OPTION)
         right = _option(RIGHT_PANE_OPTION)
         _configure_cockpit(left, right, prefix, sidebar_width)
+        if restart_sidebar:
+            tmux.tmux("respawn-pane", "-k", "-t", left, _sidebar_command())
         return
     if _option(COCKPIT_OPTION) == "1":
         right = _option(RIGHT_PANE_OPTION)
@@ -427,7 +429,7 @@ def cockpit() -> int:
     except KeyboardInterrupt:
         print("\nSSH preparation canceled.", file=sys.stderr, flush=True)
         return 130
-    ensure_cockpit()
+    ensure_cockpit(restart_sidebar=True)
     return _attach()
 
 
