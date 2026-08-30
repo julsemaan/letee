@@ -56,10 +56,7 @@ def help_command(prefix: str, keybindings: dict[str, str] | None = None, sidebar
         except SystemExit:
             keybindings = DEFAULT_KEYBINDINGS
     if sidebar_keybindings is None:
-        try:
-            sidebar_keybindings = load_sidebar_keybindings()
-        except SystemExit:
-            sidebar_keybindings = DEFAULT_SIDEBAR_KEYBINDINGS
+        sidebar_keybindings = load_sidebar_keybindings()
     kb = keybindings
     skb = sidebar_keybindings
     text = f"""letee
