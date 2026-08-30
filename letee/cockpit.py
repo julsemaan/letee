@@ -588,9 +588,9 @@ def show_session_menu(target: Target, x: int, y: int, sidebar_keybindings: dict[
         skb = sidebar_keybindings
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
-        "Rename", skb["rename"], f"send-keys -t {pane} {skb['rename']}",
-        "Remove", skb["remove"], f"send-keys -t {pane} {skb['remove']}",
-        "Kill", skb["kill"], f"send-keys -t {pane} {skb['kill']} y",
+        "Rename", skb["rename"], f"send-keys -t {pane} {shlex.quote(skb['rename'])}",
+        "Remove", skb["remove"], f"send-keys -t {pane} {shlex.quote(skb['remove'])}",
+        "Kill", skb["kill"], f"send-keys -t {pane} {shlex.quote(skb['kill'])} y",
         timeout=None,
     )
 
@@ -608,7 +608,7 @@ def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int, si
         skb = sidebar_keybindings
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
-        "Kill", skb["kill"], f"send-keys -t {pane} {skb['kill']} y",
+        "Kill", skb["kill"], f"send-keys -t {pane} {shlex.quote(skb['kill'])} y",
         timeout=None,
     )
 
