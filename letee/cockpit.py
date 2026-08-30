@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -176,7 +177,66 @@ def _fix_layout(left: str, sidebar_width: int) -> None:
     tmux.tmux("resize-pane", "-t", left, "-x", str(sidebar_width), check=False)
 
 
+def _ensure_client_size() -> bool:
+    try:
+        raw = tmux.out(
+            "list-clients",
+            "-t", tmux.SESSION,
+            "-F", "#{client_pid}:#{client_tty}:#{client_width}:#{client_height}:#{client_session}",
+            check=False,
+        )
+    except Exception:
+        return True
+    if not raw:
+        return True
+    for line in raw.splitlines():
+        if not line:
+            continue
+        parts = line.split(":")
+        if len(parts) != 5:
+            continue
+        pid_s, tty, w_s, h_s, session = parts
+        # Only consider clients attached to the letee session if tmux reports it.
+        # When filtering by -t SESSION tmux already limits to that session,
+        # but guard against unexpected output: if session is present and not ours, skip.
+        # Detached clients have no session association; they appear only when -t is omitted,
+        # so with -t they are already excluded. Keep this guard cheap.
+        if session and session != tmux.SESSION:
+            continue
+        # Treat empty/detached tty as detached.
+        if not tty or tty == "":
+            continue
+        try:
+            cached_w = int(w_s)
+            cached_h = int(h_s)
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        try:
+            fd = os.open(tty, os.O_RDONLY | os.O_NOCTTY)
+        except OSError:
+            continue
+        try:
+            size = os.get_terminal_size(fd)
+        except OSError:
+            continue
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if size.columns != cached_w or size.lines != cached_h:
+            try:
+                os.kill(pid, signal.SIGWINCH)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            return False
+    return True
+
+
 def repair_layout(left: str) -> None:
+    if not _ensure_client_size():
+        return
     state = tmux.out(
         "display-message", "-p", "-t", left,
         f"#{{pane_width}}:#{{{SIDEBAR_WIDTH_OPTION}}}:#{{window_width}}:#{{client_width}}:#{{window_offset_x}}",
@@ -354,9 +414,6 @@ def _attach() -> int:
         print(f"Cockpit ready. Current fd is /dev/tty; tmux refuses it. Run: {attach_cmd}")
         return 0
     cmd = ["tmux", "-L", tmux.SOCKET, "attach-session", "-d", "-t", TARGET]
-    if shutil.which("script"):
-        shell_cmd = " ".join(shlex.quote(part) for part in cmd)
-        os.execvp("script", ["script", "-q", "-c", shell_cmd, "/dev/null"])
     os.execvp("tmux", cmd)
     return 0
 

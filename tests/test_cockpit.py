@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import tempfile
 import unittest
 from pathlib import Path
@@ -467,6 +468,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
     def test_repair_layout_skips_healthy_layout(self):
         with (
+            patch.object(cockpit, "_ensure_client_size", return_value=True),
             patch.object(cockpit.tmux, "out", return_value="52:52:100:100:") as tmux_out,
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
@@ -481,6 +483,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
     def test_repair_layout_matches_window_to_client_and_repins_sidebar(self):
         with (
+            patch.object(cockpit, "_ensure_client_size", return_value=True),
             patch.object(cockpit.tmux, "out", return_value="10:52:160:100:60"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
@@ -1280,6 +1283,108 @@ class CockpitKeybindingTest(unittest.TestCase):
         args = tmux_call.call_args.args
         self.assertIn("X", args)
         self.assertIn("send-keys -t %1 X y", args)
+
+
+class CockpitSIGWINCHTest(unittest.TestCase):
+    def test_stale_tty_sends_sigwinch_and_defers_repair(self):
+        # tmux reports 80x24 but real TTY is 100x24 -> stale
+        with (
+            patch.object(cockpit.tmux, "out", return_value="1234:/dev/pts/3:80:24:letee") as tmux_out,
+            patch.object(cockpit.os, "open", return_value=3) as mock_open,
+            patch.object(cockpit.os, "get_terminal_size", return_value=os.terminal_size((100, 24))) as mock_get,
+            patch.object(cockpit.os, "close") as mock_close,
+            patch.object(cockpit.os, "kill") as mock_kill,
+            patch.object(cockpit.tmux, "tmux") as tmux_run,
+        ):
+            cockpit.repair_layout("%1")
+            mock_open.assert_called_once_with("/dev/pts/3", os.O_RDONLY | os.O_NOCTTY)
+            mock_get.assert_called_once_with(3)
+            mock_close.assert_called_once_with(3)
+            mock_kill.assert_called_once_with(1234, signal.SIGWINCH)
+            # list-clients queried, layout repair deferred
+            tmux_out.assert_called_once_with(
+                "list-clients", "-t", cockpit.tmux.SESSION, "-F", "#{client_pid}:#{client_tty}:#{client_width}:#{client_height}:#{client_session}", check=False
+            )
+            tmux_run.assert_not_called()
+
+    def test_matching_tty_sends_no_signal_and_repairs(self):
+        # sizes agree, so no SIGWINCH and layout repair proceeds
+        def out_side_effect(*args, **kw):
+            if args[0] == "list-clients":
+                return "1234:/dev/pts/3:80:24:letee"
+            return "10:52:160:100:60"
+        with (
+            patch.object(cockpit.tmux, "out", side_effect=out_side_effect) as tmux_out,
+            patch.object(cockpit.os, "open", return_value=3),
+            patch.object(cockpit.os, "get_terminal_size", return_value=os.terminal_size((80, 24))),
+            patch.object(cockpit.os, "close"),
+            patch.object(cockpit.os, "kill") as mock_kill,
+            patch.object(cockpit.tmux, "tmux") as tmux_run,
+        ):
+            cockpit.repair_layout("%1")
+            mock_kill.assert_not_called()
+            # both queries happened and repair ran
+            self.assertEqual(tmux_out.call_count, 2)
+            tmux_run.assert_called_once()
+
+    def test_detached_malformed_inaccessible_vanished_ignored_safely(self):
+        import contextlib
+        cases = [
+            ("detached empty tty", "1234::80:24:letee", None),
+            ("detached wrong session", "1234:/dev/pts/3:80:24:other", None),
+            ("malformed not enough parts", "bad", None),
+            ("malformed non-int", "a:/dev/pts/3:80:24:letee", None),
+            ("inaccessible tty", "1234:/dev/pts/99:80:24:letee", OSError(5, "no tty")),
+            ("vanished pid mismatch", "1234:/dev/pts/3:80:24:letee", "kill_vanish"),
+        ]
+        for label, raw, _ in cases:
+            with self.subTest(label=label):
+                def out_side(*args, **kw):
+                    if args[0] == "list-clients":
+                        return raw
+                    return "52:52:100:100:"
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(patch.object(cockpit.tmux, "out", side_effect=out_side))
+                    kill_p = stack.enter_context(patch.object(cockpit.os, "kill"))
+                    run_p = stack.enter_context(patch.object(cockpit.tmux, "tmux"))
+                    if label == "inaccessible tty":
+                        stack.enter_context(patch.object(cockpit.os, "open", side_effect=OSError(5, "no tty")))
+                    elif label == "vanished pid mismatch":
+                        stack.enter_context(patch.object(cockpit.os, "open", return_value=3))
+                        stack.enter_context(patch.object(cockpit.os, "get_terminal_size", return_value=os.terminal_size((100, 24))))
+                        stack.enter_context(patch.object(cockpit.os, "close"))
+                        kill_p.side_effect = ProcessLookupError(3, "gone")
+                    elif label in ("detached empty tty", "detached wrong session", "malformed not enough parts", "malformed non-int"):
+                        pass
+                    else:
+                        pass
+                    cockpit.repair_layout("%1")
+                    if label == "vanished pid mismatch":
+                        kill_p.assert_called_once_with(1234, signal.SIGWINCH)
+                        run_p.assert_not_called()
+                    elif label in ("detached empty tty", "detached wrong session", "malformed not enough parts", "malformed non-int"):
+                        kill_p.assert_not_called()
+                        run_p.assert_not_called()
+                    elif label == "inaccessible tty":
+                        kill_p.assert_not_called()
+                        run_p.assert_not_called()
+
+    def test_attach_executes_tmux_directly_even_when_script_installed(self):
+        # Even if `script` is on PATH, _attach must exec tmux directly
+        with (
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
+            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
+            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            self.assertRaises(RuntimeError),
+        ):
+            cockpit._attach()
+        execvp.assert_called_once_with(
+            "tmux", ["tmux", "-L", "letee", "attach-session", "-d", "-t", "letee:cockpit"]
+        )
+        # ensure script not used
+        self.assertNotIn("script", execvp.call_args[0][0])
 
 
 if __name__ == "__main__":
