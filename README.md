@@ -337,7 +337,7 @@ The startup record and any ncurses mouse decode failure include the relevant tmu
 
 ## Clipboard
 
-Native tmux copy mode forwards copied text through nested sessions using OSC 52. Physical terminal must support and enable OSC 52 clipboard access. letee declares inner clients as `clipboard` capable and sets outer server option `set-clipboard on`; inner tmux configuration remains unchanged, including explicit `set-clipboard off`.
+Native tmux copy mode forwards copied text through nested sessions using OSC 52. Physical terminal must support and enable OSC 52 clipboard access. letee declares inner clients as `clipboard` capable and sets outer server option `set-clipboard on`. With the config overlay enabled (default), letee also sources `set-clipboard on` on managed tmux servers after your configuration loads, so it overrides an explicit `set-clipboard off` there; set `tmux_config_overlay = false` to keep your inner configuration's `set-clipboard off` effective.
 
 **Security:** `set-clipboard on` permits processes in local and remote panes to set system clipboard through OSC 52. Only connect to trusted hosts and run trusted pane processes.
 
