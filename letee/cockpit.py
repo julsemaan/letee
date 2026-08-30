@@ -6,6 +6,8 @@ import re
 import shlex
 import shutil
 import sys
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 
 from .config import ensure_config, load_hosts, load_prefix, load_sidebar_width
@@ -173,8 +175,14 @@ def _install_bindings(prefix: str, _sidebar_pane: str, right_pane: str) -> None:
         tmux.tmux("bind-key", str(slot), "run-shell", _letee_command("switch-session", str(slot)))
 
 
-def _enable_mouse() -> None:
+def _enable_mouse(sidebar_pane: str) -> None:
     tmux.tmux("set-option", "-t", tmux.SESSION, "mouse", "on")
+    tmux.tmux(
+        "bind-key", "-n", "MouseDown1Pane", "select-pane", "-t", "=", ";", "send-keys", "-M", "-t", "="
+    )
+    tmux.tmux(
+        "bind-key", "-n", "MouseUp1Pane", "send-keys", "-M", "-t", "=", ";", "send-keys", "-M", "-t", sidebar_pane
+    )
     tmux.tmux("unbind-key", "-q", "-T", "root", "MouseDrag1Border")
 
 
@@ -237,7 +245,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     tmux.tmux("set-option", "-t", tmux.SESSION, "prefix", prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "status", "off")
     tmux.tmux("set-option", "-s", "escape-time", "0")
-    _enable_mouse()
+    _enable_mouse(left)
     _enable_clipboard()
     _enable_truecolor()
     _install_bindings(prefix, left, right)
@@ -399,7 +407,26 @@ def _require_right_pane() -> str:
     return pane
 
 
-def switch(target: Target, attach_command: str, agent_id: str | None = None) -> None:
+def focus_right_pane(
+    is_current: Callable[[], bool] | None = None,
+    focus_lock: AbstractContextManager[object] | None = None,
+) -> bool:
+    pane = _require_right_pane()
+    context = focus_lock if focus_lock is not None else nullcontext()
+    with context:
+        if is_current is not None and not is_current():
+            return False
+        tmux.tmux("select-pane", "-t", pane)
+    return True
+
+
+def switch(
+    target: Target,
+    attach_command: str,
+    agent_id: str | None = None,
+    *,
+    focus: bool = True,
+) -> None:
     pane = _require_right_pane()
     tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
     if agent_id:
@@ -408,7 +435,8 @@ def switch(target: Target, attach_command: str, agent_id: str | None = None) -> 
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION)
     tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
     tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command)
-    tmux.tmux("select-pane", "-t", pane)
+    if focus:
+        focus_right_pane()
 
 
 def rename_target(old: Target, new: Target) -> None:

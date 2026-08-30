@@ -10,6 +10,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,7 +56,7 @@ _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 @dataclass(frozen=True)
 class Effect:
     kind: Literal[
-        "switch", "switch_pane", "add_switch", "create", "kill", "kill_agent", "rename",
+        "switch", "switch_pane", "add_switch", "create", "focus", "kill", "kill_agent", "rename",
         "save_favorites", "status", "show_reconnecting", "show_missing",
         "show_unavailable",
     ]
@@ -816,7 +817,20 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
     return message
 
 
-def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
+def _navigation_target(effect: Effect) -> tuple[Target, str | None] | None:
+    if effect.kind in ("switch", "add_switch", "create") and isinstance(effect.target, Target):
+        return effect.target, None
+    if effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
+        return effect.target.target, effect.message or None
+    return None
+
+
+def _perform_effect(
+    effect: Effect,
+    favorites: tuple[Target, ...],
+    is_current: Callable[[], bool] | None = None,
+    focus_lock: AbstractContextManager[object] | None = None,
+) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
     try:
         if (
@@ -829,16 +843,26 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
             if effect.kind == "add_switch" and planned != favorites:
                 save_sessions(list(planned))
-            cockpit.switch(effect.target, sessions.attach_command(effect.target))
+            cockpit.switch(effect.target, sessions.attach_command(effect.target), focus=False)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
+            cockpit.switch(
+                effect.target.target,
+                sessions.pane_attach_command(effect.target),
+                effect.message,
+                focus=False,
+            )
+        elif effect.kind == "focus":
+            if is_current is None:
+                cockpit.focus_right_pane()
+            elif cockpit.focus_right_pane(is_current, focus_lock) is False:
+                return EffectResult(effect, planned, stale_navigation=True)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
             sessions.kill_agent(effect.target)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
             if planned != favorites:
                 save_sessions(list(planned))
-            cockpit.switch(effect.target, sessions.attach_command(effect.target))
+            cockpit.switch(effect.target, sessions.attach_command(effect.target), focus=False)
         elif effect.kind == "rename" and isinstance(effect.target, Target):
             renamed = _renamed_target(effect)
             if renamed is None:
@@ -959,10 +983,20 @@ class EffectRunner:
         self._future: Future[EffectResult] | None = None
         self._effect: Effect | None = None
         self._pending_navigation: tuple[Effect, tuple[Target, ...]] | None = None
+        self._focus_lock = threading.Lock()
+        self._generation = 0
 
     @property
     def busy(self) -> bool:
         return self._future is not None
+
+    @property
+    def has_pending_navigation(self) -> bool:
+        return self._pending_navigation is not None
+
+    def cancel_focus(self) -> None:
+        with self._focus_lock:
+            self._generation += 1
 
     @property
     def blocks_favorite_changes(self) -> bool:
@@ -970,33 +1004,59 @@ class EffectRunner:
             "add_switch", "create", "kill", "rename"
         )
 
+    def _start(
+        self,
+        effect: Effect,
+        favorites: tuple[Target, ...],
+        generation: int,
+    ) -> Future[EffectResult]:
+        if effect.kind == "focus":
+            return self._executor.submit(
+                _perform_effect,
+                effect,
+                favorites,
+                lambda: generation == self._generation,
+                self._focus_lock,
+            )
+        return self._executor.submit(_perform_effect, effect, favorites)
+
     def submit(self, effect: Effect, favorites: tuple[Target, ...]) -> bool:
-        if self._future is not None:
-            if (
-                self._effect is not None
-                and self._effect.kind in ("switch", "switch_pane")
-                and effect.kind in ("switch", "switch_pane")
-            ):
-                self._pending_navigation = (effect, favorites)
-                return True
-            return False
-        self._effect = effect
-        self._future = self._executor.submit(_perform_effect, effect, favorites)
-        return True
+        with self._focus_lock:
+            if self._future is not None:
+                if (
+                    effect.kind in ("switch", "switch_pane")
+                    and self._effect is not None
+                    and self._effect.kind in (
+                        "switch", "switch_pane", "focus",
+                        "show_reconnecting", "show_missing", "show_unavailable",
+                    )
+                ):
+                    self._generation += 1
+                    self._pending_navigation = (effect, favorites)
+                    return True
+                return False
+            self._effect = effect
+            self._future = self._start(effect, favorites, self._generation)
+            return True
 
     def poll(self) -> EffectResult | None:
         if self._future is None or not self._future.done():
             return None
         result = self._future.result()
-        if self._pending_navigation is None:
-            self._future = None
-            self._effect = None
-            return result
-        effect, favorites = self._pending_navigation
-        self._pending_navigation = None
-        self._effect = effect
-        self._future = self._executor.submit(_perform_effect, effect, favorites)
-        return EffectResult(result.effect, result.favorites, result.error, stale_navigation=True)
+        with self._focus_lock:
+            if self._pending_navigation is None:
+                self._future = None
+                self._effect = None
+                return result
+            effect, favorites = self._pending_navigation
+            self._pending_navigation = None
+            self._effect = effect
+            self._future = self._start(effect, favorites, self._generation)
+        return EffectResult(
+            result.effect,
+            result.favorites,
+            stale_navigation=True,
+        )
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=True)
@@ -1066,22 +1126,22 @@ class AsyncStatusPoller:
         if self._future is not None and self._future.done():
             result = self._future.result()
             self._future = None
-            changed = result.snapshot != self.snapshot
-            self.snapshot = result.snapshot
             if result.refreshed is True:
                 self._refresh_pending = any(
                     command == "refresh" for command, _ in self._commands
                 )
-            if self._refresh_target is not None:
-                target = self._refresh_target
-                source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
-                if (
-                    target in self.snapshot.sessions
-                    or (result.refreshed is True and target.kind == "local")
-                    or (source is not None and not source.available)
-                ):
-                    self._refresh_target = None
             if result.generation == self._generation:
+                changed = result.snapshot != self.snapshot
+                self.snapshot = result.snapshot
+                if self._refresh_target is not None:
+                    target = self._refresh_target
+                    source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
+                    if (
+                        target in self.snapshot.sessions
+                        or (result.refreshed is True and target.kind == "local")
+                        or (source is not None and not source.available)
+                    ):
+                        self._refresh_target = None
                 self.current_target = result.current_target
                 self.bell_target = result.bell_target
                 if self._pending_agent is None:
@@ -1992,6 +2052,9 @@ def run(stdscr: curses.window) -> None:
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
     pending_navigation: tuple[Target, str | None] | None = None
+    pending_navigation_generation: int | None = None
+    pending_focus: Target | None = None
+    focus_generation = 0
     rendered: tuple[object, ...] | None = None
     footer_height = 0
     add_col: int | None = None
@@ -1999,6 +2062,7 @@ def run(stdscr: curses.window) -> None:
     next_move_scroll: float | None = None
     pending_key: int | None = None
     pending_mouse: tuple[int, int, int, int, int] | None = None
+    mouse_button_down = False
     stdscr.timeout(UI_POLL_INTERVAL_MS)
 
     def show_status(
@@ -2007,10 +2071,30 @@ def run(stdscr: curses.window) -> None:
         _set_status(state, message, status_timeout, region)
 
     def queue_effect(effect: Effect) -> bool:
-        return actions.submit(effect, tuple(state.favorites))
+        nonlocal pending_focus, pending_navigation, pending_navigation_generation
+        submitted = actions.submit(effect, tuple(state.favorites))
+        navigation = _navigation_target(effect)
+        if submitted and navigation is not None:
+            pending_focus = None
+            pending_navigation = navigation
+            pending_navigation_generation = focus_generation
+        return submitted
+
+    def cancel_focus() -> None:
+        nonlocal pending_focus, focus_generation
+        pending_focus = None
+        focus_generation += 1
+        actions.cancel_focus()
+
+    def cancel_focus_for_mouse(mouse_state: int, activated: bool) -> None:
+        release_or_click = (
+            (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+            | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+        )
+        if activated or not mouse_state & release_or_click:
+            cancel_focus()
 
     def dispatch(effect: Effect) -> None:
-        nonlocal pending_navigation
         if effect.kind == "save_favorites":
             _execute(effect, state, poller, status_timeout)
             return
@@ -2021,10 +2105,6 @@ def run(stdscr: curses.window) -> None:
             return
         if not queue_effect(effect):
             show_status("another action is still running")
-        elif effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
-            pending_navigation = (effect.target, None)
-        elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            pending_navigation = (effect.target.target, effect.message or None)
 
     def cancel_move() -> None:
         nonlocal move_scroll_direction, next_move_scroll
@@ -2128,6 +2208,23 @@ def run(stdscr: curses.window) -> None:
         cancel_move()
         rebuild()
 
+    def mouse_click_activates(mouse_state: int) -> bool:
+        nonlocal mouse_button_down
+        pressed = getattr(curses, "BUTTON1_PRESSED", 0) or 0
+        clicked = getattr(curses, "BUTTON1_CLICKED", 0) or 0
+        released = getattr(curses, "BUTTON1_RELEASED", 0) or 0
+        if mouse_state & pressed:
+            mouse_button_down = True
+            return True
+        if mouse_state & clicked:
+            if mouse_button_down:
+                mouse_button_down = False
+                return False
+            return True
+        if mouse_state & released:
+            mouse_button_down = False
+        return False
+
     try:
         while True:
             now = time.monotonic()
@@ -2136,12 +2233,40 @@ def run(stdscr: curses.window) -> None:
                 pending_key = stdscr.getch()
                 pending_key = pending_key if pending_key != -1 else None
                 stdscr.timeout(UI_POLL_INTERVAL_MS)
-            result = actions.poll()
+            if (
+                pending_focus is not None
+                and pending_navigation is None
+                and pending_key is None
+                and pending_mouse is None
+                and not actions.busy
+            ):
+                focus_target = pending_focus
+                pending_focus = None
+                if not actions.submit(Effect("focus", focus_target), tuple(state.favorites)):
+                    pending_focus = focus_target
+            result = (
+                None
+                if pending_key is not None and getattr(actions, "has_pending_navigation", False) is True
+                else actions.poll()
+            )
             if result is not None:
-                if not result.stale_navigation and result.effect.kind in (
-                    "switch", "add_switch", "switch_pane"
+                navigation = _navigation_target(result.effect)
+                if navigation is not None and not result.stale_navigation:
+                    if (
+                        not result.error
+                        and pending_navigation == navigation
+                        and pending_navigation_generation == focus_generation
+                    ):
+                        pending_focus = navigation[0]
+                    pending_navigation = None
+                    pending_navigation_generation = None
+                elif (
+                    navigation is not None
+                    and pending_navigation == navigation
+                    and not actions.busy
                 ):
                     pending_navigation = None
+                    pending_navigation_generation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
                 unavailable_target_shown = _reconcile_active_session_effect(
@@ -2276,6 +2401,8 @@ def run(stdscr: curses.window) -> None:
             # Tests use private sentinel; removed q cannot terminate loop.
             if key is getattr(stdscr, "_letee_test_stop", None):
                 return
+            if key != curses.KEY_MOUSE:
+                cancel_focus()
             if key in (curses.KEY_F6, curses.KEY_F7):
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
@@ -2306,15 +2433,19 @@ def run(stdscr: curses.window) -> None:
                                 isinstance(mouse_col, int)
                                 and isinstance(row, int)
                                 and isinstance(mouse_state, int)
-                                and row == 0
-                                and add_col is not None
-                                and add_col <= mouse_col < stdscr.getmaxyx()[1]
-                                and _mouse_activates(mouse_state)
                             ):
-                                _add_back(state, poller.snapshot)
-                                curses.curs_set(0)
-                                rebuild()
-                                break
+                                mouse_activation = mouse_click_activates(mouse_state)
+                                cancel_focus_for_mouse(mouse_state, mouse_activation)
+                                if (
+                                    row == 0
+                                    and add_col is not None
+                                    and add_col <= mouse_col < stdscr.getmaxyx()[1]
+                                    and mouse_activation
+                                ):
+                                    _add_back(state, poller.snapshot)
+                                    curses.curs_set(0)
+                                    rebuild()
+                                    break
                     else:
                         try:
                             effect = (
@@ -2346,6 +2477,8 @@ def run(stdscr: curses.window) -> None:
                         return
                     if key == -1:
                         break
+                    if key != curses.KEY_MOUSE:
+                        cancel_focus()
                 continue
             if key == curses.KEY_MOUSE:
                 try:
@@ -2356,6 +2489,7 @@ def run(stdscr: curses.window) -> None:
                     continue
                 if not isinstance(row, int) or not isinstance(mouse_state, int):
                     continue
+                mouse_activation = mouse_click_activates(mouse_state)
                 motion = getattr(curses, "REPORT_MOUSE_POSITION", 0) or 0
                 button_bits = (
                     (getattr(curses, "BUTTON1_PRESSED", 0) or 0)
@@ -2367,6 +2501,7 @@ def run(stdscr: curses.window) -> None:
                 )
                 if state.move_source is None and mouse_state & motion and not mouse_state & button_bits:
                     continue
+                cancel_focus_for_mouse(mouse_state, mouse_activation)
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
@@ -2394,7 +2529,7 @@ def run(stdscr: curses.window) -> None:
                         if index is not None and entries[index].tracked
                         else None
                     )
-                    if _mouse_activates(mouse_state):
+                    if mouse_activation:
                         if index is None:
                             cancel_move()
                         elif entries[index].target == state.move_source and _move_handle_hit(
@@ -2410,7 +2545,7 @@ def run(stdscr: curses.window) -> None:
                     (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
                     | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
                 )
-                if mouse_state & release_or_click and not _mouse_activates(mouse_state):
+                if mouse_state & release_or_click and not mouse_activation:
                     continue
                 wheel_up = getattr(curses, "BUTTON4_PRESSED", 0) or 0
                 wheel_down = getattr(curses, "BUTTON5_PRESSED", 0) or 0
@@ -2523,7 +2658,7 @@ def run(stdscr: curses.window) -> None:
                     and 0 <= mouse_col < stdscr.getmaxyx()[1]
                     and mouse_col >= add_col
                 ):
-                    if _mouse_activates(mouse_state):
+                    if mouse_activation:
                         if state.add_view is None:
                             _open_add(state)
                         else:
@@ -2543,7 +2678,7 @@ def run(stdscr: curses.window) -> None:
                         state.agent_selected_index = index
                         entry = agent_entries[index]
                         state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
-                        if _mouse_activates(mouse_state) and entry.kind == "order":
+                        if mouse_activation and entry.kind == "order":
                             prefix = "> Order:  " if _ascii() else "›  "
                             priority = "PRIORITY" if _ascii() else "Priority"
                             session = "SESSION" if _ascii() else "Session"
@@ -2559,7 +2694,7 @@ def run(stdscr: curses.window) -> None:
                                     state.agent_ordering = "session"
                                     rebuild()
                             continue
-                        if _mouse_activates(mouse_state) and entry.pane_target:
+                        if mouse_activation and entry.pane_target:
                             dispatch(Effect("switch_pane", entry.pane_target, message=entry.agent_id or ""))
                         continue
                     index = _entry_at_row(
@@ -2575,14 +2710,14 @@ def run(stdscr: curses.window) -> None:
                     state.selected_target = entries[index].target
                     state.selected_tracked = entries[index].tracked
                     if (
-                        _mouse_activates(mouse_state)
+                        mouse_activation
                         and entries[index].tracked
                         and _move_handle_hit(mouse_col, stdscr.getmaxyx()[1])
                         and entries[index].target
                     ):
                         start_move(entries[index].target)
                         continue
-                    if _mouse_activates(mouse_state):
+                    if mouse_activation:
                         key = curses.KEY_ENTER
                     else:
                         continue
