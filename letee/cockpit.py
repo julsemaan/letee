@@ -202,6 +202,7 @@ def _install_bindings(
 ) -> None:
     if keybindings is None:
         keybindings = load_keybindings()
+    help_cmd = help_command(prefix, keybindings)
     try:
         old_raw = _option(ROOT_KEYS_OPTION)
     except Exception:
@@ -227,7 +228,7 @@ def _install_bindings(
     _bind_key(keybindings["kill_active"], "run-shell", _focus_sidebar_command("kill"))
     _bind_key(keybindings["jump_alert"], "run-shell", _focus_sidebar_command("alert"))
     _bind_key(keybindings["focus_right"], "select-pane", "-t", right_pane)
-    _bind_key(keybindings["help"], "respawn-pane", "-k", "-t", right_pane, help_command(prefix, keybindings))
+    _bind_key(keybindings["help"], "respawn-pane", "-k", "-t", right_pane, help_cmd)
     for slot in range(1, 10):
         tmux.tmux("bind-key", str(slot), "run-shell", _letee_command("switch-session", str(slot)))
     new_root_keys = [_split_prefix_value(v)[1] for v in keybindings.values() if not _split_prefix_value(v)[0]]

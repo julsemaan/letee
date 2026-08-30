@@ -1169,6 +1169,17 @@ class CockpitKeybindingTest(unittest.TestCase):
 
         self.assertEqual(calls.count(("unbind-key", "-q", "-T", "root", ",")), 1)
 
+    def test_install_bindings_validates_sidebar_before_mutating_tmux(self):
+        with (
+            patch.object(cockpit, "_option", return_value="d q"),
+            patch.object(cockpit, "load_sidebar_keybindings", side_effect=SystemExit("invalid sidebar")),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            self.assertRaisesRegex(SystemExit, "invalid sidebar"),
+        ):
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=cockpit.DEFAULT_KEYBINDINGS)
+
+        tmux_call.assert_not_called()
+
     def test_help_generated_from_custom_bindings(self):
         custom = {
             "focus_agents": "prefix+C-a",
