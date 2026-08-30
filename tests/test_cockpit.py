@@ -29,7 +29,7 @@ class CockpitStartupTest(unittest.TestCase):
             patch.object(cockpit.sessions, "group_hosts", side_effect=lambda hosts: events.append(("groups", tuple(hosts))) or [["dev", "prod"]]),
             patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
             patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
-            patch.object(cockpit, "ensure_cockpit", side_effect=lambda: events.append(("cockpit",))),
+            patch.object(cockpit, "ensure_cockpit", side_effect=lambda **kwargs: events.append(("cockpit",))),
             patch.object(cockpit, "_attach", return_value=0),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
@@ -46,6 +46,18 @@ class CockpitStartupTest(unittest.TestCase):
                 ("cockpit",),
             ],
         )
+
+    def test_cockpit_requests_sidebar_restart_on_top_level_rerun(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=type("Size", (), {"columns": 100})()),
+            patch.object(cockpit, "load_hosts", return_value=[]),
+            patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
+            patch.object(cockpit, "_attach", return_value=0),
+        ):
+            self.assertEqual(cockpit.cockpit(), 0)
+
+        ensure_cockpit.assert_called_once_with(restart_sidebar=True)
 
     def test_warmup_failure_tries_next_host_in_group(self):
         order = []
@@ -197,7 +209,7 @@ class CockpitStartupTest(unittest.TestCase):
             patch.object(cockpit.sessions, "group_hosts", side_effect=lambda hosts: order.append(("groups", tuple(hosts))) or [["one", "two", "three"]]),
             patch.object(cockpit.sessions, "prepare_host", side_effect=lambda host: True if host == "one" else prepare(host)),
             patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
-            patch.object(cockpit, "ensure_cockpit", side_effect=lambda: order.append("cockpit")),
+            patch.object(cockpit, "ensure_cockpit", side_effect=lambda **kwargs: order.append("cockpit")),
             patch.object(cockpit, "_attach", return_value=0),
             patch("builtins.print"),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
@@ -416,6 +428,28 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_existing_cockpit_restarts_sidebar_when_requested(self):
+        with (
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(
+                cockpit,
+                "_option",
+                side_effect=lambda name: {
+                    cockpit.SIDEBAR_PANE_OPTION: "%1",
+                    cockpit.RIGHT_PANE_OPTION: "%2",
+                }.get(name, ""),
+            ),
+            patch.object(cockpit, "load_prefix", return_value="C-x"),
+            patch.object(cockpit, "load_sidebar_width", return_value=52),
+            patch.object(cockpit, "_configure_cockpit"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.ensure_cockpit(restart_sidebar=True)
+
+        tmux_call.assert_called_once_with(
+            "respawn-pane", "-k", "-t", "%1", cockpit._sidebar_command()
+        )
+
     def test_layout_hook_repins_sidebar_after_window_resize(self):
         calls = []
 
@@ -497,7 +531,7 @@ class CockpitLayoutTest(unittest.TestCase):
     def test_bindings_replace_outer_prefix_table_with_letee_shortcuts(self):
         calls = []
 
-        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2")
 
         self.assertEqual(
@@ -548,7 +582,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.addCleanup(cockpit.tmux.set_server, None)
         calls = []
 
-        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2")
 
         self.assertEqual(calls[6], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
@@ -1071,6 +1105,181 @@ class CockpitDiagnosticsTest(unittest.TestCase):
         ]
         self.assertEqual(failed[0]["stage"], "current_target_marker")
         self.assertEqual(failed[0]["error_type"], "OSError")
+
+class CockpitKeybindingTest(unittest.TestCase):
+    def test_install_bindings_uses_custom_keybindings(self):
+        custom = {
+            "focus_agents": "prefix+C-a",
+            "focus_sessions": "prefix+C-b",
+            "add_session": "prefix+C-c",
+            "remove_active": "prefix+C-d",
+            "kill_active": "prefix+C-e",
+            "jump_alert": "prefix+C-f",
+            "focus_right": "prefix+C-g",
+            "toggle_sidebar": "prefix+C-h",
+            "quit": "prefix+C-i",
+            "help": "prefix+C-j",
+            "detach": "prefix+C-k",
+        }
+        calls = []
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
+        # check each custom effective key appears in prefix table binds (without -n)
+        for eff in ("C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h", "C-i", "C-j", "C-k"):
+            self.assertIn(("bind-key", eff), [(c[0], c[1]) for c in calls])
+        # defaults should not appear
+        flat = [c[1] if len(c) > 1 else "" for c in calls]
+        self.assertNotIn("a", flat)
+        self.assertNotIn("s", flat)
+        # slots still fixed
+        self.assertIn("1", flat)
+        self.assertIn("9", flat)
+
+    def test_install_bindings_supports_global_without_prefix(self):
+        custom = {
+            "focus_agents": "C-a",
+            "focus_sessions": "C-b",
+            "add_session": "C-c",
+            "remove_active": "C-d",
+            "kill_active": "C-e",
+            "jump_alert": "C-f",
+            "focus_right": "C-g",
+            "toggle_sidebar": "C-h",
+            "quit": "C-i",
+            "help": "C-j",
+            "detach": "C-k",
+        }
+        calls = []
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
+        # global binds use -n flag
+        for eff in ("C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h", "C-i", "C-j", "C-k"):
+            self.assertIn(("bind-key", "-n", eff), [(c[0], c[1], c[2]) if len(c) > 2 else c for c in calls])
+
+    def test_install_bindings_unbinds_comma_global_key_on_rerun(self):
+        custom = dict(cockpit.DEFAULT_KEYBINDINGS)
+        custom["focus_agents"] = ","
+        calls = []
+        with (
+            patch.object(cockpit, "_option", side_effect=["", ","]),
+            patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)),
+        ):
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
+
+        self.assertEqual(calls.count(("unbind-key", "-q", "-T", "root", ",")), 1)
+
+    def test_install_bindings_validates_sidebar_before_mutating_tmux(self):
+        with (
+            patch.object(cockpit, "_option", return_value="d q"),
+            patch.object(cockpit, "load_sidebar_keybindings", side_effect=SystemExit("invalid sidebar")),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            self.assertRaisesRegex(SystemExit, "invalid sidebar"),
+        ):
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=cockpit.DEFAULT_KEYBINDINGS)
+
+        tmux_call.assert_not_called()
+
+    def test_help_generated_from_custom_bindings(self):
+        custom = {
+            "focus_agents": "prefix+C-a",
+            "focus_sessions": "prefix+C-b",
+            "add_session": "prefix+C-c",
+            "remove_active": "prefix+C-d",
+            "kill_active": "prefix+C-e",
+            "jump_alert": "prefix+C-f",
+            "focus_right": "prefix+C-g",
+            "toggle_sidebar": "prefix+C-h",
+            "quit": "prefix+C-i",
+            "help": "prefix+C-j",
+            "detach": "prefix+C-k",
+        }
+        sidebar = {
+            "navigate_down": "n",
+            "navigate_up": "p",
+            "rename": "R",
+            "remove": "D",
+            "kill": "X",
+            "move_up": "U",
+            "move_down": "N",
+            "resize_inc": "{",
+            "resize_dec": "}",
+        }
+        with patch.dict(cockpit.os.environ, {}, clear=True), patch.object(cockpit.locale, "getpreferredencoding", return_value="UTF-8"):
+            cmd = cockpit.help_command("C-x", custom, sidebar)
+        self.assertIn("C-x C-a  focus/open Agents", cmd)
+        self.assertIn("C-x C-b  focus/open Sessions", cmd)
+        self.assertIn("C-x C-c  add session", cmd)
+        self.assertIn("C-x C-d  remove active", cmd)
+        self.assertIn("C-x C-e  kill", cmd)
+        self.assertIn("C-x C-f  jump", cmd)
+        self.assertIn("C-x C-g  focus right", cmd)
+        self.assertIn("C-x C-h  hide/show", cmd)
+        self.assertIn("C-x C-i  quit", cmd)
+        self.assertIn("C-x C-j  open help", cmd)
+        self.assertIn("C-x C-k  detach", cmd)
+        # global without prefix shows without prefix
+        global_custom = {k: v.replace("prefix+", "") for k, v in custom.items()}
+        cmd2 = cockpit.help_command("C-x", global_custom, sidebar)
+        self.assertIn("C-a  focus/open Agents", cmd2)
+        self.assertNotIn("C-x C-a", cmd2)
+        self.assertIn("R      rename", cmd)
+        self.assertIn("D      remove", cmd)
+        self.assertIn("U/N", cmd)
+        self.assertIn("X      kill", cmd)
+        self.assertIn("n/p    navigate", cmd)
+        self.assertIn("{ / }  resize", cmd)
+
+    def test_session_menu_uses_sidebar_accelerators(self):
+        custom_sidebar = {
+            "navigate_down": "j",
+            "navigate_up": "k",
+            "rename": "R",
+            "remove": "D",
+            "kill": "X",
+            "move_up": "K",
+            "move_down": "J",
+            "resize_inc": "[",
+            "resize_dec": "]",
+        }
+        with (
+            patch.object(cockpit, "_option", return_value="%1"),
+            patch.object(cockpit, "load_sidebar_keybindings", return_value=custom_sidebar),
+            patch.object(cockpit.tmux, "out", return_value="tmux 3.6"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_session_menu(Target("local", "work"), 2, 3)
+        args = tmux_call.call_args.args
+        self.assertIn("R", args)
+        self.assertIn("D", args)
+        self.assertIn("X", args)
+        self.assertIn("send-keys -t %1 R", args)
+        self.assertIn("send-keys -t %1 D", args)
+        self.assertIn("send-keys -t %1 X y", args)
+
+    def test_agent_menu_uses_sidebar_kill_key(self):
+        custom_sidebar = {
+            "navigate_down": "j",
+            "navigate_up": "k",
+            "rename": "e",
+            "remove": "r",
+            "kill": "X",
+            "move_up": "K",
+            "move_down": "J",
+            "resize_inc": "[",
+            "resize_dec": "]",
+        }
+        pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
+        with (
+            patch.object(cockpit, "_option", return_value="%1"),
+            patch.object(cockpit, "load_sidebar_keybindings", return_value=custom_sidebar),
+            patch.object(cockpit.tmux, "out", return_value="tmux 3.6"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_agent_menu("pi", pane, 2, 3)
+        args = tmux_call.call_args.args
+        self.assertIn("X", args)
+        self.assertIn("send-keys -t %1 X y", args)
 
 
 if __name__ == "__main__":

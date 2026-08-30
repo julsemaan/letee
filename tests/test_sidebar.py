@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 import letee.sidebar as sidebar
+from letee import config
 from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
 
@@ -3878,7 +3879,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with(second, 7, 4)
+        show_menu.assert_called_once_with(second, 7, 4, unittest.mock.ANY)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
         switch.assert_not_called()
@@ -3928,7 +3929,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi-two", second, 7, 17)
+        show_menu.assert_called_once_with("pi-two", second, 7, 17, unittest.mock.ANY)
         self.assertEqual(drawn[-1]["agent_selected"], 2)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
@@ -4402,14 +4403,16 @@ class SidebarDrawTest(unittest.TestCase):
         kill.assert_not_called()
         self.assertFalse(any(call[0] == "addnstr" and "select session to kill" in call[3] for call in screen.calls))
 
-    def test_missing_session_kill_guides_removal(self):
+    def test_missing_session_kill_guides_custom_removal(self):
         target = Target("local", "work")
+        custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "remove": "D"}
         screen = FakeScreen([ord("x"), STOP], size=(8, 60))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar.load_sidebar_keybindings", return_value=custom),
             patch("letee.sidebar._entries", return_value=[Entry("work", "session", target, unavailable_favorite=True, tracked=True)]),
             patch("letee.sidebar._agent_entries", return_value=[]),
             patch("letee.sidebar._bell_targets", return_value=set()),
@@ -4418,7 +4421,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         self.assertTrue(any(
-            call[0] == "addnstr" and "Session already missing; press r to remove" in call[3]
+            call[0] == "addnstr" and "Session already missing; press D to remove" in call[3]
             for call in screen.calls
         ))
 
@@ -5004,7 +5007,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi", second, 7, 16)
+        show_menu.assert_called_once_with("pi", second, 7, 16, unittest.mock.ANY)
         switch.assert_not_called()
 
     def test_agent_keyboard_navigation_resets_agent_scroll_offset(self):
@@ -5629,6 +5632,18 @@ class PrefixActionTest(unittest.TestCase):
         kill.assert_called_once_with(active)
         save.assert_called_once_with([stale])
 
+    def test_missing_session_kill_prefix_guides_custom_removal(self):
+        target = Target("local", "active")
+        custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "remove": "D"}
+
+        with patch.object(sidebar, "load_sidebar_keybindings", return_value=custom):
+            screen = self._run([curses.KEY_F6, curses.KEY_F9, STOP], [target], target, snapshot())
+
+        self.assertTrue(any(
+            call[0] == "addnstr" and "Session already missing; press D" in call[3]
+            for call in screen.calls
+        ))
+
     def test_rejected_kill_prefix_does_not_mutate_sessions(self):
         target = Target("local", "active")
         data = snapshot(local=("active",))
@@ -6144,6 +6159,267 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertEqual(state["tmux_focus_follows_mouse"], "off")
         self.assertTrue(state["tmux_mouse_down1_pane_binding"]["selects_pane"])
         self.assertTrue(state["tmux_mouse_down1_pane_binding"]["forwards_mouse"])
+
+
+class SidebarKeybindingTest(unittest.TestCase):
+    def _run_with_keys(self, keys, bindings=None):
+        from letee.sidebar import run as sidebar_run
+        target_a = Target("local", "a")
+        target_b = Target("local", "b")
+        data = snapshot(local=("a", "b"))
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=target_a,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        screen = FakeScreen(keys, size=(12, 40))
+        bindings = bindings or config.DEFAULT_SIDEBAR_KEYBINDINGS
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target_a, target_b]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=bindings),
+            patch.object(sidebar, "_current_target", return_value=target_a),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, None)) as draw,
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar_run(screen)
+        return screen, poller, draw
+
+    def test_custom_navigation_keys_are_used_and_arrows_still_work(self):
+        custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "navigate_down": "n", "navigate_up": "p"}
+        _, _, draw = self._run_with_keys([ord("n"), curses.KEY_UP, STOP], bindings=custom)
+        self.assertEqual(
+            [
+                (call.args[1][call.args[2]].target, call.args[2])
+                for call in draw.call_args_list
+            ],
+            [
+                (Target("local", "a"), 0),
+                (Target("local", "b"), 1),
+                (Target("local", "a"), 0),
+            ],
+        )
+
+        _, _, draw = self._run_with_keys([curses.KEY_DOWN, STOP], bindings=custom)
+        selected = draw.call_args_list[-1]
+        self.assertEqual(
+            (selected.args[1][selected.args[2]].target, selected.args[2]),
+            (Target("local", "b"), 1),
+        )
+
+    def test_sidebar_loads_bindings_once_at_start(self):
+        custom = config.DEFAULT_SIDEBAR_KEYBINDINGS
+        mock_load = unittest.mock.Mock(return_value=custom)
+        target = Target("local", "work")
+        data = snapshot(local=("work",))
+        poller = unittest.mock.Mock(snapshot=data, current_target=target, bell_target=None, current_agent=None, pane_active=True)
+        poller.tick.return_value = False
+        screen = FakeScreen([STOP], size=(8, 40))
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "load_sidebar_keybindings", mock_load),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+        mock_load.assert_called_once()
+
+    def test_custom_rename_remove_kill_reorder_resize_keys(self):
+        custom = {
+            "navigate_down": "j",
+            "navigate_up": "k",
+            "rename": "R",
+            "remove": "D",
+            "kill": "X",
+            "move_up": "U",
+            "move_down": "N",
+            "resize_inc": "{",
+            "resize_dec": "}",
+        }
+        # rename with R should open rename editor (curs_set called with 1)
+        target = Target("local", "work")
+        data = snapshot(local=("work",))
+        poller = unittest.mock.Mock(snapshot=data, current_target=target, bell_target=None, current_agent=None, pane_active=True)
+        poller.tick.return_value = False
+        screen = FakeScreen([ord("R"), 27, STOP], size=(10, 40))
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=custom),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set") as curs_set,
+            patch.object(sidebar, "_draw", return_value=(1, None)),
+            patch.object(sidebar, "_draw_name", return_value=None),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+        self.assertIn(unittest.mock.call(1), curs_set.call_args_list)
+
+        # D should remove without kill via custom binding
+        target_a = Target("local", "a")
+        target_b = Target("local", "b")
+        data_two = snapshot(local=("a", "b"))
+        poller_two = unittest.mock.Mock(snapshot=data_two, current_target=target_a, bell_target=None, current_agent=None, pane_active=True)
+        poller_two.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller_two),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target_a, target_b]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=custom),
+            patch.object(sidebar, "_current_target", return_value=target_a),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar, "save_sessions") as save,
+        ):
+            screen2 = FakeScreen([ord("D"), STOP], size=(10, 40))
+            sidebar.run(screen2)
+        save.assert_called_once_with((target_b,))
+
+        # X should kill with confirmation via custom binding
+        poller_three = unittest.mock.Mock(snapshot=data_two, current_target=target_a, bell_target=None, current_agent=None, pane_active=True)
+        poller_three.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller_three),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target_a, target_b]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=custom),
+            patch.object(sidebar, "_current_target", return_value=target_a),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.sessions, "kill") as kill,
+            patch.object(sidebar, "save_sessions") as save_kill,
+        ):
+            screen3 = FakeScreen([ord("X"), ord("y"), STOP], size=(10, 40))
+            sidebar.run(screen3)
+        kill.assert_called_once_with(target_a)
+        save_kill.assert_called_once_with([target_b])
+
+        # N should move selected session down via custom binding
+        poller_four = unittest.mock.Mock(snapshot=data_two, current_target=target_a, bell_target=None, current_agent=None, pane_active=True)
+        poller_four.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller_four),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target_a, target_b]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=custom),
+            patch.object(sidebar, "_current_target", return_value=target_a),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar, "save_sessions") as save_move_down,
+        ):
+            screen4 = FakeScreen([ord("N"), STOP], size=(10, 40))
+            sidebar.run(screen4)
+        save_move_down.assert_called_once_with((target_b, target_a))
+
+        # U should move selected session up via custom binding (navigate to second then move up)
+        poller_five = unittest.mock.Mock(snapshot=data_two, current_target=target_a, bell_target=None, current_agent=None, pane_active=True)
+        poller_five.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller_five),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target_a, target_b]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=custom),
+            patch.object(sidebar, "_current_target", return_value=target_a),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar, "save_sessions") as save_move_up,
+        ):
+            screen5 = FakeScreen([ord("j"), ord("U"), STOP], size=(10, 40))
+            sidebar.run(screen5)
+        save_move_up.assert_called_once_with((target_b, target_a))
+
+        # { / } should resize agent panel via custom bindings
+        resize_step = 7
+        percentages: list[int | None] = []
+
+        def draw_spy(*args, **kwargs):
+            bound = inspect.signature(_draw).bind(*args, **kwargs)
+            bound.apply_defaults()
+            percentages.append(bound.arguments.get("agent_percentage"))
+            return (1, None)
+
+        poller_six = unittest.mock.Mock(snapshot=snapshot(), current_target=None, bell_target=None, current_agent=None, pane_active=True)
+        poller_six.tick.return_value = False
+        percentages.clear()
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller_six),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=custom),
+            patch.object(sidebar, "load_agent_panel_resize_step", return_value=resize_step),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar, "_entries", return_value=[]),
+        ):
+            screen6 = FakeScreen([ord("{"), STOP], size=(24, 40))
+            sidebar.run(screen6)
+        self.assertGreater(len(percentages), 1)
+        self.assertEqual(percentages[0], 40)
+        self.assertEqual(percentages[1], 40 + resize_step)
+
+        percentages.clear()
+        poller_seven = unittest.mock.Mock(snapshot=snapshot(), current_target=None, bell_target=None, current_agent=None, pane_active=True)
+        poller_seven.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller_seven),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[]),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=custom),
+            patch.object(sidebar, "load_agent_panel_resize_step", return_value=resize_step),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar, "_entries", return_value=[]),
+        ):
+            screen7 = FakeScreen([ord("}"), STOP], size=(24, 40))
+            sidebar.run(screen7)
+        self.assertGreater(len(percentages), 1)
+        self.assertEqual(percentages[0], 40)
+        self.assertEqual(percentages[1], 40 - resize_step)
 
 
 if __name__ == "__main__":
