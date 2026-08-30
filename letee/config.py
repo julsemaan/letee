@@ -156,8 +156,8 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
             kind = "single-character key" if sidebar else "tmux key token"
             raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} must be a {kind}")
         if sidebar:
-            if len(value) != 1 or not value.isprintable() or value.isspace():
-                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} must be a single-character key")
+            if len(value) != 1 or not value.isprintable() or value.isspace() or not value.isascii():
+                raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} must be a single-character ASCII key")
             eff = _effective_token(value, sidebar=True)
             if eff in _RESERVED_SLOTS:
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is reserved (session slots 1 through 9)")
