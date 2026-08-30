@@ -78,6 +78,7 @@ class MainTest(unittest.TestCase):
         target = Target("local", "zeta")
         with (
             patch("letee.__main__.load_sessions", return_value=favorites),
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.__main__.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.__main__.cockpit.switch") as switch,
         ):
@@ -102,6 +103,18 @@ class MainTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     main(["switch-session", slot])
                 switch.assert_not_called()
+
+    def test_switch_without_cockpit_fails_before_building_attach_command(self):
+        with (
+            patch("letee.cockpit.right_pane", return_value=None),
+            patch("letee.__main__.sessions.attach_command") as attach_command,
+            patch("letee.__main__.cockpit.switch") as switch,
+        ):
+            with self.assertRaisesRegex(SystemExit, "^No valid letee"):
+                main(["switch", "ssh:dev:work"])
+
+        attach_command.assert_not_called()
+        switch.assert_not_called()
 
     def test_kill_removes_target_from_persisted_sessions(self):
         target = Target("local", "work")
@@ -179,6 +192,7 @@ class MainTest(unittest.TestCase):
         target = Target("local", "-V")
         with (
             patch("letee.__main__.sessions.create") as create,
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.__main__.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.__main__.cockpit.switch") as switch,
         ):
@@ -255,6 +269,7 @@ class MainTest(unittest.TestCase):
     def test_failed_create_never_switches(self):
         with (
             patch("letee.__main__.sessions.create", side_effect=SystemExit("create failed")),
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.__main__.cockpit.switch") as switch,
         ):
             with self.assertRaisesRegex(SystemExit, "create failed"):
@@ -266,6 +281,7 @@ class MainTest(unittest.TestCase):
         with (
             patch("letee.sessions.load_tmux_config_overlay", return_value=False) as overlay,
             patch("letee.sessions.subprocess.run") as run,
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.cockpit.switch") as switch,
         ):
             main(["create", "local", "work"])
@@ -278,6 +294,7 @@ class MainTest(unittest.TestCase):
         with (
             patch("letee.sessions.load_tmux_config_overlay", return_value=True),
             patch("letee.sessions.subprocess.run") as run,
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.cockpit.switch") as switch,
         ):
             main(["create", "local", "work"])

@@ -466,6 +466,11 @@ def _require_right_pane() -> str:
     return pane
 
 
+def require_cockpit() -> None:
+    """Fail with NO_COCKPIT before callers do any remote work (e.g. SSH)."""
+    _require_right_pane()
+
+
 def _switch_fields(
     target: Target,
     pane: str | None,
