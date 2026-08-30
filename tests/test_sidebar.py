@@ -5328,7 +5328,7 @@ class AgentOrderingTest(unittest.TestCase):
             ["pane-two", "pane-ten", "window-ten"],
         )
 
-    def test_selecting_idle_alerted_agent_clears_alert_without_reordering(self):
+    def test_selecting_idle_alerted_agent_clears_alert_after_focus_update_without_reordering(self):
         target = Target("local", "work")
         pane_a = PaneTarget(target, "@1", "%1", "/tmp/tmux")
         pane_b = PaneTarget(target, "@1", "%2", "/tmp/tmux")
@@ -5349,8 +5349,20 @@ class AgentOrderingTest(unittest.TestCase):
         self.assertEqual(before, ["b", "a"])
         with patch("letee.sidebar.cockpit.switch"):
             _execute(Effect("switch_pane", pane_b, message="b"), state, unittest.mock.Mock(), 5)
-        self.assertNotIn((pane_b, "b"), state.agent_alerts)
+        self.assertIn((pane_b, "b"), state.agent_alerts)
         self.assertEqual(state.agent_transition_at, {(pane_a, "a"): 10, (pane_b, "b"): 20})
+        during_switch = [e.agent_id for e in _agent_entries(data, [target], "priority", state.agent_alerts, state.agent_transition_at)]
+        self.assertEqual(during_switch, ["b", "a"])
+        focused_data = SessionSnapshot(
+            SourceSnapshot(
+                True, (), frozenset(),
+                agents=data.local.agents,
+                focused_panes=frozenset({pane_b}),
+            ),
+            {},
+        )
+        _update_agent_alerts(state, focused_data, target)
+        self.assertNotIn((pane_b, "b"), state.agent_alerts)
         after = [e.agent_id for e in _agent_entries(data, [target], "priority", state.agent_alerts, state.agent_transition_at)]
         self.assertEqual(after, ["b", "a"])
 
