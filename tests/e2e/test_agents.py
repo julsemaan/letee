@@ -135,9 +135,11 @@ def test_agent_ordering_priority_vs_session(client: TmuxTestClient) -> None:
     _setup(client, config, statuses, "alpha", "beta")
     try:
         _write_agent(client, statuses, "alpha", "alpha-agent", "working", name="alpha-agent")
-        _write_agent(client, statuses, "beta", "beta-agent", "failed", name="beta-agent")
+        _write_agent(client, statuses, "beta", "beta-agent", "working", name="beta-agent")
         _wait_for_line(client, "alpha-agent", "working")
-        _wait_for_line(client, "beta-agent", "failed")
+        _wait_for_line(client, "beta-agent", "working")
+        _write_agent(client, statuses, "beta", "beta-agent", "completed", name="beta-agent")
+        _wait_for_line(client, "beta-agent", "completed")
         sidebar = client.sidebar_text()
         assert sidebar.index("beta-agent") < sidebar.index("alpha-agent")
 

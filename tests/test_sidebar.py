@@ -5175,7 +5175,7 @@ class AgentOrderingTest(unittest.TestCase):
 
         self.assertEqual(
             [entry.agent_id for entry in entries],
-            ["window-two", "second", "pane-ten", "a", "z"],
+            ["a", "pane-ten", "window-two", "second", "z"],
         )
 
     def test_status_and_alert_changes_never_reorder_agents(self):
@@ -5207,7 +5207,7 @@ class AgentOrderingTest(unittest.TestCase):
         entries.sort(key=lambda entry: _agent_sort_key(
             entry, [target], "priority", {(bell.pane_target, "bell")},
         ))
-        self.assertEqual([entry.agent_id for entry in entries], ["bell", "urgent"])
+        self.assertEqual([entry.agent_id for entry in entries], ["urgent", "bell"])
 
     def test_session_mode_ignores_status_alerts_and_idle_recency(self):
         first = Target("local", "first")
@@ -5247,11 +5247,13 @@ class AgentOrderingTest(unittest.TestCase):
             )
 
         sidebar._update_agent_alerts(state, data("idle"), None, now=10)
+        self.assertEqual(state.agent_transition_at, {})
         sidebar._update_agent_alerts(state, data("idle"), None, now=20)
-        self.assertEqual(state.agent_idle_since, {(pane, "id"): 10})
+        self.assertEqual(state.agent_transition_at, {})
         sidebar._update_agent_alerts(state, data("working"), None, now=30)
+        self.assertEqual(state.agent_transition_at, {(pane, "id"): 30})
         sidebar._update_agent_alerts(state, data("idle"), None, now=40)
-        self.assertEqual(state.agent_idle_since, {(pane, "id"): 40})
+        self.assertEqual(state.agent_transition_at, {(pane, "id"): 40})
 
     def test_agent_entries_sort_by_selected_mode(self):
         target = Target("local", "work")
@@ -5326,6 +5328,139 @@ class AgentOrderingTest(unittest.TestCase):
             ["pane-two", "pane-ten", "window-ten"],
         )
 
+    def test_selecting_idle_alerted_agent_clears_alert_after_focus_update_without_reordering(self):
+        target = Target("local", "work")
+        pane_a = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        pane_b = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        state = SidebarState(
+            favorites=[target],
+            agent_states={(pane_a, "a"): "idle", (pane_b, "b"): "idle"},
+            agent_transition_at={(pane_a, "a"): 10, (pane_b, "b"): 20},
+            agent_alerts={(pane_b, "b")},
+        )
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True, (), frozenset(),
+                agents=(AgentEntry(pane_a, "a", "pi", "idle"), AgentEntry(pane_b, "b", "pi", "idle")),
+            ),
+            {},
+        )
+        before = [e.agent_id for e in _agent_entries(data, [target], "priority", state.agent_alerts, state.agent_transition_at)]
+        self.assertEqual(before, ["b", "a"])
+        with patch("letee.sidebar.cockpit.switch"):
+            _execute(Effect("switch_pane", pane_b, message="b"), state, unittest.mock.Mock(), 5)
+        self.assertIn((pane_b, "b"), state.agent_alerts)
+        self.assertEqual(state.agent_transition_at, {(pane_a, "a"): 10, (pane_b, "b"): 20})
+        during_switch = [e.agent_id for e in _agent_entries(data, [target], "priority", state.agent_alerts, state.agent_transition_at)]
+        self.assertEqual(during_switch, ["b", "a"])
+        focused_data = SessionSnapshot(
+            SourceSnapshot(
+                True, (), frozenset(),
+                agents=data.local.agents,
+                focused_panes=frozenset({pane_b}),
+            ),
+            {},
+        )
+        _update_agent_alerts(state, focused_data, target)
+        self.assertNotIn((pane_b, "b"), state.agent_alerts)
+        after = [e.agent_id for e in _agent_entries(data, [target], "priority", state.agent_alerts, state.agent_transition_at)]
+        self.assertEqual(after, ["b", "a"])
+
+    def test_newer_idle_transition_moves_above_older_idle(self):
+        target = Target("local", "work")
+        pane_a = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        pane_b = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        state = SidebarState(favorites=[target])
+        def data(a_status, b_status):
+            return SessionSnapshot(
+                SourceSnapshot(True, (), frozenset(), agents=(
+                    AgentEntry(pane_a, "a", "pi", a_status),
+                    AgentEntry(pane_b, "b", "pi", b_status),
+                )),
+                {},
+            )
+        _update_agent_alerts(state, data("idle", "idle"), None, now=10)
+        _update_agent_alerts(state, data("working", "idle"), None, now=20)
+        _update_agent_alerts(state, data("idle", "idle"), None, now=30)
+        # a now has newer transition (30) than b (no transition yet, so b has no timestamp)
+        entries = _agent_entries(data("idle", "idle"), [target], "priority", set(), state.agent_transition_at)
+        self.assertEqual([e.agent_id for e in entries], ["a", "b"])
+        # b then transitions and becomes newest
+        _update_agent_alerts(state, data("idle", "working"), None, now=40)
+        _update_agent_alerts(state, data("idle", "idle"), None, now=50)
+        entries = _agent_entries(data("idle", "idle"), [target], "priority", set(), state.agent_transition_at)
+        self.assertEqual([e.agent_id for e in entries], ["b", "a"])
+
+    def test_non_idle_remains_above_newer_idle(self):
+        target = Target("local", "work")
+        idle = self._make_agent(target, "@1", "%2", "idle-agent", "idle")
+        working = self._make_agent(target, "@1", "%1", "working-agent", "working")
+        # idle has newer transition, but working group should still be first
+        transition_at = {(working.pane_target, "working-agent"): 10, (idle.pane_target, "idle-agent"): 100}
+        entries = [idle, working]
+        entries.sort(key=lambda e: _agent_sort_key(e, [target], "priority", set(), transition_at))
+        self.assertEqual([e.agent_id for e in entries], ["working-agent", "idle-agent"])
+
+    def test_recently_transitioned_before_without_transition(self):
+        target = Target("local", "work")
+        pane_b = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        # both idle, only b has transition
+        a = self._make_agent(target, "@1", "%1", "a", "idle")
+        b = self._make_agent(target, "@1", "%2", "b", "idle")
+        transition_at = {(pane_b, "b"): 10}
+        entries = [a, b]
+        entries.sort(key=lambda e: _agent_sort_key(e, [target], "priority", set(), transition_at))
+        self.assertEqual([e.agent_id for e in entries], ["b", "a"])
+        # same for non-idle group
+        c = self._make_agent(target, "@1", "%3", "c", "working")
+        d = self._make_agent(target, "@1", "%4", "d", "working")
+        transition_at = {(PaneTarget(target, "@1", "%4", "/tmp/tmux"), "d"): 10}
+        entries = [c, d]
+        entries.sort(key=lambda e: _agent_sort_key(e, [target], "priority", set(), transition_at))
+        self.assertEqual([e.agent_id for e in entries], ["d", "c"])
+
+    def test_session_mode_ignores_transition_recency(self):
+        target = Target("local", "work")
+        a = self._make_agent(target, "@1", "%1", "a", "working")
+        b = self._make_agent(target, "@1", "%2", "b", "idle")
+        transition_at = {(a.pane_target, "a"): 10, (b.pane_target, "b"): 100}
+        entries = [b, a]
+        entries.sort(key=lambda e: _agent_sort_key(e, [target], "session", set(), transition_at))
+        self.assertEqual([e.agent_id for e in entries], ["a", "b"])
+        # also test that session order beats recency across sessions
+        first = Target("local", "first")
+        second = Target("local", "second")
+        idle_second = self._make_agent(second, "@1", "%1", "idle", "idle")
+        working_first = self._make_agent(first, "@1", "%1", "working", "working")
+        transition_at = {(idle_second.pane_target, "idle"): 100, (working_first.pane_target, "working"): 10}
+        entries = [idle_second, working_first]
+        entries.sort(key=lambda e: _agent_sort_key(e, [first, second], "session", set(), transition_at))
+        self.assertEqual([e.agent_id for e in entries], ["working", "idle"])
+
+    def test_missing_agents_lose_transition_data(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        state = SidebarState(
+            favorites=[target],
+            agent_states={(pane, "id"): "idle"},
+            agent_transition_at={(pane, "id"): 10},
+        )
+        empty = SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=()), {})
+        _update_agent_alerts(state, empty, None, now=20)
+        self.assertEqual(state.agent_transition_at, {})
+        self.assertEqual(state.agent_states, {})
+        # also test kill path
+        state = SidebarState(
+            favorites=[target],
+            agent_states={(pane, "id"): "working"},
+            agent_transition_at={(pane, "id"): 10},
+            selected_agent_key=(pane, "id"),
+        )
+        pane_target = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        with patch.object(sidebar.sessions, "kill_agent"):
+            _execute(Effect("kill_agent", pane_target, message="pi", agent_id="id"), state, unittest.mock.Mock(), 5)
+        self.assertNotIn((pane, "id"), state.agent_transition_at)
+        self.assertNotIn((pane, "id"), state.agent_states)
 
     def test_ordering_row_ignores_enter_and_kill(self):
         screen = FakeScreen([curses.KEY_F7, curses.KEY_ENTER, ord("x"), STOP], size=(10, 40))
@@ -5641,7 +5776,7 @@ class PrefixActionTest(unittest.TestCase):
             self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
 
         switch.assert_called_once_with(
-            target, sidebar.sessions.pane_attach_command(second_pane), "second"
+            target, sidebar.sessions.pane_attach_command(first_pane), "first"
         )
 
     def test_alert_prefix_without_alerts_shows_feedback_and_does_not_navigate(self):
