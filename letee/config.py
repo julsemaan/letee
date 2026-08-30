@@ -163,8 +163,8 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is reserved (session slots 1 through 9)")
         else:
             has_pref, eff = _split_prefix(value)
-            # for backwards compat, plain "a" without prefix+ is treated as legacy prefix binding
-            # but new explicit "prefix+" vs plain without prefix distinguishes table; validation uses effective token
+            # Plain tokens bind globally via `bind-key -n`; only `prefix+...` values use tmux's prefix table.
+            # Validation uses the effective token after removing the optional `prefix+`.
             if not eff:
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is not a valid tmux key token")
             if not _validate_tmux_token(eff):
