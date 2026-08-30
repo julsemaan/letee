@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import fcntl
 import os
 from pathlib import Path
@@ -390,15 +390,16 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
         command = ("tmux", "new-session", "-d", "-s", target.session)
         _run("create", target, command, env=_default_server_env())
         if overlay:
-            # Best effort: tmux pre-3.3 rejects newer overlay options, and that
-            # must not fail the create itself.
-            subprocess.run(
-                ("tmux", "source-file", str(OVERLAY_FILE)),
-                check=False,
-                capture_output=True,
-                timeout=10,
-                env=_default_server_env(),
-            )
+            # Best effort: tmux pre-3.3 rejects newer overlay options, and
+            # timeout/OSError here must not fail the create itself either.
+            with suppress(subprocess.TimeoutExpired, OSError):
+                subprocess.run(
+                    ("tmux", "source-file", str(OVERLAY_FILE)),
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                    env=_default_server_env(),
+                )
     else:
         if overlay:
             _install_overlay(target)
