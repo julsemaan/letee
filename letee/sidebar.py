@@ -2741,7 +2741,7 @@ def run(stdscr: curses.window) -> None:
                     return None
                 return _transition(state, "remove_session", current_target)
             if entry.unavailable_favorite:
-                show_status("Session already missing; press r to remove")
+                show_status(f"Session already missing; press {sidebar_keys['remove']} to remove")
                 return None
             if actions.busy:
                 show_status("another action is still running")
@@ -3765,7 +3765,7 @@ def run(stdscr: curses.window) -> None:
                 if entry.kind != "session" or not entry.target:
                     continue
                 if entry.unavailable_favorite:
-                    show_status("Session already missing; press r to remove")
+                    show_status(f"Session already missing; press {sidebar_keys['remove']} to remove")
                     continue
                 if read_prompt(f"kill {entry.target.format()}? y/N", state.filtering) != ord("y"):
                     continue

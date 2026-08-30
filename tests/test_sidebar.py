@@ -4403,14 +4403,16 @@ class SidebarDrawTest(unittest.TestCase):
         kill.assert_not_called()
         self.assertFalse(any(call[0] == "addnstr" and "select session to kill" in call[3] for call in screen.calls))
 
-    def test_missing_session_kill_guides_removal(self):
+    def test_missing_session_kill_guides_custom_removal(self):
         target = Target("local", "work")
+        custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "remove": "D"}
         screen = FakeScreen([ord("x"), STOP], size=(8, 60))
 
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_sessions", return_value=[target]),
+            patch("letee.sidebar.load_sidebar_keybindings", return_value=custom),
             patch("letee.sidebar._entries", return_value=[Entry("work", "session", target, unavailable_favorite=True, tracked=True)]),
             patch("letee.sidebar._agent_entries", return_value=[]),
             patch("letee.sidebar._bell_targets", return_value=set()),
@@ -4419,7 +4421,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         self.assertTrue(any(
-            call[0] == "addnstr" and "Session already missing; press r to remove" in call[3]
+            call[0] == "addnstr" and "Session already missing; press D to remove" in call[3]
             for call in screen.calls
         ))
 
@@ -5629,6 +5631,18 @@ class PrefixActionTest(unittest.TestCase):
 
         kill.assert_called_once_with(active)
         save.assert_called_once_with([stale])
+
+    def test_missing_session_kill_prefix_guides_custom_removal(self):
+        target = Target("local", "active")
+        custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "remove": "D"}
+
+        with patch.object(sidebar, "load_sidebar_keybindings", return_value=custom):
+            screen = self._run([curses.KEY_F6, curses.KEY_F9, STOP], [target], target, snapshot())
+
+        self.assertTrue(any(
+            call[0] == "addnstr" and "Session already missing; press D" in call[3]
+            for call in screen.calls
+        ))
 
     def test_rejected_kill_prefix_does_not_mutate_sessions(self):
         target = Target("local", "active")
