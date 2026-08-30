@@ -12,7 +12,8 @@ DEFAULT_SIDEBAR_WIDTH = 40
 DEFAULT_STATUS_TIMEOUT = 5
 DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
-CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\n'
+DEFAULT_TMUX_CONFIG_OVERLAY = True
+CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\n'
 
 DEFAULT_KEYBINDINGS: dict[str, str] = {
     "focus_agents": "prefix+a",
@@ -247,6 +248,14 @@ def load_persistent_ssh() -> bool:
     if not isinstance(persistent, bool):
         raise SystemExit(f"Invalid config {cfg}: persistent_ssh must be a boolean")
     return persistent
+
+
+def load_tmux_config_overlay() -> bool:
+    cfg, data = _load_config()
+    overlay = data.get("tmux_config_overlay", DEFAULT_TMUX_CONFIG_OVERLAY)
+    if not isinstance(overlay, bool):
+        raise SystemExit(f"Invalid config {cfg}: tmux_config_overlay must be a boolean")
+    return overlay
 
 
 def load_hosts() -> list[str]:

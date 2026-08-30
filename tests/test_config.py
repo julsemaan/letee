@@ -23,7 +23,7 @@ class ConfigTest(unittest.TestCase):
     def test_fresh_config_contains_default_prefix(self):
         cfg, wrapper = config.ensure_config()
 
-        self.assertEqual(cfg.read_text(), 'hosts = []\nprefix = "C-s"\nsidebar_width = 40\nstatus_timeout = 5\nagent_panel_resize_step = 5\npersistent_ssh = true\n')
+        self.assertEqual(cfg.read_text(), 'hosts = []\nprefix = "C-s"\nsidebar_width = 40\nstatus_timeout = 5\nagent_panel_resize_step = 5\npersistent_ssh = true\ntmux_config_overlay = true\n')
         self.assertNotIn("prefix", wrapper.read_text())
         self.assertNotIn("send-prefix", wrapper.read_text())
         self.assertIn("set -g mouse on", wrapper.read_text())
@@ -116,6 +116,23 @@ class ConfigTest(unittest.TestCase):
                 self.write_config(f"persistent_ssh = {value}\n")
                 with self.assertRaisesRegex(SystemExit, "persistent_ssh must be a boolean"):
                     config.load_persistent_ssh()
+
+    def test_tmux_config_overlay_defaults_enabled_and_accepts_booleans(self):
+        self.write_config("hosts = []\n")
+        self.assertTrue(config.load_tmux_config_overlay())
+
+        self.write_config("tmux_config_overlay = true\n")
+        self.assertTrue(config.load_tmux_config_overlay())
+
+        self.write_config("tmux_config_overlay = false\n")
+        self.assertFalse(config.load_tmux_config_overlay())
+
+    def test_invalid_tmux_config_overlay_fails_clearly(self):
+        for value in ('"true"', "1", "[]", "{ a = 1 }"):
+            with self.subTest(value=value):
+                self.write_config(f"tmux_config_overlay = {value}\n")
+                with self.assertRaisesRegex(SystemExit, "tmux_config_overlay must be a boolean"):
+                    config.load_tmux_config_overlay()
 
     def test_option_like_hosts_are_rejected(self):
         for host in ("-V", "-F", "--help"):

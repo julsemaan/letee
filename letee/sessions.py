@@ -13,8 +13,19 @@ import stat
 import subprocess
 import time
 
-from .config import load_persistent_ssh
+from .config import load_persistent_ssh, load_tmux_config_overlay
 from .names import PaneTarget, Target, validate_host
+
+
+OVERLAY_FILE = Path(__file__).with_name("tmux-overlay.conf")
+REMOTE_OVERLAY_PATH = "~/.config/letee/tmux-overlay.conf"
+# Atomic remote install: private dir, temp file, rename. Unconditional rewrite
+# replaces stale remote copies whenever letee ships an updated overlay.
+_SSH_INSTALL_OVERLAY = (
+    "umask 077 && mkdir -p ~/.config/letee && chmod 700 ~/.config/letee"
+    " && cat > ~/.config/letee/.tmux-overlay.conf.tmp"
+    " && mv ~/.config/letee/.tmux-overlay.conf.tmp ~/.config/letee/tmux-overlay.conf"
+)
 
 
 FALLBACK_AGENT_SOCKET = Path.home() / ".ssh" / "letee-agent.sock"
@@ -320,21 +331,40 @@ def _default_server_env() -> dict[str, str]:
     return env
 
 
-def attach_command(target: Target) -> str:
-    session = shlex.quote(target.session)
+def _install_overlay(target: Target) -> None:
+    _run("overlay", target, ssh_command(target.host or "", _SSH_INSTALL_OVERLAY), input=OVERLAY_FILE.read_text())
+
+
+def _overlay_source(target: Target) -> str:
+    return REMOTE_OVERLAY_PATH if target.kind == "ssh" else shlex.quote(str(OVERLAY_FILE))
+
+
+def attach_command(target: Target, *, overlay: bool | None = None) -> str:
+    overlay = load_tmux_config_overlay() if overlay is None else overlay
+    if overlay and target.kind == "ssh":
+        _install_overlay(target)
+    new_session = f"tmux -T clipboard new-session -A -s {shlex.quote(target.session)}"
+    if overlay:
+        new_session += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
-        return f"env -u TMUX tmux -T clipboard new-session -A -s {session}"
-    return shlex.join(ssh_command("-t", target.host or "", f"tmux -T clipboard new-session -A -s {session}", interactive=True))
+        return f"env -u TMUX {new_session}"
+    return shlex.join(ssh_command("-t", target.host or "", new_session, interactive=True))
 
 
-def pane_attach_command(pane_target: PaneTarget) -> str:
+def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None) -> str:
+    overlay = load_tmux_config_overlay() if overlay is None else overlay
     target = pane_target.target
-    tmux = shlex.join(("tmux", "-S", pane_target.socket_path))
-    command = (
-        f"{tmux} select-window -t {shlex.quote(target.session + ':' + pane_target.window_id)} "
-        f"\\; select-pane -t {shlex.quote(pane_target.pane_id)} "
-        f"\\; attach-session -t {shlex.quote(target.session)}"
+    if overlay and target.kind == "ssh":
+        _install_overlay(target)
+    parts = []
+    if overlay:
+        parts.append(f"source-file {_overlay_source(target)}")
+    parts += (
+        f"select-window -t {shlex.quote(target.session + ':' + pane_target.window_id)}",
+        f"select-pane -t {shlex.quote(pane_target.pane_id)}",
+        f"attach-session -t {shlex.quote(target.session)}",
     )
+    command = f"tmux -S {shlex.quote(pane_target.socket_path)} " + " \\; ".join(parts)
     if target.kind == "local":
         return f"env -u TMUX {command}"
     return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
@@ -354,11 +384,28 @@ def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: obj
     return result.stdout or ""
 
 
-def create(target: Target) -> None:
+def create(target: Target, *, overlay: bool | None = None) -> None:
+    overlay = load_tmux_config_overlay() if overlay is None else overlay
     if target.kind == "local":
-        _run("create", target, ("tmux", "new-session", "-d", "-s", target.session), env=_default_server_env())
+        command = ("tmux", "new-session", "-d", "-s", target.session)
+        _run("create", target, command, env=_default_server_env())
+        if overlay:
+            # Best effort: tmux pre-3.3 rejects newer overlay options, and that
+            # must not fail the create itself.
+            subprocess.run(
+                ("tmux", "source-file", str(OVERLAY_FILE)),
+                check=False,
+                capture_output=True,
+                timeout=10,
+                env=_default_server_env(),
+            )
     else:
-        _run("create", target, ssh_command(target.host or "", f"tmux new-session -d -s {shlex.quote(target.session)}"))
+        if overlay:
+            _install_overlay(target)
+        command = f"tmux new-session -d -s {shlex.quote(target.session)}"
+        if overlay:
+            command += f" && {{ tmux source-file {REMOTE_OVERLAY_PATH} || true; }}"
+        _run("create", target, ssh_command(target.host or "", command))
 
 
 def kill(target: Target) -> None:

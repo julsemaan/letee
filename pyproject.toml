@@ -32,6 +32,9 @@ Issues = "https://github.com/julsemaan/letee/issues"
 [project.scripts]
 letee = "letee.__main__:run_cli"
 
+[tool.setuptools.package-data]
+letee = ["tmux-overlay.conf"]
+
 [project.optional-dependencies]
 dev = [
     "build",
