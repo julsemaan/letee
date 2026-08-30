@@ -23,8 +23,8 @@ REMOTE_OVERLAY_PATH = "~/.config/letee/tmux-overlay.conf"
 # replaces stale remote copies whenever letee ships an updated overlay.
 _SSH_INSTALL_OVERLAY = (
     "umask 077 && mkdir -p ~/.config/letee && chmod 700 ~/.config/letee"
-    " && cat > ~/.config/letee/.tmux-overlay.conf.tmp"
-    " && mv ~/.config/letee/.tmux-overlay.conf.tmp ~/.config/letee/tmux-overlay.conf"
+    " && tmp=$(mktemp ~/.config/letee/.tmux-overlay.conf.XXXXXX)"
+    " && cat > \"$tmp\" && mv \"$tmp\" ~/.config/letee/tmux-overlay.conf"
 )
 
 

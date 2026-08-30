@@ -712,8 +712,8 @@ class TmuxOverlayTest(unittest.TestCase):
         self.assertIn("umask 077", command)
         self.assertIn("mkdir -p ~/.config/letee", command)
         self.assertIn("chmod 700 ~/.config/letee", command)
-        self.assertIn("cat > ~/.config/letee/.tmux-overlay.conf.tmp", command)
-        self.assertIn("mv ~/.config/letee/.tmux-overlay.conf.tmp ~/.config/letee/tmux-overlay.conf", command)
+        self.assertIn("mktemp ~/.config/letee/.tmux-overlay.conf.XXXXXX", command)
+        self.assertIn('mv "$tmp" ~/.config/letee/tmux-overlay.conf', command)
 
     def test_overlay_install_failure_exits_clearly(self):
         error = subprocess.CalledProcessError(1, ["ssh"], stderr="connection refused\n")
