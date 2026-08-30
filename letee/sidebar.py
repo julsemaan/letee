@@ -2455,8 +2455,8 @@ def run(stdscr: curses.window) -> None:
         state.favorites,
         state.agent_ordering,
         state.agent_alerts,
-        state.agent_transition_at,
-        state.hidden_agents,
+        transition_at=state.agent_transition_at,
+        hidden_agents=state.hidden_agents,
     )
     _reset_selection(state, entries)
     cockpit_bell_target: Target | None = None
@@ -2700,8 +2700,8 @@ def run(stdscr: curses.window) -> None:
             state.favorites,
             state.agent_ordering,
             state.agent_alerts,
-            state.agent_transition_at,
-            state.hidden_agents,
+            transition_at=state.agent_transition_at,
+            hidden_agents=state.hidden_agents,
         )
         if state.move_source not in state.favorites or not any(
             entry.tracked and entry.target == state.move_source for entry in entries
