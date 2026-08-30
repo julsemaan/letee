@@ -92,13 +92,22 @@ class SidebarState:
     selected_agent_key: tuple[PaneTarget, str] | None = None
     hidden_agents: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_states: dict[tuple[PaneTarget, str], str] = field(default_factory=dict)
-    agent_idle_since: dict[tuple[PaneTarget, str], float] = field(default_factory=dict)
+    agent_transition_at: dict[tuple[PaneTarget, str], float] = field(default_factory=dict)
     agent_alerts: set[tuple[PaneTarget, str]] = field(default_factory=set)
     agent_percentage: int = DEFAULT_AGENT_PANEL_PERCENTAGE
     agent_ordering: Literal["priority", "session"] = "priority"
     add_button_selected: bool = False
     move_source: Target | None = None
     move_target: Target | None = None
+
+    # ponytail: alias for backward compatibility with tests expecting old name
+    @property
+    def agent_idle_since(self) -> dict[tuple[PaneTarget, str], float]:
+        return self.agent_transition_at
+
+    @agent_idle_since.setter
+    def agent_idle_since(self, value: dict[tuple[PaneTarget, str], float]) -> None:
+        self.agent_transition_at = value
 
 
 @dataclass(frozen=True)
@@ -638,14 +647,22 @@ _STATUS_RANK: dict[str, int] = {
     "idle": 4,
 }
 
+_KNOWN_NON_IDLE: set[str] = {
+    "working", "submitted", "completed", "canceled", "failed", "rejected", "input-required", "auth-required",
+}
+
 
 def _agent_sort_key(
     entry: Entry,
     favorites: list[Target],
     agent_ordering: Literal["priority", "session"] = "priority",
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    transition_at: dict[tuple[PaneTarget, str], float] | None = None,
     idle_since: dict[tuple[PaneTarget, str], float] | None = None,
+    **_kwargs,
 ) -> tuple:
+    if transition_at is None:
+        transition_at = idle_since
     target = entry.target
     session_index = favorites.index(target) if target and target in favorites else len(favorites)
     pane = entry.pane_target
@@ -655,11 +672,12 @@ def _agent_sort_key(
     if agent_ordering == "session":
         return (session_index, window, pane_id, agent_id)
 
-    status_rank = _STATUS_RANK.get(entry.status, 5)
-    alert_rank = 0 if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else 1
-    idle_time = (idle_since or {}).get((entry.pane_target, agent_id)) if entry.status == "idle" else None
-    activity_rank = -idle_time if idle_time is not None else 0
-    return (alert_rank, status_rank, activity_rank, session_index, window, pane_id, agent_id)
+    is_idle_group = 0 if entry.status in _KNOWN_NON_IDLE else 1
+    key = (entry.pane_target, agent_id)
+    ts = (transition_at or {}).get(key)
+    has_transition = 0 if ts is not None else 1
+    recency = -ts if ts is not None else 0
+    return (is_idle_group, has_transition, recency, session_index, window, pane_id, agent_id)
 
 
 def _agent_entries(
@@ -667,9 +685,13 @@ def _agent_entries(
     favorites: list[Target],
     agent_ordering: Literal["priority", "session"] = "priority",
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
+    transition_at: dict[tuple[PaneTarget, str], float] | None = None,
     idle_since: dict[tuple[PaneTarget, str], float] | None = None,
     hidden_agents: set[tuple[PaneTarget, str]] | None = None,
+    **_kwargs,
 ) -> list[Entry]:
+    if transition_at is None:
+        transition_at = idle_since
     tracked = set(favorites)
     hidden_agents = hidden_agents or set()
     entries = [
@@ -690,7 +712,7 @@ def _agent_entries(
     ]
     entries.sort(
         key=lambda entry: _agent_sort_key(
-            entry, favorites, agent_ordering, agent_alerts, idle_since
+            entry, favorites, agent_ordering, agent_alerts, transition_at
         )
     )
     return entries
@@ -719,12 +741,14 @@ def _update_agent_alerts(
         if agent.pane_target.target in tracked
         and (agent.pane_target, agent.agent_id) not in hidden_agents
     }
-    idle_agents = {key for key, status in agents.items() if status == "idle"}
-    new_idle_agents = idle_agents.difference(state.agent_idle_since)
-    observed_at = (time.monotonic() if now is None else now) if new_idle_agents else 0.0
-    state.agent_idle_since = {
-        key: state.agent_idle_since.get(key, observed_at)
-        for key in idle_agents
+    now_value = now
+    for key, status in agents.items():
+        if key in state.agent_states and state.agent_states[key] != status:
+            if now_value is None:
+                now_value = time.monotonic()
+            state.agent_transition_at[key] = now_value
+    state.agent_transition_at = {
+        key: ts for key, ts in state.agent_transition_at.items() if key in agents
     }
     active = {
         key
@@ -1105,7 +1129,7 @@ def _apply_effect(
             state.hidden_agents.add(agent_key)
             state.agent_alerts.discard(agent_key)
             state.agent_states.pop(agent_key, None)
-            state.agent_idle_since.pop(agent_key, None)
+            state.agent_transition_at.pop(agent_key, None)
         poller.refresh()
         name = effect.message or "agent"
         _set_status(
@@ -2431,7 +2455,7 @@ def run(stdscr: curses.window) -> None:
         state.favorites,
         state.agent_ordering,
         state.agent_alerts,
-        state.agent_idle_since,
+        state.agent_transition_at,
         state.hidden_agents,
     )
     _reset_selection(state, entries)
@@ -2676,7 +2700,7 @@ def run(stdscr: curses.window) -> None:
             state.favorites,
             state.agent_ordering,
             state.agent_alerts,
-            state.agent_idle_since,
+            state.agent_transition_at,
             state.hidden_agents,
         )
         if state.move_source not in state.favorites or not any(
