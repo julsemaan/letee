@@ -1156,6 +1156,19 @@ class CockpitKeybindingTest(unittest.TestCase):
         for eff in ("C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h", "C-i", "C-j", "C-k"):
             self.assertIn(("bind-key", "-n", eff), [(c[0], c[1], c[2]) if len(c) > 2 else c for c in calls])
 
+    def test_install_bindings_unbinds_comma_global_key_on_rerun(self):
+        custom = dict(cockpit.DEFAULT_KEYBINDINGS)
+        custom["focus_agents"] = ","
+        calls = []
+        with (
+            patch.object(cockpit, "_option", side_effect=["", ","]),
+            patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)),
+        ):
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
+            cockpit._install_bindings("C-x", "%1", "%2", keybindings=custom)
+
+        self.assertEqual(calls.count(("unbind-key", "-q", "-T", "root", ",")), 1)
+
     def test_help_generated_from_custom_bindings(self):
         custom = {
             "focus_agents": "prefix+C-a",

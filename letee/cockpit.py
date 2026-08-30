@@ -206,7 +206,7 @@ def _install_bindings(
         old_raw = _option(ROOT_KEYS_OPTION)
     except Exception:
         old_raw = ""
-    old_keys = [k for k in old_raw.split(",") if k] if old_raw else []
+    old_keys = shlex.split(old_raw) if old_raw else []
     for key in old_keys:
         tmux.tmux("unbind-key", "-q", "-T", "root", key)
     tmux.tmux("unbind-key", "-a", "-T", "prefix")
@@ -232,7 +232,7 @@ def _install_bindings(
         tmux.tmux("bind-key", str(slot), "run-shell", _letee_command("switch-session", str(slot)))
     new_root_keys = [_split_prefix_value(v)[1] for v in keybindings.values() if not _split_prefix_value(v)[0]]
     if new_root_keys:
-        tmux.tmux("set-option", "-t", tmux.SESSION, ROOT_KEYS_OPTION, ",".join(new_root_keys))
+        tmux.tmux("set-option", "-t", tmux.SESSION, ROOT_KEYS_OPTION, shlex.join(new_root_keys))
     elif old_keys:
         tmux.tmux("set-option", "-t", tmux.SESSION, ROOT_KEYS_OPTION, "")
 
