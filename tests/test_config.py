@@ -235,6 +235,28 @@ class KeybindingConfigTest(unittest.TestCase):
         self.write_config('[keybindings]\nfocus_agents = "C-a"\n')
         self.assertEqual(config.load_keybindings()["focus_agents"], "C-a")
 
+    def test_outer_alias_normalizes_to_canonical_action(self):
+        self.write_config('[keybindings]\nagents = "C-a"\n')
+
+        result = config.load_keybindings()
+
+        self.assertEqual(result["focus_agents"], "C-a")
+        self.assertNotIn("agents", result)
+
+    def test_sidebar_alias_normalizes_to_canonical_action(self):
+        self.write_config('[sidebar_keybindings]\ndown = "d"\n')
+
+        result = config.load_sidebar_keybindings()
+
+        self.assertEqual(result["navigate_down"], "d")
+        self.assertNotIn("down", result)
+
+    def test_alias_and_canonical_action_cannot_both_be_configured(self):
+        self.write_config('[keybindings]\nfocus_agents = "C-a"\nagents = "C-b"\n')
+
+        with self.assertRaisesRegex(SystemExit, "duplicate keybindings action 'focus_agents'"):
+            config.load_keybindings()
+
     def test_existing_config_without_tables_remains_valid(self):
         self.write_config('hosts = []\nprefix = "C-s"\nsidebar_width = 40\n')
         # should not raise
