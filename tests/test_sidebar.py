@@ -6187,20 +6187,33 @@ class SidebarKeybindingTest(unittest.TestCase):
             patch.object(sidebar, "_init_colors"),
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar.curses, "curs_set"),
-            patch.object(sidebar, "_draw", return_value=(1, None)),
+            patch.object(sidebar, "_draw", return_value=(1, None)) as draw,
             patch.object(sidebar, "_bell_targets", return_value=set()),
         ):
             sidebar_run(screen)
-        return screen, poller
+        return screen, poller, draw
 
     def test_custom_navigation_keys_are_used_and_arrows_still_work(self):
         custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "navigate_down": "n", "navigate_up": "p"}
-        # custom n should move down, j should not
-        screen, _ = self._run_with_keys([ord("n"), curses.KEY_UP, STOP], bindings=custom)
-        # verify load called once
-        # Arrow KEY_DOWN still moves even with custom mapping - test arrows
-        screen2, _ = self._run_with_keys([curses.KEY_DOWN, STOP], bindings=custom)
-        self.assertTrue(True)  # no crash, arrows handled
+        _, _, draw = self._run_with_keys([ord("n"), curses.KEY_UP, STOP], bindings=custom)
+        self.assertEqual(
+            [
+                (call.args[1][call.args[2]].target, call.args[2])
+                for call in draw.call_args_list
+            ],
+            [
+                (Target("local", "a"), 0),
+                (Target("local", "b"), 1),
+                (Target("local", "a"), 0),
+            ],
+        )
+
+        _, _, draw = self._run_with_keys([curses.KEY_DOWN, STOP], bindings=custom)
+        selected = draw.call_args_list[-1]
+        self.assertEqual(
+            (selected.args[1][selected.args[2]].target, selected.args[2]),
+            (Target("local", "b"), 1),
+        )
 
     def test_sidebar_loads_bindings_once_at_start(self):
         custom = config.DEFAULT_SIDEBAR_KEYBINDINGS
