@@ -1,7 +1,11 @@
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import call, patch
 
-from letee import cockpit
+from letee import cockpit, diagnostics
 from letee.names import PaneTarget, Target
 
 
@@ -500,6 +504,12 @@ class CockpitLayoutTest(unittest.TestCase):
             calls,
             [
                 ("unbind-key", "-a", "-T", "prefix"),
+                (
+                    "bind-key", "-n", "MouseDown1Pane",
+                    "if-shell -F -t = '#{==:#{pane_id},%1}' "
+                    "{ send-keys -M -t = ; select-pane -t = } "
+                    "{ select-pane -t = ; send-keys -M }",
+                ),
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "d", "detach-client"),
                 ("bind-key", "h", "resize-pane", "-Z", "-t", "%2"),
@@ -519,6 +529,20 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_mouse_binding_uses_sidebar_id_and_preserves_branch_order(self):
+        calls = []
+
+        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+            cockpit._install_bindings("C-x", "%sidebar", "%right")
+
+        binding = next(call for call in calls if call[:3] == ("bind-key", "-n", "MouseDown1Pane"))
+        self.assertEqual(
+            binding[3],
+            "if-shell -F -t = '#{==:#{pane_id},%sidebar}' "
+            "{ send-keys -M -t = ; select-pane -t = } "
+            "{ select-pane -t = ; send-keys -M }",
+        )
+
     def test_named_bindings_propagate_server_to_generated_commands(self):
         cockpit.tmux.set_server("work")
         self.addCleanup(cockpit.tmux.set_server, None)
@@ -527,8 +551,8 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2")
 
-        self.assertEqual(calls[5], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
-        self.assertEqual(calls[13], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
+        self.assertEqual(calls[6], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
+        self.assertEqual(calls[14], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
 
     def test_focus_sidebar_recreates_selects_and_injects_region_key(self):
         with (
@@ -775,7 +799,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_layout_hooks"),
             patch.object(cockpit, "_install_bell_hook"),
             patch.object(cockpit, "_install_right_pane_reset"),
-            patch.object(cockpit, "_install_bindings"),
+            patch.object(cockpit, "_install_bindings") as install_bindings,
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
             patch.object(cockpit, "_enable_truecolor"),
@@ -784,6 +808,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
+        install_bindings.assert_called_once_with("C-x", "%1", "%2")
 
     def test_switch_uses_valid_right_pane_and_supplied_attach_command(self):
         calls = []
@@ -982,6 +1007,70 @@ class CockpitLayoutTest(unittest.TestCase):
                 ),
             ],
         )
+
+
+class CockpitDiagnosticsTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.tempdir.name) / "cockpit.jsonl"
+        self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
+        self.env.start()
+
+    def tearDown(self):
+        diagnostics.close()
+        self.env.stop()
+        self.tempdir.cleanup()
+
+    def records(self):
+        diagnostics.flush()
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def test_switch_records_each_stage_without_attach_command(self):
+        target = Target("local", "work")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux"),
+        ):
+            cockpit.switch(target, "attach work")
+
+        records = self.records()
+        stages = [
+            (record["event"], record.get("stage"), record.get("status"))
+            for record in records
+            if record["event"].startswith("switch_")
+        ]
+        self.assertEqual(
+            stages,
+            [
+                ("switch_requested", None, None),
+                ("switch_marker_update", "current_target_marker", "started"),
+                ("switch_marker_update", "current_target_marker", "completed"),
+                ("switch_respawn", "right_pane_respawn", "started"),
+                ("switch_respawn", "right_pane_respawn", "completed"),
+                ("switch_focus", "right_pane_focus", "started"),
+                ("switch_focus", "right_pane_focus", "completed"),
+                ("switch_completed", None, None),
+            ],
+        )
+        self.assertTrue(all(record["target"] == target.format() for record in records if record["event"].startswith("switch_")))
+        self.assertTrue(all(record["right_pane"] == "%2" for record in records if record["event"].startswith("switch_")))
+        self.assertNotIn("attach work", self.log_path.read_text())
+
+    def test_switch_failure_records_failed_stage(self):
+        target = Target("local", "work")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux", side_effect=OSError("denied")),
+            self.assertRaises(OSError),
+        ):
+            cockpit.switch(target, "attach work")
+
+        failed = [
+            record for record in self.records()
+            if record["event"] == "switch_error"
+        ]
+        self.assertEqual(failed[0]["stage"], "current_target_marker")
+        self.assertEqual(failed[0]["error_type"], "OSError")
 
 
 if __name__ == "__main__":

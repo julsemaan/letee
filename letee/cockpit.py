@@ -6,11 +6,12 @@ import re
 import shlex
 import shutil
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .config import ensure_config, load_hosts, load_prefix, load_sidebar_width
 from .names import DEFAULT_SERVER, PaneTarget, Target, parse_target
-from . import sessions, tmux
+from . import diagnostics, sessions, tmux
 
 
 def _truecolor_enabled() -> bool:
@@ -155,8 +156,14 @@ def _install_layout_hooks(left: str, sidebar_width: int) -> None:
     tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x {sidebar_width}")
 
 
-def _install_bindings(prefix: str, _sidebar_pane: str, right_pane: str) -> None:
+def _install_bindings(prefix: str, sidebar_pane: str, right_pane: str) -> None:
     tmux.tmux("unbind-key", "-a", "-T", "prefix")
+    tmux.tmux(
+        "bind-key", "-n", "MouseDown1Pane",
+        f"if-shell -F -t = '#{{==:#{{pane_id}},{sidebar_pane}}}' "
+        "{ send-keys -M -t = ; select-pane -t = } "
+        "{ select-pane -t = ; send-keys -M }",
+    )
     tmux.tmux("bind-key", prefix, "send-prefix")
     tmux.tmux("bind-key", "d", "detach-client")
     tmux.tmux("bind-key", "h", "resize-pane", "-Z", "-t", right_pane)
@@ -399,16 +406,104 @@ def _require_right_pane() -> str:
     return pane
 
 
-def switch(target: Target, attach_command: str, agent_id: str | None = None) -> None:
-    pane = _require_right_pane()
-    tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
-    if agent_id:
-        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_AGENT_OPTION, agent_id)
-    else:
-        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION)
-    tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
-    tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command)
-    tmux.tmux("select-pane", "-t", pane)
+def _switch_fields(
+    target: Target,
+    pane: str | None,
+    switch_id: str | None,
+    action_id: str | None,
+    input_id: str | None,
+) -> dict[str, object]:
+    return {
+        "switch_id": switch_id,
+        "action_id": action_id,
+        "input_id": input_id,
+        "target": target.format(),
+        "right_pane": pane,
+    }
+
+
+def switch(
+    target: Target,
+    attach_command: str,
+    agent_id: str | None = None,
+    *,
+    action_id: str | None = None,
+    input_id: str | None = None,
+) -> None:
+    debug = diagnostics.get_diagnostics(server=tmux.SERVER)
+    context = debug.context_values()
+    action_id = action_id or context.get("action_id")
+    input_id = input_id or context.get("input_id")
+    switch_id = action_id or debug.new_id("switch")
+    try:
+        pane = right_pane()
+    except BaseException as error:
+        debug.emit(
+            "switch_requested",
+            **_switch_fields(target, None, switch_id, action_id, input_id),
+        )
+        debug.emit(
+            "switch_error",
+            **_switch_fields(target, None, switch_id, action_id, input_id),
+            stage="right_pane_lookup",
+            error_type=type(error).__name__,
+        )
+        raise
+    debug.emit(
+        "switch_requested",
+        **_switch_fields(target, pane, switch_id, action_id, input_id),
+        agent_id=agent_id,
+    )
+    if not pane:
+        error = SystemExit(NO_COCKPIT)
+        debug.emit(
+            "switch_error",
+            **_switch_fields(target, pane, switch_id, action_id, input_id),
+            stage="right_pane_lookup",
+            error_type=type(error).__name__,
+        )
+        raise error
+
+    def stage(kind: str, name: str, operation: Callable[[], None]) -> None:
+        fields = _switch_fields(target, pane, switch_id, action_id, input_id)
+        debug.emit(f"switch_{kind}", **fields, stage=name, status="started")
+        try:
+            operation()
+        except BaseException as error:
+            debug.emit(f"switch_{kind}", **fields, stage=name, status="error", error_type=type(error).__name__)
+            debug.emit(
+                "switch_error",
+                **fields,
+                stage=name,
+                error_type=type(error).__name__,
+            )
+            raise
+        debug.emit(f"switch_{kind}", **fields, stage=name, status="completed")
+
+    def update_markers() -> None:
+        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
+        if agent_id:
+            tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_AGENT_OPTION, agent_id)
+        else:
+            tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION)
+        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
+
+    stage("marker_update", "current_target_marker", update_markers)
+    stage(
+        "respawn",
+        "right_pane_respawn",
+        lambda: tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command),
+    )
+    stage(
+        "focus",
+        "right_pane_focus",
+        lambda: tmux.tmux("select-pane", "-t", pane),
+    )
+    debug.emit(
+        "switch_completed",
+        **_switch_fields(target, pane, switch_id, action_id, input_id),
+        agent_id=agent_id,
+    )
 
 
 def rename_target(old: Target, new: Target) -> None:
