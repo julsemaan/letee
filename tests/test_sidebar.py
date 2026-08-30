@@ -3879,7 +3879,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with(second, 7, 4)
+        show_menu.assert_called_once_with(second, 7, 4, unittest.mock.ANY)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
         switch.assert_not_called()
@@ -3929,7 +3929,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi-two", second, 7, 17)
+        show_menu.assert_called_once_with("pi-two", second, 7, 17, unittest.mock.ANY)
         self.assertEqual(drawn[-1]["agent_selected"], 2)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
@@ -5005,7 +5005,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi", second, 7, 16)
+        show_menu.assert_called_once_with("pi", second, 7, 16, unittest.mock.ANY)
         switch.assert_not_called()
 
     def test_agent_keyboard_navigation_resets_agent_scroll_offset(self):

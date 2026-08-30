@@ -575,14 +575,17 @@ def _tmux_supports_menu_mouse() -> bool:
     return bool(match and (int(match.group(1)), int(match.group(2))) >= (3, 5))
 
 
-def show_session_menu(target: Target, x: int, y: int) -> None:
+def show_session_menu(target: Target, x: int, y: int, sidebar_keybindings: dict[str, str] | None = None) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
     title = f"{target.session}@{target.host or 'localhost'}"
     mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
-    try:
-        skb = load_sidebar_keybindings()
-    except SystemExit:
-        skb = DEFAULT_SIDEBAR_KEYBINDINGS
+    if sidebar_keybindings is None:
+        try:
+            skb = load_sidebar_keybindings()
+        except SystemExit:
+            skb = DEFAULT_SIDEBAR_KEYBINDINGS
+    else:
+        skb = sidebar_keybindings
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
         "Rename", skb["rename"], f"send-keys -t {pane} {skb['rename']}",
@@ -592,14 +595,17 @@ def show_session_menu(target: Target, x: int, y: int) -> None:
     )
 
 
-def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int) -> None:
+def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int, sidebar_keybindings: dict[str, str] | None = None) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
     title = f"{agent_name}@{pane_target.target.session}@{pane_target.target.host or 'localhost'}"
     mouse_flag = ("-M",) if _tmux_supports_menu_mouse() else ()
-    try:
-        skb = load_sidebar_keybindings()
-    except SystemExit:
-        skb = DEFAULT_SIDEBAR_KEYBINDINGS
+    if sidebar_keybindings is None:
+        try:
+            skb = load_sidebar_keybindings()
+        except SystemExit:
+            skb = DEFAULT_SIDEBAR_KEYBINDINGS
+    else:
+        skb = sidebar_keybindings
     tmux.tmux(
         "display-menu", *mouse_flag, "-O", "-T", title, "-x", str(x), "-y", str(y), "-t", pane,
         "Kill", skb["kill"], f"send-keys -t {pane} {skb['kill']} y",

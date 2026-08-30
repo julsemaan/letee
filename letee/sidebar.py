@@ -3408,7 +3408,7 @@ def run(stdscr: curses.window) -> None:
                             state.selected_agent_key = (entry.pane_target, entry.agent_id)
                             _mouse_cleanup()
                             try:
-                                cockpit.show_agent_menu(entry.label, entry.pane_target, mouse_col, row)
+                                cockpit.show_agent_menu(entry.label, entry.pane_target, mouse_col, row, sidebar_keys)
                             finally:
                                 _mouse_mask(False)
                             trace_mouse_decision(
@@ -3445,7 +3445,7 @@ def run(stdscr: curses.window) -> None:
                         state.selected_tracked = True
                         _mouse_cleanup()
                         try:
-                            cockpit.show_session_menu(entry.target, mouse_col, row)
+                            cockpit.show_session_menu(entry.target, mouse_col, row, sidebar_keys)
                         finally:
                             _mouse_mask(False)
                         trace_mouse_decision(
