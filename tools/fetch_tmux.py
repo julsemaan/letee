@@ -284,7 +284,7 @@ def _vendor_matches(
                     _require_regular(destination, "license notice")
                     if destination.read_bytes() != content:
                         return False
-    except ChecksumMismatch:
+    except (ValueError, OSError):
         return False
     return True
 

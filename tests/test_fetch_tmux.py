@@ -90,7 +90,7 @@ class FetchTmuxDownloadTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 fetch_tmux.verify_sha256(path, "0" * 64)
 
-    def test_fetch_stages_all_outputs_and_skips_complete_artifacts(self):
+    def test_fetch_stages_vendor_and_rebuilds_damaged_outputs(self):
         binaries = {
             "linux-x86_64": b"linux-x86_64 tmux",
             "linux-arm64": b"linux-arm64 tmux",
@@ -145,6 +145,29 @@ class FetchTmuxDownloadTest(unittest.TestCase):
                 patch.object(fetch_tmux, "ARTIFACTS", tuple(artifacts)),
             ):
                 fetch_tmux.fetch(Path(tempdir))
+
+            def rebuild_without_download():
+                with (
+                    patch.object(fetch_tmux, "urlopen", side_effect=AssertionError("damaged vendor must not download")),
+                    patch.object(fetch_tmux, "ARTIFACTS", tuple(artifacts)),
+                ):
+                    fetch_tmux.fetch(Path(tempdir))
+
+            binary = vendor / "linux-x86_64/tmux"
+            binary.unlink()
+            rebuild_without_download()
+            self.assertEqual(binary.read_bytes(), binaries["linux-x86_64"])
+
+            license_notice = vendor / "licenses/COPYING.tmux"
+            license_notice.unlink()
+            license_notice.mkdir()
+            rebuild_without_download()
+            self.assertEqual(license_notice.read_bytes(), b"COPYING.tmux")
+
+            binary.write_bytes(b"damaged")
+            with patch.object(Path, "read_bytes", side_effect=OSError("unreadable")):
+                rebuild_without_download()
+            self.assertEqual(binary.read_bytes(), binaries["linux-x86_64"])
 
 
 if __name__ == "__main__":
