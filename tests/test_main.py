@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import letee.sessions as sessions
 from letee.__main__ import _tmux_socket_dir, main
 from letee.discovery import SessionSnapshot, SourceSnapshot
 from letee.names import Target
@@ -77,6 +78,7 @@ class MainTest(unittest.TestCase):
         target = Target("local", "zeta")
         with (
             patch("letee.__main__.load_sessions", return_value=favorites),
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.__main__.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.__main__.cockpit.switch") as switch,
         ):
@@ -101,6 +103,18 @@ class MainTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     main(["switch-session", slot])
                 switch.assert_not_called()
+
+    def test_switch_without_cockpit_fails_before_building_attach_command(self):
+        with (
+            patch("letee.cockpit.right_pane", return_value=None),
+            patch("letee.__main__.sessions.attach_command") as attach_command,
+            patch("letee.__main__.cockpit.switch") as switch,
+        ):
+            with self.assertRaisesRegex(SystemExit, "^No valid letee"):
+                main(["switch", "ssh:dev:work"])
+
+        attach_command.assert_not_called()
+        switch.assert_not_called()
 
     def test_kill_removes_target_from_persisted_sessions(self):
         target = Target("local", "work")
@@ -178,6 +192,7 @@ class MainTest(unittest.TestCase):
         target = Target("local", "-V")
         with (
             patch("letee.__main__.sessions.create") as create,
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.__main__.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.__main__.cockpit.switch") as switch,
         ):
@@ -254,12 +269,39 @@ class MainTest(unittest.TestCase):
     def test_failed_create_never_switches(self):
         with (
             patch("letee.__main__.sessions.create", side_effect=SystemExit("create failed")),
+            patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.__main__.cockpit.switch") as switch,
         ):
             with self.assertRaisesRegex(SystemExit, "create failed"):
                 main(["create", "local", "work"])
 
         switch.assert_not_called()
+
+    def test_create_flows_overlay_setting_into_session_commands(self):
+        with (
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False) as overlay,
+            patch("letee.sessions.subprocess.run") as run,
+            patch("letee.cockpit.right_pane", return_value="pane"),
+            patch("letee.cockpit.switch") as switch,
+        ):
+            main(["create", "local", "work"])
+
+        overlay.assert_called_with()
+        self.assertEqual(run.call_args.args[0], ("tmux", "new-session", "-d", "-s", "work"))
+        self.assertEqual(switch.call_args.args[1], "env -u TMUX tmux -T clipboard new-session -A -s work")
+
+    def test_create_sources_packaged_overlay_when_enabled(self):
+        with (
+            patch("letee.sessions.load_tmux_config_overlay", return_value=True),
+            patch("letee.sessions.subprocess.run") as run,
+            patch("letee.cockpit.right_pane", return_value="pane"),
+            patch("letee.cockpit.switch") as switch,
+        ):
+            main(["create", "local", "work"])
+
+        self.assertEqual(run.call_args_list[0].args[0], ("tmux", "new-session", "-d", "-s", "work"))
+        self.assertEqual(run.call_args_list[1].args[0], ("tmux", "source-file", str(sessions.OVERLAY_FILE)))
+        self.assertIn("\\; source-file", switch.call_args.args[1])
 
 
 if __name__ == "__main__":

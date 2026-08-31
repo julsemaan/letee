@@ -78,6 +78,7 @@ sidebar_width = 40
 status_timeout = 5
 agent_panel_resize_step = 5
 persistent_ssh = true
+tmux_config_overlay = true
 ```
 
 ### Prefix
@@ -158,6 +159,36 @@ Names of the hosts must match:
 ```text
 [A-Za-z0-9_.-]{1,64}
 ```
+
+### Tmux config overlay
+
+By default, letee layers a small tmux configuration over your normal tmux configuration on managed tmux servers, local and SSH:
+
+```toml
+tmux_config_overlay = true
+```
+
+Your normal system and user tmux configuration loads first, exactly as without letee; letee never uses `tmux -f` for managed sessions. The overlay then sets only:
+
+- Catppuccin Mocha colors for existing status elements, pane borders, messages, popups, menus, and copy mode
+- `mouse on`
+- `set-clipboard on`
+- `allow-passthrough on`
+- bell monitoring with audible bells and no visual bell
+
+No keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed, so your tmux keybindings and status content remain intact. The overlay ships as a plain tmux configuration file with native settings only: no TPM plugins, fonts, scripts, or network access. Full effect needs tmux 3.4+; older tmux reports an error for the few newer options and applies the rest.
+
+tmux configuration is server-wide: once applied on a server, the overlay covers all sessions there, including sessions created outside letee. For local servers the packaged file is sourced directly; for SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine (private permissions) and sourced there on create, attach, and exact-pane jumps.
+
+Like `set-clipboard on` generally, the overlay permits processes in local and remote panes to set the system clipboard through OSC 52; see the clipboard security note below.
+
+To opt out:
+
+```toml
+tmux_config_overlay = false
+```
+
+Disabling stops future application but cannot undo settings already loaded into a running tmux server. Restart that server, or source your own tmux configuration in it, to restore previous behavior.
 
 ## CLI commands
 
@@ -306,7 +337,7 @@ The startup record and any ncurses mouse decode failure include the relevant tmu
 
 ## Clipboard
 
-Native tmux copy mode forwards copied text through nested sessions using OSC 52. Physical terminal must support and enable OSC 52 clipboard access. letee declares inner clients as `clipboard` capable and sets outer server option `set-clipboard on`; inner tmux configuration remains unchanged, including explicit `set-clipboard off`.
+Native tmux copy mode forwards copied text through nested sessions using OSC 52. Physical terminal must support and enable OSC 52 clipboard access. letee declares inner clients as `clipboard` capable and sets outer server option `set-clipboard on`. With the config overlay enabled (default), letee also sources `set-clipboard on` on managed tmux servers after your configuration loads, so it overrides an explicit `set-clipboard off` there; set `tmux_config_overlay = false` to keep your inner configuration's `set-clipboard off` effective.
 
 **Security:** `set-clipboard on` permits processes in local and remote panes to set system clipboard through OSC 52. Only connect to trusted hosts and run trusted pane processes.
 

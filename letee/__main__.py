@@ -159,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "switch":
         target = parse_target(args.target)
+        cockpit.require_cockpit()
         cockpit.switch(target, sessions.attach_command(target))
         return 0
     if args.command == "switch-session":
@@ -166,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.slot > len(favorites):
             raise SystemExit(f"No session in slot {args.slot}")
         target = favorites[args.slot - 1]
+        cockpit.require_cockpit()
         cockpit.switch(target, sessions.attach_command(target))
         return 0
     if args.command == "kill":
@@ -187,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "create":
         target = Target("local", args.session) if args.create_kind == "local" else Target("ssh", args.session, args.host)
         sessions.create(target)
+        cockpit.require_cockpit()
         cockpit.switch(target, sessions.attach_command(target))
         return 0
 

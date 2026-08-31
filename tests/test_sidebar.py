@@ -4,6 +4,7 @@ import json
 import os
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -16,6 +17,19 @@ import letee.sidebar as sidebar
 from letee import config
 from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
+
+_overlay_patch = None
+
+
+def setUpModule():
+    # Exact-command assertions assume the overlay is off; overlay tests enable it locally.
+    global _overlay_patch
+    _overlay_patch = patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=False)
+    _overlay_patch.start()
+
+
+def tearDownModule():
+    _overlay_patch.stop()
 
 
 def source(kind, sessions=(), bells=(), host=None, available=True, error=None):
@@ -731,6 +745,21 @@ class AgentSidebarTest(unittest.TestCase):
         switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work", "id")
         self.assertEqual(state.status, "")
         self.assertIsNone(state.status_deadline)
+
+    def test_switch_effects_source_overlay_when_enabled(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        source = shlex.quote(str(sidebar.sessions.OVERLAY_FILE))
+        with (
+            patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=True),
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            _execute(Effect("switch", target), SidebarState(), unittest.mock.Mock(), 5)
+            _execute(Effect("switch_pane", pane, message="id"), SidebarState(), unittest.mock.Mock(), 5)
+
+        attach, pane_attach = (c.args[1] for c in switch.call_args_list)
+        self.assertIn(f"tmux -T clipboard new-session -A -s work \\; source-file {source}", attach)
+        self.assertIn(f"tmux -S /tmp/tmux source-file {source} \\; select-window -t work:@1", pane_attach)
 
     def test_kill_agent_refreshes_discovery_without_changing_favorites(self):
         target = Target("local", "work")

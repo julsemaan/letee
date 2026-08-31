@@ -1,5 +1,7 @@
 from pathlib import Path
 import os
+import re
+import shlex
 import signal
 import sys
 import socket as unix_socket
@@ -75,28 +77,30 @@ class SessionOperationsTest(unittest.TestCase):
         )
 
     def test_attach_commands_quote_local_and_remote_targets(self):
-        self.assertEqual(
-            attach_command(Target("local", "work")),
-            "env -u TMUX tmux -T clipboard new-session -A -s work",
-        )
-        with patch("letee.sessions.load_persistent_ssh", return_value=True):
+        with patch("letee.sessions.load_tmux_config_overlay", return_value=False):
             self.assertEqual(
-                attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                attach_command(Target("local", "work")),
+                "env -u TMUX tmux -T clipboard new-session -A -s work",
             )
+            with patch("letee.sessions.load_persistent_ssh", return_value=True):
+                self.assertEqual(
+                    attach_command(Target("ssh", "work", "dev")),
+                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
         local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
-        self.assertEqual(
-            pane_attach_command(local),
-            "env -u TMUX tmux -S '/tmp/tmux socket' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
-        )
         remote = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket")
-        with patch("letee.sessions.load_persistent_ssh", return_value=True):
+        with patch("letee.sessions.load_tmux_config_overlay", return_value=False):
             self.assertEqual(
-                pane_attach_command(remote),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+                pane_attach_command(local),
+                "env -u TMUX tmux -S '/tmp/tmux socket' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
             )
+            with patch("letee.sessions.load_persistent_ssh", return_value=True):
+                self.assertEqual(
+                    pane_attach_command(remote),
+                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+                )
 
     def test_kill_agent_local_signals_foreground_group_not_pane_shell(self):
         pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
@@ -239,6 +243,7 @@ class SessionOperationsTest(unittest.TestCase):
         target = Target("local", "work")
         with (
             patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/letee,1,0", "PATH": "x"}, clear=True),
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False),
             patch("letee.sessions.subprocess.run") as run,
         ):
             create(target)
@@ -256,6 +261,7 @@ class SessionOperationsTest(unittest.TestCase):
         target = Target("ssh", "work.one", "dev")
         with (
             patch("letee.sessions.load_persistent_ssh", side_effect=[True, False]),
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False),
             patch("letee.sessions.subprocess.run") as run,
         ):
             create(target)
@@ -339,14 +345,21 @@ class SessionOperationsTest(unittest.TestCase):
             ("create", lambda: create(Target("local", "work"))),
             ("kill", lambda: kill(Target("ssh", "work", "dev"))),
         ):
-            with self.subTest(operation=operation), patch("letee.sessions.subprocess.run", side_effect=error):
+            with (
+                self.subTest(operation=operation),
+                patch("letee.sessions.load_tmux_config_overlay", return_value=False),
+                patch("letee.sessions.subprocess.run", side_effect=error),
+            ):
                 with self.assertRaisesRegex(SystemExit, rf"^{operation} .* failed: permission denied$"):
                     action()
 
     def test_command_timeout_includes_operation_and_target(self):
-        with patch(
-            "letee.sessions.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(["ssh"], 10),
+        with (
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False),
+            patch(
+                "letee.sessions.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(["ssh"], 10),
+            ),
         ):
             with self.assertRaisesRegex(SystemExit, r"^create ssh:dev:work timed out$"):
                 create(Target("ssh", "work", "dev"))
@@ -602,6 +615,176 @@ class SSHPreparationTest(unittest.TestCase):
             self.assertEqual(call.kwargs["timeout"], 10)
             self.assertEqual(call.kwargs["env"]["SSH_AUTH_SOCK"], "/tmp/agent")
             self.assertEqual(call.kwargs["env"]["SSH_ASKPASS_REQUIRE"], "never")
+
+
+class TmuxOverlayTest(unittest.TestCase):
+    def test_overlay_enabled_sources_packaged_file_for_local_commands(self):
+        source = shlex.quote(str(sessions.OVERLAY_FILE))
+        with patch("letee.sessions.load_tmux_config_overlay", return_value=True):
+            self.assertEqual(
+                attach_command(Target("local", "work")),
+                f"env -u TMUX tmux -T clipboard new-session -A -s work \\; source-file {source}",
+            )
+            self.assertEqual(
+                pane_attach_command(PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")),
+                f"env -u TMUX tmux -S '/tmp/tmux socket' source-file {source} \\; select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
+            )
+            with patch("letee.sessions.subprocess.run") as run:
+                create(Target("local", "work"))
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ("tmux", "new-session", "-d", "-s", "work"),
+                ("tmux", "source-file", str(sessions.OVERLAY_FILE)),
+            ],
+        )
+        self.assertFalse(run.call_args_list[-1].kwargs["check"])
+
+    def test_overlay_disabled_preserves_commands_exactly(self):
+        local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
+        remote = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket")
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            self.assertEqual(attach_command(Target("local", "work")), "env -u TMUX tmux -T clipboard new-session -A -s work")
+            self.assertEqual(
+                attach_command(Target("ssh", "work", "dev")),
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+            )
+            self.assertEqual(
+                pane_attach_command(local),
+                "env -u TMUX tmux -S '/tmp/tmux socket' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
+            )
+            self.assertEqual(
+                pane_attach_command(remote),
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+            )
+            create(Target("local", "work"))
+            create(Target("ssh", "work", "dev"))
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ("tmux", "new-session", "-d", "-s", "work"),
+                (
+                    "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                    "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
+                    "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
+                    "dev", "tmux new-session -d -s work",
+                ),
+            ],
+        )
+
+    def test_overlay_enabled_installs_and_sources_on_remote(self):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.load_tmux_config_overlay", return_value=True),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            attach = attach_command(target)
+            pane = pane_attach_command(PaneTarget(target, "@3", "%7", "/tmp/tmux socket"))
+            create(target)
+
+        install, create_call = run.call_args_list[0], run.call_args_list[-1]
+        self.assertEqual(run.call_count, 4)  # attach, pane attach, and create each install; create then runs
+        self.assertEqual(
+            install.args[0],
+            (
+                "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
+                "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
+                "dev", sessions._SSH_INSTALL_OVERLAY,
+            ),
+        )
+        self.assertEqual(install.kwargs["input"], sessions.OVERLAY_FILE.read_text())
+        self.assertTrue(create_call.args[0][-1].endswith("tmux new-session -d -s work && { tmux source-file ~/.config/letee/tmux-overlay.conf || true; }"))
+        self.assertIn("-t dev 'tmux -T clipboard new-session -A -s work \\; source-file ~/.config/letee/tmux-overlay.conf'", attach)
+        self.assertIn("source-file ~/.config/letee/tmux-overlay.conf \\; select-window -t work:@3", pane)
+        self.assertLess(pane.index("source-file ~/.config/letee/tmux-overlay.conf"), pane.index("select-window -t work:@3"))
+        self.assertIn("/tmp/tmux socket", pane)
+
+    def test_remote_overlay_install_is_atomic_and_private(self):
+        command = sessions._SSH_INSTALL_OVERLAY
+        self.assertIn("umask 077", command)
+        self.assertIn("mkdir -p ~/.config/letee", command)
+        self.assertIn("chmod 700 ~/.config/letee", command)
+        self.assertIn("mktemp ~/.config/letee/.tmux-overlay.conf.XXXXXX", command)
+        self.assertIn('mv "$tmp" ~/.config/letee/tmux-overlay.conf', command)
+        cleanup_trap = "trap 'rm -f \"$tmp\"' 0 HUP INT TERM"
+        clear_trap = "trap - 0 HUP INT TERM"
+        self.assertLess(command.index(cleanup_trap), command.index('cat > "$tmp"'))
+        self.assertGreater(
+            command.index(clear_trap),
+            command.index('mv "$tmp" ~/.config/letee/tmux-overlay.conf'),
+        )
+
+    def test_overlay_install_failure_exits_clearly(self):
+        error = subprocess.CalledProcessError(1, ["ssh"], stderr="connection refused\n")
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.load_tmux_config_overlay", return_value=True),
+            patch("letee.sessions.subprocess.run", side_effect=error),
+        ):
+            with self.assertRaisesRegex(SystemExit, r"^overlay ssh:dev:work failed: connection refused$"):
+                attach_command(Target("ssh", "work", "dev"))
+
+    def test_no_command_uses_config_file_flag(self):
+        local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
+        remote = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket")
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            for overlay in (True, False):
+                with patch("letee.sessions.load_tmux_config_overlay", return_value=overlay):
+                    commands = [
+                        attach_command(Target("local", "work")),
+                        attach_command(Target("ssh", "work", "dev")),
+                        pane_attach_command(local),
+                        pane_attach_command(remote),
+                    ]
+                    create(Target("local", "work"))
+                    create(Target("ssh", "work", "dev"))
+                    commands.extend(call.args[0] for call in run.call_args_list)
+                    run.reset_mock()
+                    for command in commands:
+                        tokens = command.split() if isinstance(command, str) else command
+                        self.assertNotIn("-f", tokens, command)
+
+
+class TmuxOverlayFileTest(unittest.TestCase):
+    def setUp(self):
+        self.commands = [
+            line for line in sessions.OVERLAY_FILE.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+    def test_shipped_overlay_contains_no_binding_or_prefix_changes(self):
+        for line in self.commands:
+            self.assertIsNone(re.search(r"\bbind\b", line), line)
+            self.assertNotIn("prefix", line, line)
+
+    def test_shipped_overlay_does_not_assign_status_left_or_right(self):
+        for line in self.commands:
+            self.assertIsNone(
+                re.match(r"\s*set(-option)?\s+(-\S+\s+)*status-(left|right)(\s|$)", line),
+                line,
+            )
+
+    def test_repeated_application_is_safe(self):
+        for line in self.commands:
+            self.assertRegex(line, r"^set -(g|s) \S+ .+$")
+
+    def test_package_ships_the_overlay_file(self):
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        self.assertIn('[tool.setuptools.package-data]', pyproject.read_text())
+        self.assertIn('letee = ["tmux-overlay.conf"]', pyproject.read_text())
+        self.assertTrue(sessions.OVERLAY_FILE.exists())
+        self.assertEqual(sessions.OVERLAY_FILE.name, "tmux-overlay.conf")
 
 
 if __name__ == "__main__":
