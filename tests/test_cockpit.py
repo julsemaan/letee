@@ -365,6 +365,25 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_attach_uses_bsd_script_arguments_on_macos(self):
+        executable = "/tmp/tmux with space"
+        with (
+            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
+            patch.object(cockpit.sys, "platform", "darwin"),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
+            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
+            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            self.assertRaises(RuntimeError),
+        ):
+            cockpit._attach()
+
+        execvp.assert_called_once_with(
+            "script",
+            ["script", "-q", "/dev/null", executable, "-L", "letee-v1", "attach-session", "-d", "-t", "letee:cockpit"],
+        )
+
     def test_fix_layout_pins_sidebar_to_configured_width(self):
         calls = []
 

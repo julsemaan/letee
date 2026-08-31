@@ -416,6 +416,8 @@ def _attach() -> int:
         return 0
     cmd = [executable, "-L", tmux.SOCKET, "attach-session", "-d", "-t", TARGET]
     if shutil.which("script"):
+        if sys.platform == "darwin":
+            os.execvp("script", ["script", "-q", "/dev/null", *cmd])
         os.execvp("script", ["script", "-q", "-c", shlex.join(cmd), "/dev/null"])
     os.execvp(executable, cmd)
     return 0
