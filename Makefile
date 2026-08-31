@@ -28,7 +28,7 @@ check: lint coverage build-check
 test-e2e: test-e2e-docker
 
 # Docker is mandatory. If unavailable, stop; never run tests directly on host.
-test-e2e-docker:
+test-e2e-docker: fetch-tmux
 	PYTHONPATH=$(PEXPECT_DIR) $(PYTHON) -m pytest tests/e2e/ -v --docker
 
 dev-install:
