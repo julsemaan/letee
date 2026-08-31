@@ -24,7 +24,9 @@ REMOTE_OVERLAY_PATH = "~/.config/letee/tmux-overlay.conf"
 _SSH_INSTALL_OVERLAY = (
     "umask 077 && mkdir -p ~/.config/letee && chmod 700 ~/.config/letee"
     " && tmp=$(mktemp ~/.config/letee/.tmux-overlay.conf.XXXXXX)"
+    " && trap 'rm -f \"$tmp\"' 0 HUP INT TERM"
     " && cat > \"$tmp\" && mv \"$tmp\" ~/.config/letee/tmux-overlay.conf"
+    " && trap - 0 HUP INT TERM"
 )
 
 
@@ -390,7 +392,7 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
         command = ("tmux", "new-session", "-d", "-s", target.session)
         _run("create", target, command, env=_default_server_env())
         if overlay:
-            # Best effort: tmux pre-3.3 rejects newer overlay options, and
+            # Best effort: tmux pre-3.4 rejects newer overlay options, and
             # timeout/OSError here must not fail the create itself either.
             with suppress(subprocess.TimeoutExpired, OSError):
                 subprocess.run(

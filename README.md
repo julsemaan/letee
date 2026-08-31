@@ -176,7 +176,7 @@ Your normal system and user tmux configuration loads first, exactly as without l
 - `allow-passthrough on`
 - bell monitoring with audible bells and no visual bell
 
-No keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed, so your tmux keybindings and status content remain intact. The overlay ships as a plain tmux configuration file with native settings only: no TPM plugins, fonts, scripts, or network access. Full effect needs tmux 3.3+; older tmux reports an error for the few newer options and applies the rest.
+No keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed, so your tmux keybindings and status content remain intact. The overlay ships as a plain tmux configuration file with native settings only: no TPM plugins, fonts, scripts, or network access. Full effect needs tmux 3.4+; older tmux reports an error for the few newer options and applies the rest.
 
 tmux configuration is server-wide: once applied on a server, the overlay covers all sessions there, including sessions created outside letee. For local servers the packaged file is sourced directly; for SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine (private permissions) and sourced there on create, attach, and exact-pane jumps.
 

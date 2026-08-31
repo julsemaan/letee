@@ -714,6 +714,13 @@ class TmuxOverlayTest(unittest.TestCase):
         self.assertIn("chmod 700 ~/.config/letee", command)
         self.assertIn("mktemp ~/.config/letee/.tmux-overlay.conf.XXXXXX", command)
         self.assertIn('mv "$tmp" ~/.config/letee/tmux-overlay.conf', command)
+        cleanup_trap = "trap 'rm -f \"$tmp\"' 0 HUP INT TERM"
+        clear_trap = "trap - 0 HUP INT TERM"
+        self.assertLess(command.index(cleanup_trap), command.index('cat > "$tmp"'))
+        self.assertGreater(
+            command.index(clear_trap),
+            command.index('mv "$tmp" ~/.config/letee/tmux-overlay.conf'),
+        )
 
     def test_overlay_install_failure_exits_clearly(self):
         error = subprocess.CalledProcessError(1, ["ssh"], stderr="connection refused\n")
