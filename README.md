@@ -11,7 +11,7 @@
 
 `letee` is a tmux cockpit that allows to run many sessions and coding agents. It adds a persistent sidebar to your existing terminal, bringing local and SSH work into one unified focused view.
 
-Your sessions remain ordinary tmux sessions. Keep your terminal, tmux configuration, keybindings, plugins, and workflows. `letee` only makes them easier to see and reach.
+Your sessions remain normal tmux sessions. Letee keeps its managed sessions on a dedicated inner server named `letee.inner` on every local or remote host. It does not discover or change sessions on tmux's ordinary default server. Keep your terminal, tmux configuration, keybindings, plugins, and workflows; `letee` only makes its managed sessions easier to see and reach.
 
 ## Why letee?
 
@@ -43,7 +43,9 @@ letee -L work kill-server
 
 ## How it works
 
-`letee` creates or attaches to a dedicated outer tmux server. That outer layer owns only the layout. Bare `letee` uses default server; `-L NAME` uses `letee-NAME`. Reopening same name uses `attach -d`, moving cockpit to newest terminal.
+`letee` creates or attaches to a dedicated outer tmux server. That outer layer owns only the layout. Bare `letee` uses the `letee` outer socket; `-L NAME` uses `letee-NAME`. Reopening the same name uses `attach -d`, moving the cockpit to the newest terminal.
+
+Inner local and remote sessions use `letee.inner`, one shared server per host. Named outer cockpits on the same host share those inner sessions. The ordinary tmux default server is outside letee's scope. Sessions there stay running but are not discovered or changed.
 
 - outer prefix: `C-s`
 - focus/open Sessions: `C-s s`
@@ -162,7 +164,7 @@ Names of the hosts must match:
 
 ### Tmux config overlay
 
-By default, letee layers a small tmux configuration over your normal tmux configuration on managed tmux servers, local and SSH:
+By default, letee layers a small tmux configuration over your normal tmux configuration on its dedicated `letee.inner` server on each local or remote host:
 
 ```toml
 tmux_config_overlay = true
@@ -178,7 +180,7 @@ Your normal system and user tmux configuration loads first, exactly as without l
 
 No keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed, so your tmux keybindings and status content remain intact. The overlay ships as a plain tmux configuration file with native settings only: no TPM plugins, fonts, scripts, or network access. Full effect needs tmux 3.4+; older tmux reports an error for the few newer options and applies the rest.
 
-tmux configuration is server-wide: once applied on a server, the overlay covers all sessions there, including sessions created outside letee. For local servers the packaged file is sourced directly; for SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine (private permissions) and sourced there on create, attach, and exact-pane jumps.
+tmux configuration is server-wide: once applied to `letee.inner`, the overlay covers all sessions there, including sessions created outside letee. It no longer applies to the ordinary tmux default server. For local servers the packaged file is sourced directly; for SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine (private permissions) and sourced there on create, attach, and exact-pane jumps.
 
 Like `set-clipboard on` generally, the overlay permits processes in local and remote panes to set the system clipboard through OSC 52; see the clipboard security note below.
 
@@ -189,6 +191,10 @@ tmux_config_overlay = false
 ```
 
 Disabling stops future application but cannot undo settings already loaded into a running tmux server. Restart that server, or source your own tmux configuration in it, to restore previous behavior.
+
+### Moving from older letee versions
+
+Older letee versions used the ordinary tmux default server for inner sessions. Those sessions keep running, but current letee neither discovers nor changes them. The `Existing session` picker lists only untracked sessions on each host's `letee.inner`. A tracked name from an older version appears as missing; selecting it creates a new session with that name on `letee.inner` and switches to it. Overlay settings previously applied to the default server remain there until that server restarts or reloads its configuration.
 
 ## CLI commands
 
@@ -237,7 +243,7 @@ letee -L <name> kill-server
 
 `›` marks keyboard selection and left-pane focus; mint reverse highlight marks active session independently. Unfocused sidebar hides pointer while preserving selection, viewport, colors, and active-session highlight.
 
-Normal sidebar lists sessions in persisted manual order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. Priority mode groups non-idle agents before idle and unknown agents; within each group the most recently observed state transition comes first, then tracked session order, numeric window/pane, and agent ID. A bell uses the same recency event as the transition that produced it, and acknowledging it clears the marker without reordering. Session mode uses tracked session order, numeric window/pane, and agent ID and ignores transition recency. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Tracked sessions persist in `~/.config/letee/sessions` for default server and `~/.config/letee/servers/<name>/sessions` for named servers. Config, hosts, prefix, dimensions, timeout, and SSH settings stay shared. Tracked sessions, ordering, active target, alerts, and cockpit panes stay isolated. `kill-server` removes only selected outer cockpit; tracked inner tmux sessions and persisted state survive. Same inner session may be tracked by multiple servers, so overlapping servers can show duplicate alerts. Prefix session actions use active right-pane target, never sidebar selection; missing or untracked targets show status and do nothing. `prefix+!` follows current Agents order, jumps to exact window/pane, and clears only selected alert after success. No alert shows `no agent alerts` in Agents and leaves right pane focused. Set `LETEE_ASCII=1` for text-only labels and ellipses.
+Normal sidebar lists sessions in persisted manual order. Add menu separates `New session` from `Existing session`. New-session flow skips location selection when exactly one local/SSH location is available; multiple locations use dedicated picker, then dedicated name input. Existing-session search lists only untracked sessions on each host's `letee.inner`. Selecting or creating one persists it and switches immediately. Independently navigable Agents region remains visible below `AGENTS` divider when Add menu is closed. Priority mode groups non-idle agents before idle and unknown agents; within each group the most recently observed state transition comes first, then tracked session order, numeric window/pane, and agent ID. A bell uses the same recency event as the transition that produced it, and acknowledging it clears the marker without reordering. Session mode uses tracked session order, numeric window/pane, and agent ID and ignores transition recency. First nine sessions receive shortcut numbers; `K`/`J` updates order. Missing sessions remain launchers: `Enter` uses tmux `new-session -A` to recreate and attach. Tracked sessions persist in `~/.config/letee/sessions` for the default outer server and `~/.config/letee/servers/<name>/sessions` for named outer servers. Config, hosts, prefix, dimensions, timeout, and SSH settings stay shared. Tracked sessions, ordering, active target, alerts, and cockpit panes stay isolated. `kill-server` removes only selected outer cockpit; tracked inner tmux sessions and persisted state survive. Same inner session may be tracked by multiple servers, so overlapping servers can show duplicate alerts. Prefix session actions use active right-pane target, never sidebar selection; missing or untracked targets show status and do nothing. `prefix+!` follows current Agents order, jumps to exact window/pane, and clears only selected alert after success. No alert shows `no agent alerts` in Agents and leaves right pane focused. Set `LETEE_ASCII=1` for text-only labels and ellipses.
 
 ## Agent discovery
 

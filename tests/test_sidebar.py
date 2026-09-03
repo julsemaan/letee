@@ -758,7 +758,7 @@ class AgentSidebarTest(unittest.TestCase):
             _execute(Effect("switch_pane", pane, message="id"), SidebarState(), unittest.mock.Mock(), 5)
 
         attach, pane_attach = (c.args[1] for c in switch.call_args_list)
-        self.assertIn(f"tmux -T clipboard new-session -A -s work \\; source-file {source}", attach)
+        self.assertIn(f"tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file {source}", attach)
         self.assertIn(f"tmux -S /tmp/tmux source-file {source} \\; select-window -t work:@1", pane_attach)
 
     def test_kill_agent_refreshes_discovery_without_changing_favorites(self):
@@ -3804,7 +3804,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(target, "env -u TMUX tmux -T clipboard new-session -A -s one")
+        switch.assert_called_once_with(target, "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one")
 
     def test_press_release_selects_and_switches_untracked_session(self):
         target = Target("local", "one")
@@ -3831,7 +3831,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         switch.assert_called_once_with(
-            target, "env -u TMUX tmux -T clipboard new-session -A -s one"
+            target, "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one"
         )
 
     def test_press_release_opens_add_button(self):
@@ -3877,7 +3877,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         target = Target("local", "two")
         switch.assert_called_once_with(
-            target, "env -u TMUX tmux -T clipboard new-session -A -s two"
+            target, "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s two"
         )
 
     def test_right_click_press_opens_menu_without_switching(self):

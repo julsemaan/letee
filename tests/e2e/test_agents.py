@@ -9,8 +9,8 @@ from .conftest import TmuxTestClient
 
 def _setup(client: TmuxTestClient, config: str, status_dir: str, *sessions: str) -> None:
     for name in sessions:
-        client.default_tmux("kill-session", "-t", name, check=False)
-        client.default_tmux("new-session", "-d", "-s", name)
+        client.inner_tmux("kill-session", "-t", name, check=False)
+        client.inner_tmux("new-session", "-d", "-s", name)
     client.write_file(f"{config}/sessions", "".join(f"local:{name}\n" for name in sessions))
     client.start_cockpit(env={
         "LETEE_CONFIG_DIR": config,
@@ -30,8 +30,8 @@ def _write_agent(
     name: str = "pi",
     age: int = 0,
 ) -> None:
-    socket_path = client.default_tmux("display-message", "-p", "-t", session, "#{socket_path}")
-    pane_id = client.default_tmux("display-message", "-p", "-t", session, "#{pane_id}")
+    socket_path = client.inner_tmux("display-message", "-p", "-t", session, "#{socket_path}")
+    pane_id = client.inner_tmux("display-message", "-p", "-t", session, "#{pane_id}")
     updated = datetime.now(timezone.utc) - timedelta(seconds=age)
     payload = {
         "schema_version": "agent-status/v1alpha1",
@@ -47,7 +47,7 @@ def _write_agent(
 def _cleanup(client: TmuxTestClient, *sessions: str) -> None:
     client.stop_cockpit()
     for name in sessions:
-        client.default_tmux("kill-session", "-t", name, check=False)
+        client.inner_tmux("kill-session", "-t", name, check=False)
 
 
 def _wait_for_line(client: TmuxTestClient, *parts: str, timeout: float = 4) -> str:
@@ -74,7 +74,7 @@ def test_agents_appear_for_tracked_sessions(client: TmuxTestClient) -> None:
 def test_agents_only_for_tracked_sessions(client: TmuxTestClient) -> None:
     config, statuses = "/tmp/letee-e2e-agent-hidden", "/tmp/letee-e2e-agent-hidden-status"
     _setup(client, config, statuses, "tracked")
-    client.default_tmux("new-session", "-d", "-s", "hidden")
+    client.inner_tmux("new-session", "-d", "-s", "hidden")
     try:
         _write_agent(client, statuses, "hidden", "hidden-agent", "working", name="secret-agent")
         time.sleep(1)

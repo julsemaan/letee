@@ -963,6 +963,24 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
 
+    def test_current_target_recovers_from_local_inner_attach_command(self):
+        command = "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work"
+        with (
+            patch.object(cockpit, "_option", return_value=""),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=command),
+        ):
+            self.assertEqual(cockpit.current_target(), cockpit.Target("local", "work"))
+
+    def test_current_target_recovers_from_remote_inner_attach_command(self):
+        command = "ssh -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'"
+        with (
+            patch.object(cockpit, "_option", return_value=""),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=command),
+        ):
+            self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
+
     def test_bell_target_returns_valid_target_only(self):
         with patch.object(cockpit, "_option", side_effect=["local:work", "bad"]):
             self.assertEqual(cockpit.bell_target(), cockpit.Target("local", "work"))

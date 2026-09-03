@@ -14,8 +14,8 @@ from .helpers import (
 
 def _start(client: TmuxTestClient, config_dir: str) -> None:
     for name in ("alpha", "beta"):
-        client.default_tmux("kill-session", "-t", name, check=False)
-        client.default_tmux("new-session", "-d", "-s", name)
+        client.inner_tmux("kill-session", "-t", name, check=False)
+        client.inner_tmux("new-session", "-d", "-s", name)
     client.write_file(f"{config_dir}/sessions", "local:alpha\nlocal:beta\n")
     client.start_cockpit(env={
         "LETEE_CONFIG_DIR": config_dir,
@@ -62,7 +62,7 @@ def _focus_sidebar(client: TmuxTestClient) -> None:
 def _cleanup(client: TmuxTestClient) -> None:
     client.stop_cockpit()
     for name in ("alpha", "beta"):
-        client.default_tmux("kill-session", "-t", name, check=False)
+        client.inner_tmux("kill-session", "-t", name, check=False)
 
 
 def test_cursor_moves_with_jk_and_arrow_keys(client: TmuxTestClient) -> None:

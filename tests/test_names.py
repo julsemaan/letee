@@ -1,6 +1,6 @@
 import unittest
 
-from letee.names import PaneTarget, Target, normalize_server, server_socket, validate_server
+from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target, normalize_server, server_socket, validate_server
 
 
 class ServerNameTest(unittest.TestCase):
@@ -8,6 +8,7 @@ class ServerNameTest(unittest.TestCase):
         self.assertEqual(normalize_server(None), "default")
         self.assertEqual(server_socket("default"), "letee")
         self.assertEqual(server_socket("work"), "letee-work")
+        self.assertEqual(INNER_SERVER_SOCKET, "letee.inner")
 
     def test_server_names_use_safe_name_format(self):
         for value in ("work", "personal_1", "prod.dev-2"):
