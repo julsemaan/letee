@@ -2,9 +2,11 @@
 
 ## Requirement
 
-Letee discovers coding agents by reading JSON status files from [agent-status](https://github.com/julsemaan/agent-status). The agent-status plugin is required for detection. Install it in every coding agent you want letee to discover.
+Letee discovers coding agents by reading JSON status files written by the `agent-status` plugin. The plugin is required for detection. Install it in every coding agent you want letee to discover.
 
-`pip install letee` also installs the `agent-status` Python package. A remote machine that runs an agent but does not have letee installed still needs the agent-status plugin and its package there.
+`pip install letee` also installs the `agent-status` Python package. A remote machine that runs an agent but does not have letee installed still needs the plugin and its package there.
+
+For a concise setup and discovery checklist, see the local [agent discovery guide](https://github.com/julsemaan/letee/blob/main/docs/agent-discovery.md). The rest of this file documents how discovered agents are displayed and controlled.
 
 ## Set up a supported agent
 

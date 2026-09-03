@@ -19,9 +19,7 @@ It adds a persistent sidebar to an existing terminal. Your sessions remain ordin
 
 ## Requirements
 
-You need Python 3.11 or newer, tmux, OpenSSH, and a terminal at least 90 columns wide.
-
-Agent discovery is optional. To discover Claude Code, Codex, Pi, or OpenCode, install the [agent-status](https://github.com/julsemaan/agent-status) plugin wherever those agents run. `pip install letee` installs the `agent-status` Python package. A remote machine without letee still needs the plugin and package when it runs an agent.
+You need Python 3.11 or newer, tmux and OpenSSH.
 
 ## Install and launch
 
@@ -30,68 +28,28 @@ pip install letee
 letee
 ```
 
-Letee opens an outer tmux cockpit with the sidebar on the left and the selected session, or a startup pane, on the right. The default outer prefix is `C-s`.
+Letee opens an outer tmux cockpit with the sidebar on the left and the selected session, or a startup pane, on the right. The default outer prefix is `C-s`. Your tmux prefix and keybindings stay the same if you have any. Use your mouse if that's what you're most comfortable with.
 
 ## Open or add a local tmux session
 
-1. Press `C-s s` to focus Sessions.
-2. Select an existing local session with `j` and `k`, then press `Enter`.
-3. To create one, press `C-s +`, select `New session`, type a name, and press `Enter`.
+1. Use your mouse and click "+ add" or use the keyboard equivalent:
+  1. Press `C-s +`, select `New session`, type a name, and press `Enter`.
 
-The new session is tracked and opens immediately. If it is missing later, select it and press `Enter` to recreate it.
+## Configure agent discovery
 
-## Configure agent-status
-
-Install the plugin for each agent you want to find. These are the short setup commands.
-
-### Claude Code
-
-```sh
-claude plugin marketplace add julsemaan/agent-status
-claude plugin install agent-status@agent-status
-```
-
-Restart Claude Code.
-
-### Codex
-
-```sh
-codex plugin marketplace add julsemaan/agent-status
-codex plugin add agent-status@agent-status
-```
-
-Start Codex, open `/hooks`, trust the hooks, and send a prompt.
-
-### Pi
-
-```sh
-pi install git:github.com/julsemaan/agent-status@v0.1.26
-```
-
-Run `/reload` or restart pi.
-
-### OpenCode
-
-Add this to `opencode.json`, then restart OpenCode:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["agent-status-opencode"]
-}
-```
-
-See the [agent integration guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md) for setup details, status files, and agent behavior.
+Use the [local agent discovery guide](https://github.com/julsemaan/letee/blob/main/docs/agent-discovery.md) to install agent-status for Claude Code, Codex, Pi, or OpenCode. It also explains where letee reads status files and how it matches agents to tmux panes.
 
 ## Open the Agents view and jump to an agent
 
-Start an agent inside a tracked session, then press `C-s a`. Select the agent with `j` and `k` and press `Enter`. Letee opens the agent's exact tmux pane. Agents outside tracked sessions do not appear.
+Start an agent inside a session, then press `C-s a`. Select the agent with `j` and `k` and press `Enter`. Letee opens the agent's exact tmux pane. Agents outside tracked sessions do not appear.
 
 When an agent needs attention, press `C-s !` to open Agents and jump to the first alert. See the [agent integration guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md) for alert states and termination behavior.
 
 ## Essential controls
 
-These are the default keys.
+Everything in letee aims to support mouse clicks, use this if you're most comfortable with a mouse.
+
+For keyboard enthusiasts, these are the default keys.
 
 ### Sessions
 
@@ -113,15 +71,20 @@ These are the default keys.
 
 `C-s ?` opens the built-in help.
 
-### Quit
+### Quit or Detach
 
 `C-s q` quits the outer letee cockpit. Inner tmux sessions keep running.
 
-## The outer tmux model
+`C-s d` detaches the outer letee cockpit. Inner tmux sessions keep running and getting back into letee will be faster.
 
-Letee creates or attaches to a dedicated outer tmux server that owns the sidebar layout. Bare `letee` uses the default server. `letee -L work` uses the named `letee-work` server. The outer layer shows the sidebar on the left and attaches the selected local or remote tmux session on the right. Inner sessions keep their normal tmux prefix and bindings and remain alive when you switch away.
+## Looking for more?
 
-See the [configuration guide](https://github.com/julsemaan/letee/blob/main/docs/configuration.md), [usage reference](https://github.com/julsemaan/letee/blob/main/docs/usage.md), [agent integration guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md), and [development guide](https://github.com/julsemaan/letee/blob/main/DEVELOPMENT.md).
+See:
+
+- [Configuration Guide](https://github.com/julsemaan/letee/blob/main/docs/configuration.md)
+- [Usage Reference](https://github.com/julsemaan/letee/blob/main/docs/usage.md)
+- [Agent Integration Guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md)
+- [Development Guide](https://github.com/julsemaan/letee/blob/main/DEVELOPMENT.md).
 
 ## License
 
