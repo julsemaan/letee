@@ -758,15 +758,57 @@ class TmuxOverlayTest(unittest.TestCase):
 
 class TmuxOverlayFileTest(unittest.TestCase):
     def setUp(self):
+        self.overlay = sessions.OVERLAY_FILE.read_text()
         self.commands = [
-            line for line in sessions.OVERLAY_FILE.read_text().splitlines()
+            line for line in self.overlay.splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         ]
 
-    def test_shipped_overlay_contains_no_binding_or_prefix_changes(self):
+    def test_shipped_overlay_does_not_change_prefix(self):
         for line in self.commands:
-            self.assertIsNone(re.search(r"\bbind\b", line), line)
             self.assertNotIn("prefix", line, line)
+
+    def test_new_window_button_is_appended_to_both_window_formats(self):
+        for option, color in (
+            ("window-status-format", "#a6adc8"),
+            ("window-status-current-format", "#f5c2e7"),
+        ):
+            expected = (
+                f"set -ag {option} "
+                f"'#{{?window_end_flag,#[fg={color}]#[range=user|letee-new][+]#[norange],}}'"
+            )
+            self.assertIn(expected, self.overlay)
+
+    def test_new_window_button_is_limited_to_the_final_window_tab(self):
+        for option in ("window-status-format", "window-status-current-format"):
+            line = next(line for line in self.commands if line.strip().startswith(f"set -ag {option} "))
+            self.assertIn("#{?window_end_flag,", line)
+            self.assertIn("#[range=user|letee-new][+]#[norange],}", line)
+
+    def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
+        for option, marker in (
+            ("window-status-format", "letee_window_status_format"),
+            ("window-status-current-format", "letee_window_status_current_format"),
+        ):
+            self.assertEqual(self.overlay.count(f"set -ag {option} "), 1)
+            self.assertIn(f"if-shell -F '#{{!=:#{{@{marker}}},1}}' {{", self.overlay)
+            self.assertIn(f"set -g @{marker} 1", self.overlay)
+
+    def test_new_window_mouse_range_creates_a_window_in_the_active_directory(self):
+        binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
+        self.assertIn("#{==:#{mouse_status_range},letee-new}", binding)
+        self.assertIn('new-window -c "#{pane_current_path}"', binding)
+
+    def test_other_window_mouse_clicks_still_select_the_clicked_window(self):
+        binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
+        self.assertTrue(binding.endswith("'select-window -t ='"))
+
+    def test_new_window_mouse_range_requires_tmux_3_4(self):
+        feature_start = self.overlay.index('%if "#{>=:#{version},3.4}"')
+        feature_end = self.overlay.index("%endif", feature_start)
+        feature = self.overlay[feature_start:feature_end]
+        for expected in ("window-status-format", "window-status-current-format", "MouseDown1Status"):
+            self.assertIn(expected, feature)
 
     def test_shipped_overlay_does_not_assign_status_left_or_right(self):
         for line in self.commands:
@@ -775,9 +817,10 @@ class TmuxOverlayFileTest(unittest.TestCase):
                 line,
             )
 
-    def test_repeated_application_is_safe(self):
+    def test_shipped_overlay_scopes_all_set_commands(self):
         for line in self.commands:
-            self.assertRegex(line, r"^set -(g|s) \S+ .+$")
+            if line.strip().startswith("set "):
+                self.assertRegex(line.strip(), r"^set -(g|s|ag) \S+ .+$")
 
     def test_package_ships_the_overlay_file(self):
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"

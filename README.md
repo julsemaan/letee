@@ -175,8 +175,11 @@ Your normal system and user tmux configuration loads first, exactly as without l
 - `set-clipboard on`
 - `allow-passthrough on`
 - bell monitoring with audible bells and no visual bell
+- a styled `[+]` button after the last inner window tab; clicking it creates a window in the active pane's current directory on tmux 3.4+
 
-No keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed, so your tmux keybindings and status content remain intact. The overlay ships as a plain tmux configuration file with native settings only: no TPM plugins, fonts, scripts, or network access. Full effect needs tmux 3.4+; older tmux reports an error for the few newer options and applies the rest.
+The overlay owns the tmux `MouseDown1Status` binding. Normal inner window-tab clicks still select the clicked window, while `[+]` creates and selects a new window in the active pane's current directory. This replaces any custom binding you have for that mouse event. No other keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed, so your tmux keybindings and status content remain intact. The overlay ships as a plain tmux configuration file with native settings only: no TPM plugins, fonts, scripts, or network access.
+
+The `[+]` button requires tmux 3.4+, which added user-defined status-bar mouse ranges. On older tmux, letee skips the button and its binding; tmux may still report errors for other newer options and applies the rest.
 
 tmux configuration is server-wide: once applied on a server, the overlay covers all sessions there, including sessions created outside letee. For local servers the packaged file is sourced directly; for SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine (private permissions) and sourced there on create, attach, and exact-pane jumps.
 
@@ -313,6 +316,7 @@ When a tracked agent changes from `working` to `idle`, `completed`, `input-requi
 - click `‹ back` (`< back` in ASCII mode) in Add-session top bar: go back one level, same as `Esc`
 - wheel over Sessions or Agents: scroll the region under the pointer without keyboard focus or changing selection
 - right-pane mouse events: forwarded by outer tmux to mouse-aware applications
+- left-click inner window tabs: select the clicked window; click `[+]` after the last tab to create and select a new window in the active pane's current directory (tmux 3.4+)
 - live border dragging: disabled so text selection can cross the sidebar divider without resizing it
 
 Tmux mouse capture may require holding `Shift` for terminal-native text selection.
