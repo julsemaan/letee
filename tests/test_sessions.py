@@ -768,30 +768,30 @@ class TmuxOverlayFileTest(unittest.TestCase):
         for line in self.commands:
             self.assertNotIn("prefix", line, line)
 
-    def test_new_window_button_is_appended_to_both_window_formats(self):
-        button = (
-            "#[fg=#1e1e2e]#[bg=#1e1e2e] "
-            "#[fg=#1e1e2e]#[bg=#89b4fa]#[bold]#[range=user|letee-new] [+] #[norange]"
+    def test_window_formats_and_legacy_markers_are_not_modified(self):
+        self.assertNotRegex(
+            self.overlay,
+            r"(?m)^\s*set(?:-option)?\s+(-\S+\s+)*window-status(?:-current)?-format(?:\s|$)",
         )
-        for option in ("window-status-format", "window-status-current-format"):
-            expected = f"set -ag {option} '#{{?window_end_flag,{button},}}'"
-            self.assertIn(expected, self.overlay)
+        for marker in ("window_end_flag", "@letee_window_status_format", "@letee_window_status_current_format"):
+            self.assertNotIn(marker, self.overlay)
 
-    def test_new_window_button_is_limited_to_the_final_window_tab(self):
-        for option in ("window-status-format", "window-status-current-format"):
-            line = next(line for line in self.commands if line.strip().startswith(f"set -ag {option} "))
-            self.assertIn("#{?window_end_flag,", line)
-            self.assertIn("#[range=user|letee-new] [+] #[norange],}", line)
+    def test_new_window_button_is_prefixed_to_status_right_and_retains_existing_content(self):
+        expected = (
+            "set -gF status-right "
+            "'#[fg=#1e1e2e,bg=#a6e3a1,bold,range=user|letee-new] + "
+            "#[range=right default] #{status-right}'"
+        )
+        self.assertIn(expected, self.overlay)
+
+    def test_new_window_button_has_exact_clickable_range_and_restores_right_range(self):
+        line = next(line for line in self.commands if line.strip().startswith("set -gF status-right "))
+        self.assertIn("fg=#1e1e2e,bg=#a6e3a1,bold", line)
+        self.assertIn("range=user|letee-new] + #[range=right default]", line)
 
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
-        for option, marker in (
-            ("window-status-format", "letee_window_status_format"),
-            ("window-status-current-format", "letee_window_status_current_format"),
-        ):
-            self.assertEqual(self.overlay.count(f"set -ag {option} "), 1)
-            expected_guard = f"if-shell -F '#{{!:#{{m:*letee-new*,#{{{option}}}}}}}' {{"
-            self.assertIn(expected_guard, self.overlay)
-            self.assertIn(f"set -g @{marker} 1", self.overlay)
+        self.assertEqual(self.overlay.count("set -gF status-right "), 1)
+        self.assertIn("if-shell -F '#{!:#{m:*letee-new*,#{status-right}}}' {", self.overlay)
 
     def test_new_window_mouse_range_creates_a_window_in_the_active_directory(self):
         binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
@@ -802,24 +802,26 @@ class TmuxOverlayFileTest(unittest.TestCase):
         binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
         self.assertTrue(binding.endswith("'select-window -t ='"))
 
-    def test_new_window_mouse_range_requires_tmux_3_4(self):
+    def test_new_window_button_and_mouse_range_require_tmux_3_4(self):
         feature_start = self.overlay.index('%if "#{>=:#{version},3.4}"')
         feature_end = self.overlay.index("%endif", feature_start)
         feature = self.overlay[feature_start:feature_end]
-        for expected in ("window-status-format", "window-status-current-format", "MouseDown1Status"):
+        for expected in ("status-right", "MouseDown1Status"):
             self.assertIn(expected, feature)
+        for unexpected in ("window-status-format", "window-status-current-format"):
+            self.assertNotIn(unexpected, feature)
 
-    def test_shipped_overlay_does_not_assign_status_left_or_right(self):
+    def test_shipped_overlay_does_not_assign_status_left(self):
         for line in self.commands:
             self.assertIsNone(
-                re.match(r"\s*set(-option)?\s+(-\S+\s+)*status-(left|right)(\s|$)", line),
+                re.match(r"\s*set(-option)?\s+(-\S+\s+)*status-left(\s|$)", line),
                 line,
             )
 
     def test_shipped_overlay_scopes_all_set_commands(self):
         for line in self.commands:
             if line.strip().startswith("set "):
-                self.assertRegex(line.strip(), r"^set -(g|s|ag) \S+ .+$")
+                self.assertRegex(line.strip(), r"^set -(g|s|ag|gF) \S+ .+$")
 
     def test_package_ships_the_overlay_file(self):
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
