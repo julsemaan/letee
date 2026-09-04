@@ -72,6 +72,18 @@ def _check_provenance(content: bytes, label: str) -> None:
         raise ValueError(f"tmux provenance in {label} is not version {TMUX_VERSION}")
 
 
+def _check_binary(content: bytes, suffix: str, distribution: str) -> None:
+    path = PROJECT_ROOT / suffix
+    try:
+        expected = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"cannot read staged vendor binary {path}: {error}") from error
+    if content != expected:
+        raise ValueError(
+            f"bundled binary does not match staged vendor binary in {distribution}: {suffix}"
+        )
+
+
 def _check_wheel(path: Path) -> None:
     try:
         with ZipFile(path) as archive:
@@ -85,6 +97,7 @@ def _check_wheel(path: Path) -> None:
                 info = archive.getinfo(name)
                 if info.is_dir() or not ((info.external_attr >> 16) & 0o111):
                     raise ValueError(f"bundled binary is not executable in wheel: {name}")
+                _check_binary(archive.read(name), suffix, "wheel")
             for suffix in LICENSE_PATHS:
                 name = _member_for_suffix(names, suffix)
                 if archive.getinfo(name).is_dir():
@@ -104,6 +117,10 @@ def _check_sdist(path: Path) -> None:
                 member = members[name]
                 if not member.isreg() or not member.mode & 0o111:
                     raise ValueError(f"bundled binary is not executable in source distribution: {name}")
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"cannot read bundled binary in {path}: {name}")
+                _check_binary(extracted.read(), suffix, "source distribution")
             for suffix in LICENSE_PATHS:
                 name = _member_for_suffix(set(members), suffix)
                 if not members[name].isreg():
