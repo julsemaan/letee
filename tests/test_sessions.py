@@ -1,4 +1,5 @@
 from pathlib import Path
+import fnmatch
 import os
 import re
 import shlex
@@ -791,7 +792,13 @@ class TmuxOverlayFileTest(unittest.TestCase):
 
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
         self.assertEqual(self.overlay.count("set -gF status-right "), 1)
-        self.assertIn("if-shell -F '#{!=:#{m:*letee-new*,#{status-right}},1}' {", self.overlay)
+        self.assertIn("if-shell -F '#{!=:#{m:*range=user|letee-new*,#{status-right}},1}' {", self.overlay)
+
+    def test_unrelated_letee_new_status_text_does_not_trigger_duplicate_guard(self):
+        guard = next(line for line in self.commands if line.startswith("if-shell -F "))
+        pattern = re.search(r"#\{m:(.*),#\{status-right\}\}", guard).group(1)
+        self.assertFalse(fnmatch.fnmatchcase("custom letee-new label", pattern))
+        self.assertTrue(fnmatch.fnmatchcase("#[range=user|letee-new] ＋ add", pattern))
 
     def test_new_window_mouse_range_creates_a_window_in_the_active_directory(self):
         binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
