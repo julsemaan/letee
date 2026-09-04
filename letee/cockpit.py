@@ -743,7 +743,7 @@ def current_target() -> Target | None:
                     break
             if index < len(parts) and (match := re.search(r"(?:^| )tmux .* -s ([A-Za-z0-9_.-]+)", " ".join(parts[index + 1:]))):
                 return Target("ssh", match.group(1), parts[index])
-        if match := re.search(r"(?:^| )tmux(?: -\S+(?: \S+)?)* new-session .* -s ([A-Za-z0-9_.-]+)", command):
+        if match := re.search(r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ new-session .* -s ([A-Za-z0-9_.-]+)", command):
             return Target("local", match.group(1))
     except SystemExit:
         pass

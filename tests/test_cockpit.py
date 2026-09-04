@@ -981,6 +981,15 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
 
+    def test_current_target_handles_repeated_invalid_options(self):
+        command = "tmux " + " ".join(["-!"] * 100)
+        with (
+            patch.object(cockpit, "_option", return_value=""),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=command),
+        ):
+            self.assertIsNone(cockpit.current_target())
+
     def test_bell_target_returns_valid_target_only(self):
         with patch.object(cockpit, "_option", side_effect=["local:work", "bad"]):
             self.assertEqual(cockpit.bell_target(), cockpit.Target("local", "work"))
