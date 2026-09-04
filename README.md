@@ -8,7 +8,7 @@
   Letee, pronounced luh-tee, is a tmux cockpit for local and remote tmux sessions and coding agents.
 </p>
 
-It adds a persistent sidebar to an existing terminal. Your sessions remain ordinary tmux sessions, with your terminal, tmux configuration, keybindings, plugins, and workflows unchanged.
+It adds a persistent sidebar to an existing terminal. Your sessions remain ordinary tmux sessions, with your terminal, keybindings, plugins, and workflows unchanged. By default, letee applies a server-wide tmux configuration overlay to managed local and remote servers. It changes styles, mouse, clipboard, passthrough, and bell settings. Set `tmux_config_overlay = false` to opt out.
 
 ## Why letee?
 
