@@ -779,7 +779,7 @@ class TmuxOverlayFileTest(unittest.TestCase):
     def test_new_window_button_is_prefixed_to_status_right_and_retains_existing_content(self):
         expected = (
             "set -gF status-right "
-            "'#[fg=#1e1e2e,bg=#a6e3a1,bold,range=user|letee-new] + "
+            "'#[fg=#1e1e2e,bg=#a6e3a1,bold,range=user|letee-new] ＋ add "
             "#[range=right default] #{status-right}'"
         )
         self.assertIn(expected, self.overlay)
@@ -787,7 +787,7 @@ class TmuxOverlayFileTest(unittest.TestCase):
     def test_new_window_button_has_exact_clickable_range_and_restores_right_range(self):
         line = next(line for line in self.commands if line.strip().startswith("set -gF status-right "))
         self.assertIn("fg=#1e1e2e,bg=#a6e3a1,bold", line)
-        self.assertIn("range=user|letee-new] + #[range=right default]", line)
+        self.assertIn("range=user|letee-new] ＋ add #[range=right default]", line)
 
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
         self.assertEqual(self.overlay.count("set -gF status-right "), 1)
