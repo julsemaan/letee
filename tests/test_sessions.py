@@ -1,5 +1,4 @@
 from pathlib import Path
-import fnmatch
 import os
 import re
 import shlex
@@ -781,24 +780,23 @@ class TmuxOverlayFileTest(unittest.TestCase):
         expected = (
             "set -gF status-right "
             "'#[fg=#1e1e2e,bg=#a6e3a1,bold,range=user|letee-new] ＋ add "
-            "#[range=right default] #{status-right}'"
+            "#[default,range=right] #{status-right}'"
         )
         self.assertIn(expected, self.overlay)
 
     def test_new_window_button_has_exact_clickable_range_and_restores_right_range(self):
         line = next(line for line in self.commands if line.strip().startswith("set -gF status-right "))
         self.assertIn("fg=#1e1e2e,bg=#a6e3a1,bold", line)
-        self.assertIn("range=user|letee-new] ＋ add #[range=right default]", line)
+        self.assertIn("range=user|letee-new] ＋ add #[default,range=right]", line)
 
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
         self.assertEqual(self.overlay.count("set -gF status-right "), 1)
-        self.assertIn("if-shell -F '#{!=:#{m:*range=user|letee-new*,#{status-right}},1}' {", self.overlay)
+        self.assertIn("if-shell -F '#{!=:#{m:*#[range=user\\|letee-new]*,#{status-right}},1}' {", self.overlay)
 
-    def test_unrelated_letee_new_status_text_does_not_trigger_duplicate_guard(self):
+    def test_duplicate_guard_matches_the_complete_status_range_marker(self):
         guard = next(line for line in self.commands if line.startswith("if-shell -F "))
         pattern = re.search(r"#\{m:(.*),#\{status-right\}\}", guard).group(1)
-        self.assertFalse(fnmatch.fnmatchcase("custom letee-new label", pattern))
-        self.assertTrue(fnmatch.fnmatchcase("#[range=user|letee-new] ＋ add", pattern))
+        self.assertEqual(pattern, r"*#[range=user\|letee-new]*")
 
     def test_new_window_mouse_range_creates_a_window_in_the_active_directory(self):
         binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
