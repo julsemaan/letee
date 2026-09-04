@@ -35,6 +35,7 @@ LICENSE_PATHS = frozenset(
     )
 )
 PROVENANCE_PATH = "letee/_vendor/tmux/provenance.json"
+_SUPPORTED_ARCHITECTURES = frozenset({"x86_64", "amd64", "aarch64", "arm64"})
 RAW_ARCHIVES = frozenset(
     {
         "tmux-3.6a-linux-x86_64.tar.gz",
@@ -148,7 +149,10 @@ def _check_host_binary() -> None:
             if int(platform.mac_ver()[0].split(".", 1)[0]) < 15:
                 print("Skipping host binary check on macOS before version 15")
                 return
-        if system not in {"linux", "darwin"}:
+        if (
+            system not in {"linux", "darwin"}
+            or platform.machine().lower() not in _SUPPORTED_ARCHITECTURES
+        ):
             print("Skipping host binary check on unsupported platform")
             return
         raise ValueError("host-compatible bundled tmux binary is missing or not executable")

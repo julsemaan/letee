@@ -129,5 +129,15 @@ class CheckDistWheelTest(unittest.TestCase):
                             checker(path)
 
 
+class CheckDistHostBinaryTest(unittest.TestCase):
+    def test_skips_unsupported_linux_architecture(self):
+        with (
+            patch.object(check_dist.platform, "system", return_value="Linux"),
+            patch.object(check_dist.platform, "machine", return_value="s390x"),
+            patch("letee.tmux.bundled_tmux_path", return_value=None),
+        ):
+            check_dist._check_host_binary()
+
+
 if __name__ == "__main__":
     unittest.main()
