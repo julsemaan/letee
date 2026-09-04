@@ -40,7 +40,13 @@ class CheckDistWheelTest(unittest.TestCase):
                 info.external_attr = 0o755 << 16
                 archive.writestr(info, contents[duplicate_name])
 
-    def _write_sdist(self, path: Path, contents: dict[str, bytes]) -> None:
+    def _write_sdist(
+        self,
+        path: Path,
+        contents: dict[str, bytes],
+        *,
+        duplicate_name: str | None = None,
+    ) -> None:
         with tarfile.open(path, "w:gz") as archive:
             root = "letee-0.0"
             for name in check_dist.BINARY_PATHS:
@@ -60,6 +66,12 @@ class CheckDistWheelTest(unittest.TestCase):
             info.mode = 0o644
             info.size = len(content)
             archive.addfile(info, io.BytesIO(content))
+            if duplicate_name is not None:
+                content = contents[duplicate_name]
+                info = tarfile.TarInfo(f"{root}/{duplicate_name}")
+                info.mode = 0o755
+                info.size = len(content)
+                archive.addfile(info, io.BytesIO(content))
 
     def test_check_wheel_rejects_duplicate_member_names(self):
         with tempfile.TemporaryDirectory() as tempdir:
@@ -73,6 +85,19 @@ class CheckDistWheelTest(unittest.TestCase):
             with patch.object(check_dist, "PROJECT_ROOT", root):
                 with self.assertRaisesRegex(ValueError, "duplicate"):
                     check_dist._check_wheel(path)
+
+    def test_check_sdist_rejects_duplicate_member_names(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            contents = {name: b"tmux" for name in check_dist.BINARY_PATHS}
+            self._stage_binaries(root, contents)
+            duplicate = next(iter(check_dist.BINARY_PATHS))
+            path = root / "letee.tar.gz"
+            self._write_sdist(path, contents, duplicate_name=duplicate)
+
+            with patch.object(check_dist, "PROJECT_ROOT", root):
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    check_dist._check_sdist(path)
 
     def test_check_dist_rejects_tampered_binary_bytes(self):
         for distribution in ("wheel", "sdist"):

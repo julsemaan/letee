@@ -110,7 +110,11 @@ def _check_wheel(path: Path) -> None:
 def _check_sdist(path: Path) -> None:
     try:
         with tarfile.open(path, "r:gz") as archive:
-            members = {member.name: member for member in archive.getmembers()}
+            archive_members = archive.getmembers()
+            member_names = [member.name for member in archive_members]
+            if len(member_names) != len(set(member_names)):
+                raise ValueError("source distribution contains duplicate member names")
+            members = {member.name: member for member in archive_members}
             _reject_raw_archives(set(members))
             for suffix in BINARY_PATHS:
                 name = _member_for_suffix(set(members), suffix)
