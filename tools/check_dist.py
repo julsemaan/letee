@@ -75,7 +75,10 @@ def _check_provenance(content: bytes, label: str) -> None:
 def _check_wheel(path: Path) -> None:
     try:
         with ZipFile(path) as archive:
-            names = set(archive.namelist())
+            member_names = archive.namelist()
+            if len(member_names) != len(set(member_names)):
+                raise ValueError("wheel contains duplicate member names")
+            names = set(member_names)
             _reject_raw_archives(names)
             for suffix in BINARY_PATHS:
                 name = _member_for_suffix(names, suffix)
