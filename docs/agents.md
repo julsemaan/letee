@@ -4,7 +4,7 @@
 
 Letee discovers coding agents by reading JSON status files written by the `agent-status` plugin. The plugin is required for detection. Install it in every coding agent you want letee to discover.
 
-`pip install letee` also installs the `agent-status` Python package. A remote machine that runs an agent but does not have letee installed still needs the plugin and its package there.
+`pip install letee` also installs the `agent-status` Python package used by Claude Code and Codex. For those agents on a remote machine without letee, install the package and plugin there.
 
 For a concise setup and discovery checklist, see the local [agent discovery guide](https://github.com/julsemaan/letee/blob/main/docs/agent-discovery.md). The rest of this file documents how discovered agents are displayed and controlled.
 
@@ -33,7 +33,7 @@ Start Codex in a repository, open `/hooks`, and trust the agent-status hooks. Th
 ### Pi
 
 ```sh
-pi install git:github.com/julsemaan/agent-status@v0.1.26
+pi install npm:agent-status-pi
 ```
 
 Run `/reload` or restart pi.
