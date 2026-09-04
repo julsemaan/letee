@@ -121,3 +121,16 @@ class TmuxResolverTests(unittest.TestCase):
                 patch.object(TMUX_MODULE.platform, "machine", return_value="x86_64"),
             ):
                 self.assertIsNone(TMUX_MODULE.bundled_tmux_path())
+
+    def test_inaccessible_execute_bit_falls_back_to_path(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = Path(tempdir) / "linux-x86_64" / "tmux"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"tmux")
+            path.chmod(0o001)
+            with (
+                patch.object(TMUX_MODULE, "VENDOR_ROOT", path.parent.parent),
+                patch.object(TMUX_MODULE.platform, "system", return_value="Linux"),
+                patch.object(TMUX_MODULE.platform, "machine", return_value="x86_64"),
+            ):
+                self.assertIsNone(TMUX_MODULE.bundled_tmux_path())

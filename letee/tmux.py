@@ -45,7 +45,7 @@ def bundled_tmux_path() -> Path | None:
         mode = os.lstat(path).st_mode
     except OSError:
         return None
-    if stat.S_ISREG(mode) and mode & 0o111:
+    if stat.S_ISREG(mode) and os.access(path, os.X_OK):
         return path
     return None
 
