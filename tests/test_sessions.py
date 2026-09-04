@@ -769,21 +769,19 @@ class TmuxOverlayFileTest(unittest.TestCase):
             self.assertNotIn("prefix", line, line)
 
     def test_new_window_button_is_appended_to_both_window_formats(self):
-        for option, color in (
-            ("window-status-format", "#a6adc8"),
-            ("window-status-current-format", "#f5c2e7"),
-        ):
-            expected = (
-                f"set -ag {option} "
-                f"'#{{?window_end_flag,#[fg={color}]#[range=user|letee-new][+]#[norange],}}'"
-            )
+        button = (
+            "#[fg=#1e1e2e,bg=#1e1e2e] "
+            "#[fg=#1e1e2e,bg=#89b4fa,bold]#[range=user|letee-new] [+] #[norange]"
+        )
+        for option in ("window-status-format", "window-status-current-format"):
+            expected = f"set -ag {option} '#{{?window_end_flag,{button},}}'"
             self.assertIn(expected, self.overlay)
 
     def test_new_window_button_is_limited_to_the_final_window_tab(self):
         for option in ("window-status-format", "window-status-current-format"):
             line = next(line for line in self.commands if line.strip().startswith(f"set -ag {option} "))
             self.assertIn("#{?window_end_flag,", line)
-            self.assertIn("#[range=user|letee-new][+]#[norange],}", line)
+            self.assertIn("#[range=user|letee-new] [+] #[norange],}", line)
 
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
         for option, marker in (
