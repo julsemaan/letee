@@ -38,7 +38,7 @@ class TmuxTestClient:
             self._outer_tmux_executable = self.exec(
                 "python", "-c", "from letee.tmux import tmux_executable; print(tmux_executable())"
             )
-        return ["docker", "exec", self.container, self._outer_tmux_executable, "-L", "letee-v1"] + list(args)
+        return ["docker", "exec", self.container, self._outer_tmux_executable, "-L", "letee@v1"] + list(args)
 
     def tmux(self, *args: str) -> str:
         """Run tmux command, return stdout (or stderr on failure)."""

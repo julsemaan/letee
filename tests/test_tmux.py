@@ -22,7 +22,7 @@ class TmuxTests(unittest.TestCase):
 
         self.assertEqual(
             run.call_args.args[0],
-            [TMUX_MODULE.tmux_executable(), "-L", "letee-v1-work", "list-sessions"],
+            [TMUX_MODULE.tmux_executable(), "-L", "letee@v1-work", "list-sessions"],
         )
 
     def test_timeout_can_be_disabled_for_interactive_commands(self):
@@ -30,7 +30,7 @@ class TmuxTests(unittest.TestCase):
             tmux("display-menu", timeout=None)
 
         run.assert_called_once_with(
-            [TMUX_MODULE.tmux_executable(), "-L", "letee-v1", "display-menu"],
+            [TMUX_MODULE.tmux_executable(), "-L", "letee@v1", "display-menu"],
             text=True, capture_output=False, check=True, timeout=None,
         )
 
@@ -41,7 +41,7 @@ class TmuxTests(unittest.TestCase):
 
         self.assertEqual(
             str(raised.exception),
-            f"{TMUX_MODULE.tmux_executable()} -L letee-v1 list-sessions timed out after 5 seconds",
+            f"{TMUX_MODULE.tmux_executable()} -L letee@v1 list-sessions timed out after 5 seconds",
         )
         self.assertIsNone(raised.exception.__cause__)
 

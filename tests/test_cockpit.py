@@ -320,7 +320,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         executable = cockpit.tmux.tmux_executable()
         execvp.assert_called_once_with(
-            executable, [executable, "-L", "letee-v1", "attach-session", "-d", "-t", "letee:cockpit"]
+            executable, [executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"]
         )
 
     def test_named_server_attach_uses_prefixed_socket_and_keeps_target(self):
@@ -338,7 +338,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         executable = cockpit.tmux.tmux_executable()
         execvp.assert_called_once_with(
-            executable, [executable, "-L", "letee-v1-work", "attach-session", "-d", "-t", "letee:cockpit"]
+            executable, [executable, "-L", "letee@v1-work", "attach-session", "-d", "-t", "letee:cockpit"]
         )
 
     def test_attach_quotes_absolute_executable_when_using_script(self):
@@ -360,7 +360,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 "script",
                 "-q",
                 "-c",
-                "'/tmp/tmux with space' -L letee-v1 attach-session -d -t letee:cockpit",
+                "'/tmp/tmux with space' -L letee@v1 attach-session -d -t letee:cockpit",
                 "/dev/null",
             ],
         )
@@ -381,7 +381,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         execvp.assert_called_once_with(
             "script",
-            ["script", "-q", "/dev/null", executable, "-L", "letee-v1", "attach-session", "-d", "-t", "letee:cockpit"],
+            ["script", "-q", "/dev/null", executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"],
         )
 
     def test_fix_layout_pins_sidebar_to_configured_width(self):
@@ -1432,7 +1432,7 @@ class CockpitSIGWINCHTest(unittest.TestCase):
                 "script",
                 "-q",
                 "-c",
-                f"{executable} -L letee-v1 attach-session -d -t letee:cockpit",
+                f"{executable} -L letee@v1 attach-session -d -t letee:cockpit",
                 "/dev/null",
             ],
         )

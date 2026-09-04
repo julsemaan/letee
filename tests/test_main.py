@@ -227,16 +227,16 @@ class MainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             socket_dir = Path(tempdir) / "tmux-1000"
             socket_dir.mkdir()
-            for name in ("letee-v1", "letee-v1-personal", "letee-v1-stale", "other"):
+            for name in ("letee@v1", "letee@v1-personal", "letee@v1-stale", "other"):
                 (socket_dir / name).touch()
 
             def run(command, **kwargs):
                 socket = command[2]
-                if socket == "letee-v1-stale":
+                if socket == "letee@v1-stale":
                     return subprocess.CompletedProcess(command, 1, "", "stale socket")
                 if command[3:6] == ["show-options", "-v", "-t"]:
                     return subprocess.CompletedProcess(command, 0, "1\n", "")
-                clients = "client\n" if socket == "letee-v1" else ""
+                clients = "client\n" if socket == "letee@v1" else ""
                 return subprocess.CompletedProcess(command, 0, clients, "")
 
             with (
@@ -250,6 +250,35 @@ class MainTest(unittest.TestCase):
             [call.args[0] for call in print_.call_args_list],
             ["default (attached)", "personal (detached)"],
         )
+
+    def test_legacy_v1_socket_names_are_migrated_not_listed_as_current_servers(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            socket_dir = Path(tempdir) / "tmux-1000"
+            socket_dir.mkdir()
+            for name in ("letee-v1", "letee-v1-work"):
+                (socket_dir / name).touch()
+
+            with (
+                patch("letee.__main__._tmux_socket_dir", return_value=socket_dir),
+                patch("letee.__main__._legacy_socket_present", return_value=True),
+                patch(
+                    "letee.__main__._run_legacy_tmux",
+                    return_value=subprocess.CompletedProcess([], 0, "1\n", ""),
+                ) as run_legacy,
+                patch("letee.__main__._server_attached") as server_attached,
+            ):
+                self.assertEqual(MAIN_MODULE.list_servers(), [])
+
+        self.assertEqual(
+            run_legacy.call_args_list,
+            [
+                unittest.mock.call("letee-v1", "show-options", "-v", "-t", "letee", "@letee_cockpit"),
+                unittest.mock.call("letee-v1", "kill-server"),
+                unittest.mock.call("letee-v1-work", "show-options", "-v", "-t", "letee", "@letee_cockpit"),
+                unittest.mock.call("letee-v1-work", "kill-server"),
+            ],
+        )
+        server_attached.assert_not_called()
 
     def test_verified_legacy_server_is_killed_with_system_tmux_only(self):
         with tempfile.TemporaryDirectory() as tempdir:
@@ -334,7 +363,7 @@ class MainTest(unittest.TestCase):
 
         status.assert_called_once_with("work")
         run.assert_called_once_with(
-            [MAIN_MODULE.tmux.tmux_executable(), "-L", "letee-v1-work", "kill-server"],
+            [MAIN_MODULE.tmux.tmux_executable(), "-L", "letee@v1-work", "kill-server"],
             text=True, capture_output=True, check=False, timeout=5,
         )
 
