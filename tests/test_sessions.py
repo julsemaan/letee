@@ -770,8 +770,8 @@ class TmuxOverlayFileTest(unittest.TestCase):
 
     def test_new_window_button_is_appended_to_both_window_formats(self):
         button = (
-            "#[fg=#1e1e2e,bg=#1e1e2e] "
-            "#[fg=#1e1e2e,bg=#89b4fa,bold]#[range=user|letee-new] [+] #[norange]"
+            "#[fg=#1e1e2e]#[bg=#1e1e2e] "
+            "#[fg=#1e1e2e]#[bg=#89b4fa]#[bold]#[range=user|letee-new] [+] #[norange]"
         )
         for option in ("window-status-format", "window-status-current-format"):
             expected = f"set -ag {option} '#{{?window_end_flag,{button},}}'"
@@ -789,7 +789,8 @@ class TmuxOverlayFileTest(unittest.TestCase):
             ("window-status-current-format", "letee_window_status_current_format"),
         ):
             self.assertEqual(self.overlay.count(f"set -ag {option} "), 1)
-            self.assertIn(f"if-shell -F '#{{!=:#{{@{marker}}},1}}' {{", self.overlay)
+            expected_guard = f"if-shell -F '#{{!:#{{m:*letee-new*,#{{{option}}}}}}}' {{"
+            self.assertIn(expected_guard, self.overlay)
             self.assertIn(f"set -g @{marker} 1", self.overlay)
 
     def test_new_window_mouse_range_creates_a_window_in_the_active_directory(self):
