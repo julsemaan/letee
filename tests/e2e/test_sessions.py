@@ -70,6 +70,25 @@ def _current_target(client: TmuxTestClient) -> str:
     return client.tmux("show-options", "-v", "-t", "letee", "@letee_current_target").strip()
 
 
+def test_overlay_sourcing_twice_keeps_one_new_window_button(client: TmuxTestClient) -> None:
+    """Sourcing the packaged overlay twice leaves one new-window status marker."""
+    socket = f"letee-overlay-{os.urandom(4).hex()}"
+    overlay = client.exec(
+        "python", "-c",
+        "from letee.sessions import OVERLAY_FILE; print(OVERLAY_FILE)",
+    )
+    try:
+        client.exec("tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", "overlay")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        status_right = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right",
+        )
+        assert status_right.count("range=user|letee-new") == 1, status_right
+    finally:
+        client.exec("tmux", "-L", socket, "kill-server", check=False)
+
+
 # ============================================================
 # CLI tests
 # ============================================================
