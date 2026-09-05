@@ -143,7 +143,7 @@ SSH hosts must not start with `-`.
 
 ## Tmux configuration overlay
 
-By default, letee layers a small tmux configuration over your normal tmux configuration on managed tmux servers, both local and SSH:
+By default, letee layers a small tmux configuration over your normal tmux configuration on its dedicated `letee.inner` server on each local and remote host:
 
 ```toml
 tmux_config_overlay = true
@@ -159,7 +159,7 @@ Your normal system and user tmux configuration loads first, exactly as without l
 
 No keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed. The overlay is a plain tmux configuration file with native settings only. It uses no TPM plugins, fonts, scripts, or network access. The full effect needs tmux 3.4 or newer. Older tmux reports an error for the few newer options and applies the rest.
 
-Tmux configuration is server-wide. Once applied on a server, the overlay covers all sessions there, including sessions created outside letee. For local servers the packaged file is sourced directly. For SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine with private permissions, then sourced on create, attach, and exact-pane jumps.
+Tmux configuration is server-wide. Once applied to `letee.inner`, the overlay covers all sessions there, including sessions created outside letee. It does not apply to the ordinary tmux default server. For local servers the packaged file is sourced directly. For SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine with private permissions, then sourced on create, attach, and exact-pane jumps.
 
 Like `set-clipboard on` generally, the overlay permits processes in local and remote panes to set the system clipboard through OSC 52. See the clipboard security warning below.
 
@@ -170,6 +170,10 @@ tmux_config_overlay = false
 ```
 
 Disabling the overlay stops future application but cannot undo settings already loaded into a running tmux server. Restart that server, or source your own tmux configuration in it, to restore previous behavior.
+
+## Moving from older letee versions
+
+Older letee versions used the ordinary tmux default server for inner sessions. Those sessions keep running, but current letee neither discovers nor changes them. The `Existing session` picker lists only untracked sessions on each host's `letee.inner`. A tracked name from an older version appears as missing. Selecting it creates a new session with that name on `letee.inner` and switches to it. Overlay settings previously applied to the default server remain there until that server restarts or reloads its configuration.
 
 ## Clipboard
 

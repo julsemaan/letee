@@ -12,12 +12,12 @@ import tempfile
 import time
 
 from .config import load_hosts, load_persistent_ssh
-from .names import PaneTarget, Target, validate_host
+from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
 from .sessions import ssh_command
 
 
 PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}\t#{window_name}"
-PANES_COMMAND = f'tmux list-panes -a -F "{PANES_FORMAT}"'
+PANES_COMMAND = f'tmux -L {shlex.quote(INNER_SERVER_SOCKET)} list-panes -a -F "{PANES_FORMAT}"'
 REMOTE_SEPARATOR = "__LETEE_AGENT_STATUS__"
 _REMOTE_READER = """import glob,json,os,pathlib
 root=os.environ.get('AGENT_STATUS_DIR') or str(pathlib.Path(os.environ.get('XDG_STATE_HOME', '~/.local/state')).expanduser() / 'agent-status')
@@ -244,7 +244,7 @@ def _source_result(
 def local_snapshot() -> SourceSnapshot:
     try:
         proc = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", PANES_FORMAT],
+            ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes", "-a", "-F", PANES_FORMAT],
             text=True,
             capture_output=True,
             timeout=5,

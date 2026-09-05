@@ -8,7 +8,7 @@
   Letee, pronounced luh-tee, is a tmux cockpit for local and remote tmux sessions and coding agents.
 </p>
 
-It adds a persistent sidebar to an existing terminal. Your sessions remain ordinary tmux sessions, with your terminal, keybindings, plugins, and workflows unchanged. By default, letee applies a server-wide tmux configuration overlay to managed local and remote servers. It changes styles, mouse, clipboard, passthrough, and bell settings. Set `tmux_config_overlay = false` to opt out.
+It adds a persistent sidebar to an existing terminal. Your sessions remain ordinary tmux sessions, with your terminal, keybindings, plugins, and workflows unchanged. Letee keeps managed sessions on a dedicated inner server named `letee.inner` on each local or remote host, and does not discover or change sessions on tmux's ordinary default server. By default, letee applies a server-wide tmux configuration overlay to each `letee.inner` server. It changes styles, mouse, clipboard, passthrough, and bell settings. Set `tmux_config_overlay = false` to opt out.
 
 ## Why letee?
 
@@ -29,6 +29,12 @@ letee
 ```
 
 Letee opens an outer tmux cockpit with the sidebar on the left and the selected session, or a startup pane, on the right. The default outer prefix is `C-s`. Your tmux prefix and keybindings stay the same if you have any. Use your mouse if that's what you're most comfortable with.
+
+## How it works
+
+Letee creates or attaches to a dedicated outer tmux server. Bare `letee` uses the `letee` outer socket; `-L NAME` uses `letee-NAME`. Reopening the same name uses `attach -d`, moving the cockpit to the newest terminal.
+
+Inner local and remote sessions use `letee.inner`, one shared server per host. Named outer cockpits on the same host share those inner sessions. The ordinary tmux default server is outside letee's scope. Sessions there stay running but are not discovered or changed.
 
 ## Open or add a local tmux session
 

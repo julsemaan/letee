@@ -48,21 +48,33 @@ def _read_favorites(client: TmuxTestClient, config_dir: str) -> str:
     return local_path.read_text() if local_path.exists() else ""
 
 
-def _default_tmux_ok(client: TmuxTestClient, *args: str) -> bool:
-    """Run tmux command on default server, return True if exit 0."""
-    result = subprocess.run(_command(client, "tmux", *args), capture_output=True, text=True, timeout=15, check=False)
+def _inner_tmux_ok(client: TmuxTestClient, *args: str) -> bool:
+    """Run tmux command on letee's dedicated inner server."""
+    result = subprocess.run(
+        _command(client, "tmux", "-L", "letee.inner", *args),
+        capture_output=True, text=True, timeout=15, check=False,
+    )
     return result.returncode == 0
 
 
-def _create_session_default(client: TmuxTestClient, name: str) -> None:
-    """Create a tmux session on the default server. Kills existing first."""
-    subprocess.run(_command(client, "tmux", "kill-session", "-t", name), capture_output=True, check=False, timeout=15)
-    subprocess.run(_command(client, "tmux", "new-session", "-d", "-s", name), capture_output=True, check=True, timeout=15)
+def _create_session_inner(client: TmuxTestClient, name: str) -> None:
+    """Create a tmux session on letee's dedicated inner server."""
+    subprocess.run(
+        _command(client, "tmux", "-L", "letee.inner", "kill-session", "-t", name),
+        capture_output=True, check=False, timeout=15,
+    )
+    subprocess.run(
+        _command(client, "tmux", "-L", "letee.inner", "new-session", "-d", "-s", name),
+        capture_output=True, check=True, timeout=15,
+    )
 
 
-def _kill_session_default(client: TmuxTestClient, name: str) -> None:
-    """Kill a tmux session on the default server."""
-    subprocess.run(_command(client, "tmux", "kill-session", "-t", name), capture_output=True, check=False, timeout=15)
+def _kill_session_inner(client: TmuxTestClient, name: str) -> None:
+    """Kill a tmux session on letee's dedicated inner server."""
+    subprocess.run(
+        _command(client, "tmux", "-L", "letee.inner", "kill-session", "-t", name),
+        capture_output=True, check=False, timeout=15,
+    )
 
 
 def _current_target(client: TmuxTestClient) -> str:
@@ -79,19 +91,19 @@ def test_cli_create_local(client: TmuxTestClient) -> None:
     """Create a local session via CLI."""
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-create"}
     client.cli("create", "local", "test-session", env=env)
-    assert _default_tmux_ok(client, "has-session", "-t", "test-session"), \
+    assert _inner_tmux_ok(client, "has-session", "-t", "test-session"), \
         "Session test-session should exist"
 
-    _kill_session_default(client, "test-session")
+    _kill_session_inner(client, "test-session")
 
 
 def test_cli_create_name_with_dots_and_hyphens(client: TmuxTestClient) -> None:
     """Session names accept hyphens and underscores. ponytail: tmux replaces . with _ in session names."""
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-dots"}
     client.cli("create", "local", "my-test-session_1", env=env)
-    assert _default_tmux_ok(client, "has-session", "-t", "my-test-session_1")
+    assert _inner_tmux_ok(client, "has-session", "-t", "my-test-session_1")
 
-    _kill_session_default(client, "my-test-session_1")
+    _kill_session_inner(client, "my-test-session_1")
 
 
 def test_cli_create_name_too_long(client: TmuxTestClient) -> None:
@@ -109,23 +121,49 @@ def test_cli_create_name_with_spaces(client: TmuxTestClient) -> None:
 
 
 def test_cli_list(client: TmuxTestClient) -> None:
-    """List discovers local sessions on default server."""
-    _create_session_default(client, "alpha")
-    _create_session_default(client, "beta")
+    """List discovers local sessions on the dedicated inner server."""
+    _create_session_inner(client, "alpha")
+    _create_session_inner(client, "beta")
 
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-list"}
     out = client.cli("list", env=env)
     assert "local:alpha" in out, f"alpha not in list output:\n{out}"
     assert "local:beta" in out, f"beta not in list output:\n{out}"
 
-    _kill_session_default(client, "alpha")
-    _kill_session_default(client, "beta")
+    _kill_session_inner(client, "alpha")
+    _kill_session_inner(client, "beta")
+
+
+def test_cli_list_ignores_default_server_sessions(client: TmuxTestClient) -> None:
+    """List leaves ordinary default-server sessions undiscovered and running."""
+    session = "default-only"
+    default_command = _command(client, "tmux")
+    subprocess.run(
+        [*default_command, "kill-session", "-t", session],
+        capture_output=True, check=False, timeout=15,
+    )
+    subprocess.run(
+        [*default_command, "new-session", "-d", "-s", session],
+        capture_output=True, check=True, timeout=15,
+    )
+    try:
+        out = client.cli("list", env={"LETEE_CONFIG_DIR": "/tmp/letee-e2e-list-default"})
+        assert "local:default-only" not in out, f"default-server session leaked into list:\n{out}"
+        assert subprocess.run(
+            [*default_command, "has-session", "-t", session],
+            capture_output=True, check=False, timeout=15,
+        ).returncode == 0
+    finally:
+        subprocess.run(
+            [*default_command, "kill-session", "-t", session],
+            capture_output=True, check=False, timeout=15,
+        )
 
 
 def test_cli_switch(client: TmuxTestClient) -> None:
     """Switch session via CLI updates current target."""
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-switch"}
-    _create_session_default(client, "work")
+    _create_session_inner(client, "work")
 
     client.start_cockpit(env=env)
     assert client.wait_for_sidebar_text("letee", timeout=10)
@@ -137,17 +175,17 @@ def test_cli_switch(client: TmuxTestClient) -> None:
         f"Current target should be local:work, got: {_current_target(client)}"
 
     client.stop_cockpit()
-    _kill_session_default(client, "work")
+    _kill_session_inner(client, "work")
 
 
 def test_cli_kill(client: TmuxTestClient) -> None:
-    """Kill session via CLI removes it from default server."""
+    """Kill session via CLI removes it from the dedicated inner server."""
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-kill"}
-    _create_session_default(client, "to-kill")
-    assert _default_tmux_ok(client, "has-session", "-t", "to-kill")
+    _create_session_inner(client, "to-kill")
+    assert _inner_tmux_ok(client, "has-session", "-t", "to-kill")
 
     client.cli("kill", "local:to-kill", env=env)
-    assert not _default_tmux_ok(client, "has-session", "-t", "to-kill"), \
+    assert not _inner_tmux_ok(client, "has-session", "-t", "to-kill"), \
         "Session should not exist after kill"
 
 
@@ -215,11 +253,11 @@ def test_tui_add_session(client: TmuxTestClient) -> None:
 
     # Session creation includes discovery and cockpit switching; poll instead of racing it.
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not _default_tmux_ok(
+    while time.monotonic() < deadline and not _inner_tmux_ok(
         client, "has-session", "-t", "myproject"
     ):
         time.sleep(0.1)
-    assert _default_tmux_ok(client, "has-session", "-t", "myproject"), \
+    assert _inner_tmux_ok(client, "has-session", "-t", "myproject"), \
         f"Session myproject should be created:\n{client.sidebar_text()}"
 
     # Current target should be myproject
@@ -227,15 +265,15 @@ def test_tui_add_session(client: TmuxTestClient) -> None:
         f"Current target should be local:myproject, got: {_current_target(client)}"
 
     client.stop_cockpit()
-    _kill_session_default(client, "myproject")
+    _kill_session_inner(client, "myproject")
 
 
 def test_tui_switch_session(client: TmuxTestClient) -> None:
     """Switch between sessions using j/k and Enter in sidebar."""
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-tui-switch"}
 
-    _create_session_default(client, "alpha")
-    _create_session_default(client, "beta")
+    _create_session_inner(client, "alpha")
+    _create_session_inner(client, "beta")
     _write_favorites(client, env["LETEE_CONFIG_DIR"], "local:alpha", "local:beta")
 
     client.start_cockpit(env=env)
@@ -260,15 +298,15 @@ def test_tui_switch_session(client: TmuxTestClient) -> None:
         f"Current target should be local:beta, got: {_current_target(client)}"
 
     client.stop_cockpit()
-    _kill_session_default(client, "alpha")
-    _kill_session_default(client, "beta")
+    _kill_session_inner(client, "alpha")
+    _kill_session_inner(client, "beta")
 
 
 def test_tui_remove_favorite(client: TmuxTestClient) -> None:
     """Remove a favorite (unstar) via the sidebar."""
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-tui-remove"}
 
-    _create_session_default(client, "keepme")
+    _create_session_inner(client, "keepme")
     _write_favorites(client, env["LETEE_CONFIG_DIR"], "local:keepme")
 
     client.start_cockpit(env=env)
@@ -278,8 +316,8 @@ def test_tui_remove_favorite(client: TmuxTestClient) -> None:
     _send_sidebar(client, "r")
     time.sleep(0.3)
 
-    # Session still exists on default server
-    assert _default_tmux_ok(client, "has-session", "-t", "keepme"), \
+    # Session still exists on the dedicated inner server
+    assert _inner_tmux_ok(client, "has-session", "-t", "keepme"), \
         "Session should still exist after unstar"
 
     # Verify favorites file is now empty (or doesn't contain keepme)
@@ -288,7 +326,7 @@ def test_tui_remove_favorite(client: TmuxTestClient) -> None:
         f"keepme should be removed from favorites file, got: {content}"
 
     client.stop_cockpit()
-    _kill_session_default(client, "keepme")
+    _kill_session_inner(client, "keepme")
 
 
 def test_prefix_number_switch(client: TmuxTestClient) -> None:
@@ -299,9 +337,9 @@ def test_prefix_number_switch(client: TmuxTestClient) -> None:
     """
     env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-prefix"}
 
-    _create_session_default(client, "first")
-    _create_session_default(client, "second")
-    _create_session_default(client, "third")
+    _create_session_inner(client, "first")
+    _create_session_inner(client, "second")
+    _create_session_inner(client, "third")
     _write_favorites(client, env["LETEE_CONFIG_DIR"], "local:first", "local:second", "local:third")
 
     client.start_cockpit(env=env)
@@ -330,6 +368,6 @@ def test_prefix_number_switch(client: TmuxTestClient) -> None:
         f"Expected error for slot 9, got: {out}"
 
     client.stop_cockpit()
-    _kill_session_default(client, "first")
-    _kill_session_default(client, "second")
-    _kill_session_default(client, "third")
+    _kill_session_inner(client, "first")
+    _kill_session_inner(client, "second")
+    _kill_session_inner(client, "third")

@@ -16,6 +16,10 @@ Inner local and remote sessions keep their normal tmux prefix and bindings. They
 
 `C-s h` zooms the right pane instead of killing the sidebar. The sidebar process stays alive while hidden, so selection, polling, and alerts continue. `C-s s`, `C-s a`, and `C-s +` restore the layout while focusing Sessions, focusing Agents, or opening the Add session menu.
 
+## Inner tmux servers
+
+Managed local and remote sessions run on a dedicated tmux server named `letee.inner` on each host. Named outer cockpits on the same host share those inner sessions. The ordinary tmux default server is outside letee's scope. Sessions there keep running but are not discovered or changed.
+
 ## Named cockpits
 
 Use `-L <name>` to run independent outer tmux servers:
@@ -117,7 +121,7 @@ Missing sessions remain launchers. Press `Enter` on one to recreate and attach i
 The Add menu separates `New session` from `Existing session`:
 
 - `New session` creates a fresh tmux session. With exactly one local or SSH location available, letee skips location selection. With multiple locations, it opens a location picker and then a name input.
-- `Existing session` searches only sessions that are not already tracked.
+- `Existing session` searches only untracked sessions on each host's `letee.inner` server.
 - Selecting or creating a session persists it and switches to it immediately.
 
 When the Add menu is closed, the independently navigable Agents region remains below the `AGENTS` divider.

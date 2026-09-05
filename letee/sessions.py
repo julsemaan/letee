@@ -14,7 +14,7 @@ import subprocess
 import time
 
 from .config import load_persistent_ssh, load_tmux_config_overlay
-from .names import PaneTarget, Target, validate_host
+from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
 
 
 OVERLAY_FILE = Path(__file__).with_name("tmux-overlay.conf")
@@ -327,7 +327,10 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: boo
     return ("ssh", *SSH_OPTIONS, *multiplex, *persist, *args)
 
 
-def _default_server_env() -> dict[str, str]:
+INNER_TMUX = f"tmux -L {shlex.quote(INNER_SERVER_SOCKET)}"
+
+
+def _inner_server_env() -> dict[str, str]:
     env = os.environ.copy()
     env.pop("TMUX", None)
     return env
@@ -345,7 +348,7 @@ def attach_command(target: Target, *, overlay: bool | None = None) -> str:
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     if overlay and target.kind == "ssh":
         _install_overlay(target)
-    new_session = f"tmux -T clipboard new-session -A -s {shlex.quote(target.session)}"
+    new_session = f"{INNER_TMUX} -T clipboard new-session -A -s {shlex.quote(target.session)}"
     if overlay:
         new_session += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
@@ -389,33 +392,33 @@ def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: obj
 def create(target: Target, *, overlay: bool | None = None) -> None:
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     if target.kind == "local":
-        command = ("tmux", "new-session", "-d", "-s", target.session)
-        _run("create", target, command, env=_default_server_env())
+        command = ("tmux", "-L", INNER_SERVER_SOCKET, "new-session", "-d", "-s", target.session)
+        _run("create", target, command, env=_inner_server_env())
         if overlay:
             # Best effort: tmux pre-3.4 rejects newer overlay options, and
             # timeout/OSError here must not fail the create itself either.
             with suppress(subprocess.TimeoutExpired, OSError):
                 subprocess.run(
-                    ("tmux", "source-file", str(OVERLAY_FILE)),
+                    ("tmux", "-L", INNER_SERVER_SOCKET, "source-file", str(OVERLAY_FILE)),
                     check=False,
                     capture_output=True,
                     timeout=10,
-                    env=_default_server_env(),
+                    env=_inner_server_env(),
                 )
     else:
         if overlay:
             _install_overlay(target)
-        command = f"tmux new-session -d -s {shlex.quote(target.session)}"
+        command = f"{INNER_TMUX} new-session -d -s {shlex.quote(target.session)}"
         if overlay:
-            command += f" && {{ tmux source-file {REMOTE_OVERLAY_PATH} || true; }}"
+            command += f" && {{ {INNER_TMUX} source-file {REMOTE_OVERLAY_PATH} || true; }}"
         _run("create", target, ssh_command(target.host or "", command))
 
 
 def kill(target: Target) -> None:
     if target.kind == "local":
-        _run("kill", target, ("tmux", "kill-session", "-t", target.session), env=_default_server_env())
+        _run("kill", target, ("tmux", "-L", INNER_SERVER_SOCKET, "kill-session", "-t", target.session), env=_inner_server_env())
     else:
-        _run("kill", target, ssh_command(target.host or "", f"tmux kill-session -t {shlex.quote(target.session)}"))
+        _run("kill", target, ssh_command(target.host or "", f"{INNER_TMUX} kill-session -t {shlex.quote(target.session)}"))
 
 
 def _pane_process_info(pane_target: PaneTarget) -> tuple[int, str]:
@@ -427,7 +430,7 @@ def _pane_process_info(pane_target: PaneTarget) -> tuple[int, str]:
             "tmux", "-S", pane_target.socket_path, "display-message", "-p",
             "-t", pane_target.pane_id, "#{pane_pid}\t#{pane_tty}",
         ),
-        env=_default_server_env(),
+        env=_inner_server_env(),
     )
     fields = output.strip().split("\t", 1)
     if len(fields) != 2 or not fields[1]:
@@ -446,7 +449,7 @@ def _foreground_pgid(target: Target, pane_pid: int) -> int:
         "kill agent",
         target,
         ("ps", "-o", "tpgid=", "-p", str(pane_pid)),
-        env=_default_server_env(),
+        env=_inner_server_env(),
     )
     try:
         return int(output.strip())
@@ -491,8 +494,8 @@ def rename(target: Target, new_name: str) -> Target:
         _run(
             "rename",
             target,
-            ("tmux", "rename-session", "-t", target.session, renamed.session),
-            env=_default_server_env(),
+            ("tmux", "-L", INNER_SERVER_SOCKET, "rename-session", "-t", target.session, renamed.session),
+            env=_inner_server_env(),
         )
     else:
         _run(
@@ -500,7 +503,7 @@ def rename(target: Target, new_name: str) -> Target:
             target,
             ssh_command(
                 target.host or "",
-                f"tmux rename-session -t {shlex.quote(target.session)} {shlex.quote(renamed.session)}",
+                f"{INNER_TMUX} rename-session -t {shlex.quote(target.session)} {shlex.quote(renamed.session)}",
             ),
         )
     return renamed

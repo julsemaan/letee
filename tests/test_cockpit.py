@@ -950,18 +950,125 @@ class CockpitLayoutTest(unittest.TestCase):
         with (
             patch.object(cockpit, "_option", return_value=""),
             patch.object(cockpit, "right_pane", return_value="%2"),
-            patch.object(cockpit.tmux, "out", return_value="ssh -t dev 'tmux -T clipboard new-session -A -s work'"),
+            patch.object(cockpit.tmux, "out", return_value="ssh -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'"),
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
 
     def test_current_target_recovers_from_option_rich_ssh_command(self):
-        command = "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'"
+        command = "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'"
         with (
             patch.object(cockpit, "_option", return_value=""),
             patch.object(cockpit, "right_pane", return_value="%2"),
             patch.object(cockpit.tmux, "out", return_value=command),
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
+
+    def test_current_target_recovers_from_local_inner_attach_command(self):
+        command = "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work"
+        with (
+            patch.object(cockpit, "_option", return_value=""),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=command),
+        ):
+            self.assertEqual(cockpit.current_target(), cockpit.Target("local", "work"))
+
+    def test_current_target_recovers_from_remote_inner_attach_command(self):
+        command = "ssh -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'"
+        with (
+            patch.object(cockpit, "_option", return_value=""),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=command),
+        ):
+            self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
+
+    def test_current_target_recovers_from_inner_pane_attach_commands(self):
+        socket_path = "/tmp/tmux-1000/letee.inner"
+        commands = (
+            f"env -u TMUX tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
+            f"ssh -t dev 'tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+        )
+        for command in commands:
+            with self.subTest(command=command), patch.object(cockpit, "_option", return_value=""), patch.object(cockpit, "right_pane", return_value="%2"), patch.object(cockpit.tmux, "out", return_value=command):
+                expected = cockpit.Target("ssh", "work", "dev") if command.startswith("ssh ") else cockpit.Target("local", "work")
+                self.assertEqual(cockpit.current_target(), expected)
+
+    def test_current_target_clears_stale_marker_for_legacy_pane_attach_commands(self):
+        socket_path = "/tmp/tmux-1000/default"
+        cases = (
+            ("local:work", f"env -u TMUX tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work"),
+            ("ssh:dev:work", f"ssh -t dev 'tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'"),
+        )
+        for marker, command in cases:
+            with self.subTest(marker=marker, command=command):
+                with (
+                    patch.object(cockpit, "_option", return_value=marker),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value=command),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    self.assertIsNone(cockpit.current_target())
+
+                tmux_call.assert_called_once_with(
+                    "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
+                )
+
+    def test_current_target_ignores_legacy_server_attach_commands(self):
+        commands = (
+            "tmux new-session -A -s work",
+            "tmux -L other new-session -A -s work",
+            "ssh -t dev 'tmux new-session -A -s work'",
+            "ssh -t dev 'tmux -L other new-session -A -s work'",
+        )
+        for command in commands:
+            with self.subTest(command=command), patch.object(cockpit, "_option", return_value=""), patch.object(cockpit, "right_pane", return_value="%2"), patch.object(cockpit.tmux, "out", return_value=command):
+                self.assertIsNone(cockpit.current_target())
+
+    def test_current_target_clears_stale_marker_for_legacy_session_collision(self):
+        cases = (
+            ("local:work", "tmux new-session -A -s work"),
+            ("ssh:dev:work", "ssh -t dev 'tmux new-session -A -s work'"),
+        )
+        for marker, command in cases:
+            with self.subTest(marker=marker, command=command):
+                with (
+                    patch.object(cockpit, "_option", return_value=marker),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value=command),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    self.assertIsNone(cockpit.current_target())
+
+                tmux_call.assert_called_once_with(
+                    "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
+                )
+
+    def test_current_target_clears_stale_marker_for_mismatched_inner_attach(self):
+        cases = (
+            ("local:work", "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s other"),
+            ("ssh:dev:work", "ssh -t dev 'tmux -L letee.inner -T clipboard new-session -A -s other'"),
+        )
+        for marker, command in cases:
+            with self.subTest(marker=marker, command=command):
+                with (
+                    patch.object(cockpit, "_option", return_value=marker),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value=command),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    self.assertIsNone(cockpit.current_target())
+
+                tmux_call.assert_called_once_with(
+                    "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
+                )
+
+    def test_current_target_handles_repeated_invalid_options(self):
+        command = "tmux " + " ".join(["-!"] * 100)
+        with (
+            patch.object(cockpit, "_option", return_value=""),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=command),
+        ):
+            self.assertIsNone(cockpit.current_target())
 
     def test_bell_target_returns_valid_target_only(self):
         with patch.object(cockpit, "_option", side_effect=["local:work", "bad"]):

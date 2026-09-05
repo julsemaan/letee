@@ -287,8 +287,8 @@ class MainTest(unittest.TestCase):
             main(["create", "local", "work"])
 
         overlay.assert_called_with()
-        self.assertEqual(run.call_args.args[0], ("tmux", "new-session", "-d", "-s", "work"))
-        self.assertEqual(switch.call_args.args[1], "env -u TMUX tmux -T clipboard new-session -A -s work")
+        self.assertEqual(run.call_args.args[0], ("tmux", "-L", "letee.inner", "new-session", "-d", "-s", "work"))
+        self.assertEqual(switch.call_args.args[1], "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work")
 
     def test_create_sources_packaged_overlay_when_enabled(self):
         with (
@@ -299,8 +299,8 @@ class MainTest(unittest.TestCase):
         ):
             main(["create", "local", "work"])
 
-        self.assertEqual(run.call_args_list[0].args[0], ("tmux", "new-session", "-d", "-s", "work"))
-        self.assertEqual(run.call_args_list[1].args[0], ("tmux", "source-file", str(sessions.OVERLAY_FILE)))
+        self.assertEqual(run.call_args_list[0].args[0], ("tmux", "-L", "letee.inner", "new-session", "-d", "-s", "work"))
+        self.assertEqual(run.call_args_list[1].args[0], ("tmux", "-L", "letee.inner", "source-file", str(sessions.OVERLAY_FILE)))
         self.assertIn("\\; source-file", switch.call_args.args[1])
 
 
