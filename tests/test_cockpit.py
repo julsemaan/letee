@@ -318,8 +318,9 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             cockpit._attach()
 
+        executable = cockpit.tmux.tmux_executable()
         execvp.assert_called_once_with(
-            "tmux", ["tmux", "-L", "letee", "attach-session", "-d", "-t", "letee:cockpit"]
+            executable, [executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"]
         )
 
     def test_named_server_attach_uses_prefixed_socket_and_keeps_target(self):
@@ -335,8 +336,71 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             cockpit._attach()
 
+        executable = cockpit.tmux.tmux_executable()
         execvp.assert_called_once_with(
-            "tmux", ["tmux", "-L", "letee-work", "attach-session", "-d", "-t", "letee:cockpit"]
+            executable, [executable, "-L", "letee@v1-work", "attach-session", "-d", "-t", "letee:cockpit"]
+        )
+
+    def test_attach_quotes_absolute_executable_when_using_script(self):
+        executable = "/tmp/tmux with space"
+        with (
+            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
+            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
+            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            self.assertRaises(RuntimeError),
+        ):
+            cockpit._attach()
+
+        execvp.assert_called_once_with(
+            "script",
+            [
+                "script",
+                "-q",
+                "-c",
+                "'/tmp/tmux with space' -L letee@v1 attach-session -d -t letee:cockpit",
+                "/dev/null",
+            ],
+        )
+
+    def test_attach_uses_bsd_script_arguments_on_macos(self):
+        executable = "/tmp/tmux with space"
+        with (
+            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
+            patch.object(cockpit.sys, "platform", "darwin"),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
+            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
+            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            self.assertRaises(RuntimeError),
+        ):
+            cockpit._attach()
+
+        execvp.assert_called_once_with(
+            "script",
+            ["script", "-q", "/dev/null", executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"],
+        )
+
+    def test_attach_uses_bsd_script_arguments_on_freebsd(self):
+        executable = "/tmp/tmux with space"
+        with (
+            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
+            patch.object(cockpit.sys, "platform", "freebsd"),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
+            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
+            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
+            self.assertRaises(RuntimeError),
+        ):
+            cockpit._attach()
+
+        execvp.assert_called_once_with(
+            "script",
+            ["script", "-q", "/dev/null", executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"],
         )
 
     def test_fix_layout_pins_sidebar_to_configured_width(self):
@@ -1369,8 +1433,8 @@ class CockpitSIGWINCHTest(unittest.TestCase):
                         kill_p.assert_not_called()
                         run_p.assert_not_called()
 
-    def test_attach_executes_tmux_directly_even_when_script_installed(self):
-        # Even if `script` is on PATH, _attach must exec tmux directly
+    def test_attach_uses_script_with_bundled_tmux(self):
+        # `script` gives the bundled tmux a usable terminal for attachment.
         with (
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
@@ -1380,11 +1444,17 @@ class CockpitSIGWINCHTest(unittest.TestCase):
             self.assertRaises(RuntimeError),
         ):
             cockpit._attach()
+        executable = cockpit.tmux.tmux_executable()
         execvp.assert_called_once_with(
-            "tmux", ["tmux", "-L", "letee", "attach-session", "-d", "-t", "letee:cockpit"]
+            "script",
+            [
+                "script",
+                "-q",
+                "-c",
+                f"{executable} -L letee@v1 attach-session -d -t letee:cockpit",
+                "/dev/null",
+            ],
         )
-        # ensure script not used
-        self.assertNotIn("script", execvp.call_args[0][0])
 
 
 if __name__ == "__main__":

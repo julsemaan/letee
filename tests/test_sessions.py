@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import tomllib
 import re
 import shlex
 import signal
@@ -283,16 +284,16 @@ class SessionOperationsTest(unittest.TestCase):
             ],
         )
 
-    def test_rename_local_session_returns_new_target(self):
+    def test_rename_local_session_accepts_option_like_new_name(self):
         old = Target("local", "work")
         with (
             patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/letee,1,0", "PATH": "x"}, clear=True),
             patch("letee.sessions.subprocess.run") as run,
         ):
-            self.assertEqual(rename(old, "renamed"), Target("local", "renamed"))
+            self.assertEqual(rename(old, "-V"), Target("local", "-V"))
 
         run.assert_called_once_with(
-            ("tmux", "rename-session", "-t", "work", "renamed"),
+            ("tmux", "rename-session", "-t", "work", "--", "-V"),
             check=True,
             capture_output=True,
             text=True,
@@ -314,7 +315,7 @@ class SessionOperationsTest(unittest.TestCase):
                 "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
                 "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                 "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
-                "dev", "tmux rename-session -t work renamed",
+                "dev", "tmux rename-session -t work -- renamed",
             ),
         )
 
@@ -781,8 +782,8 @@ class TmuxOverlayFileTest(unittest.TestCase):
 
     def test_package_ships_the_overlay_file(self):
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-        self.assertIn('[tool.setuptools.package-data]', pyproject.read_text())
-        self.assertIn('letee = ["tmux-overlay.conf"]', pyproject.read_text())
+        package_data = tomllib.loads(pyproject.read_text())["tool"]["setuptools"]["package-data"]
+        self.assertIn("tmux-overlay.conf", package_data["letee"])
         self.assertTrue(sessions.OVERLAY_FILE.exists())
         self.assertEqual(sessions.OVERLAY_FILE.name, "tmux-overlay.conf")
 

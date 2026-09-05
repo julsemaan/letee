@@ -1,7 +1,7 @@
 PYTHON ?= python3
 PEXPECT_DIR ?= /tmp/pexpect-pkg
 
-.PHONY: test lint coverage build-check check dev-install test-e2e test-e2e-docker bump-version
+.PHONY: test lint coverage fetch-tmux build-check check dev-install test-e2e test-e2e-docker bump-version
 
 test:
 	$(PYTHON) -m unittest discover -s tests
@@ -13,10 +13,14 @@ coverage:
 	$(PYTHON) -m coverage run -m unittest discover -s tests
 	$(PYTHON) -m coverage report
 
-build-check:
+fetch-tmux:
+	$(PYTHON) tools/fetch_tmux.py
+
+build-check: fetch-tmux
 	rm -rf build dist
 	$(PYTHON) -m build
 	$(PYTHON) -m twine check dist/*
+	$(PYTHON) tools/check_dist.py dist
 
 check: lint coverage build-check
 
@@ -24,7 +28,7 @@ check: lint coverage build-check
 test-e2e: test-e2e-docker
 
 # Docker is mandatory. If unavailable, stop; never run tests directly on host.
-test-e2e-docker:
+test-e2e-docker: fetch-tmux
 	PYTHONPATH=$(PEXPECT_DIR) $(PYTHON) -m pytest tests/e2e/ -v --docker
 
 dev-install:

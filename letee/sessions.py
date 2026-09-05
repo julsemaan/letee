@@ -491,7 +491,7 @@ def rename(target: Target, new_name: str) -> Target:
         _run(
             "rename",
             target,
-            ("tmux", "rename-session", "-t", target.session, renamed.session),
+            ("tmux", "rename-session", "-t", target.session, "--", renamed.session),
             env=_default_server_env(),
         )
     else:
@@ -500,7 +500,7 @@ def rename(target: Target, new_name: str) -> Target:
             target,
             ssh_command(
                 target.host or "",
-                f"tmux rename-session -t {shlex.quote(target.session)} {shlex.quote(renamed.session)}",
+                f"tmux rename-session -t {shlex.quote(target.session)} -- {shlex.quote(renamed.session)}",
             ),
         )
     return renamed

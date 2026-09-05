@@ -48,7 +48,7 @@ jobs:
       - run: make coverage
 
   package-build:
-    name: package build
+    name: package build with bundled tmux
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,4 +60,5 @@ jobs:
           python-version: "3.14"
           cache: pip
       - run: python -m pip install build twine
-      - run: make build-check
+      - name: Fetch and validate package distributions
+        run: make build-check

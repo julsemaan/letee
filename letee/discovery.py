@@ -182,7 +182,7 @@ def _parse_agent(payload: object, panes: tuple[PaneTarget, ...], now: datetime) 
         return None
     task = payload.get("task")
     state = task.get("state") if isinstance(task, dict) else None
-    if state is not None and state not in SUPPORTED_TASK_STATES:
+    if state is not None and (not isinstance(state, str) or state not in SUPPORTED_TASK_STATES):
         state = "unknown"
     try:
         task_timestamp = _parse_timestamp(task["status_timestamp"]) if isinstance(task, dict) and "status_timestamp" in task else None
