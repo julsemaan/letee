@@ -81,7 +81,7 @@ Each row starts with a semantic status icon. Working uses an animated Braille sp
 
 | State | Unicode icon | ASCII icon |
 | --- | --- | --- |
-| `working` | animated Braille spinner | animated `|/-\\` spinner |
+| `working` | animated Braille spinner | animated `\|/-\` spinner |
 | `submitted` | `◷` | `.` |
 | `idle` | `○` | `o` |
 | `completed` | `✓` | `+` |
