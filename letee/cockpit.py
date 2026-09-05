@@ -726,13 +726,16 @@ def status_snapshot() -> StatusSnapshot | None:
 
 
 def current_target() -> Target | None:
-    if target := _target_option(CURRENT_TARGET_OPTION):
-        return target
+    target = _target_option(CURRENT_TARGET_OPTION)
     pane = right_pane()
-    command = tmux.out("display-message", "-p", "-t", pane or "", "#{pane_start_command}", check=False)
+    if not pane:
+        return target
+    command = tmux.out("display-message", "-p", "-t", pane, "#{pane_start_command}", check=False)
+    attach = r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ new-session .* -s [A-Za-z0-9_.-]+"
     inner_attach = rf"(?:^| )tmux -L {re.escape(INNER_SERVER_SOCKET)}(?: -\S+(?: \S+)?)*+ new-session .* -s ([A-Za-z0-9_.-]+)"
     try:
         parts = shlex.split(command)
+        parsed_command = command
         if parts and parts[0] == "ssh":
             index = 1
             while index < len(parts):
@@ -742,9 +745,16 @@ def current_target() -> Target | None:
                     index += 1
                 else:
                     break
-            if index < len(parts) and (match := re.search(inner_attach, " ".join(parts[index + 1:]))):
-                return Target("ssh", match.group(1), parts[index])
-        if match := re.search(inner_attach, command):
+            if index < len(parts):
+                parsed_command = " ".join(parts[index + 1:])
+                if not target and (match := re.search(inner_attach, parsed_command)):
+                    return Target("ssh", match.group(1), parts[index])
+        if target:
+            if re.search(attach, parsed_command) and not re.search(inner_attach, parsed_command):
+                tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
+                return None
+            return target
+        if match := re.search(inner_attach, parsed_command):
             return Target("local", match.group(1))
     except SystemExit:
         pass

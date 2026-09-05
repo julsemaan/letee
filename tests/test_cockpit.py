@@ -992,6 +992,25 @@ class CockpitLayoutTest(unittest.TestCase):
             with self.subTest(command=command), patch.object(cockpit, "_option", return_value=""), patch.object(cockpit, "right_pane", return_value="%2"), patch.object(cockpit.tmux, "out", return_value=command):
                 self.assertIsNone(cockpit.current_target())
 
+    def test_current_target_clears_stale_marker_for_legacy_session_collision(self):
+        cases = (
+            ("local:work", "tmux new-session -A -s work"),
+            ("ssh:dev:work", "ssh -t dev 'tmux new-session -A -s work'"),
+        )
+        for marker, command in cases:
+            with self.subTest(marker=marker, command=command):
+                with (
+                    patch.object(cockpit, "_option", return_value=marker),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value=command),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    self.assertIsNone(cockpit.current_target())
+
+                tmux_call.assert_called_once_with(
+                    "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
+                )
+
     def test_current_target_handles_repeated_invalid_options(self):
         command = "tmux " + " ".join(["-!"] * 100)
         with (
