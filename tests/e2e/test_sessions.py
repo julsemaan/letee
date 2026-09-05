@@ -5,6 +5,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import pexpect
 import pytest
 
 from .conftest import TmuxTestClient
@@ -86,6 +87,78 @@ def test_overlay_sourcing_twice_keeps_one_new_window_button(client: TmuxTestClie
         )
         assert status_right.count("range=user|letee-new") == 1, status_right
     finally:
+        client.exec("tmux", "-L", socket, "kill-server", check=False)
+
+
+def test_new_window_button_click_creates_window_in_active_directory(client: TmuxTestClient) -> None:
+    """Clicking the new-window status range creates a window in the active directory."""
+    socket = f"letee-click-{os.urandom(4).hex()}"
+    workdir = f"/tmp/letee-e2e-new-window-{os.urandom(4).hex()}"
+    overlay = client.exec(
+        "python", "-c",
+        "from letee.sessions import OVERLAY_FILE; print(OVERLAY_FILE)",
+    )
+    attached: pexpect.spawn | None = None
+    try:
+        client.exec("mkdir", "-p", workdir)
+        client.exec(
+            "tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d",
+            "-s", "click", "-c", workdir,
+        )
+        # Keep one visible character after the button so the click coordinate is stable.
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "x")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right-length", "1")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+
+        attached = pexpect.spawn(
+            "docker",
+            [
+                "exec", "-it", client.container, "tmux", "-L", socket,
+                "attach-session", "-t", "click",
+            ],
+            encoding="utf-8",
+            dimensions=(24, 90),
+            timeout=15,
+        )
+
+        client_size = ""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            client_size = client.exec(
+                "tmux", "-L", socket, "list-clients", "-F", "#{client_width}:#{client_height}",
+                check=False,
+            )
+            if client_size:
+                break
+            time.sleep(0.1)
+        assert client_size, "The tmux test client did not attach"
+        width, height = (int(value) for value in client_size.splitlines()[0].split(":", 1))
+
+        # Send an SGR mouse-down event through the attached tmux client.
+        attached.send(f"\x1b[<0;{width - 3};{height}M")
+
+        windows = ""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            windows = client.exec(
+                "tmux", "-L", socket, "list-windows", "-t", "click",
+                "-F", "#{window_index}\t#{pane_current_path}", check=False,
+            )
+            entries = [line.split("\t", 1) for line in windows.splitlines()]
+            if len(entries) == 2 and all(
+                len(entry) == 2 and entry[1] == workdir for entry in entries
+            ):
+                break
+            time.sleep(0.1)
+
+        entries = [line.split("\t", 1) for line in windows.splitlines()]
+        assert len(entries) == 2, f"Click should create one new window, got:\n{windows}"
+        assert all(
+            len(entry) == 2 and entry[1] == workdir for entry in entries
+        ), f"Windows should use {workdir}, got:\n{windows}"
+    finally:
+        if attached is not None:
+            attached.close(force=True)
         client.exec("tmux", "-L", socket, "kill-server", check=False)
 
 
