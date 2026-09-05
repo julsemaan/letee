@@ -90,8 +90,10 @@ def test_overlay_sourcing_twice_keeps_one_new_window_button(client: TmuxTestClie
         client.exec("tmux", "-L", socket, "kill-server", check=False)
 
 
-def test_new_window_button_click_creates_window_in_active_directory(client: TmuxTestClient) -> None:
-    """Clicking the new-window status range creates a window in the active directory."""
+def test_new_window_button_click_creates_and_selects_window_in_active_directory(
+    client: TmuxTestClient,
+) -> None:
+    """Add-range clicks create/select a cwd-matching window; normal clicks select their target."""
     socket = f"letee-click-{os.urandom(4).hex()}"
     workdir = f"/tmp/letee-e2e-new-window-{os.urandom(4).hex()}"
     overlay = client.exec(
@@ -105,10 +107,18 @@ def test_new_window_button_click_creates_window_in_active_directory(client: Tmux
             "tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d",
             "-s", "click", "-c", workdir,
         )
-        # Keep one visible character after the button so the click coordinate is stable.
+        # Put the first window at a stable coordinate for the normal-range click.
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-left", "")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-left-length", "0")
+        client.exec("tmux", "-L", socket, "set-window-option", "-g", "window-status-format", "target")
+        client.exec("tmux", "-L", socket, "set-window-option", "-g", "window-status-current-format", "current")
+        # Keep one visible character after the button so the add-click coordinate is stable.
         client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "x")
         client.exec("tmux", "-L", socket, "set-option", "-g", "status-right-length", "1")
         client.exec("tmux", "-L", socket, "source-file", overlay)
+        initial_window = client.exec(
+            "tmux", "-L", socket, "display-message", "-p", "-t", "click", "#{window_id}",
+        )
 
         attached = pexpect.spawn(
             "docker",
@@ -142,20 +152,38 @@ def test_new_window_button_click_creates_window_in_active_directory(client: Tmux
         while time.monotonic() < deadline:
             windows = client.exec(
                 "tmux", "-L", socket, "list-windows", "-t", "click",
-                "-F", "#{window_index}\t#{pane_current_path}", check=False,
+                "-F", "#{window_id}\t#{window_active}\t#{pane_current_path}", check=False,
             )
-            entries = [line.split("\t", 1) for line in windows.splitlines()]
-            if len(entries) == 2 and all(
-                len(entry) == 2 and entry[1] == workdir for entry in entries
-            ):
+            entries = [line.split("\t", 2) for line in windows.splitlines()]
+            if len(entries) == 2:
                 break
             time.sleep(0.1)
 
-        entries = [line.split("\t", 1) for line in windows.splitlines()]
+        entries = [line.split("\t", 2) for line in windows.splitlines()]
         assert len(entries) == 2, f"Click should create one new window, got:\n{windows}"
         assert all(
-            len(entry) == 2 and entry[1] == workdir for entry in entries
+            len(entry) == 3 and entry[2] == workdir for entry in entries
         ), f"Windows should use {workdir}, got:\n{windows}"
+        active = [entry for entry in entries if len(entry) == 3 and entry[1] == "1"]
+        assert len(active) == 1, f"Exactly one window should be active, got:\n{windows}"
+        assert active[0][0] != initial_window, f"Add click should select the new window, got:\n{windows}"
+        assert active[0][2] == workdir, f"New active window should use {workdir}, got:\n{windows}"
+
+        # The first window starts at x=1 and must remain selectable through the fallback.
+        attached.send(f"\x1b[<0;1;{height}M")
+        active_window = ""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            active_window = client.exec(
+                "tmux", "-L", socket, "display-message", "-p", "-t", "click", "#{window_id}",
+                check=False,
+            )
+            if active_window == initial_window:
+                break
+            time.sleep(0.1)
+        assert active_window == initial_window, (
+            f"Normal window click should select {initial_window}, got {active_window}"
+        )
     finally:
         if attached is not None:
             attached.close(force=True)
