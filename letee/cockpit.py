@@ -736,6 +736,7 @@ def current_target() -> Target | None:
     try:
         parts = shlex.split(command)
         parsed_command = command
+        parsed_target = None
         if parts and parts[0] == "ssh":
             index = 1
             while index < len(parts):
@@ -747,15 +748,19 @@ def current_target() -> Target | None:
                     break
             if index < len(parts):
                 parsed_command = " ".join(parts[index + 1:])
-                if not target and (match := re.search(inner_attach, parsed_command)):
-                    return Target("ssh", match.group(1), parts[index])
+                if match := re.search(inner_attach, parsed_command):
+                    parsed_target = Target("ssh", match.group(1), parts[index])
+        if parsed_target is None and (match := re.search(inner_attach, parsed_command)):
+            parsed_target = Target("local", match.group(1))
         if target:
-            if re.search(attach, parsed_command) and not re.search(inner_attach, parsed_command):
+            if parsed_target is not None and target != parsed_target:
+                tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
+                return None
+            if re.search(attach, parsed_command) and parsed_target is None:
                 tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
                 return None
             return target
-        if match := re.search(inner_attach, parsed_command):
-            return Target("local", match.group(1))
+        return parsed_target
     except SystemExit:
         pass
     return None

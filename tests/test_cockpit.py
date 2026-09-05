@@ -1011,6 +1011,25 @@ class CockpitLayoutTest(unittest.TestCase):
                     "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
                 )
 
+    def test_current_target_clears_stale_marker_for_mismatched_inner_attach(self):
+        cases = (
+            ("local:work", "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s other"),
+            ("ssh:dev:work", "ssh -t dev 'tmux -L letee.inner -T clipboard new-session -A -s other'"),
+        )
+        for marker, command in cases:
+            with self.subTest(marker=marker, command=command):
+                with (
+                    patch.object(cockpit, "_option", return_value=marker),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value=command),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    self.assertIsNone(cockpit.current_target())
+
+                tmux_call.assert_called_once_with(
+                    "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
+                )
+
     def test_current_target_handles_repeated_invalid_options(self):
         command = "tmux " + " ".join(["-!"] * 100)
         with (
