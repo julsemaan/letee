@@ -950,12 +950,12 @@ class CockpitLayoutTest(unittest.TestCase):
         with (
             patch.object(cockpit, "_option", return_value=""),
             patch.object(cockpit, "right_pane", return_value="%2"),
-            patch.object(cockpit.tmux, "out", return_value="ssh -t dev 'tmux -T clipboard new-session -A -s work'"),
+            patch.object(cockpit.tmux, "out", return_value="ssh -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'"),
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
 
     def test_current_target_recovers_from_option_rich_ssh_command(self):
-        command = "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'"
+        command = "ssh -o ControlMaster=auto -o ControlPersist=10m -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'"
         with (
             patch.object(cockpit, "_option", return_value=""),
             patch.object(cockpit, "right_pane", return_value="%2"),
@@ -980,6 +980,17 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit.tmux, "out", return_value=command),
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
+
+    def test_current_target_ignores_legacy_server_attach_commands(self):
+        commands = (
+            "tmux new-session -A -s work",
+            "tmux -L other new-session -A -s work",
+            "ssh -t dev 'tmux new-session -A -s work'",
+            "ssh -t dev 'tmux -L other new-session -A -s work'",
+        )
+        for command in commands:
+            with self.subTest(command=command), patch.object(cockpit, "_option", return_value=""), patch.object(cockpit, "right_pane", return_value="%2"), patch.object(cockpit.tmux, "out", return_value=command):
+                self.assertIsNone(cockpit.current_target())
 
     def test_current_target_handles_repeated_invalid_options(self):
         command = "tmux " + " ".join(["-!"] * 100)

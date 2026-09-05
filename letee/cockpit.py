@@ -20,7 +20,7 @@ from .config import (
     load_sidebar_keybindings,
     load_sidebar_width,
 )
-from .names import DEFAULT_SERVER, PaneTarget, Target, parse_target
+from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, parse_target
 from . import diagnostics, sessions, tmux
 
 
@@ -730,6 +730,7 @@ def current_target() -> Target | None:
         return target
     pane = right_pane()
     command = tmux.out("display-message", "-p", "-t", pane or "", "#{pane_start_command}", check=False)
+    inner_attach = rf"(?:^| )tmux -L {re.escape(INNER_SERVER_SOCKET)}(?: -\S+(?: \S+)?)*+ new-session .* -s ([A-Za-z0-9_.-]+)"
     try:
         parts = shlex.split(command)
         if parts and parts[0] == "ssh":
@@ -741,9 +742,9 @@ def current_target() -> Target | None:
                     index += 1
                 else:
                     break
-            if index < len(parts) and (match := re.search(r"(?:^| )tmux .* -s ([A-Za-z0-9_.-]+)", " ".join(parts[index + 1:]))):
+            if index < len(parts) and (match := re.search(inner_attach, " ".join(parts[index + 1:]))):
                 return Target("ssh", match.group(1), parts[index])
-        if match := re.search(r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ new-session .* -s ([A-Za-z0-9_.-]+)", command):
+        if match := re.search(inner_attach, command):
             return Target("local", match.group(1))
     except SystemExit:
         pass
