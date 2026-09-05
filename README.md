@@ -19,7 +19,7 @@ It adds a persistent sidebar to an existing terminal. Your sessions remain ordin
 
 ## Requirements
 
-You need Python 3.11 or newer and OpenSSH. Letee includes tmux 3.6a for its outer cockpit on Linux x86_64/ARM64 and macOS 15+ x86_64/ARM64. On macOS versions before 15 and unsupported systems, install tmux. Local and remote sessions still use the tmux installed on their host. Automatic discovery for Claude Code, Codex, Pi, and OpenCode is optional and requires [agent-status](https://github.com/julsemaan/agent-status) wherever those agents run. `pip install letee` also installs the `agent-status` Python package. Remote machines without letee still need `agent-status` installed separately when agents run there.
+You need Python 3.11 or newer, tmux and OpenSSH.
 
 ## Install and launch
 
@@ -34,14 +34,6 @@ Letee opens an outer tmux cockpit with the sidebar on the left and the selected 
 
 1. Use your mouse and click "+ add" or use the keyboard equivalent:
   1. Press `C-s +`, select `New session`, type a name, and press `Enter`.
-
-## Tmux used by letee
-
-The bundled binary is used only for letee's outer cockpit and does not replace `tmux` on `PATH`. macOS versions before 15 and unsupported systems use system tmux instead, so install tmux there. Letee never downloads tmux at application runtime. Release archives come from [tmux/tmux-builds](https://github.com/tmux/tmux-builds), and the package includes its third-party license notices.
-
-## How it works
-
-`letee` creates or attaches to a dedicated outer tmux server. That outer layer owns only the layout. Bare `letee` uses the default server; `-L NAME` uses the named server. Letee keeps these outer servers in a private socket namespace so a tmux version change cannot attach to an older cockpit. Reopening the same name uses `attach -d`, moving the cockpit to the newest terminal.
 
 ## Configure agent discovery
 
