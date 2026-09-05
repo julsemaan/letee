@@ -799,12 +799,12 @@ class TmuxOverlayFileTest(unittest.TestCase):
 
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
         self.assertEqual(self.overlay.count("set -gF status-right "), 1)
-        self.assertIn("if-shell -F '#{!=:#{m:*#\\[range=user\\|letee-new]*,#{status-right}},1}' {", self.overlay)
+        self.assertIn("if-shell -F '#{!=:#{m:*#\\[*range=user\\|letee-new]*,#{status-right}},1}' {", self.overlay)
 
-    def test_duplicate_guard_matches_the_complete_status_range_marker(self):
+    def test_duplicate_guard_matches_range_marker_after_style_attributes(self):
         guard = next(line for line in self.commands if line.startswith("if-shell -F "))
         pattern = re.search(r"#\{m:(.*),#\{status-right\}\}", guard).group(1)
-        self.assertEqual(pattern, r"*#\[range=user\|letee-new]*")
+        self.assertEqual(pattern, r"*#\[*range=user\|letee-new]*")
 
     def test_new_window_mouse_range_creates_a_window_in_the_active_directory(self):
         binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
