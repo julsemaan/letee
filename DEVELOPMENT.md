@@ -1,6 +1,6 @@
 # Development guide
 
-This guide covers local development and manual integration testing for letee. See [README.md](README.md) for user-facing installation and usage instructions.
+This guide covers local development and manual integration testing for letee. See the [README](https://github.com/julsemaan/letee/blob/main/README.md) for user-facing installation and usage instructions.
 
 ## Set up
 
@@ -57,3 +57,18 @@ persistent_ssh = false
 ```sh
 ssh dev-slow
 ```
+
+## Preparing a release
+
+Use GitHub UI to create release PR:
+
+1. Open **Actions → Prepare release**.
+2. Select `main` as workflow branch and click **Run workflow**.
+3. Leave **Version** blank for next patch version, or enter explicit `MAJOR.MINOR.PATCH` version.
+4. Click **Run workflow**.
+
+Workflow creates `release/v<version>`, commits `pyproject.toml` and `letee/__init__.py`, pushes branch, and opens PR to `main`.
+
+Enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** so workflow can open PRs with built-in `GITHUB_TOKEN`.
+
+Merging release PR starts build, PyPI publication, and GitHub release automatically.
