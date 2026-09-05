@@ -789,6 +789,14 @@ class TmuxOverlayFileTest(unittest.TestCase):
         self.assertIn("fg=#1e1e2e,bg=#a6e3a1,bold", line)
         self.assertIn("range=user|letee-new] ＋ add #[default,range=right]", line)
 
+    def test_new_window_button_extends_status_right_length_and_preserves_unlimited(self):
+        expected = (
+            "set -gF status-right-length "
+            "'#{?#{==:#{status-right-length},0},0,"
+            "#{e|+:#{status-right-length},9}}'"
+        )
+        self.assertIn(expected, self.overlay)
+
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
         self.assertEqual(self.overlay.count("set -gF status-right "), 1)
         self.assertIn("if-shell -F '#{!=:#{m:*#\\[range=user\\|letee-new]*,#{status-right}},1}' {", self.overlay)
