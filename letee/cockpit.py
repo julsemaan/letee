@@ -731,8 +731,8 @@ def current_target() -> Target | None:
     if not pane:
         return target
     command = tmux.out("display-message", "-p", "-t", pane, "#{pane_start_command}", check=False)
-    attach = r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ new-session .* -s [A-Za-z0-9_.-]+"
-    inner_attach = rf"(?:^| )tmux -L {re.escape(INNER_SERVER_SOCKET)}(?: -\S+(?: \S+)?)*+ new-session .* -s ([A-Za-z0-9_.-]+)"
+    attach = r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s [A-Za-z0-9_.-]+|(?:.* )?attach-session(?: .*?)? -t [A-Za-z0-9_.-]+)"
+    inner_attach = rf"(?:^| )tmux (?:-L {re.escape(INNER_SERVER_SOCKET)}|-S (?:\S*/)?{re.escape(INNER_SERVER_SOCKET)})(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s|(?:.* )?attach-session(?: .*?)? -t) ([A-Za-z0-9_.-]+)"
     try:
         parts = shlex.split(command)
         parsed_command = command

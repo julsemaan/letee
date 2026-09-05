@@ -981,6 +981,37 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("ssh", "work", "dev"))
 
+    def test_current_target_recovers_from_inner_pane_attach_commands(self):
+        socket_path = "/tmp/tmux-1000/letee.inner"
+        commands = (
+            f"env -u TMUX tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work",
+            f"ssh -t dev 'tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+        )
+        for command in commands:
+            with self.subTest(command=command), patch.object(cockpit, "_option", return_value=""), patch.object(cockpit, "right_pane", return_value="%2"), patch.object(cockpit.tmux, "out", return_value=command):
+                expected = cockpit.Target("ssh", "work", "dev") if command.startswith("ssh ") else cockpit.Target("local", "work")
+                self.assertEqual(cockpit.current_target(), expected)
+
+    def test_current_target_clears_stale_marker_for_legacy_pane_attach_commands(self):
+        socket_path = "/tmp/tmux-1000/default"
+        cases = (
+            ("local:work", f"env -u TMUX tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work"),
+            ("ssh:dev:work", f"ssh -t dev 'tmux -S {socket_path} select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'"),
+        )
+        for marker, command in cases:
+            with self.subTest(marker=marker, command=command):
+                with (
+                    patch.object(cockpit, "_option", return_value=marker),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value=command),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    self.assertIsNone(cockpit.current_target())
+
+                tmux_call.assert_called_once_with(
+                    "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
+                )
+
     def test_current_target_ignores_legacy_server_attach_commands(self):
         commands = (
             "tmux new-session -A -s work",
