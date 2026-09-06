@@ -67,10 +67,13 @@ def _reject_raw_archives(names: set[str]) -> None:
 def _check_provenance(content: bytes, label: str) -> None:
     try:
         metadata = json.loads(content)
-    except (UnicodeError, json.JSONDecodeError) as error:
+        staged = json.loads((PROJECT_ROOT / PROVENANCE_PATH).read_bytes())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid tmux provenance in {label}: {error}") from error
     if not isinstance(metadata, dict) or metadata.get("tmux_version") != TMUX_VERSION:
         raise ValueError(f"tmux provenance in {label} is not version {TMUX_VERSION}")
+    if metadata != staged:
+        raise ValueError(f"tmux provenance in {label} does not match staged provenance")
 
 
 def _check_binary(content: bytes, suffix: str, distribution: str) -> None:

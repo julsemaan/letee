@@ -1,4 +1,5 @@
 import io
+import json
 import tarfile
 import tempfile
 import unittest
@@ -16,6 +17,11 @@ class CheckDistWheelTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
             path.chmod(0o755)
+        provenance = root / check_dist.PROVENANCE_PATH
+        provenance.parent.mkdir(parents=True, exist_ok=True)
+        provenance.write_bytes(
+            (check_dist.PROJECT_ROOT / check_dist.PROVENANCE_PATH).read_bytes()
+        )
 
     def _write_wheel(
         self,
@@ -23,7 +29,10 @@ class CheckDistWheelTest(unittest.TestCase):
         contents: dict[str, bytes],
         *,
         duplicate_name: str | None = None,
+        provenance: bytes | None = None,
     ) -> None:
+        if provenance is None:
+            provenance = (path.parent / check_dist.PROVENANCE_PATH).read_bytes()
         with ZipFile(path, "w") as archive:
             for name in check_dist.BINARY_PATHS:
                 info = ZipInfo(name)
@@ -31,10 +40,7 @@ class CheckDistWheelTest(unittest.TestCase):
                 archive.writestr(info, contents[name])
             for name in check_dist.LICENSE_PATHS:
                 archive.writestr(name, b"license")
-            archive.writestr(
-                check_dist.PROVENANCE_PATH,
-                b'{"tmux_version": "3.6a"}',
-            )
+            archive.writestr(check_dist.PROVENANCE_PATH, provenance)
             if duplicate_name is not None:
                 info = ZipInfo(duplicate_name)
                 info.external_attr = 0o755 << 16
@@ -46,7 +52,10 @@ class CheckDistWheelTest(unittest.TestCase):
         contents: dict[str, bytes],
         *,
         duplicate_name: str | None = None,
+        provenance: bytes | None = None,
     ) -> None:
+        if provenance is None:
+            provenance = (path.parent / check_dist.PROVENANCE_PATH).read_bytes()
         with tarfile.open(path, "w:gz") as archive:
             root = "letee-0.0"
             for name in check_dist.BINARY_PATHS:
@@ -61,11 +70,10 @@ class CheckDistWheelTest(unittest.TestCase):
                 info.mode = 0o644
                 info.size = len(content)
                 archive.addfile(info, io.BytesIO(content))
-            content = b'{"tmux_version": "3.6a"}'
             info = tarfile.TarInfo(f"{root}/{check_dist.PROVENANCE_PATH}")
             info.mode = 0o644
-            info.size = len(content)
-            archive.addfile(info, io.BytesIO(content))
+            info.size = len(provenance)
+            archive.addfile(info, io.BytesIO(provenance))
             if duplicate_name is not None:
                 content = contents[duplicate_name]
                 info = tarfile.TarInfo(f"{root}/{duplicate_name}")
@@ -127,6 +135,43 @@ class CheckDistWheelTest(unittest.TestCase):
                             ValueError, "does not match staged vendor binary"
                         ):
                             checker(path)
+
+    def test_check_dist_rejects_incomplete_or_tampered_provenance(self):
+        for distribution in ("wheel", "sdist"):
+            for mutation in ("missing_source", "altered_url", "altered_sha256"):
+                with self.subTest(distribution=distribution, mutation=mutation):
+                    with tempfile.TemporaryDirectory() as tempdir:
+                        root = Path(tempdir)
+                        contents = {name: b"tmux" for name in check_dist.BINARY_PATHS}
+                        self._stage_binaries(root, contents)
+                        metadata = json.loads(
+                            (root / check_dist.PROVENANCE_PATH).read_text()
+                        )
+                        if mutation == "missing_source":
+                            del metadata["source"]
+                        else:
+                            artifact = next(iter(metadata["artifacts"].values()))
+                            artifact["url" if mutation == "altered_url" else "sha256"] = (
+                                "https://example.invalid/tmux.tar.gz"
+                                if mutation == "altered_url"
+                                else "0" * 64
+                            )
+                        provenance = json.dumps(metadata).encode()
+
+                        if distribution == "wheel":
+                            path = root / "letee.whl"
+                            self._write_wheel(path, contents, provenance=provenance)
+                            checker = check_dist._check_wheel
+                        else:
+                            path = root / "letee.tar.gz"
+                            self._write_sdist(path, contents, provenance=provenance)
+                            checker = check_dist._check_sdist
+
+                        with patch.object(check_dist, "PROJECT_ROOT", root):
+                            with self.assertRaisesRegex(
+                                ValueError, "does not match staged provenance"
+                            ):
+                                checker(path)
 
 
 class CheckDistHostBinaryTest(unittest.TestCase):
