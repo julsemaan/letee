@@ -17,6 +17,10 @@ class CheckDistWheelTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
             path.chmod(0o755)
+        for name in check_dist.LICENSE_PATHS:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"license")
         provenance = root / check_dist.PROVENANCE_PATH
         provenance.parent.mkdir(parents=True, exist_ok=True)
         source = "https://example.invalid/tmux-builds"
@@ -54,16 +58,19 @@ class CheckDistWheelTest(unittest.TestCase):
         duplicate_name: str | None = None,
         provenance: bytes | None = None,
         member_prefix: str = "",
+        license_contents: dict[str, bytes] | None = None,
     ) -> None:
         if provenance is None:
             provenance = (path.parent / check_dist.PROVENANCE_PATH).read_bytes()
+        if license_contents is None:
+            license_contents = {name: b"license" for name in check_dist.LICENSE_PATHS}
         with ZipFile(path, "w") as archive:
             for name in check_dist.BINARY_PATHS:
                 info = ZipInfo(f"{member_prefix}{name}")
                 info.external_attr = 0o755 << 16
                 archive.writestr(info, contents[name])
             for name in check_dist.LICENSE_PATHS:
-                archive.writestr(f"{member_prefix}{name}", b"license")
+                archive.writestr(f"{member_prefix}{name}", license_contents[name])
             archive.writestr(f"{member_prefix}{check_dist.PROVENANCE_PATH}", provenance)
             if duplicate_name is not None:
                 info = ZipInfo(duplicate_name)
@@ -89,9 +96,12 @@ class CheckDistWheelTest(unittest.TestCase):
         *,
         duplicate_name: str | None = None,
         provenance: bytes | None = None,
+        license_contents: dict[str, bytes] | None = None,
     ) -> None:
         if provenance is None:
             provenance = (path.parent / check_dist.PROVENANCE_PATH).read_bytes()
+        if license_contents is None:
+            license_contents = {name: b"license" for name in check_dist.LICENSE_PATHS}
         with tarfile.open(path, "w:gz") as archive:
             root = "letee-0.0"
             for name in check_dist.BINARY_PATHS:
@@ -101,7 +111,7 @@ class CheckDistWheelTest(unittest.TestCase):
                 info.size = len(content)
                 archive.addfile(info, io.BytesIO(content))
             for name in check_dist.LICENSE_PATHS:
-                content = b"license"
+                content = license_contents[name]
                 info = tarfile.TarInfo(f"{root}/{name}")
                 info.mode = 0o644
                 info.size = len(content)
@@ -171,6 +181,41 @@ class CheckDistWheelTest(unittest.TestCase):
                             ValueError, "does not match staged vendor binary"
                         ):
                             checker(path)
+
+    def test_check_dist_rejects_tampered_license_bytes(self):
+        for distribution in ("wheel", "sdist"):
+            for license_content in (b"tampered", b""):
+                with self.subTest(
+                    distribution=distribution, license_content=license_content
+                ):
+                    with tempfile.TemporaryDirectory() as tempdir:
+                        root = Path(tempdir)
+                        contents = {name: b"tmux" for name in check_dist.BINARY_PATHS}
+                        self._stage_binaries(root, contents)
+                        tampered = next(iter(check_dist.LICENSE_PATHS))
+                        license_contents = {
+                            name: b"license" for name in check_dist.LICENSE_PATHS
+                        }
+                        license_contents[tampered] = license_content
+
+                        if distribution == "wheel":
+                            path = root / "letee.whl"
+                            self._write_wheel(
+                                path, contents, license_contents=license_contents
+                            )
+                            checker = check_dist._check_wheel
+                        else:
+                            path = root / "letee.tar.gz"
+                            self._write_sdist(
+                                path, contents, license_contents=license_contents
+                            )
+                            checker = check_dist._check_sdist
+
+                        with patch.object(check_dist, "PROJECT_ROOT", root):
+                            with self.assertRaisesRegex(
+                                ValueError, "does not match staged license notice"
+                            ):
+                                checker(path)
 
     def test_check_dist_rejects_incomplete_or_tampered_provenance(self):
         for distribution in ("wheel", "sdist"):

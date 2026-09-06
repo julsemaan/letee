@@ -82,16 +82,27 @@ def _check_provenance(content: bytes, label: str) -> None:
         raise ValueError(f"tmux provenance in {label} does not match staged provenance")
 
 
-def _check_binary(content: bytes, suffix: str, distribution: str) -> None:
+def _check_staged_file(
+    content: bytes, suffix: str, distribution: str, description: str
+) -> None:
     path = PROJECT_ROOT / suffix
     try:
         expected = path.read_bytes()
     except OSError as error:
-        raise ValueError(f"cannot read staged vendor binary {path}: {error}") from error
+        raise ValueError(f"cannot read staged {description} {path}: {error}") from error
     if content != expected:
         raise ValueError(
-            f"bundled binary does not match staged vendor binary in {distribution}: {suffix}"
+            f"bundled {description} does not match staged {description} in "
+            f"{distribution}: {suffix}"
         )
+
+
+def _check_binary(content: bytes, suffix: str, distribution: str) -> None:
+    _check_staged_file(content, suffix, distribution, "vendor binary")
+
+
+def _check_license(content: bytes, suffix: str, distribution: str) -> None:
+    _check_staged_file(content, suffix, distribution, "license notice")
 
 
 def _check_wheel(path: Path) -> None:
@@ -112,6 +123,7 @@ def _check_wheel(path: Path) -> None:
                 name = _member_for_exact_name(names, suffix)
                 if archive.getinfo(name).is_dir():
                     raise ValueError(f"license notice is a directory in wheel: {name}")
+                _check_license(archive.read(name), suffix, "wheel")
             _check_provenance(
                 archive.read(_member_for_exact_name(names, PROVENANCE_PATH)), str(path)
             )
@@ -141,6 +153,10 @@ def _check_sdist(path: Path) -> None:
                 name = _member_for_suffix(set(members), suffix)
                 if not members[name].isreg():
                     raise ValueError(f"license notice is not a regular file in source distribution: {name}")
+                extracted = archive.extractfile(members[name])
+                if extracted is None:
+                    raise ValueError(f"cannot read license notice in {path}: {name}")
+                _check_license(extracted.read(), suffix, "source distribution")
             name = _member_for_suffix(set(members), PROVENANCE_PATH)
             extracted = archive.extractfile(members[name])
             if extracted is None:
