@@ -19,8 +19,31 @@ class CheckDistWheelTest(unittest.TestCase):
             path.chmod(0o755)
         provenance = root / check_dist.PROVENANCE_PATH
         provenance.parent.mkdir(parents=True, exist_ok=True)
-        provenance.write_bytes(
-            (check_dist.PROJECT_ROOT / check_dist.PROVENANCE_PATH).read_bytes()
+        source = "https://example.invalid/tmux-builds"
+        provenance.write_text(
+            json.dumps(
+                {
+                    "tmux_version": check_dist.TMUX_VERSION,
+                    "source": source,
+                    "release": f"{source}/releases/tag/v{check_dist.TMUX_VERSION}",
+                    "artifacts": {
+                        name: {
+                            "url": f"{source}/releases/download/v{check_dist.TMUX_VERSION}/{name}",
+                            "sha256": "f" * 64,
+                        }
+                        for name in (
+                            f"tmux-{check_dist.TMUX_VERSION}-linux-x86_64.tar.gz",
+                            f"tmux-{check_dist.TMUX_VERSION}-linux-arm64.tar.gz",
+                            f"tmux-{check_dist.TMUX_VERSION}-macos-x86_64.tar.gz",
+                            f"tmux-{check_dist.TMUX_VERSION}-macos-arm64.tar.gz",
+                            "LICENSES.tar.gz",
+                        )
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
         )
 
     def _write_wheel(
