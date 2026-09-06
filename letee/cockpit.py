@@ -725,6 +725,47 @@ def status_snapshot() -> StatusSnapshot | None:
     return _parse_status_snapshot(text)
 
 
+def _inner_attach_session(parts: list[str]) -> str | None:
+    try:
+        tmux_index = parts.index("tmux")
+    except ValueError:
+        return None
+
+    tmux_parts = parts[tmux_index + 1:]
+    socket_option = None
+    socket = None
+    index = 0
+    while index < len(tmux_parts):
+        part = tmux_parts[index]
+        if part in ("-L", "-S"):
+            if index + 1 >= len(tmux_parts):
+                return None
+            socket_option = part
+            socket = tmux_parts[index + 1]
+            index += 2
+            continue
+        if part not in ("new-session", "attach-session"):
+            index += 1
+            continue
+
+        target_option = "-s" if part == "new-session" else "-t"
+        try:
+            target_index = tmux_parts.index(target_option, index + 1)
+        except ValueError:
+            return None
+        if target_index + 1 >= len(tmux_parts):
+            return None
+        session = tmux_parts[target_index + 1]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", session):
+            return None
+        inner = (
+            socket_option == "-L" and socket == INNER_SERVER_SOCKET
+            or socket_option == "-S" and os.path.basename(socket or "") == INNER_SERVER_SOCKET
+        )
+        return session if inner else None
+    return None
+
+
 def current_target() -> Target | None:
     target = _target_option(CURRENT_TARGET_OPTION)
     pane = right_pane()
@@ -732,10 +773,10 @@ def current_target() -> Target | None:
         return target
     command = tmux.out("display-message", "-p", "-t", pane, "#{pane_start_command}", check=False)
     attach = r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s [A-Za-z0-9_.-]+|(?:.* )?attach-session(?: .*?)? -t [A-Za-z0-9_.-]+)"
-    inner_attach = rf"(?:^| )tmux (?:-L {re.escape(INNER_SERVER_SOCKET)}|-S (?:\S*/)?{re.escape(INNER_SERVER_SOCKET)})(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s|(?:.* )?attach-session(?: .*?)? -t) ([A-Za-z0-9_.-]+)"
     try:
         parts = shlex.split(command)
         parsed_command = command
+        parsed_parts = parts
         parsed_target = None
         if parts and parts[0] == "ssh":
             index = 1
@@ -748,10 +789,11 @@ def current_target() -> Target | None:
                     break
             if index < len(parts):
                 parsed_command = " ".join(parts[index + 1:])
-                if match := re.search(inner_attach, parsed_command):
-                    parsed_target = Target("ssh", match.group(1), parts[index])
-        if parsed_target is None and (match := re.search(inner_attach, parsed_command)):
-            parsed_target = Target("local", match.group(1))
+                parsed_parts = shlex.split(parsed_command)
+                if session := _inner_attach_session(parsed_parts):
+                    parsed_target = Target("ssh", session, parts[index])
+        if parsed_target is None and (session := _inner_attach_session(parsed_parts)):
+            parsed_target = Target("local", session)
         if target:
             if parsed_target is not None and target != parsed_target:
                 tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
