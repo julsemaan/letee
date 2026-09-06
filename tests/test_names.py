@@ -1,6 +1,7 @@
 import unittest
 
 from letee.names import (
+    INNER_SERVER_SOCKET,
     PaneTarget,
     Target,
     legacy_server_socket,
@@ -15,6 +16,7 @@ class ServerNameTest(unittest.TestCase):
         self.assertEqual(normalize_server(None), "default")
         self.assertEqual(server_socket("default"), "letee@v1")
         self.assertEqual(server_socket("work"), "letee@v1-work")
+        self.assertEqual(INNER_SERVER_SOCKET, "letee.inner")
 
     def test_generated_socket_names_do_not_overlap_legacy_server_names(self):
         for server, legacy_server in (("default", "v1"), ("work", "v1-work")):
