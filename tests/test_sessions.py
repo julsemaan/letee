@@ -801,8 +801,21 @@ class TmuxOverlayFileTest(unittest.TestCase):
         self.assertEqual(self.overlay.count("set -gF status-right "), 1)
         self.assertIn("if-shell -F '#{!=:#{m:*#\\[*range=user\\|letee-new]*,#{status-right}},1}' {", self.overlay)
 
+    def test_status_right_length_guard_tracks_its_last_value(self):
+        self.assertIn(
+            "if-shell -F '#{!=:#{status-right-length},#{@letee_status_right_length}}' {",
+            self.overlay,
+        )
+        self.assertIn(
+            "set -gF @letee_status_right_length '#{status-right-length}'",
+            self.overlay,
+        )
+
     def test_duplicate_guard_matches_range_marker_after_style_attributes(self):
-        guard = next(line for line in self.commands if line.startswith("if-shell -F "))
+        guard = next(
+            line for line in self.commands
+            if line.startswith("if-shell -F ") and "#{m:" in line
+        )
         pattern = re.search(r"#\{m:(.*),#\{status-right\}\}", guard).group(1)
         self.assertEqual(pattern, r"*#\[*range=user\|letee-new]*")
 

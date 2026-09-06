@@ -90,6 +90,51 @@ def test_overlay_sourcing_twice_keeps_one_new_window_button(client: TmuxTestClie
         client.exec("tmux", "-L", socket, "kill-server", check=False)
 
 
+def test_overlay_reinstall_does_not_accumulate_status_right_length(client: TmuxTestClient) -> None:
+    """Replacing the button and sourcing again keeps the right-side length stable."""
+    socket = f"letee-overlay-length-{os.urandom(4).hex()}"
+    overlay = client.exec(
+        "python", "-c",
+        "from letee.sessions import OVERLAY_FILE; print(OVERLAY_FILE)",
+    )
+    try:
+        client.exec("tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", "overlay")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right-length", "1")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        first_length = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        )
+
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "replacement")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        second_length = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        )
+
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "replacement-again")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        third_length = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        )
+
+        assert first_length == second_length == third_length == "10"
+        status_right = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right",
+        )
+        assert status_right.count("range=user|letee-new") == 1, status_right
+
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right-length", "0")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "unlimited")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "unlimited-again")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        assert client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        ) == "0"
+    finally:
+        client.exec("tmux", "-L", socket, "kill-server", check=False)
+
+
 def test_new_window_button_click_creates_and_selects_window_in_active_directory(
     client: TmuxTestClient,
 ) -> None:
