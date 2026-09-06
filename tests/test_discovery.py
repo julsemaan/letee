@@ -18,7 +18,7 @@ from letee.discovery import (
 )
 from datetime import datetime, timezone
 
-from letee.names import PaneTarget, Target
+from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
 
 
 EMPTY_LOCAL = SourceSnapshot(True, (), frozenset())
@@ -78,7 +78,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2"])
         self.assertEqual(snapshot.focused_panes, frozenset({snapshot.panes[0]}))
         run.assert_called_once()
-        self.assertEqual(run.call_args.args[0][:3], ["tmux", "list-panes", "-a"])
+        self.assertEqual(run.call_args.args[0][:4], ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes"])
 
     def test_local_snapshot_timeout_is_reported_without_hanging(self):
         with patch(
@@ -88,11 +88,11 @@ class DiscoverySnapshotTest(unittest.TestCase):
             self.assertEqual(local_snapshot().error, "timed out")
 
     def test_local_no_server_is_available_empty_and_other_failure_is_explicit(self):
-        no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/default\n")
+        no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/letee.inner\n")
         missing_socket = Mock(
             returncode=1,
             stdout="",
-            stderr="error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
+            stderr="error connecting to /tmp/tmux-1000/letee.inner (No such file or directory)\n",
         )
         failure = Mock(returncode=1, stdout="", stderr="tmux: permission denied\n")
         with patch("letee.discovery.subprocess.run", side_effect=[no_server, missing_socket, failure]):
@@ -177,6 +177,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         )
         self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
         self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
+        self.assertIn(f"tmux -L {INNER_SERVER_SOCKET} list-panes", REMOTE_COMMAND)
 
     def test_remote_result_keeps_panes_when_agent_reader_is_missing(self):
         pane_line = "work:@1:%2:0:-:/tmp/tmux"
@@ -211,7 +212,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         with patch("letee.discovery.subprocess.run", side_effect=oversized):
             self.assertEqual(remote_snapshot("dev").error, "output exceeded 1 MiB")
 
-        no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/default\n")
+        no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/letee.inner\n")
         with patch("letee.discovery.subprocess.run", return_value=no_server):
             self.assertEqual(remote_snapshot("dev"), SourceSnapshot(True, (), frozenset()))
 
@@ -457,7 +458,7 @@ class DiscoveryPollerTest(unittest.TestCase):
         def popen(command, **kwargs):
             process = FakeProcess(1)
             kwargs["stderr"].write(
-                b"no server running on /tmp/tmux-1000/default\n"
+                b"no server running on /tmp/tmux-1000/letee.inner\n"
                 if command[-2] == "empty"
                 else b"tmux: permission denied\n"
             )

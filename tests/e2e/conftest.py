@@ -57,9 +57,9 @@ class TmuxTestClient:
         )
         return result.stdout.strip()
 
-    def default_tmux(self, *args: str, check: bool = True) -> str:
-        """Run tmux against default server where managed sessions live."""
-        return self.exec("tmux", *args, check=check)
+    def inner_tmux(self, *args: str, check: bool = True) -> str:
+        """Run tmux against letee's dedicated inner server."""
+        return self.exec("tmux", "-L", "letee.inner", *args, check=check)
 
     def write_file(self, path: str, content: str) -> None:
         """Write UTF-8 text inside test container."""
@@ -171,12 +171,12 @@ class TmuxTestClient:
     # -- Session management --
 
     def create_session(self, name: str) -> None:
-        """tmux new-session -d -s <name>"""
-        self.tmux("new-session", "-d", "-s", name)
+        """Create a session on letee's dedicated inner server."""
+        self.inner_tmux("new-session", "-d", "-s", name)
 
     def kill_session(self, name: str) -> None:
-        """tmux kill-session -t <name>"""
-        self.tmux("kill-session", "-t", name)
+        """Kill a session on letee's dedicated inner server."""
+        self.inner_tmux("kill-session", "-t", name)
 
     # -- Cleanup --
 

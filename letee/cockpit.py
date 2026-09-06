@@ -20,7 +20,7 @@ from .config import (
     load_sidebar_keybindings,
     load_sidebar_width,
 )
-from .names import DEFAULT_SERVER, PaneTarget, Target, parse_target
+from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, parse_target
 from . import diagnostics, sessions, tmux
 
 
@@ -726,12 +726,17 @@ def status_snapshot() -> StatusSnapshot | None:
 
 
 def current_target() -> Target | None:
-    if target := _target_option(CURRENT_TARGET_OPTION):
-        return target
+    target = _target_option(CURRENT_TARGET_OPTION)
     pane = right_pane()
-    command = tmux.out("display-message", "-p", "-t", pane or "", "#{pane_start_command}", check=False)
+    if not pane:
+        return target
+    command = tmux.out("display-message", "-p", "-t", pane, "#{pane_start_command}", check=False)
+    attach = r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s [A-Za-z0-9_.-]+|(?:.* )?attach-session(?: .*?)? -t [A-Za-z0-9_.-]+)"
+    inner_attach = rf"(?:^| )tmux (?:-L {re.escape(INNER_SERVER_SOCKET)}|-S (?:\S*/)?{re.escape(INNER_SERVER_SOCKET)})(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s|(?:.* )?attach-session(?: .*?)? -t) ([A-Za-z0-9_.-]+)"
     try:
         parts = shlex.split(command)
+        parsed_command = command
+        parsed_target = None
         if parts and parts[0] == "ssh":
             index = 1
             while index < len(parts):
@@ -741,10 +746,21 @@ def current_target() -> Target | None:
                     index += 1
                 else:
                     break
-            if index < len(parts) and (match := re.search(r"(?:^| )tmux .* -s ([A-Za-z0-9_.-]+)", " ".join(parts[index + 1:]))):
-                return Target("ssh", match.group(1), parts[index])
-        if match := re.search(r"(?:^| )tmux new-session .* -s ([A-Za-z0-9_.-]+)", command):
-            return Target("local", match.group(1))
+            if index < len(parts):
+                parsed_command = " ".join(parts[index + 1:])
+                if match := re.search(inner_attach, parsed_command):
+                    parsed_target = Target("ssh", match.group(1), parts[index])
+        if parsed_target is None and (match := re.search(inner_attach, parsed_command)):
+            parsed_target = Target("local", match.group(1))
+        if target:
+            if parsed_target is not None and target != parsed_target:
+                tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
+                return None
+            if re.search(attach, parsed_command) and parsed_target is None:
+                tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
+                return None
+            return target
+        return parsed_target
     except SystemExit:
         pass
     return None
