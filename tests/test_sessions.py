@@ -822,7 +822,7 @@ class TmuxOverlayFileTest(unittest.TestCase):
     def test_new_window_mouse_range_creates_a_window_in_the_active_directory(self):
         binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
         self.assertIn(
-            "#{&&:#{==:#{mouse_status_range},user},#{==:#{mouse_status_range_argument},letee-new}}",
+            "#{==:#{mouse_status_range},letee-new}",
             binding,
         )
         self.assertIn(
