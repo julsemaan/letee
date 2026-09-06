@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import letee.sessions as sessions
-from letee.names import PaneTarget, Target
+from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
 from letee.sessions import attach_command, create, kill, kill_agent, pane_attach_command, rename, ssh_command
 
 
@@ -80,12 +80,12 @@ class SessionOperationsTest(unittest.TestCase):
         with patch("letee.sessions.load_tmux_config_overlay", return_value=False):
             self.assertEqual(
                 attach_command(Target("local", "work")),
-                "env -u TMUX tmux -T clipboard new-session -A -s work",
+                "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work",
             )
             with patch("letee.sessions.load_persistent_ssh", return_value=True):
                 self.assertEqual(
                     attach_command(Target("ssh", "work", "dev")),
-                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
                 )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
@@ -223,7 +223,7 @@ class SessionOperationsTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, r"^kill agent local:work failed: not permitted$"):
                 kill_agent(pane)
 
-    def test_kill_local_session_uses_default_server(self):
+    def test_kill_local_session_uses_inner_server(self):
         with (
             patch.dict("letee.sessions.os.environ", {"TMUX": "/tmp/letee,1,0", "PATH": "x"}, clear=True),
             patch("letee.sessions.subprocess.run") as run,
@@ -231,7 +231,7 @@ class SessionOperationsTest(unittest.TestCase):
             kill(Target("local", "work"))
 
         run.assert_called_once_with(
-            ("tmux", "kill-session", "-t", "work"),
+            ("tmux", "-L", INNER_SERVER_SOCKET, "kill-session", "-t", "work"),
             check=True,
             capture_output=True,
             text=True,
@@ -249,7 +249,7 @@ class SessionOperationsTest(unittest.TestCase):
             create(target)
 
         run.assert_called_once_with(
-            ("tmux", "new-session", "-d", "-s", "work"),
+            ("tmux", "-L", INNER_SERVER_SOCKET, "new-session", "-d", "-s", "work"),
             check=True,
             capture_output=True,
             text=True,
@@ -274,11 +274,11 @@ class SessionOperationsTest(unittest.TestCase):
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
                     "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                     "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
-                    "dev", "tmux new-session -d -s work.one",
+                    "dev", "tmux -L letee.inner new-session -d -s work.one",
                 ),
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
-                    "-o", "AddKeysToAgent=yes", "dev", "tmux kill-session -t work.one",
+                    "-o", "AddKeysToAgent=yes", "dev", "tmux -L letee.inner kill-session -t work.one",
                 ),
             ],
         )
@@ -292,7 +292,7 @@ class SessionOperationsTest(unittest.TestCase):
             self.assertEqual(rename(old, "renamed"), Target("local", "renamed"))
 
         run.assert_called_once_with(
-            ("tmux", "rename-session", "-t", "work", "renamed"),
+            ("tmux", "-L", INNER_SERVER_SOCKET, "rename-session", "-t", "work", "renamed"),
             check=True,
             capture_output=True,
             text=True,
@@ -314,7 +314,7 @@ class SessionOperationsTest(unittest.TestCase):
                 "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
                 "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                 "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
-                "dev", "tmux rename-session -t work renamed",
+                "dev", "tmux -L letee.inner rename-session -t work renamed",
             ),
         )
 
@@ -623,7 +623,7 @@ class TmuxOverlayTest(unittest.TestCase):
         with patch("letee.sessions.load_tmux_config_overlay", return_value=True):
             self.assertEqual(
                 attach_command(Target("local", "work")),
-                f"env -u TMUX tmux -T clipboard new-session -A -s work \\; source-file {source}",
+                f"env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file {source}",
             )
             self.assertEqual(
                 pane_attach_command(PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")),
@@ -635,8 +635,8 @@ class TmuxOverlayTest(unittest.TestCase):
         self.assertEqual(
             [call.args[0] for call in run.call_args_list],
             [
-                ("tmux", "new-session", "-d", "-s", "work"),
-                ("tmux", "source-file", str(sessions.OVERLAY_FILE)),
+                ("tmux", "-L", INNER_SERVER_SOCKET, "new-session", "-d", "-s", "work"),
+                ("tmux", "-L", INNER_SERVER_SOCKET, "source-file", str(sessions.OVERLAY_FILE)),
             ],
         )
         self.assertFalse(run.call_args_list[-1].kwargs["check"])
@@ -649,10 +649,10 @@ class TmuxOverlayTest(unittest.TestCase):
             patch("letee.sessions.load_tmux_config_overlay", return_value=False),
             patch("letee.sessions.subprocess.run") as run,
         ):
-            self.assertEqual(attach_command(Target("local", "work")), "env -u TMUX tmux -T clipboard new-session -A -s work")
+            self.assertEqual(attach_command(Target("local", "work")), "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work")
             self.assertEqual(
                 attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -T clipboard new-session -A -s work'",
+                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
             )
             self.assertEqual(
                 pane_attach_command(local),
@@ -668,12 +668,12 @@ class TmuxOverlayTest(unittest.TestCase):
         self.assertEqual(
             [call.args[0] for call in run.call_args_list],
             [
-                ("tmux", "new-session", "-d", "-s", "work"),
+                ("tmux", "-L", INNER_SERVER_SOCKET, "new-session", "-d", "-s", "work"),
                 (
                     "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
                     "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                     "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
-                    "dev", "tmux new-session -d -s work",
+                    "dev", "tmux -L letee.inner new-session -d -s work",
                 ),
             ],
         )
@@ -701,8 +701,8 @@ class TmuxOverlayTest(unittest.TestCase):
             ),
         )
         self.assertEqual(install.kwargs["input"], sessions.OVERLAY_FILE.read_text())
-        self.assertTrue(create_call.args[0][-1].endswith("tmux new-session -d -s work && { tmux source-file ~/.config/letee/tmux-overlay.conf || true; }"))
-        self.assertIn("-t dev 'tmux -T clipboard new-session -A -s work \\; source-file ~/.config/letee/tmux-overlay.conf'", attach)
+        self.assertTrue(create_call.args[0][-1].endswith("tmux -L letee.inner new-session -d -s work && { tmux -L letee.inner source-file ~/.config/letee/tmux-overlay.conf || true; }"))
+        self.assertIn("-t dev 'tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file ~/.config/letee/tmux-overlay.conf'", attach)
         self.assertIn("source-file ~/.config/letee/tmux-overlay.conf \\; select-window -t work:@3", pane)
         self.assertLess(pane.index("source-file ~/.config/letee/tmux-overlay.conf"), pane.index("select-window -t work:@3"))
         self.assertIn("/tmp/tmux socket", pane)
