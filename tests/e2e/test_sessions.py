@@ -152,7 +152,7 @@ def test_new_window_button_click_creates_and_selects_window_in_active_directory(
 ) -> None:
     """Add-range clicks create/select a cwd-matching window; normal clicks select their target."""
     socket = f"letee-click-{os.urandom(4).hex()}"
-    workdir = f"/tmp/letee-e2e-new-window-{os.urandom(4).hex()}"
+    workdir = f'/tmp/letee-e2e-new-window-{os.urandom(4).hex()}-"quoted"'
     overlay = client.exec(
         "python", "-c",
         "from letee.sessions import OVERLAY_FILE; print(OVERLAY_FILE)",

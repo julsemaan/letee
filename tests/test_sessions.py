@@ -825,11 +825,14 @@ class TmuxOverlayFileTest(unittest.TestCase):
             "#{&&:#{==:#{mouse_status_range},user},#{==:#{mouse_status_range_argument},letee-new}}",
             binding,
         )
-        self.assertIn('new-window -c "#{pane_current_path}"', binding)
+        self.assertIn(
+            "{ new-window -c \"#{pane_current_path}\" } { select-window -t = }",
+            binding,
+        )
 
     def test_other_window_mouse_clicks_still_select_the_clicked_window(self):
         binding = next(line for line in self.commands if line.startswith("bind -n MouseDown1Status "))
-        self.assertTrue(binding.endswith("'select-window -t ='"))
+        self.assertTrue(binding.endswith("{ select-window -t = }"))
 
     def test_new_window_button_and_mouse_range_require_tmux_3_4(self):
         feature_start = self.overlay.index('%if "#{>=:#{version},3.4}"')
