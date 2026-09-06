@@ -30,21 +30,34 @@ class CheckDistWheelTest(unittest.TestCase):
         *,
         duplicate_name: str | None = None,
         provenance: bytes | None = None,
+        member_prefix: str = "",
     ) -> None:
         if provenance is None:
             provenance = (path.parent / check_dist.PROVENANCE_PATH).read_bytes()
         with ZipFile(path, "w") as archive:
             for name in check_dist.BINARY_PATHS:
-                info = ZipInfo(name)
+                info = ZipInfo(f"{member_prefix}{name}")
                 info.external_attr = 0o755 << 16
                 archive.writestr(info, contents[name])
             for name in check_dist.LICENSE_PATHS:
-                archive.writestr(name, b"license")
-            archive.writestr(check_dist.PROVENANCE_PATH, provenance)
+                archive.writestr(f"{member_prefix}{name}", b"license")
+            archive.writestr(f"{member_prefix}{check_dist.PROVENANCE_PATH}", provenance)
             if duplicate_name is not None:
                 info = ZipInfo(duplicate_name)
                 info.external_attr = 0o755 << 16
                 archive.writestr(info, contents[duplicate_name])
+
+    def test_check_wheel_rejects_prefixed_member_paths(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            contents = {name: b"tmux" for name in check_dist.BINARY_PATHS}
+            self._stage_binaries(root, contents)
+            path = root / "letee.whl"
+            self._write_wheel(path, contents, member_prefix="wrong/")
+
+            with patch.object(check_dist, "PROJECT_ROOT", root):
+                with self.assertRaisesRegex(ValueError, "missing or duplicates"):
+                    check_dist._check_wheel(path)
 
     def _write_sdist(
         self,

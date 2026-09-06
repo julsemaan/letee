@@ -54,6 +54,12 @@ def _member_for_suffix(names: set[str], suffix: str) -> str:
     return matches[0]
 
 
+def _member_for_exact_name(names: set[str], name: str) -> str:
+    if name not in names:
+        raise ValueError(f"distribution is missing or duplicates {name}")
+    return name
+
+
 def _reject_raw_archives(names: set[str]) -> None:
     for name in names:
         if (
@@ -97,16 +103,18 @@ def _check_wheel(path: Path) -> None:
             names = set(member_names)
             _reject_raw_archives(names)
             for suffix in BINARY_PATHS:
-                name = _member_for_suffix(names, suffix)
+                name = _member_for_exact_name(names, suffix)
                 info = archive.getinfo(name)
                 if info.is_dir() or not ((info.external_attr >> 16) & 0o111):
                     raise ValueError(f"bundled binary is not executable in wheel: {name}")
                 _check_binary(archive.read(name), suffix, "wheel")
             for suffix in LICENSE_PATHS:
-                name = _member_for_suffix(names, suffix)
+                name = _member_for_exact_name(names, suffix)
                 if archive.getinfo(name).is_dir():
                     raise ValueError(f"license notice is a directory in wheel: {name}")
-            _check_provenance(archive.read(_member_for_suffix(names, PROVENANCE_PATH)), str(path))
+            _check_provenance(
+                archive.read(_member_for_exact_name(names, PROVENANCE_PATH)), str(path)
+            )
     except BadZipFile as error:
         raise ValueError(f"invalid wheel {path}: {error}") from error
 
