@@ -45,6 +45,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install coverage
+      - run: make fetch-tmux
       - run: make coverage
 
   package-build:
