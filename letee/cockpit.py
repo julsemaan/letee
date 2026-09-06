@@ -628,9 +628,31 @@ def switch(
     )
 
 
+def _refresh_renamed_pane(old: Target, new: Target) -> None:
+    pane = right_pane()
+    if not pane:
+        return
+    command = tmux.out("display-message", "-p", "-t", pane, "#{pane_start_command}", check=False)
+    if old.kind == "ssh":
+        match = re.search(r"['\"]tmux(?= )", command)
+    else:
+        match = re.search(r"(?:^| )tmux(?= )", command)
+    if not match:
+        return
+    tmux_start = match.end() - len("tmux")
+    renamed_command = re.sub(
+        rf"(-[st]\s+){re.escape(old.session)}(?=[:\s'\"]|$)",
+        rf"\g<1>{new.session}",
+        command[tmux_start:],
+    )
+    if renamed_command != command[tmux_start:]:
+        tmux.tmux("respawn-pane", "-k", "-t", pane, command[:tmux_start] + renamed_command)
+
+
 def rename_target(old: Target, new: Target) -> None:
     if current_target() == old:
         tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, new.format())
+        _refresh_renamed_pane(old, new)
     if bell_target() == old:
         tmux.tmux("set-option", "-t", tmux.SESSION, BELL_TARGET_OPTION, new.format())
 

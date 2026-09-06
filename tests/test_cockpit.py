@@ -727,6 +727,7 @@ class CockpitLayoutTest(unittest.TestCase):
         with (
             patch.object(cockpit, "current_target", return_value=old),
             patch.object(cockpit, "bell_target", return_value=old),
+            patch.object(cockpit, "right_pane", return_value=None),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
             cockpit.rename_target(old, new)
@@ -738,6 +739,40 @@ class CockpitLayoutTest(unittest.TestCase):
                 unittest.mock.call("set-option", "-t", "letee", cockpit.BELL_TARGET_OPTION, "local:new"),
             ],
         )
+
+    def test_rename_target_refreshes_active_pane_command_preserving_attach_mode(self):
+        cases = (
+            (
+                Target("local", "old"),
+                Target("local", "new"),
+                "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s old",
+                "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s new",
+            ),
+            (
+                Target("ssh", "old", "dev"),
+                Target("ssh", "new", "dev"),
+                "ssh -t dev 'tmux -S /tmp/letee.inner select-window -t old:@3 \\; select-pane -t %7 \\; attach-session -t old'",
+                "ssh -t dev 'tmux -S /tmp/letee.inner select-window -t new:@3 \\; select-pane -t %7 \\; attach-session -t new'",
+            ),
+        )
+        for old, new, command, renamed_command in cases:
+            with self.subTest(target=old):
+                with (
+                    patch.object(cockpit, "current_target", return_value=old),
+                    patch.object(cockpit, "bell_target", return_value=None),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value=command),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    cockpit.rename_target(old, new)
+
+                self.assertEqual(
+                    tmux_call.call_args_list,
+                    [
+                        unittest.mock.call("set-option", "-t", "letee", cockpit.CURRENT_TARGET_OPTION, new.format()),
+                        unittest.mock.call("respawn-pane", "-k", "-t", "%2", renamed_command),
+                    ],
+                )
 
     def test_help_uses_configured_prefix(self):
         with (
