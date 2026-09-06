@@ -31,7 +31,7 @@ test-e2e: test-e2e-docker
 test-e2e-docker: fetch-tmux
 	PYTHONPATH=$(PEXPECT_DIR) $(PYTHON) -m pytest tests/e2e/ -v --docker
 
-dev-install:
+dev-install: fetch-tmux
 	$(PYTHON) -m pip install -e ".[dev]" --break-system-packages
 
 bump-version:
