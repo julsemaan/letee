@@ -127,15 +127,22 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
         agents = _read_agents(
             (pane, other),
-            [record("b", state="future-state"), record("a", state=None), record("wrong", socket_path="/tmp/missing"), record("stale", age="2026-06-20T16:44:00Z")],
+            [
+                record("b", state="future-state"),
+                record("a", state=None),
+                record("dict", state={}),
+                record("list", state=[]),
+                record("wrong", socket_path="/tmp/missing"),
+                record("stale", age="2026-06-20T16:44:00Z"),
+            ],
             now,
         )
 
-        self.assertEqual([agent.agent_id for agent in agents], ["a", "b"])
-        self.assertEqual([agent.task_state for agent in agents], [None, "unknown"])
+        self.assertEqual([agent.agent_id for agent in agents], ["a", "b", "dict", "list"])
+        self.assertEqual([agent.task_state for agent in agents], [None, "unknown", "unknown", "unknown"])
         self.assertEqual(
             [agent.runtime_updated_at for agent in agents],
-            [datetime(2026, 6, 20, 16, 45, tzinfo=timezone.utc)] * 2,
+            [datetime(2026, 6, 20, 16, 45, tzinfo=timezone.utc)] * 4,
         )
 
     def test_agent_reader_prefers_valid_task_timestamp_and_ignores_malformed_optional_timestamp(self):

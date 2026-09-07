@@ -1,3 +1,5 @@
+import importlib
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +10,9 @@ import letee.sessions as sessions
 from letee.__main__ import _tmux_socket_dir, main
 from letee.discovery import SessionSnapshot, SourceSnapshot
 from letee.names import Target
+
+
+MAIN_MODULE = importlib.import_module("letee.__main__")
 
 
 class MainTest(unittest.TestCase):
@@ -222,16 +227,16 @@ class MainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             socket_dir = Path(tempdir) / "tmux-1000"
             socket_dir.mkdir()
-            for name in ("letee", "letee-personal", "letee-stale", "other"):
+            for name in ("letee@v1", "letee@v1-personal", "letee@v1-stale", "other"):
                 (socket_dir / name).touch()
 
             def run(command, **kwargs):
                 socket = command[2]
-                if socket == "letee-stale":
+                if socket == "letee@v1-stale":
                     return subprocess.CompletedProcess(command, 1, "", "stale socket")
                 if command[3:6] == ["show-options", "-v", "-t"]:
                     return subprocess.CompletedProcess(command, 0, "1\n", "")
-                clients = "client\n" if socket == "letee" else ""
+                clients = "client\n" if socket == "letee@v1" else ""
                 return subprocess.CompletedProcess(command, 0, clients, "")
 
             with (
@@ -246,6 +251,109 @@ class MainTest(unittest.TestCase):
             ["default (attached)", "personal (detached)"],
         )
 
+    def test_legacy_v1_socket_names_are_migrated_not_listed_as_current_servers(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            socket_dir = Path(tempdir) / "tmux-1000"
+            socket_dir.mkdir()
+            for name in ("letee-v1", "letee-v1-work"):
+                (socket_dir / name).touch()
+
+            with (
+                patch("letee.__main__._tmux_socket_dir", return_value=socket_dir),
+                patch("letee.__main__._legacy_socket_present", return_value=True),
+                patch(
+                    "letee.__main__._run_legacy_tmux",
+                    return_value=subprocess.CompletedProcess([], 0, "1\n", ""),
+                ) as run_legacy,
+                patch("letee.__main__._server_attached") as server_attached,
+            ):
+                self.assertEqual(MAIN_MODULE.list_servers(), [])
+
+        self.assertEqual(
+            run_legacy.call_args_list,
+            [
+                unittest.mock.call("letee-v1", "show-options", "-v", "-t", "letee", "@letee_cockpit"),
+                unittest.mock.call("letee-v1", "kill-server"),
+                unittest.mock.call("letee-v1-work", "show-options", "-v", "-t", "letee", "@letee_cockpit"),
+                unittest.mock.call("letee-v1-work", "kill-server"),
+            ],
+        )
+        server_attached.assert_not_called()
+
+    def test_verified_legacy_server_is_killed_with_system_tmux_only(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            socket_dir = Path(tempdir) / "tmux-1000"
+            socket_dir.mkdir()
+            legacy_path = socket_dir / "letee-work"
+            legacy = socket.socket(socket.AF_UNIX)
+            legacy.bind(str(legacy_path))
+            self.addCleanup(legacy.close)
+            self.addCleanup(legacy_path.unlink, missing_ok=True)
+            calls = []
+
+            def run(server_socket, *args):
+                calls.append((server_socket, args))
+                return subprocess.CompletedProcess([], 0, "1\n", "")
+
+            with patch("letee.__main__._tmux_socket_dir", return_value=socket_dir), patch(
+                "letee.__main__._run_legacy_tmux", side_effect=run
+            ):
+                MAIN_MODULE._cleanup_legacy_server("work")
+
+        self.assertEqual(
+            calls,
+            [
+                ("letee-work", ("show-options", "-v", "-t", "letee", "@letee_cockpit")),
+                ("letee-work", ("kill-server",)),
+            ],
+        )
+
+    def test_unverified_or_symlink_legacy_server_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            socket_dir = Path(tempdir) / "tmux-1000"
+            socket_dir.mkdir()
+            legacy_path = socket_dir / "letee-work"
+            legacy_path.touch()
+            with (
+                patch("letee.__main__._tmux_socket_dir", return_value=socket_dir),
+                patch("letee.__main__._run_legacy_tmux") as run,
+            ):
+                MAIN_MODULE._cleanup_legacy_server("work")
+            run.assert_not_called()
+
+            legacy_path.unlink()
+            target = socket_dir / "other"
+            target.touch()
+            legacy_path.symlink_to(target)
+            with (
+                patch("letee.__main__._run_legacy_tmux") as run,
+                patch("letee.__main__._tmux_socket_dir", return_value=socket_dir),
+            ):
+                MAIN_MODULE._cleanup_legacy_server("work")
+            run.assert_not_called()
+
+    def test_unverified_legacy_server_is_not_killed(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            socket_dir = Path(tempdir) / "tmux-1000"
+            socket_dir.mkdir()
+            legacy_path = socket_dir / "letee-work"
+            legacy = socket.socket(socket.AF_UNIX)
+            legacy.bind(str(legacy_path))
+            self.addCleanup(legacy.close)
+            self.addCleanup(legacy_path.unlink, missing_ok=True)
+            with (
+                patch("letee.__main__._tmux_socket_dir", return_value=socket_dir),
+                patch(
+                    "letee.__main__._run_legacy_tmux",
+                    return_value=subprocess.CompletedProcess([], 0, "0\n", ""),
+                ) as run,
+            ):
+                MAIN_MODULE._cleanup_legacy_server("work")
+
+        run.assert_called_once_with(
+            "letee-work", "show-options", "-v", "-t", "letee", "@letee_cockpit"
+        )
+
     def test_kill_server_requires_verified_letee_server_and_uses_selected_socket(self):
         with (
             patch("letee.__main__._server_attached", return_value=False) as status,
@@ -255,7 +363,7 @@ class MainTest(unittest.TestCase):
 
         status.assert_called_once_with("work")
         run.assert_called_once_with(
-            ["tmux", "-L", "letee-work", "kill-server"],
+            [MAIN_MODULE.tmux.tmux_executable(), "-L", "letee@v1-work", "kill-server"],
             text=True, capture_output=True, check=False, timeout=5,
         )
 

@@ -8,6 +8,8 @@ build/
 dist/
 *.egg-info/
 .eggs/
+letee/_vendor/tmux/
+release-assets/
 
 # Test, coverage, and type-checker caches
 .pytest_cache/
