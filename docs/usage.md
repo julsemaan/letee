@@ -14,7 +14,7 @@ The outer server owns the layout only:
 - standard outer tmux prefix bindings are disabled
 - the outer prefix is `C-s` by default
 
-Inner local and remote sessions keep their normal tmux prefix and bindings. They remain alive when you switch away from them. `C-s C-s` forwards the outer prefix to the inner session.
+Inner local and remote sessions keep their normal tmux prefix and keyboard bindings. They remain alive when you switch away from them. `C-s C-s` forwards the outer prefix to the inner session.
 
 `C-s h` zooms the right pane instead of killing the sidebar. The sidebar process stays alive while hidden, so selection, polling, and alerts continue. `C-s s`, `C-s a`, and `C-s +` restore the layout while focusing Sessions, focusing Agents, or opening the Add session menu.
 
@@ -139,7 +139,7 @@ When the Add menu is closed, the independently navigable Agents region remains b
 - Click `‹ back`, or `< back` in ASCII mode, in the Add-session top bar to go back one level, like `Esc`.
 - Wheel over Sessions or Agents scrolls the region under the pointer without keyboard focus or changing selection.
 - Right-pane mouse events are forwarded by outer tmux to mouse-aware applications.
-- Left-click inner window tabs to select the clicked window. Click the `＋ add` button before the right-side status content to create and select a new window in the active pane's current directory on tmux 3.4+.
+- Left-click inner window tabs to select the clicked window. Click the `＋ add` button before the right-side status content to create and select a new window in the active pane's current directory on tmux 3.4+. See the [configuration guide](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for how this replaces a custom `MouseDown1Status` binding.
 - Live border dragging is disabled, so text selection can cross the sidebar divider without resizing it.
 
 Tmux mouse capture may require holding `Shift` for terminal-native text selection.
