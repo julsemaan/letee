@@ -156,11 +156,8 @@ Your normal system and user tmux configuration loads first, exactly as without l
 - `set-clipboard on`
 - `allow-passthrough on`
 - bell monitoring with audible bells and no visual bell
-- a styled `＋ add` button before the existing right-side status content; clicking it creates a window in the active pane's current directory on tmux 3.4+
 
-The overlay owns the tmux `MouseDown1Status` binding. Normal inner window-tab clicks still select the clicked window, while the `＋ add` button creates and selects a new window in the active pane's current directory. This replaces any custom binding you have for that mouse event. Letee prefixes `status-right` with the button and retains its existing content. No other keybindings, prefix, indexes, history settings, or `status-left` content are changed. The overlay is a plain tmux configuration file with native settings only. It uses no TPM plugins, fonts, scripts, or network access.
-
-The `＋ add` button requires tmux 3.4+, which added user-defined status-bar mouse ranges. On older tmux, letee skips the button and its binding; tmux may still report errors for other newer options and applies the rest.
+No keybindings, prefix, indexes, history settings, or `status-left`/`status-right` content are changed. The overlay is a plain tmux configuration file with native settings only. It uses no TPM plugins, fonts, scripts, or network access. The full effect needs tmux 3.4 or newer. Older tmux reports an error for the few newer options and applies the rest.
 
 Tmux configuration is server-wide. Once applied to `letee.inner`, the overlay covers all sessions there, including sessions created outside letee. It does not apply to the ordinary tmux default server. For local servers the packaged file is sourced directly. For SSH hosts it is copied to `~/.config/letee/tmux-overlay.conf` on the remote machine with private permissions, then sourced on create, attach, and exact-pane jumps.
 
