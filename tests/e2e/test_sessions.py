@@ -5,6 +5,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import pexpect
 import pytest
 
 from .conftest import TmuxTestClient
@@ -80,6 +81,170 @@ def _kill_session_inner(client: TmuxTestClient, name: str) -> None:
 def _current_target(client: TmuxTestClient) -> str:
     """Return the @letee_current_target value."""
     return client.tmux("show-options", "-v", "-t", "letee", "@letee_current_target").strip()
+
+
+def test_overlay_sourcing_twice_keeps_one_new_window_button(client: TmuxTestClient) -> None:
+    """Sourcing the packaged overlay twice leaves one new-window status marker."""
+    socket = f"letee-overlay-{os.urandom(4).hex()}"
+    overlay = client.exec(
+        "python", "-c",
+        "from letee.sessions import OVERLAY_FILE; print(OVERLAY_FILE)",
+    )
+    try:
+        client.exec("tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", "overlay")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        status_right = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right",
+        )
+        assert status_right.count("range=user|letee-new") == 1, status_right
+    finally:
+        client.exec("tmux", "-L", socket, "kill-server", check=False)
+
+
+def test_overlay_reinstall_does_not_accumulate_status_right_length(client: TmuxTestClient) -> None:
+    """Replacing the button and sourcing again keeps the right-side length stable."""
+    socket = f"letee-overlay-length-{os.urandom(4).hex()}"
+    overlay = client.exec(
+        "python", "-c",
+        "from letee.sessions import OVERLAY_FILE; print(OVERLAY_FILE)",
+    )
+    try:
+        client.exec("tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", "overlay")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right-length", "1")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        first_length = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        )
+
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "replacement")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        second_length = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        )
+
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "replacement-again")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        third_length = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        )
+
+        assert first_length == second_length == third_length == "10"
+        status_right = client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right",
+        )
+        assert status_right.count("range=user|letee-new") == 1, status_right
+
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right-length", "0")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "unlimited")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "unlimited-again")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        assert client.exec(
+            "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
+        ) == "0"
+    finally:
+        client.exec("tmux", "-L", socket, "kill-server", check=False)
+
+
+def test_new_window_button_click_creates_and_selects_window_in_active_directory(
+    client: TmuxTestClient,
+) -> None:
+    """Add-range clicks create/select a cwd-matching window; normal clicks select their target."""
+    socket = f"letee-click-{os.urandom(4).hex()}"
+    workdir = f'/tmp/letee-e2e-new-window-{os.urandom(4).hex()}-"quoted"'
+    overlay = client.exec(
+        "python", "-c",
+        "from letee.sessions import OVERLAY_FILE; print(OVERLAY_FILE)",
+    )
+    attached: pexpect.spawn | None = None
+    try:
+        client.exec("mkdir", "-p", workdir)
+        client.exec(
+            "tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d",
+            "-s", "click", "-c", workdir,
+        )
+        # Put the first window at a stable coordinate for the normal-range click.
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-left", "")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-left-length", "0")
+        client.exec("tmux", "-L", socket, "set-window-option", "-g", "window-status-format", "target")
+        client.exec("tmux", "-L", socket, "set-window-option", "-g", "window-status-current-format", "current")
+        # Keep one visible character after the button so the add-click coordinate is stable.
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right", "x")
+        client.exec("tmux", "-L", socket, "set-option", "-g", "status-right-length", "1")
+        client.exec("tmux", "-L", socket, "source-file", overlay)
+        initial_window = client.exec(
+            "tmux", "-L", socket, "display-message", "-p", "-t", "click", "#{window_id}",
+        )
+
+        attached = pexpect.spawn(
+            "docker",
+            [
+                "exec", "-it", client.container, "tmux", "-L", socket,
+                "attach-session", "-t", "click",
+            ],
+            encoding="utf-8",
+            dimensions=(24, 90),
+            timeout=15,
+        )
+
+        client_size = ""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            client_size = client.exec(
+                "tmux", "-L", socket, "list-clients", "-F", "#{client_width}:#{client_height}",
+                check=False,
+            )
+            if client_size:
+                break
+            time.sleep(0.1)
+        assert client_size, "The tmux test client did not attach"
+        width, height = (int(value) for value in client_size.splitlines()[0].split(":", 1))
+
+        # Send an SGR mouse-down event through the attached tmux client.
+        attached.send(f"\x1b[<0;{width - 3};{height}M")
+
+        windows = ""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            windows = client.exec(
+                "tmux", "-L", socket, "list-windows", "-t", "click",
+                "-F", "#{window_id}\t#{window_active}\t#{pane_current_path}", check=False,
+            )
+            entries = [line.split("\t", 2) for line in windows.splitlines()]
+            if len(entries) == 2:
+                break
+            time.sleep(0.1)
+
+        entries = [line.split("\t", 2) for line in windows.splitlines()]
+        assert len(entries) == 2, f"Click should create one new window, got:\n{windows}"
+        assert all(
+            len(entry) == 3 and entry[2] == workdir for entry in entries
+        ), f"Windows should use {workdir}, got:\n{windows}"
+        active = [entry for entry in entries if len(entry) == 3 and entry[1] == "1"]
+        assert len(active) == 1, f"Exactly one window should be active, got:\n{windows}"
+        assert active[0][0] != initial_window, f"Add click should select the new window, got:\n{windows}"
+        assert active[0][2] == workdir, f"New active window should use {workdir}, got:\n{windows}"
+
+        # The first window starts at x=1 and must remain selectable through the fallback.
+        attached.send(f"\x1b[<0;1;{height}M")
+        active_window = ""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            active_window = client.exec(
+                "tmux", "-L", socket, "display-message", "-p", "-t", "click", "#{window_id}",
+                check=False,
+            )
+            if active_window == initial_window:
+                break
+            time.sleep(0.1)
+        assert active_window == initial_window, (
+            f"Normal window click should select {initial_window}, got {active_window}"
+        )
+    finally:
+        if attached is not None:
+            attached.close(force=True)
+        client.exec("tmux", "-L", socket, "kill-server", check=False)
 
 
 # ============================================================
