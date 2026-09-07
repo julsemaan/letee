@@ -3,13 +3,22 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import os
+import stat
 import subprocess
 import sys
 
 from . import config, cockpit, sessions, tmux
 from .config import ensure_config, load_sessions, save_sessions
 from .discovery import discover
-from .names import DEFAULT_SERVER, Target, normalize_server, parse_target, server_socket, validate_server
+from .names import (
+    DEFAULT_SERVER,
+    Target,
+    legacy_server_socket,
+    normalize_server,
+    parse_target,
+    server_socket,
+    validate_server,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,7 +70,7 @@ def _tmux_socket_dir() -> Path:
 
 def _run_server_tmux(server: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["tmux", "-L", server_socket(server), *args],
+        [tmux.tmux_executable(), "-L", server_socket(server), *args],
         text=True,
         capture_output=True,
         check=False,
@@ -69,10 +78,43 @@ def _run_server_tmux(server: str, *args: str) -> subprocess.CompletedProcess[str
     )
 
 
+def _run_legacy_tmux(socket_name: str, *args: str) -> subprocess.CompletedProcess[str]:
+    # Legacy servers were created by the tmux found on PATH.
+    return subprocess.run(
+        ["tmux", "-L", socket_name, *args],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+
+
+def _legacy_socket_present(server: str) -> bool:
+    path = _tmux_socket_dir() / legacy_server_socket(server)
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return False
+    return stat.S_ISSOCK(mode)
+
+
+def _cleanup_legacy_server(server: str) -> None:
+    if not _legacy_socket_present(server):
+        return
+    socket_name = legacy_server_socket(server)
+    try:
+        marker = _run_legacy_tmux(socket_name, "show-options", "-v", "-t", tmux.SESSION, "@letee_cockpit")
+        if marker.returncode != 0 or (marker.stdout or "").strip() != "1":
+            return
+        _run_legacy_tmux(socket_name, "kill-server")
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def _server_attached(server: str) -> bool | None:
     try:
         marker = _run_server_tmux(server, "show-options", "-v", "-t", tmux.SESSION, "@letee_cockpit")
-        if marker.returncode != 0 or marker.stdout.strip() != "1":
+        if marker.returncode != 0 or (marker.stdout or "").strip() != "1":
             return None
         clients = _run_server_tmux(server, "list-clients", "-t", tmux.SESSION, "-F", "#{client_name}")
     except (OSError, subprocess.SubprocessError):
@@ -88,17 +130,28 @@ def list_servers() -> list[tuple[str, bool]]:
     except OSError:
         return []
     servers: list[tuple[str, bool]] = []
+    current_socket = server_socket(DEFAULT_SERVER)
+    legacy_socket = legacy_server_socket(DEFAULT_SERVER)
     for path in paths:
-        if path.name == "letee":
+        if path.name == current_socket:
             server = DEFAULT_SERVER
-        elif path.name.startswith("letee-"):
+        elif path.name.startswith(f"{current_socket}-"):
             try:
-                server = validate_server(path.name.removeprefix("letee-"))
+                server = validate_server(path.name.removeprefix(f"{current_socket}-"))
             except SystemExit:
                 continue
             if server == DEFAULT_SERVER:
                 continue
         else:
+            if path.name == legacy_socket:
+                _cleanup_legacy_server(DEFAULT_SERVER)
+            elif path.name.startswith(f"{legacy_socket}-"):
+                try:
+                    legacy_server = validate_server(path.name.removeprefix(f"{legacy_socket}-"))
+                except SystemExit:
+                    continue
+                if legacy_server != DEFAULT_SERVER:
+                    _cleanup_legacy_server(legacy_server)
             continue
         attached = _server_attached(server)
         if attached is not None:
@@ -107,7 +160,8 @@ def list_servers() -> list[tuple[str, bool]]:
 
 
 def _configure_server(server: str | None) -> None:
-    tmux.set_server(config.set_server(server))
+    selected = config.set_server(server)
+    tmux.set_server(selected)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -118,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         from .sidebar import main as sidebar_main
         return sidebar_main()
     if args.command in (None, "cockpit"):
+        _cleanup_legacy_server(tmux.SERVER)
         return cockpit.cockpit()
     if args.command == "init":
         cfg, wrapper = ensure_config()
@@ -138,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         if result.returncode != 0:
             raise subprocess.CalledProcessError(
                 result.returncode,
-                ["tmux", "-L", server_socket(server), "kill-server"],
+                [tmux.tmux_executable(), "-L", server_socket(server), "kill-server"],
                 result.stdout,
                 result.stderr,
             )

@@ -4,6 +4,12 @@
 
 Letee is short for "Multiple tmux" and it allows to manage multiple local and remote tmux sessions in a single terminal window and switch between them. It features bell support in order to raise awareness that a session requires attention which is primarily used for coding agent driven development.
 
+## Documentation
+
+The README must be kept simple and focused on information that is aimed at end users of letee. There are additional files in docs/ that can be used for advanced details for end users.
+
+To document information for letee developers (for example: release instructions, development environment setup, etc), use DEVELOPMENT.md 
+
 ## Development rules
 
 - Follow Python best practices

@@ -15,6 +15,7 @@ class TmuxTestClient:
         self.container = container_name
         self._pexpect: pexpect.spawn | None = None
         self._config_dir: str | None = None
+        self._outer_tmux_executable: str | None = None
 
     # -- CLI (subprocess) --
 
@@ -32,8 +33,12 @@ class TmuxTestClient:
         return result.stdout + result.stderr
 
     def _tmux_cmd(self, *args: str) -> list[str]:
-        """Build the tmux command list."""
-        return ["docker", "exec", self.container, "tmux", "-L", "letee"] + list(args)
+        """Build a command using letee's bundled outer tmux."""
+        if self._outer_tmux_executable is None:
+            self._outer_tmux_executable = self.exec(
+                "python", "-c", "from letee.tmux import tmux_executable; print(tmux_executable())"
+            )
+        return ["docker", "exec", self.container, self._outer_tmux_executable, "-L", "letee@v1"] + list(args)
 
     def tmux(self, *args: str) -> str:
         """Run tmux command, return stdout (or stderr on failure)."""

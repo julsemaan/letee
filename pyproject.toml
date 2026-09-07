@@ -32,8 +32,6 @@ Issues = "https://github.com/julsemaan/letee/issues"
 [project.scripts]
 letee = "letee.__main__:run_cli"
 
-[tool.setuptools.package-data]
-letee = ["tmux-overlay.conf"]
 
 [project.optional-dependencies]
 dev = [
@@ -41,6 +39,14 @@ dev = [
     "coverage[toml]",
     "ruff",
     "twine",
+]
+
+[tool.setuptools.package-data]
+letee = [
+    "tmux-overlay.conf",
+    "_vendor/tmux/*/tmux",
+    "_vendor/tmux/licenses/*",
+    "_vendor/tmux/provenance.json",
 ]
 
 [tool.coverage.run]
