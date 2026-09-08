@@ -312,7 +312,6 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
             patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
-            patch.object(cockpit.shutil, "which", return_value=None),
             patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
             self.assertRaises(RuntimeError),
         ):
@@ -330,7 +329,6 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
             patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
-            patch.object(cockpit.shutil, "which", return_value=None),
             patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
             self.assertRaises(RuntimeError),
         ):
@@ -341,67 +339,18 @@ class CockpitLayoutTest(unittest.TestCase):
             executable, [executable, "-L", "letee@v1-work", "attach-session", "-d", "-t", "letee:cockpit"]
         )
 
-    def test_attach_quotes_absolute_executable_when_using_script(self):
-        executable = "/tmp/tmux with space"
+    def test_attach_reports_dev_tty_without_executing_tmux(self):
         with (
-            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
-            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
-            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
-            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
-            self.assertRaises(RuntimeError),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/tty"),
+            patch("builtins.print") as print_,
+            patch.object(cockpit.os, "execvp") as execvp,
         ):
-            cockpit._attach()
+            self.assertEqual(cockpit._attach(), 0)
 
-        execvp.assert_called_once_with(
-            "script",
-            [
-                "script",
-                "-q",
-                "-c",
-                "'/tmp/tmux with space' -L letee@v1 attach-session -d -t letee:cockpit",
-                "/dev/null",
-            ],
-        )
-
-    def test_attach_uses_bsd_script_arguments_on_macos(self):
-        executable = "/tmp/tmux with space"
-        with (
-            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
-            patch.object(cockpit.sys, "platform", "darwin"),
-            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
-            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
-            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
-            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
-            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
-            self.assertRaises(RuntimeError),
-        ):
-            cockpit._attach()
-
-        execvp.assert_called_once_with(
-            "script",
-            ["script", "-q", "/dev/null", executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"],
-        )
-
-    def test_attach_uses_bsd_script_arguments_on_freebsd(self):
-        executable = "/tmp/tmux with space"
-        with (
-            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
-            patch.object(cockpit.sys, "platform", "freebsd"),
-            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
-            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
-            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
-            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
-            patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
-            self.assertRaises(RuntimeError),
-        ):
-            cockpit._attach()
-
-        execvp.assert_called_once_with(
-            "script",
-            ["script", "-q", "/dev/null", executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"],
-        )
+        execvp.assert_not_called()
+        self.assertIn("Current fd is /dev/tty; tmux refuses it", print_.call_args.args[0])
 
     def test_fix_layout_pins_sidebar_to_configured_width(self):
         calls = []
@@ -1540,27 +1489,23 @@ class CockpitSIGWINCHTest(unittest.TestCase):
                         kill_p.assert_not_called()
                         run_p.assert_not_called()
 
-    def test_attach_uses_script_with_bundled_tmux(self):
-        # `script` gives the bundled tmux a usable terminal for attachment.
+    def test_attach_executes_bundled_tmux_directly_without_script(self):
+        executable = "/tmp/tmux with space"
         with (
+            patch.object(cockpit.tmux, "tmux_executable", return_value=executable),
             patch.object(cockpit.sys.stdin, "isatty", return_value=True),
             patch.object(cockpit.sys.stdout, "isatty", return_value=True),
             patch.object(cockpit.os, "ttyname", return_value="/dev/pts/2"),
-            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script"),
+            patch.object(cockpit.shutil, "which", return_value="/usr/bin/script") as which,
             patch.object(cockpit.os, "execvp", side_effect=RuntimeError) as execvp,
             self.assertRaises(RuntimeError),
         ):
             cockpit._attach()
-        executable = cockpit.tmux.tmux_executable()
+
+        which.assert_not_called()
         execvp.assert_called_once_with(
-            "script",
-            [
-                "script",
-                "-q",
-                "-c",
-                f"{executable} -L letee@v1 attach-session -d -t letee:cockpit",
-                "/dev/null",
-            ],
+            executable,
+            [executable, "-L", "letee@v1", "attach-session", "-d", "-t", "letee:cockpit"],
         )
 
 

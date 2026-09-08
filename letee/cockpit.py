@@ -415,11 +415,6 @@ def _attach() -> int:
         print(f"Cockpit ready. Current fd is /dev/tty; tmux refuses it. Run: {attach_cmd}")
         return 0
     cmd = [executable, "-L", tmux.SOCKET, "attach-session", "-d", "-t", TARGET]
-    if shutil.which("script"):
-        if sys.platform in {"darwin", "freebsd"}:
-            os.execvp("script", ["script", "-q", "/dev/null", *cmd])
-        elif sys.platform == "linux":
-            os.execvp("script", ["script", "-q", "-c", shlex.join(cmd), "/dev/null"])
     os.execvp(executable, cmd)
     return 0
 
