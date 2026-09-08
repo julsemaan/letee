@@ -482,22 +482,41 @@ class CockpitLayoutTest(unittest.TestCase):
     def test_repair_layout_skips_healthy_layout(self):
         with (
             patch.object(cockpit, "_ensure_client_size", return_value=True),
-            patch.object(cockpit.tmux, "out", return_value="52:52:100:100:") as tmux_out,
+            patch.object(cockpit.tmux, "out", return_value="52:52:100:100:100:100:") as tmux_out,
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
             cockpit.repair_layout("%1")
 
         tmux_out.assert_called_once_with(
             "display-message", "-p", "-t", "%1",
-            "#{pane_width}:#{@letee_sidebar_width}:#{window_width}:#{client_width}:#{window_offset_x}",
+            "#{pane_width}:#{@letee_sidebar_width}:#{window_width}:#{client_width}:#{window_height}:#{client_height}:#{window_offset_x}",
             check=False,
         )
         tmux_call.assert_not_called()
 
+    def test_repair_layout_repairs_stale_window_height(self):
+        with (
+            patch.object(cockpit, "_ensure_client_size", return_value=True),
+            patch.object(cockpit.tmux, "out", return_value="40:40:377:377:92:60:0") as tmux_out,
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.repair_layout("%1")
+
+        tmux_out.assert_called_once_with(
+            "display-message", "-p", "-t", "%1",
+            "#{pane_width}:#{@letee_sidebar_width}:#{window_width}:#{client_width}:#{window_height}:#{client_height}:#{window_offset_x}",
+            check=False,
+        )
+        tmux_call.assert_called_once_with(
+            "run-shell", "-C", "-t", "%1",
+            "resize-window -a -t letee:cockpit ; resize-pane -t %1 -x '#{@letee_sidebar_width}'",
+            check=False,
+        )
+
     def test_repair_layout_matches_window_to_client_and_repins_sidebar(self):
         with (
             patch.object(cockpit, "_ensure_client_size", return_value=True),
-            patch.object(cockpit.tmux, "out", return_value="10:52:160:100:60"),
+            patch.object(cockpit.tmux, "out", return_value="10:52:160:100:100:100:60"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
             cockpit.repair_layout("%1")
@@ -1406,33 +1425,38 @@ class CockpitKeybindingTest(unittest.TestCase):
 
 
 class CockpitSIGWINCHTest(unittest.TestCase):
-    def test_stale_tty_sends_sigwinch_and_defers_repair(self):
-        # tmux reports 80x24 but real TTY is 100x24 -> stale
-        with (
-            patch.object(cockpit.tmux, "out", return_value="1234:/dev/pts/3:80:24:letee") as tmux_out,
-            patch.object(cockpit.os, "open", return_value=3) as mock_open,
-            patch.object(cockpit.os, "get_terminal_size", return_value=os.terminal_size((100, 24))) as mock_get,
-            patch.object(cockpit.os, "close") as mock_close,
-            patch.object(cockpit.os, "kill") as mock_kill,
-            patch.object(cockpit.tmux, "tmux") as tmux_run,
-        ):
-            cockpit.repair_layout("%1")
-            mock_open.assert_called_once_with("/dev/pts/3", os.O_RDONLY | os.O_NOCTTY)
-            mock_get.assert_called_once_with(3)
-            mock_close.assert_called_once_with(3)
-            mock_kill.assert_called_once_with(1234, signal.SIGWINCH)
-            # list-clients queried, layout repair deferred
-            tmux_out.assert_called_once_with(
-                "list-clients", "-t", cockpit.tmux.SESSION, "-F", "#{client_pid}:#{client_tty}:#{client_width}:#{client_height}:#{client_session}", check=False
-            )
-            tmux_run.assert_not_called()
+    def test_stale_tty_repairs_with_real_dimensions_and_refreshes_client(self):
+        for width, height in ((100, 24), (160, 40)):
+            with self.subTest(width=width, height=height):
+                with (
+                    patch.object(cockpit.tmux, "out", return_value="1234:/dev/pts/3:80:24:letee") as tmux_out,
+                    patch.object(cockpit.os, "open", return_value=3) as mock_open,
+                    patch.object(cockpit.os, "get_terminal_size", return_value=os.terminal_size((width, height))) as mock_get,
+                    patch.object(cockpit.os, "close") as mock_close,
+                    patch.object(cockpit.os, "kill") as mock_kill,
+                    patch.object(cockpit.tmux, "tmux") as tmux_run,
+                ):
+                    cockpit.repair_layout("%1")
+
+                mock_open.assert_called_once_with("/dev/pts/3", os.O_RDONLY | os.O_NOCTTY)
+                mock_get.assert_called_once_with(3)
+                mock_close.assert_called_once_with(3)
+                mock_kill.assert_called_once_with(1234, signal.SIGWINCH)
+                tmux_out.assert_called_once_with(
+                    "list-clients", "-t", cockpit.tmux.SESSION, "-F", "#{client_pid}:#{client_tty}:#{client_width}:#{client_height}:#{client_session}", check=False
+                )
+                tmux_run.assert_called_once_with(
+                    "run-shell", "-C", "-t", "%1",
+                    f"resize-window -x {width} -y {height} -t {cockpit.TARGET} ; resize-pane -t %1 -x '#{{@letee_sidebar_width}}' ; refresh-client -t /dev/pts/3",
+                    check=False,
+                )
 
     def test_matching_tty_sends_no_signal_and_repairs(self):
         # sizes agree, so no SIGWINCH and layout repair proceeds
         def out_side_effect(*args, **kw):
             if args[0] == "list-clients":
                 return "1234:/dev/pts/3:80:24:letee"
-            return "10:52:160:100:60"
+            return "10:52:160:100:100:100:60"
         with (
             patch.object(cockpit.tmux, "out", side_effect=out_side_effect) as tmux_out,
             patch.object(cockpit.os, "open", return_value=3),
@@ -1462,7 +1486,7 @@ class CockpitSIGWINCHTest(unittest.TestCase):
                 def out_side(*args, **kw):
                     if args[0] == "list-clients":
                         return raw
-                    return "52:52:100:100:"
+                    return "52:52:100:100:100:100:"
                 with contextlib.ExitStack() as stack:
                     stack.enter_context(patch.object(cockpit.tmux, "out", side_effect=out_side))
                     kill_p = stack.enter_context(patch.object(cockpit.os, "kill"))

@@ -177,7 +177,7 @@ def _fix_layout(left: str, sidebar_width: int) -> None:
     tmux.tmux("resize-pane", "-t", left, "-x", str(sidebar_width), check=False)
 
 
-def _ensure_client_size() -> bool:
+def _ensure_client_size() -> bool | tuple[str, os.terminal_size]:
     try:
         raw = tmux.out(
             "list-clients",
@@ -185,9 +185,11 @@ def _ensure_client_size() -> bool:
             "-F", "#{client_pid}:#{client_tty}:#{client_width}:#{client_height}:#{client_session}",
             check=False,
         )
-    except Exception:
+    except Exception as error:
+        diagnostics.log("layout_client_query_error", error_type=type(error).__name__)
         return True
     if not raw:
+        diagnostics.log("layout_client_query", status="empty")
         return True
     for line in raw.splitlines():
         if not line:
@@ -225,27 +227,87 @@ def _ensure_client_size() -> bool:
                 os.close(fd)
             except OSError:
                 pass
-        if size.columns != cached_w or size.lines != cached_h:
+        stale = size.columns != cached_w or size.lines != cached_h
+        diagnostics.log(
+            "layout_client_probe",
+            client_pid=pid,
+            client_tty=tty,
+            cached_width=cached_w,
+            cached_height=cached_h,
+            tty_width=size.columns,
+            tty_height=size.lines,
+            status="stale" if stale else "healthy",
+        )
+        if stale:
             try:
                 os.kill(pid, signal.SIGWINCH)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-            return False
+            except (ProcessLookupError, PermissionError, OSError) as error:
+                diagnostics.log(
+                    "layout_client_signal",
+                    client_pid=pid,
+                    client_tty=tty,
+                    signal="SIGWINCH",
+                    status="error",
+                    error_type=type(error).__name__,
+                )
+                return False
+            diagnostics.log(
+                "layout_client_signal",
+                client_pid=pid,
+                client_tty=tty,
+                signal="SIGWINCH",
+                status="sent",
+            )
+            return tty, size
     return True
 
 
 def repair_layout(left: str) -> None:
-    if not _ensure_client_size():
+    client = _ensure_client_size()
+    if client is False:
+        return
+    if isinstance(client, tuple):
+        tty, size = client
+        command = (
+            f"resize-window -x {size.columns} -y {size.lines} -t {TARGET} ; "
+            f"resize-pane -t {left} -x '#{{{SIDEBAR_WIDTH_OPTION}}}' ; "
+            f"refresh-client -t {tty}"
+        )
+        result = tmux.tmux("run-shell", "-C", "-t", left, command, check=False)
+        diagnostics.log(
+            "layout_repair",
+            pane=left,
+            mode="stale_client",
+            client_tty=tty,
+            width=size.columns,
+            height=size.lines,
+            returncode=getattr(result, "returncode", None),
+        )
         return
     state = tmux.out(
         "display-message", "-p", "-t", left,
-        f"#{{pane_width}}:#{{{SIDEBAR_WIDTH_OPTION}}}:#{{window_width}}:#{{client_width}}:#{{window_offset_x}}",
+        f"#{{pane_width}}:#{{{SIDEBAR_WIDTH_OPTION}}}:#{{window_width}}:#{{client_width}}:#{{window_height}}:#{{client_height}}:#{{window_offset_x}}",
         check=False,
     ).split(":")
-    if len(state) == 5 and state[0] == state[1] and state[2] == state[3] and state[4] in ("", "0"):
+    healthy = (
+        len(state) == 7
+        and state[0] == state[1]
+        and state[2] == state[3]
+        and state[4] == state[5]
+        and state[6] in ("", "0")
+    )
+    diagnostics.log("layout_state", pane=left, state=state, healthy=healthy)
+    if healthy:
         return
     command = f"resize-window -a -t {TARGET} ; resize-pane -t {left} -x '#{{{SIDEBAR_WIDTH_OPTION}}}'"
-    tmux.tmux("run-shell", "-C", "-t", left, command, check=False)
+    result = tmux.tmux("run-shell", "-C", "-t", left, command, check=False)
+    diagnostics.log(
+        "layout_repair",
+        pane=left,
+        mode="automatic",
+        state=state,
+        returncode=getattr(result, "returncode", None),
+    )
 
 
 def _install_layout_hooks(left: str, sidebar_width: int) -> None:

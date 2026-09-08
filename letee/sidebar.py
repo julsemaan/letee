@@ -3785,7 +3785,24 @@ def run(stdscr: curses.window) -> None:
 
 def _maintain_sidebar(stop: threading.Event, pane: str) -> None:
     while not stop.is_set():
-        cockpit.repair_layout(pane)
+        diagnostics.log("layout_repair_attempt", pane=pane)
+        try:
+            cockpit.repair_layout(pane)
+        except (OSError, SystemExit, subprocess.SubprocessError) as error:
+            diagnostics.log(
+                "layout_repair_error",
+                pane=pane,
+                handled=True,
+                error_type=type(error).__name__,
+            )
+        except BaseException as error:
+            diagnostics.log(
+                "layout_repair_error",
+                pane=pane,
+                handled=False,
+                error_type=type(error).__name__,
+            )
+            raise
         stop.wait(LAYOUT_REPAIR_INTERVAL)
 
 
