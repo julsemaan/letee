@@ -2400,6 +2400,45 @@ class SidebarDrawTest(unittest.TestCase):
         repair_layout.assert_called_once_with("%1")
         self.assertEqual(waits, [sidebar.LAYOUT_REPAIR_INTERVAL])
 
+    def test_layout_maintainer_retries_after_transient_repair_errors(self):
+        waits = []
+
+        class StopAfterRetries:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, timeout):
+                waits.append(timeout)
+                if len(waits) == 4:
+                    self.stopped = True
+
+        with patch.object(
+            sidebar.cockpit,
+            "repair_layout",
+            side_effect=[
+                OSError("tmux unavailable"),
+                subprocess.SubprocessError("tmux failed"),
+                SystemExit("tmux timed out"),
+                None,
+            ],
+        ) as repair_layout:
+            sidebar._maintain_sidebar(StopAfterRetries(), "%1")
+
+        self.assertEqual(repair_layout.call_count, 4)
+        self.assertEqual(waits, [sidebar.LAYOUT_REPAIR_INTERVAL] * 4)
+
+    def test_layout_maintainer_propagates_unexpected_repair_errors(self):
+        stop = unittest.mock.Mock()
+        stop.is_set.return_value = False
+
+        with patch.object(sidebar.cockpit, "repair_layout", side_effect=RuntimeError("programming error")):
+            with self.assertRaisesRegex(RuntimeError, "programming error"):
+                sidebar._maintain_sidebar(stop, "%1")
+
+        stop.wait.assert_not_called()
+
     def test_main_restarts_after_keyboard_interrupt(self):
         with (
             patch.dict(sidebar.os.environ, {}, clear=True),
