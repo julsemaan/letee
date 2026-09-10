@@ -409,9 +409,9 @@ def _reconnecting_command(target: Target) -> str:
     return f"printf %s {shlex.quote(text)}; printf %s {save_cursor}; while :; do for state in {states}; do {animate}; printf {spinner} \"$color\" \"$frame\" \"$dots\"; sleep 0.1; done; done"
 
 
-def _install_right_pane_reset(left: str, right: str) -> None:
+def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
-    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @letee_current_agent ; set-option -u -t {tmux.SESSION} @letee_bell_target ; respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left} }}"
+    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @letee_current_agent ; set-option -u -t {tmux.SESSION} @letee_bell_target ; respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left} }}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
@@ -420,7 +420,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     _fix_layout(left, sidebar_width)
     _install_layout_hooks(left, sidebar_width)
     _install_bell_hook()
-    _install_right_pane_reset(left, right)
+    _install_right_pane_reset(left, right, prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "prefix", prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "status", "off")
     tmux.tmux("set-option", "-s", "escape-time", "0")
@@ -689,6 +689,10 @@ def switch(
         **_switch_fields(target, pane, switch_id, action_id, input_id),
         agent_id=agent_id,
     )
+
+
+def clear_current_target() -> None:
+    tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
 
 
 def rename_target(old: Target, new: Target) -> None:

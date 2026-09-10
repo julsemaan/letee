@@ -2031,6 +2031,33 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertEqual(status.current_target, renamed)
         self.assertEqual(status.bell_target, renamed)
 
+    def test_status_poller_drops_current_target_after_kill_effect(self):
+        killed = Target("local", "killed")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "other")))
+        status = sidebar.AsyncStatusPoller(poller, killed)
+        generation = status._generation
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+        finally:
+            status.close()
+
+        self.assertIsNone(status.current_target)
+        self.assertEqual(status._generation, generation + 1)
+
+    def test_status_poller_keeps_current_target_after_kill_of_other_session(self):
+        killed = Target("local", "killed")
+        active = Target("local", "active")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "active")))
+        status = sidebar.AsyncStatusPoller(poller, active)
+        generation = status._generation
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+        finally:
+            status.close()
+
+        self.assertEqual(status.current_target, active)
+        self.assertEqual(status._generation, generation)
+
     def test_status_poller_keeps_refresh_pending_until_renamed_remote_session_is_seen(self):
         old = Target("ssh", "old", "dev")
         renamed = Target("ssh", "renamed", "dev")
@@ -5694,11 +5721,32 @@ class PrefixActionTest(unittest.TestCase):
         active = Target("local", "active")
         data = snapshot(local=("stale", "active"))
 
-        with patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
+        with (
+            patch.object(sidebar.sessions, "kill") as kill,
+            patch.object(sidebar, "save_sessions") as save,
+            patch.object(sidebar.cockpit, "clear_current_target") as clear_target,
+        ):
             self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), STOP], [stale, active], active, data)
 
         kill.assert_called_once_with(active)
+        clear_target.assert_called_once_with()
         save.assert_called_once_with([stale])
+
+    def test_kill_of_inactive_session_keeps_current_target(self):
+        stale = Target("local", "stale")
+        active = Target("local", "active")
+        data = snapshot(local=("stale", "active"))
+
+        with (
+            patch.object(sidebar.sessions, "kill") as kill,
+            patch.object(sidebar, "save_sessions") as save,
+            patch.object(sidebar.cockpit, "clear_current_target") as clear_target,
+        ):
+            self._run([ord("x"), ord("y"), STOP], [stale, active], active, data)
+
+        kill.assert_called_once_with(stale)
+        clear_target.assert_not_called()
+        save.assert_called_once_with([active])
 
     def test_missing_session_kill_prefix_guides_custom_removal(self):
         target = Target("local", "active")
@@ -6382,11 +6430,13 @@ class SidebarKeybindingTest(unittest.TestCase):
             patch.object(sidebar, "_draw", return_value=(1, None)),
             patch.object(sidebar, "_bell_targets", return_value=set()),
             patch.object(sidebar.sessions, "kill") as kill,
+            patch.object(sidebar.cockpit, "clear_current_target") as clear_target,
             patch.object(sidebar, "save_sessions") as save_kill,
         ):
             screen3 = FakeScreen([ord("X"), ord("y"), STOP], size=(10, 40))
             sidebar.run(screen3)
         kill.assert_called_once_with(target_a)
+        clear_target.assert_called_once_with()
         save_kill.assert_called_once_with([target_b])
 
         # N should move selected session down via custom binding

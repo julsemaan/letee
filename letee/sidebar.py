@@ -1037,7 +1037,10 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             if planned != favorites:
                 save_sessions(list(planned))
         elif effect.kind == "kill" and isinstance(effect.target, Target):
+            active = _current_target() == effect.target
             sessions.kill(effect.target)
+            if active:
+                cockpit.clear_current_target()
             if planned != favorites:
                 save_sessions(list(planned))
         elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
@@ -1560,6 +1563,10 @@ class AsyncStatusPoller:
             if self.bell_target == target:
                 self.bell_target = renamed
             self._generation += 1
+        elif result.effect.kind == "kill" and isinstance(target, Target):
+            if self.current_target == target:
+                self.current_target = None
+                self._generation += 1
 
     @property
     def refresh_pending(self) -> bool:
