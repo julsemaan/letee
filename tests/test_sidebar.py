@@ -450,6 +450,7 @@ class FakeScreen:
         self.calls = []
         self.keys = list(keys or [])
         self.key = ord("y")
+        self.timeout_value = None
         self._letee_test_stop = STOP
         self.size = size
 
@@ -481,7 +482,7 @@ class FakeScreen:
         self.calls.append(("getch",))
         if self.keys:
             return self.keys.pop(0)
-        return self.key
+        return -1 if self.timeout_value == 0 else self.key
 
     def redrawln(self, *args):
         self.calls.append(("redrawln", *args))
@@ -493,6 +494,7 @@ class FakeScreen:
         self.calls.append(("move", *args))
 
     def timeout(self, *args):
+        self.timeout_value = args[0]
         self.calls.append(("timeout", *args))
 
 
@@ -4641,6 +4643,208 @@ class SidebarDrawTest(unittest.TestCase):
 
         poller.close.assert_called_once_with()
 
+
+class SidebarBurstInputTest(unittest.TestCase):
+    def _run(self, keys, data, favorites=(), mouse_events=(), size=(12, 40)):
+        screen = FakeScreen(keys, size=size)
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        draws = []
+        draw_signature = inspect.signature(sidebar._draw)
+
+        def draw_spy(*args, **kwargs):
+            bound = draw_signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            draws.append({
+                "selected": bound.arguments["selected"],
+                "target": (
+                    bound.arguments["entries"][bound.arguments["selected"]].target
+                    if bound.arguments["entries"]
+                    and 0 <= bound.arguments["selected"] < len(bound.arguments["entries"])
+                    else None
+                ),
+                "scroll_offset": bound.arguments["scroll_offset"],
+                "adding": bound.arguments["adding"],
+                "filtering": bound.arguments["filtering"],
+            })
+            return 2, None
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=list(favorites)),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.curses, "getmouse", side_effect=mouse_events),
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            sidebar.run(screen)
+
+        return screen, poller, draws, switch
+
+    def test_rapid_session_navigation_applies_every_key_in_order(self):
+        favorites = [Target("local", name) for name in ("one", "two", "three", "four")]
+        _, _, draws, _ = self._run(
+            [ord("j"), ord("j"), ord("j"), curses.KEY_F7, STOP],
+            snapshot(local=tuple(target.session for target in favorites)),
+            favorites,
+        )
+
+        self.assertEqual(draws[-1]["target"], favorites[-1])
+
+    def test_rapid_add_existing_navigation_applies_every_key_in_order(self):
+        _, _, draws, _ = self._run(
+            [curses.KEY_F11, curses.KEY_DOWN, curses.KEY_ENTER, curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_F7, STOP],
+            snapshot(local=("one", "two", "three")),
+        )
+
+        self.assertTrue(draws[-1]["adding"])
+        self.assertEqual(draws[-1]["target"], Target("local", "three"))
+
+    def test_rapid_name_entry_preserves_every_character(self):
+        screen = FakeScreen(
+            [curses.KEY_F11, curses.KEY_ENTER, *map(ord, "session"), getattr(curses, "KEY_RESIZE", 410), STOP],
+            size=(12, 40),
+        )
+        entered = []
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("running",)),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+
+        def draw_name(_screen, state, _dimmed=False):
+            entered.append(state.creation_text)
+            return None
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_draw_name", side_effect=draw_name),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+
+        self.assertIn("session", entered)
+        self.assertEqual(entered[-1], "session")
+
+    def test_mixed_wheel_and_keyboard_input_keeps_order(self):
+        first = Target("local", "one")
+        second = Target("local", "two")
+        _, _, _, switch = self._run(
+            [curses.KEY_MOUSE, ord("j"), curses.KEY_MOUSE, ord("k"), curses.KEY_ENTER, STOP],
+            snapshot(local=("one", "two")),
+            [first, second],
+            [
+                (0, 0, 3, 0, curses.BUTTON5_PRESSED),
+                (0, 0, 3, 0, curses.BUTTON4_PRESSED),
+            ],
+        )
+
+        switch.assert_called_once_with(first, sidebar.sessions.attach_command(first))
+
+    def test_mouse_press_and_release_execute_once(self):
+        target = Target("local", "one")
+        _, _, _, switch = self._run(
+            [curses.KEY_MOUSE, curses.KEY_MOUSE, STOP],
+            snapshot(local=("one",)),
+            [target],
+            [
+                (0, 0, 2, 0, curses.BUTTON1_PRESSED),
+                (0, 0, 2, 0, curses.BUTTON1_RELEASED),
+            ],
+        )
+
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+
+    def test_wheel_then_click_renders_new_layout_before_hit_testing(self):
+        targets = [Target("local", str(index)) for index in range(8)]
+        order = []
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 40))
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=tuple(target.session for target in targets)),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        draw_signature = inspect.signature(sidebar._draw)
+
+        def draw_spy(*args, **kwargs):
+            bound = draw_signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            order.append(("draw", bound.arguments["scroll_offset"]))
+            return 2, None
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=targets),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.curses, "getmouse", side_effect=[
+                (0, 0, 3, 0, curses.BUTTON5_PRESSED),
+                (0, 0, 3, 0, curses.BUTTON1_PRESSED),
+            ]),
+            patch.object(sidebar.cockpit, "switch", side_effect=lambda *_: order.append("switch")),
+        ):
+            sidebar.run(screen)
+
+        self.assertIn(("draw", 1), order)
+        self.assertLess(order.index(("draw", 1)), order.index("switch"))
+
+    def test_continuous_input_still_polls_and_renders(self):
+        favorites = [Target("local", name) for name in ("one", "two")]
+        _, poller, draws, _ = self._run(
+            [ord("j")] * 40 + [STOP],
+            snapshot(local=("one", "two")),
+            favorites,
+        )
+
+        self.assertGreaterEqual(poller.tick.call_count, 2)
+        self.assertGreaterEqual(len(draws), 2)
+        self.assertLess(poller.tick.call_count, 40)
+        self.assertLess(len(draws), 40)
+
+    def test_resize_and_malformed_mouse_keep_following_event(self):
+        target = Target("local", "one")
+        _, _, _, switch = self._run(
+            [getattr(curses, "KEY_RESIZE", 410), curses.KEY_MOUSE, curses.KEY_MOUSE, STOP],
+            snapshot(local=("one",)),
+            [target],
+            [curses.error(), (0, 0, 2, 0, curses.BUTTON1_PRESSED)],
+        )
+
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+
+
 class ShouldAutoCreateTest(unittest.TestCase):
     def test_should_auto_create_true_single_host_no_sessions(self):
         entries = [Entry("laptop", "host", host="")]
@@ -5115,7 +5319,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
                 ):
                     run(screen)
 
-                self.assertIn(1, captured)
+                self.assertNotIn(1, captured)
                 self.assertIsNone(captured[-1])
 
     def test_discovery_refresh_preserves_and_clamps_agent_scroll_offset(self):
@@ -5978,6 +6182,12 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertEqual(completed["action_id"], applied["action_id"])
         self.assertEqual(applied["selected_target"], target.format())
         self.assertEqual(completed["target"], target.format())
+        processed = [record for record in records if record["event"] == "input_processed"]
+        self.assertEqual(
+            {record["input_id"] for record in processed},
+            {record["input_id"] for record in records if record["event"] == "input_received"},
+        )
+        self.assertTrue(all("applied" in record and "ignored" in record for record in processed))
 
     def _run_mouse_trace(self, mouse_events, keys=None, poller=None, collect_records=True):
         target = Target("local", "one")
@@ -6021,6 +6231,13 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertIn(("ignored_release", "release_without_press"), decisions)
         self.assertIn(("malformed_event", "invalid_row_or_state"), decisions)
         self.assertIn(("empty_row", None), decisions)
+        received = [record for record in records if record["event"] == "input_received"]
+        processed = [record for record in records if record["event"] == "input_processed"]
+        self.assertEqual(
+            [record["input_id"] for record in processed],
+            [record["input_id"] for record in received],
+        )
+        self.assertTrue(all(record["ignored"] == (not record["applied"]) for record in processed))
 
     def test_wheel_outside_list_regions_records_ignored_decision(self):
         records = self._run_mouse_trace([
@@ -6263,17 +6480,11 @@ class SidebarKeybindingTest(unittest.TestCase):
 
     def test_custom_navigation_keys_are_used_and_arrows_still_work(self):
         custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "navigate_down": "n", "navigate_up": "p"}
-        _, _, draw = self._run_with_keys([ord("n"), curses.KEY_UP, STOP], bindings=custom)
+        _, _, draw = self._run_with_keys([ord("n"), STOP], bindings=custom)
+        selected = draw.call_args_list[-1]
         self.assertEqual(
-            [
-                (call.args[1][call.args[2]].target, call.args[2])
-                for call in draw.call_args_list
-            ],
-            [
-                (Target("local", "a"), 0),
-                (Target("local", "b"), 1),
-                (Target("local", "a"), 0),
-            ],
+            (selected.args[1][selected.args[2]].target, selected.args[2]),
+            (Target("local", "b"), 1),
         )
 
         _, _, draw = self._run_with_keys([curses.KEY_DOWN, STOP], bindings=custom)
