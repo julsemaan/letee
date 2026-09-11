@@ -1252,7 +1252,7 @@ class AddFlowTest(unittest.TestCase):
             status_deadline=123.0,
         )
 
-        self.assertFalse(_search_key(state, ord("y"), data))
+        self.assertTrue(_search_key(state, ord("y"), data))
         self.assertEqual(state.filter_text, "x" * 64)
 
         self.assertTrue(_search_key(state, curses.KEY_BACKSPACE, data))
@@ -1542,6 +1542,25 @@ class AddRunLoopTest(unittest.TestCase):
 
         create.assert_called_once_with(Target("local", "new"))
 
+    def test_full_search_consumes_navigation_key_at_max_length(self):
+        name = "x" * 64
+        draws = []
+
+        def draw(*args, **kwargs):
+            draws.append(kwargs)
+            return 1, None
+
+        with (
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=config.DEFAULT_SIDEBAR_KEYBINDINGS),
+            patch.object(sidebar, "_draw", side_effect=draw),
+        ):
+            self._run_add_flow(
+                [curses.KEY_F11, *map(ord, name), ord("k"), STOP],
+                snapshot(local=(name,)),
+            )
+
+        self.assertFalse(draws[-1]["add_button_selected"])
+
     def test_clicking_the_create_row_creates(self):
         with (
             patch("letee.sidebar.sessions.create") as create,
@@ -1715,7 +1734,7 @@ class SidebarStateTest(unittest.TestCase):
             status_deadline=123.0,
         )
 
-        self.assertFalse(_search_key(state, ord("y"), snapshot()))
+        self.assertTrue(_search_key(state, ord("y"), snapshot()))
         self.assertEqual(state.filter_text, "x" * 64)
 
         self.assertTrue(_search_key(state, curses.KEY_BACKSPACE, snapshot()))

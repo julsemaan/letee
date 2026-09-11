@@ -1580,8 +1580,9 @@ def _search_key(
 ) -> bool:
     if key in (curses.KEY_BACKSPACE, 8, 127):
         state.filter_text = state.filter_text[:-1]
-    elif 32 <= key <= 126 and len(state.filter_text) < 64:
-        state.filter_text += chr(key)
+    elif 32 <= key <= 126:
+        if len(state.filter_text) < 64:
+            state.filter_text += chr(key)
     else:
         return False
     state.selected_target = None
