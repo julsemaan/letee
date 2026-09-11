@@ -710,6 +710,10 @@ def set_expected_right_pane_death(expected: bool) -> None:
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION)
 
 
+def set_current_target(target: Target) -> None:
+    tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
+
+
 def rename_target(old: Target, new: Target) -> None:
     if current_target() == old:
         tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, new.format())

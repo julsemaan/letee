@@ -718,6 +718,16 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_set_current_target_sets_session_option(self):
+        target = Target("ssh", "work", "dev")
+
+        with patch.object(cockpit.tmux, "tmux") as tmux_call:
+            cockpit.set_current_target(target)
+
+        tmux_call.assert_called_once_with(
+            "set-option", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION, "ssh:dev:work"
+        )
+
     def test_session_menu_targets_sidebar_at_click_coordinates(self):
         with (
             patch.object(cockpit, "_option", return_value="%1"),

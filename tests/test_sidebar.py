@@ -1675,6 +1675,39 @@ class SidebarStateTest(unittest.TestCase):
         finally:
             status.close()
 
+    def test_failed_active_kill_restores_target_after_pane_death(self):
+        target = Target("local", "work")
+        current = target
+        events = []
+
+        def current_target():
+            events.append("current")
+            return current
+
+        def fail_kill(_target):
+            nonlocal current
+            events.append("kill")
+            current = None
+            raise SystemExit("kill local:work failed: denied")
+
+        def clear_marker(expected):
+            events.append(f"marker {expected}")
+
+        with (
+            patch.object(sidebar, "_current_target", side_effect=current_target),
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death", side_effect=clear_marker) as expected_death,
+            patch.object(sidebar.cockpit, "set_current_target", side_effect=lambda _target: events.append("restore")) as set_current_target,
+            patch.object(sidebar.cockpit, "show_unavailable", side_effect=lambda _target: events.append("unavailable")) as show_unavailable,
+            patch.object(sidebar.sessions, "kill", side_effect=fail_kill),
+        ):
+            result = sidebar._perform_effect(Effect("kill", target=target), (target,))
+
+        self.assertEqual(result.error, "kill local:work failed: denied")
+        self.assertEqual(events, ["current", "marker True", "kill", "marker False", "current", "restore", "unavailable"])
+        self.assertEqual(expected_death.call_args_list, [call(True), call(False)])
+        set_current_target.assert_called_once_with(target)
+        show_unavailable.assert_called_once_with(target)
+
     def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
         state = SidebarState(add_view="existing")
