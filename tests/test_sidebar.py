@@ -1092,7 +1092,7 @@ class AddFlowTest(unittest.TestCase):
         entries = sidebar._add_entries("location", "", data, [])
         self.assertEqual(
             [(entry.label, entry.host) for entry in entries],
-            [("Select where to create", None), ("localhost", ""), ("dev", "dev")],
+            [("Select a location", None), ("localhost", ""), ("dev", "dev")],
         )
 
     def test_location_picker_uses_icons_and_location_colors(self):

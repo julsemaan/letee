@@ -569,7 +569,7 @@ def _add_entries(
 ) -> list[Entry]:
     if view == "search":
         return _search_entries(host or "", filter_text, snapshot, favorites)
-    entries = [Entry("Select where to create", "section")]
+    entries = [Entry("Select a location", "section")]
     entries.extend(Entry(label, "location", host=entry_host) for label, entry_host in _available_locations(snapshot))
     if not snapshot.local.available:
         entries.append(Entry("localhost: unavailable", "unavailable", host=""))
