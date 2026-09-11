@@ -1038,9 +1038,11 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 save_sessions(list(planned))
         elif effect.kind == "kill" and isinstance(effect.target, Target):
             active = _current_target() == effect.target
-            sessions.kill(effect.target)
             if active:
+                # Clear before the kill so the pane-died hook sees the target
+                # unset and returns the right pane to help instead of unavailable.
                 cockpit.clear_current_target()
+            sessions.kill(effect.target)
             if planned != favorites:
                 save_sessions(list(planned))
         elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):

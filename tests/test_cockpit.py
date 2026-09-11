@@ -679,7 +679,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 expected.insert(0, unittest.mock.call("select-pane", "-t", "%7"))
             self.assertEqual(tmux_call.call_args_list, expected)
 
-    def test_right_pane_reset_restores_startup_help_and_preserves_target(self):
+    def test_right_pane_reset_helps_after_kill_and_unavailable_after_unexpected_death(self):
         calls = []
 
         with (
@@ -692,8 +692,11 @@ class CockpitLayoutTest(unittest.TestCase):
         command = calls[1][4]
         self.assertEqual(calls[0], ("set-option", "-p", "-t", "%2", "remain-on-exit", "on"))
         self.assertEqual(calls[1][:4], ("set-hook", "-t", "letee", "pane-died"))
+        # Target cleared before a letee-initiated kill: right pane returns to help.
+        self.assertIn("#{?@letee_current_target,0,1}", command)
         self.assertIn(shlex.quote(cockpit.help_command("C-x")), command)
-        self.assertNotIn("is unavailable", command)
+        # Target still set on an unexpected death: unavailable fallback survives.
+        self.assertIn("Active session is unavailable.", command)
         self.assertNotIn("set-option -u -t letee @letee_current_target", command)
         self.assertIn("select-pane -t %1", command)
 

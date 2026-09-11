@@ -4551,6 +4551,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=target),
+            patch("letee.sidebar.cockpit.clear_current_target"),
             patch("letee.sidebar.sessions.kill", side_effect=SystemExit("kill local:work failed: denied")),
         ):
             run(screen)
@@ -5721,15 +5722,23 @@ class PrefixActionTest(unittest.TestCase):
         active = Target("local", "active")
         data = snapshot(local=("stale", "active"))
 
+        # The target must be cleared before the kill so the pane-died hook sees
+        # it unset and respawns help instead of unavailable.
+        order = []
+
+        def record(name):
+            return lambda *args, **kwargs: order.append(name)
+
         with (
-            patch.object(sidebar.sessions, "kill") as kill,
+            patch.object(sidebar.sessions, "kill", side_effect=record("kill")) as kill,
             patch.object(sidebar, "save_sessions") as save,
-            patch.object(sidebar.cockpit, "clear_current_target") as clear_target,
+            patch.object(sidebar.cockpit, "clear_current_target", side_effect=record("clear_target")) as clear_target,
         ):
             self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), STOP], [stale, active], active, data)
 
         kill.assert_called_once_with(active)
         clear_target.assert_called_once_with()
+        self.assertEqual(order, ["clear_target", "kill"])
         save.assert_called_once_with([stale])
 
     def test_kill_of_inactive_session_keeps_current_target(self):

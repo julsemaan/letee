@@ -411,7 +411,16 @@ def _reconnecting_command(target: Target) -> str:
 
 def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
-    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ set-option -u -t {tmux.SESSION} @letee_current_agent ; set-option -u -t {tmux.SESSION} @letee_bell_target ; respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left} }}"
+    cleanup = f"set-option -u -t {tmux.SESSION} @letee_current_agent ; set-option -u -t {tmux.SESSION} @letee_bell_target"
+    help_respawn = f"respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left}"
+    unavailable = f"respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left}"
+    # The sidebar clears @letee_current_target before killing the active session,
+    # so an unset option marks a letee-initiated kill (help); a set option means
+    # the pane died unexpectedly and keeps the unavailable fallback.
+    command = (
+        f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ {cleanup} ; "
+        f"if-shell -F '#{{?@letee_current_target,0,1}}' {{ {help_respawn} }} {{ {unavailable} }} }}"
+    )
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
