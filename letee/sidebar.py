@@ -73,7 +73,7 @@ class Effect:
 class SidebarState:
     filter_text: str = ""
     filtering: bool = False
-    add_view: Literal["choice", "existing", "location", "name"] | None = None
+    add_view: Literal["location", "search", "name"] | None = None
     creation_host: str | None = None
     creation_text: str = ""
     rename_target: Target | None = None
@@ -530,60 +530,97 @@ def _available_locations(snapshot: SessionSnapshot) -> list[tuple[str, str]]:
     return locations
 
 
-def _add_entries(
-    view: Literal["choice", "existing", "location"],
+def _valid_session_name(name: str) -> bool:
+    try:
+        validate_name(name, "session")
+    except SystemExit:
+        return False
+    return True
+
+
+def _name_conflicts(
+    name: str,
+    host: str,
+    existing_sessions: tuple[Target, ...],
+    ignore: Target | None = None,
+) -> bool:
+    kind = "local" if host == "" else "ssh"
+    return any(
+        target != ignore
+        and target.kind == kind
+        and target.host == (None if kind == "local" else host)
+        and target.session == name
+        for target in existing_sessions
+    )
+
+
+def _search_entries(
+    host: str,
     filter_text: str,
     snapshot: SessionSnapshot,
     favorites: list[Target],
 ) -> list[Entry]:
-    if view == "choice":
-        return [Entry("New session", "choice_new"), Entry("Existing session", "choice_existing")]
-    if view == "existing":
-        grouped: list[Entry] = []
-        entries = _entries(filter_text, snapshot, favorites, adding=True)
-        for index, entry in enumerate(entries):
-            if entry.kind in ("host", "header"):
-                label = "localhost" if entry.host == "" else entry.label
-                grouped.append(Entry(label, "header", host=entry.host))
-                if index + 1 == len(entries) or entries[index + 1].kind in ("host", "header"):
-                    grouped.append(Entry("No sessions", "empty", host=entry.host))
-            else:
-                grouped.append(entry)
-        return grouped
+    source = snapshot.local if host == "" else snapshot.remotes.get(host)
+    if source is None:
+        return [Entry("connecting…", "unavailable", host=host)]
+    if not source.available:
+        label = f"reconnecting…: {source.error}" if source.error else "reconnecting…"
+        return [Entry(label, "unavailable", host=host)]
+    needle = filter_text.lower()
+    matches = [
+        target for target in source.sessions
+        if target not in favorites and needle in target.session.lower()
+    ]
+    matches.sort(key=lambda target: target.session != filter_text)
+    entries: list[Entry] = []
+    if (
+        filter_text
+        and _valid_session_name(filter_text)
+        and not _name_conflicts(filter_text, host, snapshot.sessions)
+    ):
+        entries.append(Entry(filter_text, "create", host=host))
+    entries.extend(Entry(target.session, "session", target, target.host) for target in matches)
+    if not entries:
+        return [
+            Entry("No sessions", "empty", host=host),
+            Entry("Type a session name to create", "hint", host=host),
+        ]
+    return entries
+
+
+def _add_entries(
+    view: Literal["location", "search"],
+    filter_text: str,
+    snapshot: SessionSnapshot,
+    favorites: list[Target],
+    host: str | None = None,
+) -> list[Entry]:
+    if view == "search":
+        return _search_entries(host or "", filter_text, snapshot, favorites)
     entries = [Entry("Select where to create", "section")]
-    entries.extend(Entry(label, "location", host=host) for label, host in _available_locations(snapshot))
+    entries.extend(Entry(label, "location", host=entry_host) for label, entry_host in _available_locations(snapshot))
     if not snapshot.local.available:
         entries.append(Entry("localhost: unavailable", "unavailable", host=""))
-    for host, source in snapshot.remotes.items():
+    for remote_host, source in snapshot.remotes.items():
         if source is None or not source.available:
-            entries.append(Entry(f"{host}: unavailable", "unavailable", host=host))
+            entries.append(Entry(f"{remote_host}: unavailable", "unavailable", host=remote_host))
     if not entries or not any(entry.kind == "location" for entry in entries):
         entries.append(Entry("No available locations", "hint"))
     return entries
 
 
-def _open_add(state: SidebarState, view: Literal["choice", "existing"] = "choice") -> None:
-    _clear_status(state)
-    state.add_view = view
-    state.filtering = view == "existing"
-    state.filter_text = ""
-    state.creation_host = None
-    state.creation_text = ""
-    state.rename_target = None
+def _open_add(state: SidebarState, snapshot: SessionSnapshot) -> None:
+    _reset_add(state)
+    state.focused_region = "sessions"
     state.selected_index = 0
     state.selected_target = None
-    state.add_button_selected = False
-
-
-def _start_new(state: SidebarState, snapshot: SessionSnapshot) -> None:
-    _clear_status(state)
     locations = _available_locations(snapshot)
     if len(locations) == 1:
-        _select_location(state, locations[0][1])
+        state.add_view = "search"
+        state.creation_host = locations[0][1]
+        state.filtering = True
     else:
         state.add_view = "location"
-        state.filtering = False
-        state.selected_index = 0
 
 
 def _select_location(state: SidebarState, host: str) -> None:
@@ -591,8 +628,11 @@ def _select_location(state: SidebarState, host: str) -> None:
     state.creation_host = host
     state.creation_text = ""
     state.rename_target = None
-    state.add_view = "name"
-    state.filtering = False
+    state.add_view = "search"
+    state.filtering = True
+    state.filter_text = ""
+    state.selected_index = 0
+    state.selected_target = None
 
 
 def _start_rename(state: SidebarState, target: Target) -> None:
@@ -607,19 +647,17 @@ def _start_rename(state: SidebarState, target: Target) -> None:
 def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
     _clear_status(state)
     state.add_button_selected = False
-    if state.add_view == "name":
-        if state.rename_target is not None:
-            _reset_add(state)
-            return
-        state.add_view = "location" if len(_available_locations(snapshot)) > 1 else "choice"
-        state.creation_host = None
-        state.creation_text = ""
-    elif state.add_view in ("location", "existing"):
-        state.add_view = "choice"
+    if (
+        state.rename_target is None
+        and state.add_view == "search"
+        and len(_available_locations(snapshot)) > 1
+    ):
+        state.add_view = "location"
         state.filtering = False
         state.filter_text = ""
-    elif state.add_view == "choice":
-        state.add_view = None
+        state.creation_host = None
+        return
+    _reset_add(state)
 
 
 def _reset_add(state: SidebarState) -> None:
@@ -768,14 +806,7 @@ def _update_agent_alerts(
 
 
 def _selectable(entries: list[Entry]) -> list[int]:
-    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "location", "choice_new", "choice_existing")]
-
-
-def _should_auto_create(entries: list[Entry]) -> bool:
-    """True when exactly one host and no sessions — skip host selection step."""
-    hosts = [e for e in entries if e.kind == "host"]
-    sessions = [e for e in entries if e.kind == "session"]
-    return len(hosts) == 1 and len(sessions) == 0
+    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "location", "create")]
 
 
 def _selected_index(entries: list[Entry], target: Target | None) -> int:
@@ -1092,10 +1123,7 @@ def _apply_effect(
 ) -> bool:
     effect = result.effect
     if result.error:
-        if effect.kind == "create" and isinstance(effect.target, Target):
-            state.creation_host = "" if effect.target.kind == "local" else effect.target.host
-            state.creation_text = effect.target.session
-        elif effect.kind == "rename" and isinstance(effect.target, Target):
+        if effect.kind == "rename" and isinstance(effect.target, Target):
             state.rename_target = effect.target
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.message
@@ -1580,48 +1608,24 @@ class AsyncStatusPoller:
         self._poller.close()
 
 
-def _creation_conflicts(state: SidebarState, existing_sessions: tuple[Target, ...]) -> bool:
-    kind = "local" if state.creation_host == "" else "ssh"
-    return any(
-        target != state.rename_target
-        and target.kind == kind
-        and target.host == (None if kind == "local" else state.creation_host)
-        and target.session == state.creation_text
-        for target in existing_sessions
-    )
-
-
-def _creation_key(
+def _search_key(
     state: SidebarState,
     key: int,
-    existing_sessions: tuple[Target, ...] = (),
-) -> Effect | None:
-    if key in (27, 3):
-        state.creation_host = None
-        state.creation_text = ""
-    elif key in (curses.KEY_BACKSPACE, 8, 127):
-        state.creation_text = state.creation_text[:-1]
-    elif key in (10, 13, curses.KEY_ENTER):
-        name = validate_name(state.creation_text, "session")
-        if _creation_conflicts(state, existing_sessions):
-            raise SystemExit("Session already exists on this host")
-        if state.rename_target is not None:
-            if name == state.rename_target.session:
-                _reset_add(state)
-                return None
-            return Effect("rename", target=state.rename_target, message=name)
-        host = state.creation_host
-        target = Target("local", name) if host == "" else Target("ssh", name, host)
-        state.creation_host = None
-        state.creation_text = ""
-        return Effect("create", target)
-    elif 32 <= key <= 126 and len(state.creation_text) < 64:
-        state.creation_text += chr(key)
-
+    snapshot: SessionSnapshot,
+) -> bool:
+    if key in (curses.KEY_BACKSPACE, 8, 127):
+        state.filter_text = state.filter_text[:-1]
+    elif 32 <= key <= 126 and len(state.filter_text) < 64:
+        state.filter_text += chr(key)
+    else:
+        return False
     _clear_status(state)
-    if _creation_conflicts(state, existing_sessions):
+    text = state.filter_text
+    if text and not _valid_session_name(text):
+        state.status = "Invalid session name"
+    elif text and _name_conflicts(text, state.creation_host or "", snapshot.sessions):
         state.status = "Session already exists on this host"
-    return None
+    return True
 
 
 def _rename_key(
@@ -1631,7 +1635,30 @@ def _rename_key(
 ) -> Effect | None:
     if state.rename_target is None:
         return None
-    return _creation_key(state, key, existing_sessions)
+    if key in (27, 3):
+        _reset_add(state)
+        return None
+    if key in (curses.KEY_BACKSPACE, 8, 127):
+        state.creation_text = state.creation_text[:-1]
+    elif key in (10, 13, curses.KEY_ENTER):
+        name = validate_name(state.creation_text, "session")
+        if _name_conflicts(
+            name, state.creation_host or "", existing_sessions, state.rename_target
+        ):
+            raise SystemExit("Session already exists on this host")
+        if name == state.rename_target.session:
+            _reset_add(state)
+            return None
+        return Effect("rename", target=state.rename_target, message=name)
+    elif 32 <= key <= 126 and len(state.creation_text) < 64:
+        state.creation_text += chr(key)
+
+    _clear_status(state)
+    if _name_conflicts(
+        state.creation_text, state.creation_host or "", existing_sessions, state.rename_target
+    ):
+        state.status = "Session already exists on this host"
+    return None
 
 
 def _agent_layout(
@@ -1710,7 +1737,7 @@ def _bell_targets(
 
 
 def _entry_height(entry: Entry) -> int:
-    if entry.kind in ("choice_new", "choice_existing", "order"):
+    if entry.kind == "order":
         return 2
     return 2 if entry.tracked or entry.kind == "agent" else 1
 
@@ -1780,7 +1807,7 @@ def _entry_at_row(
     for index in range(start, end):
         if entry_row < _entry_height(entries[index]):
             return index if entries[index].kind in (
-                "session", "host", "agent", "order", "choice_new", "choice_existing", "location"
+                "session", "host", "agent", "order", "create", "location"
             ) else None
         entry_row -= _entry_height(entries[index])
     return None
@@ -1894,11 +1921,14 @@ def _draw_title(
     dimmed: bool = False,
     adding: bool = False,
     add_button_selected: bool = False,
+    creation_host: str | None = None,
 ) -> tuple[int, int | None]:
     width = max(1, w)
     brand = " letee" if _ascii() else "  letee"
     if adding:
-        section = "Add existing" if filtering else "New session" if any(entry.kind == "location" for entry in entries) else "Add session"
+        section = "Add session"
+        if creation_host is not None:
+            section += f" · {'localhost' if creation_host == '' else creation_host}"
         left = f"{brand} / {section}"
     else:
         left = brand
@@ -1982,13 +2012,8 @@ def _entry_lines(
         return [entry.label + " " + rule * (width - len(entry.label) - 1)]
     if entry.kind == "header":
         return [_truncate(entry.label, width)]
-    if entry.kind in ("choice_new", "choice_existing"):
-        symbol = "+" if entry.kind == "choice_new" else "=" if _ascii() else "≡"
-        detail = "Create a fresh tmux session" if entry.kind == "choice_new" else "Add a running tmux session"
-        return [
-            _truncate_cells(f"{pointer} {symbol} {entry.label}", width),
-            _truncate_cells(f"    {detail}", width),
-        ]
+    if entry.kind == "create":
+        return [_truncate_cells(f"{pointer} {icon['create']} {entry.label}", width)]
     if entry.kind == "location":
         location_icon = icon["local"] if entry.host == "" else icon["remote"]
         return [_truncate_cells(f"{pointer} {location_icon} {entry.label}", width)]
@@ -2090,10 +2115,8 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, move_source
         attr = _color("section") or curses.A_BOLD
     elif entry.kind == "add":
         attr = _color("add_entry") or (curses.A_BOLD | curses.A_REVERSE)
-    elif entry.kind == "choice_new":
+    elif entry.kind == "create":
         attr = (_color("create") or 0) | curses.A_BOLD
-    elif entry.kind == "choice_existing":
-        attr = (_color("remote") or 0) | curses.A_BOLD
     elif entry.kind in ("header", "host"):
         attr = curses.A_BOLD
     elif entry.unavailable_favorite:
@@ -2240,7 +2263,12 @@ def _draw_footer(
     dimmed: bool = False,
     adding: bool = False,
 ) -> int:
-    if filtering:
+    if filtering and adding:
+        logical_rows = [
+            "type a name  backspace edit",
+            f"esc back  {'Enter' if _ascii() else '↵'} create or switch",
+        ]
+    elif filtering:
         logical_rows = ["type to filter  backspace edit", f"esc clear  {'Enter' if _ascii() else '↵'} switch"]
     elif adding:
         logical_rows = [f"{'Enter' if _ascii() else '↵'} select · Esc back" if not _ascii() else "Enter select  Esc back"]
@@ -2262,10 +2290,7 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     width = max(1, w)
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     ascii_mode = _ascii()
-    if state.rename_target is None:
-        title = " + New session" if ascii_mode else " ＋ New session"
-    else:
-        title = " e Rename session" if ascii_mode else " ✎ Rename session"
+    title = " e Rename session" if ascii_mode else " ✎ Rename session"
     back_col = _draw_back_title(stdscr, width, title, attr, dimmed)
     host = "localhost" if state.creation_host == "" else (state.creation_host or "")
     host_icon = "*" if ascii_mode else ("●" if state.creation_host == "" else "◆")
@@ -2281,10 +2306,7 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
         message = f" ! {state.status}" if ascii_mode and state.status else f" ✕ {state.status}" if state.status else " Letters, numbers, . _ -"
         message_attr = (_color("danger") or curses.A_BOLD) if state.status else (_color("hints") or curses.A_DIM)
         stdscr.addnstr(4, 0, _truncate_cells(message, width), width, _fade(message_attr) if dimmed else message_attr)
-    if state.rename_target is None:
-        footer = "Esc back  Enter create" if ascii_mode else "Esc back · ↵ create"
-    else:
-        footer = "Esc cancel  Enter rename" if ascii_mode else "Esc cancel · ↵ rename"
+    footer = "Esc cancel  Enter rename" if ascii_mode else "Esc cancel · ↵ rename"
     footer_width = max(0, width - 1)
     stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
     if width > 1:
@@ -2328,7 +2350,7 @@ def _draw(
     h, w = stdscr.getmaxyx()
     cursor, add_col = _draw_title(
         stdscr, w, entries, filter_text, filtering, dimmed, adding,
-        add_button_selected and pane_active,
+        add_button_selected and pane_active, creation_host,
     )
     if filtering:
         cursor = _draw_filter(stdscr, w, filter_text, dimmed)
@@ -2645,6 +2667,9 @@ def run(stdscr: curses.window) -> None:
     ) -> None:
         _set_status(state, message, status_timeout, region)
 
+    def sync_cursor() -> None:
+        curses.curs_set(1 if state.add_view in ("search", "name") else 0)
+
     def read_prompt(
         prompt: str,
         filtering: bool = False,
@@ -2693,8 +2718,11 @@ def run(stdscr: curses.window) -> None:
         known_agents = {(agent.pane_target, agent.agent_id) for agent in poller.snapshot.agents}
         state.hidden_agents.intersection_update(known_agents)
         entries = (
-            _add_entries(state.add_view, state.filter_text, poller.snapshot, state.favorites)
-            if state.add_view in ("choice", "existing", "location")
+            _add_entries(
+                state.add_view, state.filter_text, poller.snapshot, state.favorites,
+                state.creation_host,
+            )
+            if state.add_view in ("location", "search")
             else _entries(state.filter_text, poller.snapshot, state.favorites)
         )
         agent_entries = [Entry("", "order")] + _agent_entries(
@@ -2715,14 +2743,14 @@ def run(stdscr: curses.window) -> None:
 
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
         if action == "add":
-            _open_add(state)
+            _open_add(state, poller.snapshot)
             state.focused_region = "sessions"
-            curses.curs_set(0)
+            sync_cursor()
             rebuild()
             return None
         if state.add_view is not None:
             _reset_add(state)
-            curses.curs_set(0)
+            sync_cursor()
             rebuild()
         if action in ("remove", "kill"):
             state.focused_region = "sessions"
@@ -2938,7 +2966,7 @@ def run(stdscr: curses.window) -> None:
                 return
             if key != curses.KEY_MOUSE:
                 clear_mouse_failure()
-            if key in (curses.KEY_F6, curses.KEY_F7):
+            if key in (curses.KEY_F6, curses.KEY_F7) and state.add_view is None:
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
                 continue
@@ -2955,7 +2983,7 @@ def run(stdscr: curses.window) -> None:
                         _reset_selection(state, entries, state.focused_region)
                     elif key in (27, 3):
                         _add_back(state, poller.snapshot)
-                        curses.curs_set(0)
+                        sync_cursor()
                         rebuild()
                         break
                     elif key == curses.KEY_MOUSE:
@@ -3012,7 +3040,7 @@ def run(stdscr: curses.window) -> None:
                                 trace_mouse_decision(
                                     input_id, "activate_add_back", row, mouse_col
                                 )
-                                curses.curs_set(0)
+                                sync_cursor()
                                 rebuild()
                                 break
                             trace_mouse_decision(
@@ -3021,11 +3049,7 @@ def run(stdscr: curses.window) -> None:
                             )
                     else:
                         try:
-                            effect = (
-                                _rename_key(state, key, poller.snapshot.sessions)
-                                if state.rename_target is not None
-                                else _creation_key(state, key, poller.snapshot.sessions)
-                            )
+                            effect = _rename_key(state, key, poller.snapshot.sessions)
                         except SystemExit as error:
                             show_status(str(error))
                         else:
@@ -3033,12 +3057,12 @@ def run(stdscr: curses.window) -> None:
                                 if actions.busy:
                                     show_status("another action is still running")
                                 else:
-                                    curses.curs_set(0)
+                                    sync_cursor()
                                     dispatch(effect, input_id)
                                     rebuild()
                                     break
                             elif state.add_view != "name":
-                                curses.curs_set(0)
+                                sync_cursor()
                                 rebuild()
                                 break
                     add_col = _draw_name(stdscr, state, dimmed)
@@ -3467,11 +3491,11 @@ def run(stdscr: curses.window) -> None:
                 ):
                     if _mouse_activates(mouse_state):
                         if state.add_view is None:
-                            _open_add(state)
+                            _open_add(state, poller.snapshot)
                             decision = "open_add"
                         else:
                             _add_back(state, poller.snapshot)
-                            curses.curs_set(0)
+                            sync_cursor()
                             decision = "activate_add_back"
                         rebuild()
                         trace_mouse_decision(
@@ -3590,21 +3614,27 @@ def run(stdscr: curses.window) -> None:
                 continue
             if state.filtering:
                 if key in (27, 3):
-                    if state.add_view == "existing":
+                    if state.add_view == "search":
                         _add_back(state, poller.snapshot)
                     else:
                         state.filter_text = ""
                         state.filtering = False
-                    curses.curs_set(0)
+                    sync_cursor()
                     rebuild()
                     continue
-                new_filter = _filter_key(state.filter_text, key)
-                if new_filter is not None:
-                    state.filter_text = new_filter
-                    rebuild()
-                    continue
+                if state.add_view == "search":
+                    if _search_key(state, key, poller.snapshot):
+                        rebuild()
+                        continue
+                else:
+                    new_filter = _filter_key(state.filter_text, key)
+                    if new_filter is not None:
+                        state.filter_text = new_filter
+                        rebuild()
+                        continue
             if key in (27, 3) and state.add_view is not None:
                 _add_back(state, poller.snapshot)
+                sync_cursor()
                 rebuild()
                 continue
             selectable = _selectable(entries)
@@ -3719,7 +3749,7 @@ def run(stdscr: curses.window) -> None:
                         show_status("Session unavailable; rename a running session")
                     else:
                         _start_rename(state, entry.target)
-                        curses.curs_set(1)
+                        sync_cursor()
             elif key == ord(sidebar_keys["remove"]) and state.add_view is None and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target:
@@ -3732,32 +3762,25 @@ def run(stdscr: curses.window) -> None:
                 if state.add_button_selected:
                     state.add_button_selected = False
                     if state.add_view is None:
-                        _open_add(state)
+                        _open_add(state, poller.snapshot)
                     else:
                         _add_back(state, poller.snapshot)
-                        curses.curs_set(0)
+                    sync_cursor()
                     rebuild()
                     continue
                 if not entries:
                     continue
                 entry = entries[state.selected_index]
-                if entry.kind == "choice_new":
-                    _start_new(state, poller.snapshot)
-                    rebuild()
-                    if state.add_view == "name":
-                        curses.curs_set(1)
-                    continue
-                if entry.kind == "choice_existing":
-                    _open_add(state, "existing")
-                    rebuild()
-                    curses.curs_set(1)
-                    continue
-                if entry.kind == "location":
+                if entry.kind == "create":
+                    host = state.creation_host or ""
+                    target = Target("local", entry.label) if host == "" else Target("ssh", entry.label, host)
+                    effect = Effect("create", target)
+                elif entry.kind == "location":
                     _select_location(state, entry.host or "")
-                    curses.curs_set(1)
+                    sync_cursor()
                     continue
-                if entry.target:
-                    effect = _transition(state, "add_switch" if state.add_view == "existing" else "switch", entry.target)
+                elif entry.target:
+                    effect = _transition(state, "add_switch" if state.add_view == "search" else "switch", entry.target)
             elif key == ord(sidebar_keys["kill"]):
                 if not entries:
                     continue
@@ -3773,7 +3796,7 @@ def run(stdscr: curses.window) -> None:
             if effect:
                 dispatch(effect, input_id)
                 if effect.kind in ("switch", "create"):
-                    curses.curs_set(0)
+                    sync_cursor()
                 rebuild()
     finally:
         cancel_move()

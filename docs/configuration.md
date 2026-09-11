@@ -173,7 +173,7 @@ Disabling the overlay stops future application but cannot undo settings already 
 
 ## Moving from older letee versions
 
-Older letee versions used the ordinary tmux default server for inner sessions. Those sessions keep running, but current letee neither discovers nor changes them. The `Existing session` picker lists only untracked sessions on each host's `letee.inner`. A tracked name from an older version appears as missing. Selecting it creates a new session with that name on `letee.inner` and switches to it. Overlay settings previously applied to the default server remain there until that server restarts or reloads its configuration.
+Older letee versions used the ordinary tmux default server for inner sessions. Those sessions keep running, but current letee neither discovers nor changes them. The Add session screen lists only untracked sessions on each host's `letee.inner`. A tracked name from an older version appears as missing. Selecting it creates a new session with that name on `letee.inner` and switches to it. Overlay settings previously applied to the default server remain there until that server restarts or reloads its configuration.
 
 ## Clipboard
 

@@ -120,10 +120,11 @@ Missing sessions remain launchers. Press `Enter` on one to recreate and attach i
 
 ## Add session menu
 
-The Add menu separates `New session` from `Existing session`:
+The Add screen searches untracked sessions and creates new ones:
 
-- `New session` creates a fresh tmux session. With exactly one local or SSH location available, letee skips location selection. With multiple locations, it opens a location picker and then a name input.
-- `Existing session` searches only untracked sessions on each host's `letee.inner` server.
+- With exactly one local or SSH location available, `C-s +` opens the search directly. With multiple locations, it opens a location picker first and the search afterwards.
+- Typing filters untracked sessions on the chosen host's `letee.inner` server. A `＋` row appears when the typed name is free and valid.
+- `Enter` on a session tracks it and switches to it. `Enter` on the `＋` row creates a session with the typed name. `Esc` goes back one level, or closes the Add screen.
 - Selecting or creating a session persists it and switches to it immediately.
 
 When the Add menu is closed, the independently navigable Agents region remains below the `AGENTS` divider.
@@ -135,7 +136,7 @@ When the Add menu is closed, the independently navigable Agents region remains b
 - Click a tracked session's `↕` handle, or `:` in ASCII mode, hover the destination, then click the destination row to move it. The source and insertion target highlight while moving.
 - Press `Esc`, click the background, or click the source handle again to cancel a move. Hovering `↑ more` or `↓ more` auto-scrolls.
 - Right-click an agent to open the native tmux `Kill` menu. Confirmation sends `SIGTERM` to the foreground process group while the pane and shell survive. Right-click does not switch the session or agent pane.
-- Click `＋ add`, an Add choice, or an available location row to activate the same flow as `Enter`.
+- Click `＋ add`, a location row, an untracked session row, or the `＋` create row to activate the same flow as `Enter`.
 - Click `‹ back`, or `< back` in ASCII mode, in the Add-session top bar to go back one level, like `Esc`.
 - Wheel over Sessions or Agents scrolls the region under the pointer without keyboard focus or changing selection.
 - Right-pane mouse events are forwarded by outer tmux to mouse-aware applications.
