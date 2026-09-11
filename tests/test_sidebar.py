@@ -420,7 +420,6 @@ from letee.sidebar import (
     _entry_at_row,
     _entry_attr,
     _entry_lines,
-    _filter_key,
     _init_colors,
     _mouse_activates,
     _mouse_mask,
@@ -503,14 +502,14 @@ class SidebarViewModeTest(unittest.TestCase):
     def test_normal_view_contains_only_ordered_sessions_and_add_action(self):
         sessions = [Target("ssh", "notes", "dev"), Target("local", "work")]
 
-        entries = _entries("", snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), sessions)
+        entries = _entries(snapshot(local=("work", "other"), remotes={"dev": source("ssh", ("notes", "chat"), host="dev")}), sessions)
 
         self.assertEqual([entry.target for entry in entries if entry.kind == "session"], sessions)
         self.assertEqual([entry.kind for entry in entries[:2]], ["session", "session"])
         self.assertEqual(sidebar._selectable(entries)[0], 0)
 
     def test_empty_normal_view_shows_add_instructions(self):
-        entries = _entries("", snapshot(local=("work",)), [])
+        entries = _entries(snapshot(local=("work",)), [])
 
         self.assertEqual(
             [(entry.label, entry.kind) for entry in entries],
@@ -520,7 +519,7 @@ class SidebarViewModeTest(unittest.TestCase):
     def test_tracked_remote_favorite_shows_connecting_during_initial_discovery(self):
         target = Target("ssh", "work", "dev")
 
-        entry = next(entry for entry in _entries("", snapshot(remotes={"dev": None}), [target]) if entry.target == target)
+        entry = next(entry for entry in _entries(snapshot(remotes={"dev": None}), [target]) if entry.target == target)
 
         self.assertTrue(entry.unavailable_favorite)
         self.assertEqual(entry.status, "connecting…")
@@ -530,7 +529,7 @@ class SidebarViewModeTest(unittest.TestCase):
         target = Target("ssh", "work", "dev")
         failed = source("ssh", host="dev", available=False, error="connection refused")
 
-        entry = next(entry for entry in _entries("", snapshot(remotes={"dev": failed}), [target]) if entry.target == target)
+        entry = next(entry for entry in _entries(snapshot(remotes={"dev": failed}), [target]) if entry.target == target)
 
         self.assertTrue(entry.unavailable_favorite)
         self.assertEqual(entry.status, "reconnecting…")
@@ -540,7 +539,7 @@ class SidebarViewModeTest(unittest.TestCase):
         targets = (Target("local", "work"), Target("ssh", "work", "dev"))
         data = snapshot(local=("other",), remotes={"dev": source("ssh", ("other",), host="dev")})
 
-        entries = [next(entry for entry in _entries("", data, [target]) if entry.target == target) for target in targets]
+        entries = [next(entry for entry in _entries(data, [target]) if entry.target == target) for target in targets]
 
         self.assertTrue(all(entry.unavailable_favorite for entry in entries))
         self.assertEqual([entry.status for entry in entries], ["missing", "missing"])
@@ -551,35 +550,12 @@ class SidebarViewModeTest(unittest.TestCase):
     def test_tracked_unknown_remote_host_stays_unavailable(self):
         target = Target("ssh", "work", "unknown")
 
-        entry = next(entry for entry in _entries("", snapshot(), [target]) if entry.target == target)
+        entry = next(entry for entry in _entries(snapshot(), [target]) if entry.target == target)
 
         self.assertEqual(entry.status, "unavailable")
 
-    def test_add_picker_shows_reconnecting_with_connection_error(self):
-        failed = source("ssh", host="dev", available=False, error="connection refused")
 
-        entries = _entries("", snapshot(remotes={"dev": failed}), [], adding=True)
 
-        reconnecting = next(entry for entry in entries if entry.kind == "unavailable")
-        self.assertEqual(reconnecting.label, "reconnecting…: connection refused")
-        with patch("letee.sidebar._ascii", return_value=True):
-            line = _entry_lines(reconnecting, False, set(), None, 24)[0]
-        self.assertTrue(line.isascii())
-        self.assertLessEqual(sidebar._cell_width(line), 24)
-
-    def test_add_picker_groups_hosts_and_excludes_tracked(self):
-        tracked_target = Target("local", "work")
-
-        entries = _entries("", snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")}), [tracked_target], adding=True)
-
-        self.assertNotIn(tracked_target, [entry.target for entry in entries])
-        self.assertEqual([entry.kind for entry in entries], ["host", "session", "host", "session"])
-
-    def test_add_picker_filter_preserves_headers_and_hides_create_hosts(self):
-        entries = _entries("chat", snapshot(local=("work",), remotes={"dev": source("ssh", ("chat",), host="dev")}), [], adding=True)
-
-        self.assertFalse(any(entry.kind == "host" for entry in entries))
-        self.assertEqual([entry.kind for entry in entries], ["header", "header", "session"])
 
     def test_bells_are_limited_to_tracked(self):
         tracked = Target("local", "work")
@@ -1000,7 +976,7 @@ class AddFlowTest(unittest.TestCase):
             0,
             "",
             "",
-            filtering=True,
+            name_input=True,
             adding=True,
             creation_host="dev",
         )
@@ -1015,7 +991,7 @@ class AddFlowTest(unittest.TestCase):
             0,
             "",
             "",
-            filtering=True,
+            name_input=True,
             adding=True,
             creation_host="",
         )
@@ -1025,17 +1001,11 @@ class AddFlowTest(unittest.TestCase):
     def test_search_footer_talks_about_create_or_switch(self):
         screen = FakeScreen(size=(6, 40))
 
-        _draw(screen, [], 0, "", "wor", filtering=True, adding=True)
+        _draw(screen, [], 0, "", "wor", name_input=True, adding=True)
 
         footer = " ".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] >= 4)
         self.assertIn("type a name", footer)
         self.assertIn("create or switch", footer)
-
-        plain = FakeScreen(size=(6, 40))
-        _draw(plain, [], 0, "", "wor", filtering=True)
-        plain_footer = " ".join(call[3] for call in plain.calls if call[0] == "addnstr" and call[1] >= 4)
-        self.assertIn("esc clear", plain_footer)
-        self.assertNotIn("create or switch", plain_footer)
 
     def test_name_title_renders_back_and_returns_hit_column(self):
         screen = FakeScreen(size=(6, 40))
@@ -1213,8 +1183,8 @@ class AddFlowTest(unittest.TestCase):
         sidebar._open_add(single, snapshot(local=("work",)))
 
         self.assertEqual(
-            (single.add_view, single.creation_host, single.filtering, single.focused_region),
-            ("search", "", True, "sessions"),
+            (single.add_view, single.creation_host, single.focused_region),
+            ("search", "", "sessions"),
         )
 
         data = snapshot(local=("work",), remotes={"dev": source("ssh", host="dev")})
@@ -1223,14 +1193,14 @@ class AddFlowTest(unittest.TestCase):
         sidebar._open_add(multiple, data)
 
         self.assertEqual(
-            (multiple.add_view, multiple.creation_host, multiple.filtering),
-            ("location", None, False),
+            (multiple.add_view, multiple.creation_host),
+            ("location", None),
         )
 
         sidebar._select_location(multiple, "dev")
         self.assertEqual(
-            (multiple.add_view, multiple.creation_host, multiple.filtering),
-            ("search", "dev", True),
+            (multiple.add_view, multiple.creation_host),
+            ("search", "dev"),
         )
 
         sidebar._add_back(multiple, data)
@@ -1241,7 +1211,7 @@ class AddFlowTest(unittest.TestCase):
 
     def test_search_typing_reports_conflicts_and_invalid_names(self):
         data = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
-        state = SidebarState(add_view="search", filtering=True, creation_host="dev")
+        state = SidebarState(add_view="search", creation_host="dev")
 
         self.assertFalse(_search_key(state, curses.KEY_DOWN, data))
         self.assertFalse(_search_key(state, 10, data))
@@ -1258,7 +1228,6 @@ class AddFlowTest(unittest.TestCase):
         data = snapshot()
         state = SidebarState(
             add_view="search",
-            filtering=True,
             creation_host="",
             filter_text="x" * 64,
             status="agent failed",
@@ -1278,7 +1247,6 @@ class AddFlowTest(unittest.TestCase):
         data = snapshot(local=("work",), remotes={"dev": source("ssh", host="dev")})
         state = SidebarState(
             add_view="search",
-            filtering=True,
             creation_host="dev",
             filter_text="work",
             status="Session already exists on this host",
@@ -1288,7 +1256,7 @@ class AddFlowTest(unittest.TestCase):
 
         sidebar._add_back(state, data)
 
-        self.assertEqual((state.add_view, state.filtering, state.filter_text), ("location", False, ""))
+        self.assertEqual((state.add_view, state.filter_text), ("location", ""))
         self.assertEqual((state.status, state.status_region, state.status_deadline), ("", "sessions", None))
 
     def test_opening_add_clears_prior_session_or_agent_status(self):
@@ -1303,8 +1271,7 @@ class AddFlowTest(unittest.TestCase):
     def test_name_screen_uses_dedicated_row_and_cursor_at_narrow_width(self):
         screen = FakeScreen(size=(6, 16))
         state = SidebarState(add_view="name", creation_host="", creation_text="x" * 64)
-        with patch("letee.sidebar.socket.gethostname", return_value="laptop"):
-            sidebar._draw_name(screen, state)
+        sidebar._draw_name(screen, state)
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
         self.assertTrue(any("● localhost" in line for line in lines))
         self.assertTrue(any(line.startswith(" ❯ ") for line in lines))
@@ -1495,6 +1462,31 @@ class AddRunLoopTest(unittest.TestCase):
         save.assert_called_once_with([Target("local", "existing")])
         switch.assert_called_once_with(Target("local", "existing"), "attach")
 
+    def test_enter_on_location_immediately_lists_that_hosts_sessions(self):
+        data = snapshot(local=("work",), remotes={"dev": source("ssh", ("notes",), host="dev")})
+        with (
+            patch("letee.sidebar.sessions.create") as create,
+            patch("letee.sidebar.save_sessions"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            self._run_add_flow(
+                [
+                    curses.KEY_F11,
+                    curses.KEY_DOWN,
+                    curses.KEY_ENTER,
+                    curses.KEY_DOWN,
+                    curses.KEY_ENTER,
+                    STOP,
+                ],
+                data,
+            )
+
+        create.assert_not_called()
+        # The second Enter must act on the dev search list rebuilt right after
+        # selecting the location, before any new poll or keypress.
+        switch.assert_called_once_with(Target("ssh", "notes", "dev"), "attach")
+
     def test_region_keys_do_not_steal_enter_from_the_add_search(self):
         with (
             patch("letee.sidebar.sessions.create") as create,
@@ -1534,7 +1526,7 @@ class AddRunLoopTest(unittest.TestCase):
 class SidebarStateTest(unittest.TestCase):
     def test_search_key_edits_the_name_and_ignores_navigation(self):
         data = snapshot(remotes={"dev": source("ssh", host="dev")})
-        state = SidebarState(add_view="search", filtering=True, creation_host="dev")
+        state = SidebarState(add_view="search", creation_host="dev")
 
         self.assertTrue(_search_key(state, ord("w"), data))
         self.assertTrue(_search_key(state, ord("o"), data))
@@ -1547,7 +1539,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_search_key_ignores_invalid_and_taken_names(self):
         data = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
-        state = SidebarState(add_view="search", filtering=True, creation_host="dev")
+        state = SidebarState(add_view="search", creation_host="dev")
 
         for letter in "work":
             _search_key(state, ord(letter), data)
@@ -1560,7 +1552,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_search_key_allows_same_name_on_different_host(self):
         data = snapshot(local=("work",), remotes={"dev": source("ssh", host="dev")})
-        state = SidebarState(add_view="search", filtering=True, creation_host="dev")
+        state = SidebarState(add_view="search", creation_host="dev")
 
         for letter in "work":
             self.assertTrue(_search_key(state, ord(letter), data))
@@ -1574,7 +1566,6 @@ class SidebarStateTest(unittest.TestCase):
     def test_search_key_caps_name_length_and_clears_stale_status(self):
         state = SidebarState(
             add_view="search",
-            filtering=True,
             creation_host="dev",
             filter_text="x" * 64,
             status="agent failed",
@@ -1694,14 +1685,14 @@ class SidebarStateTest(unittest.TestCase):
     def test_reset_selection_selects_add_button_when_sessions_are_empty(self):
         state = SidebarState()
 
-        _reset_selection(state, _entries("", snapshot(), []))
+        _reset_selection(state, _entries(snapshot(), []))
 
         self.assertTrue(state.add_button_selected)
 
     def test_sync_selection_preserves_add_button_selection_when_sessions_exist(self):
         target = Target("local", "work")
         state = SidebarState(add_button_selected=True)
-        entries = _entries("", snapshot(local=("work",)), [target])
+        entries = _entries(snapshot(local=("work",)), [target])
 
         _sync_selection(state, entries)
 
@@ -1709,14 +1700,15 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_pending_selection_waits_for_discovery_then_selects_target(self):
         target = Target("ssh", "new", "dev")
+        tracked = Target("local", "work")
         state = SidebarState(selected_index=2, pending_selection=target)
-        pending_entries = _entries("", snapshot(remotes={"dev": source("ssh", ("work",), host="dev")}))
+        pending_entries = _entries(snapshot(remotes={"dev": source("ssh", ("work",), host="dev")}), [tracked])
 
         _sync_selection(state, pending_entries)
         self.assertEqual(state.pending_selection, target)
         self.assertIsNone(state.selected_target)
 
-        ready_entries = _entries("", snapshot(remotes={"dev": source("ssh", ("work", "new"), host="dev")}))
+        ready_entries = _entries(snapshot(remotes={"dev": source("ssh", ("work", "new"), host="dev")}), [tracked, target])
         _sync_selection(state, ready_entries)
         self.assertEqual(state.selected_target, target)
         self.assertIsNone(state.pending_selection)
@@ -1724,7 +1716,7 @@ class SidebarStateTest(unittest.TestCase):
     def test_unrelated_snapshot_preserves_user_selection(self):
         selected = Target("local", "notes")
         state = SidebarState(selected_target=selected, selected_index=2)
-        entries = _entries("", snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")}))
+        entries = _entries(snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")}), [selected])
 
         _sync_selection(state, entries)
 
@@ -1823,7 +1815,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
-        state = SidebarState(add_view="search", filtering=True, creation_host="")
+        state = SidebarState(add_view="search", creation_host="")
         poller = unittest.mock.Mock()
         with (
             patch("letee.sidebar.save_sessions") as save,
@@ -1840,7 +1832,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_successful_create_tracks_after_creation(self):
         target = Target("local", "new")
-        state = SidebarState(add_view="search", filtering=True, creation_host="", filter_text="new")
+        state = SidebarState(add_view="search", creation_host="", filter_text="new")
         poller = unittest.mock.Mock()
         with (
             patch("letee.sidebar.sessions.create") as create,
@@ -1856,7 +1848,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_failed_create_neither_switches_nor_sets_pending_selection(self):
         target = Target("ssh", "new", "dev")
-        state = SidebarState(add_view="search", filtering=True, creation_host="dev", filter_text="new")
+        state = SidebarState(add_view="search", creation_host="dev", filter_text="new")
         poller = unittest.mock.Mock()
         with (
             patch("letee.sidebar.sessions.create", side_effect=SystemExit("create failed")),
@@ -1871,7 +1863,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_create_error_does_not_leak_when_backing_out_of_add_flow(self):
         target = Target("ssh", "new", "dev")
-        state = SidebarState(add_view="search", filtering=True, creation_host="dev", filter_text="new")
+        state = SidebarState(add_view="search", creation_host="dev", filter_text="new")
         poller = unittest.mock.Mock()
         with patch("letee.sidebar.sessions.create", side_effect=SystemExit("create failed")):
             _execute(Effect("create", target=target), state, poller, 5)
@@ -1884,7 +1876,7 @@ class SidebarStateTest(unittest.TestCase):
 
     def test_add_switch_error_does_not_leak_when_backing_out_of_add_flow(self):
         target = Target("local", "work")
-        state = SidebarState(add_view="search", filtering=True, creation_host="")
+        state = SidebarState(add_view="search", creation_host="")
         poller = unittest.mock.Mock()
         with (
             patch("letee.sidebar.save_sessions"),
@@ -2826,10 +2818,10 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(status[1], 1)
         self.assertEqual(footer, ["↵ activate"])
 
-    def test_filter_status_renders_below_filter_input(self):
+    def test_name_input_status_renders_below_name_input(self):
         screen = FakeScreen(size=(7, 30))
 
-        _draw(screen, [], 0, "filter cleared", "work", filtering=True)
+        _draw(screen, [], 0, "filter cleared", "work", name_input=True, adding=True)
 
         status = next(call for call in screen.calls if call[0] == "addnstr" and "filter cleared" in call[3])
         self.assertEqual(status[1], 2)
@@ -2867,14 +2859,14 @@ class SidebarDrawTest(unittest.TestCase):
                 footers.append(footer)
             self.assertEqual(footers[0], footers[1])
 
-    def test_filtering_uses_two_instruction_rows_with_ascii_fallback(self):
+    def test_name_input_uses_two_instruction_rows_with_ascii_fallback(self):
         for ascii_mode, expected in (
-            (False, ["type to filter  backspace edit", "esc clear  ↵ switch"]),
-            (True, ["type to filter  backspace edit", "esc clear  Enter switch"]),
+            (False, ["type a name  backspace edit", "esc back  ↵ create or switch"]),
+            (True, ["type a name  backspace edit", "esc back  Enter create or switch"]),
         ):
             screen = FakeScreen(size=(7, 60))
             with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
-                _draw(screen, [], 0, "ignored", "", filtering=True)
+                _draw(screen, [], 0, "ignored", "", name_input=True, adding=True)
             footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
             self.assertEqual(footer, expected)
 
@@ -2892,11 +2884,6 @@ class SidebarDrawTest(unittest.TestCase):
         footer = [call for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
         self.assertTrue(all(call[5] & curses.A_BOLD and call[5] & curses.A_REVERSE for call in footer))
 
-    def test_host_row_never_contains_inline_name_editor(self):
-        line = _entry_lines(Entry("laptop", "host", host=""), True, set(), None, 40, "", "work")[0]
-
-        self.assertNotIn("work", line)
-        self.assertNotIn("new:", line)
 
     def test_read_key_shows_confirmation_below_title_and_preserves_footer(self):
         screen = FakeScreen(size=(5, 20))
@@ -2916,7 +2903,7 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen(size=(6, 12))
 
         with patch("letee.sidebar._ascii", return_value=False):
-            _read_key(screen, "kill session-with-a-long-name? y/N", filtering=True)
+            _read_key(screen, "kill session-with-a-long-name? y/N", name_input=True)
 
         prompt = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[3].strip())
         self.assertLessEqual(sidebar._cell_width(prompt[3]), 12)
@@ -2924,8 +2911,8 @@ class SidebarDrawTest(unittest.TestCase):
 
     def test_agent_confirmation_row_matches_agents_divider(self):
         entries = [Entry("pi", "agent", status="working")]
-        for filtering, agent_percentage in ((False, 40), (False, 80), (True, 40), (True, 50)):
-            with self.subTest(filtering=filtering, agent_percentage=agent_percentage):
+        for name_input, agent_percentage in ((False, 40), (False, 80), (True, 40), (True, 50)):
+            with self.subTest(name_input=name_input, agent_percentage=agent_percentage):
                 screen = FakeScreen(size=(20, 40))
                 footer_height, _ = _draw(
                     screen,
@@ -2933,7 +2920,7 @@ class SidebarDrawTest(unittest.TestCase):
                     0,
                     "",
                     "",
-                    filtering=filtering,
+                    name_input=name_input,
                     agent_entries=entries,
                     agent_percentage=agent_percentage,
                 )
@@ -2942,7 +2929,7 @@ class SidebarDrawTest(unittest.TestCase):
                     if call[0] == "addnstr" and call[3].startswith("AGENTS ")
                 )
                 self.assertEqual(
-                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_percentage, filtering),
+                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_percentage, name_input),
                     divider[1] + 2,
                 )
 
@@ -3027,30 +3014,25 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertNotIn("1 session", normal_text)
 
         screen = FakeScreen(size=(6, 40))
-        _draw(screen, entries, 0, "filtering", "work", filtering=True)
-        filtering_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        _draw(screen, entries, 0, "filtering", "work", name_input=True, adding=True)
+        add_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
-        self.assertIn("letee", filtering_text)
-        self.assertNotIn("1 match", filtering_text)
-        self.assertTrue(filter_row[3].startswith(" Filter: work"))
-
-        screen = FakeScreen(size=(6, 40))
-        _draw(screen, entries, 0, "filtering", "work", filtering=True, adding=True)
-        add_text = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
+        self.assertIn("letee", add_text)
         self.assertNotIn("1 match", add_text)
+        self.assertTrue(filter_row[3].startswith(" Name: work"))
 
-    def test_filter_uses_dedicated_full_width_row(self):
+    def test_name_input_uses_dedicated_full_width_row(self):
         screen = FakeScreen(size=(6, 40))
         entries = [Entry("work", "session", Target("local", "work"))]
 
-        _draw(screen, entries, 0, "filtering", "work", filtering=True, adding=True)
+        _draw(screen, entries, 0, "filtering", "work", name_input=True, adding=True)
 
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
         self.assertNotIn("work", title[3])
-        self.assertEqual(filter_row[3], " Filter: work" + " " * 27)
+        self.assertEqual(filter_row[3], " Name: work" + " " * 29)
         self.assertEqual(filter_row[4], 40)
-        self.assertIn(("move", 1, len(" Filter: work")), screen.calls)
+        self.assertIn(("move", 1, len(" Name: work")), screen.calls)
 
     def test_session_rows_use_last_available_column(self):
         screen = FakeScreen(size=(7, 20))
@@ -3062,24 +3044,24 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(row[4], 20)
         self.assertEqual(sidebar._cell_width(row[3]), 20)
 
-    def test_empty_filter_has_visible_input_position(self):
+    def test_empty_name_input_has_visible_input_position(self):
         screen = FakeScreen(size=(6, 20))
 
-        _draw(screen, [], 0, "filtering", "", filtering=True)
+        _draw(screen, [], 0, "filtering", "", name_input=True, adding=True)
 
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
-        self.assertTrue(filter_row[3].startswith(" Filter: "))
-        self.assertIn(("move", 1, len(" Filter: ")), screen.calls)
+        self.assertTrue(filter_row[3].startswith(" Name: "))
+        self.assertIn(("move", 1, len(" Name: ")), screen.calls)
 
-    def test_narrow_filter_drops_count_before_clipping_query(self):
+    def test_narrow_name_input_drops_count_before_clipping_query(self):
         screen = FakeScreen(size=(5, 16))
 
-        _draw(screen, [Entry("work", "session", Target("local", "work"))], 0, "filtering", "abcdefghij", filtering=True)
+        _draw(screen, [Entry("work", "session", Target("local", "work"))], 0, "filtering", "abcdefghij", name_input=True, adding=True)
 
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
         self.assertNotIn("abcdefghij", title[3])
-        self.assertEqual(filter_row[3], " Filter: abcdef…")
+        self.assertEqual(filter_row[3], " Name: abcdefgh…")
         cursor = next(call for call in screen.calls if call[0] == "move")
         self.assertEqual(cursor, ("move", 1, 15))
 
@@ -3113,11 +3095,6 @@ class SidebarDrawTest(unittest.TestCase):
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertTrue(title[5] & curses.A_BOLD)
         self.assertTrue(title[5] & curses.A_REVERSE)
-
-    def test_filter_key_updates_live_text(self):
-        self.assertEqual(_filter_key("a", ord("b")), "ab")
-        self.assertEqual(_filter_key("ab", 127), "a")
-        self.assertIsNone(_filter_key("ab", 10))
 
     def test_bell_targets_combines_cockpit_local_and_remote_bells(self):
         discovered = snapshot(
@@ -3167,7 +3144,7 @@ class SidebarDrawTest(unittest.TestCase):
             ):
                 run(screen)
 
-            self.assertEqual(draw.call_args_list[-1].args[15], expected)
+            self.assertEqual(draw.call_args_list[-1].args[14], expected)
 
     def test_removed_focused_keys_do_nothing(self):
         for key in map(ord, "q?/a"):
@@ -3185,7 +3162,7 @@ class SidebarDrawTest(unittest.TestCase):
                     run(screen)
 
                 self.assertEqual(screen.calls.count(("getch",)), 2)
-                self.assertFalse(any(call.args[11] for call in draw.call_args_list))
+                self.assertFalse(any(call.args[10] for call in draw.call_args_list))
                 self.assertFalse(any(call.args[1] in ("help", "quit") for call in transition.call_args_list))
 
     def test_h_and_l_leave_agent_ordering_unchanged(self):
@@ -3233,7 +3210,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        self.assertTrue(any(call.args[11] for call in draw.call_args_list))
+        self.assertTrue(any(call.args[10] for call in draw.call_args_list))
 
     def test_up_at_top_of_add_menu_selects_back(self):
         screen = FakeScreen([curses.KEY_F11, curses.KEY_UP, STOP])
@@ -3253,7 +3230,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        add_draws = [call for call in draw.call_args_list if call.args[11]]
+        add_draws = [call for call in draw.call_args_list if call.args[10]]
         self.assertTrue(add_draws)
         self.assertTrue(any(call.kwargs["add_button_selected"] for call in add_draws))
 
@@ -3275,7 +3252,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        add_draws = [call for call in draw.call_args_list if call.args[11]]
+        add_draws = [call for call in draw.call_args_list if call.args[10]]
         self.assertTrue(add_draws)
         self.assertFalse(add_draws[-1].kwargs["add_button_selected"])
         self.assertEqual(add_draws[-1].args[2], 0)
@@ -3402,14 +3379,14 @@ class SidebarDrawTest(unittest.TestCase):
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar._init_colors"),
-            patch("letee.sidebar._entries", side_effect=lambda filter_text="", *_: calls.append(filter_text) or [Entry("work", "session", Target("local", "work"))]),
+            patch("letee.sidebar._entries", side_effect=lambda *args: calls.append(args) or [Entry("work", "session", Target("local", "work"))]),
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=None),
         ):
             run(screen)
 
         self.assertIn(("timeout", 50), screen.calls)
-        self.assertEqual(calls, [""])
+        self.assertEqual(len(calls), 1)
 
     def test_agent_duration_redraws_each_second_and_restart_reads_active_agent(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
@@ -3670,8 +3647,8 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_F7, curses.KEY_DOWN, curses.KEY_ENTER, -1, STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
-            active_agents.append(args[17])
-            if args[17] == "id":
+            active_agents.append(args[16])
+            if args[16] == "id":
                 release.set()
             return (2, None)
 
@@ -3736,7 +3713,7 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar.load_sessions", return_value=[target]),
             patch(
                 "letee.sidebar._draw",
-                side_effect=lambda *args, **kwargs: active_agents.append(args[17]) or (2, None),
+                side_effect=lambda *args, **kwargs: active_agents.append(args[16]) or (2, None),
             ),
         ):
             run(screen)
@@ -4285,12 +4262,12 @@ class SidebarDrawTest(unittest.TestCase):
         sidebar._select_location(state, "")
 
         self.assertEqual(
-            (state.add_view, state.creation_host, state.filtering),
-            ("search", "", True),
+            (state.add_view, state.creation_host),
+            ("search", ""),
         )
 
     def test_search_back_returns_to_location_for_multiple_locations(self):
-        state = SidebarState(add_view="search", filtering=True, creation_host="dev", filter_text="draft")
+        state = SidebarState(add_view="search", creation_host="dev", filter_text="draft")
         data = snapshot(remotes={"dev": source("ssh", host="dev")})
 
         sidebar._add_back(state, data)
@@ -4321,7 +4298,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         def draw_spy(*args, **kwargs):
             selected = args[2]
-            scroll_offset = args[12] if len(args) > 12 else None
+            scroll_offset = args[11] if len(args) > 11 else None
             captured.append((selected, scroll_offset))
             return (2, None)
 
@@ -4384,7 +4361,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_only_first_nine_tracked_entries_get_slots(self):
         favorites = [Target("local", f"session-{slot}") for slot in range(10)]
 
-        tracked_entries = [entry for entry in _entries("", snapshot(), favorites) if entry.tracked]
+        tracked_entries = [entry for entry in _entries(snapshot(), favorites) if entry.tracked]
 
         self.assertEqual([entry.shortcut_slot for entry in tracked_entries], [1, 2, 3, 4, 5, 6, 7, 8, 9, None])
 
@@ -4429,45 +4406,13 @@ class SidebarDrawTest(unittest.TestCase):
             self.assertEqual(_entry_attr(Entry("STARRED", "section"), False), curses.A_BOLD)
 
 
-    def test_local_discovery_error_is_visible(self):
-        entries = _entries("", snapshot(local_available=False, local_error="permission denied"))
 
-        self.assertTrue(any(entry.kind == "unavailable" and entry.label == "unavailable: permission denied" for entry in entries))
 
-    def test_available_hosts_replace_create_rows_and_show_enter_affordance(self):
-        with patch("letee.sidebar.socket.gethostname", return_value="laptop"), patch(
-            "letee.sidebar._ascii", return_value=False
-        ):
-            entries = _entries("", snapshot(remotes={"dev": source("ssh", host="dev")}))
 
-        hosts = [entry for entry in entries if entry.kind == "host"]
-        self.assertEqual([(entry.label, entry.host) for entry in hosts], [("laptop", ""), ("dev", "dev")])
-        self.assertFalse(any(entry.kind == "create" for entry in entries))
-        self.assertEqual(_entry_lines(hosts[0], False, set(), None, 40), ["💻 laptop ＋"])
-
-    def test_filtering_and_unavailable_hosts_are_not_selectable(self):
-        filtered = _entries("work", snapshot(local=("work",), remotes={"dev": source("ssh", ("work",), host="dev")}))
-        unavailable = _entries("", snapshot(local_available=False, remotes={"dev": None}))
-
-        self.assertFalse(any(entry.kind == "host" for entry in filtered + unavailable))
-
-    def test_ascii_headers_preserve_text_only_labels(self):
-        with patch.dict("letee.sidebar.os.environ", {"LETEE_ASCII": "1"}), patch(
-            "letee.sidebar.socket.gethostname", return_value="laptop"
-        ):
-            entries = _entries("", snapshot(remotes={"dev": None}))
-
-        self.assertEqual([entry.label for entry in entries if entry.kind == "host"], ["laptop"])
-        self.assertEqual([entry.label for entry in entries if entry.kind == "header"], ["SSH dev"])
-
-    def test_filter_hides_new_session_options(self):
-        entries = _entries("work", snapshot(local=("work",), remotes={"dev": source("ssh", ("work",), host="dev")}))
-
-        self.assertFalse(any(entry.kind == "create" for entry in entries))
 
 
     def test_add_titles_name_mode_and_filter_query(self):
-        for query, filtering, adding, creation_host, expected in (
+        for query, name_input, adding, creation_host, expected in (
             ("", False, False, None, "＋ add"),
             ("", False, True, None, "letee / Add session"),
             ("work", True, True, None, "letee / Add session"),
@@ -4475,7 +4420,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             screen = FakeScreen(size=(5, 50))
             _draw(
-                screen, [], 0, "", query, filtering=filtering, adding=adding,
+                screen, [], 0, "", query, name_input=name_input, adding=adding,
                 creation_host=creation_host,
             )
             all_title_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
@@ -4525,8 +4470,7 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertEqual(line_call[5], 123)
 
     def test_tracked_entries_render_session_then_source_without_raw_targets(self):
-        with patch("letee.sidebar.socket.gethostname", return_value="laptop"):
-            local = next(entry for entry in _entries("", snapshot(local=("dashboard",)), [Target("local", "dashboard")]) if entry.kind == "session")
+        local = next(entry for entry in _entries(snapshot(local=("dashboard",)), [Target("local", "dashboard")]) if entry.kind == "session")
         remote = Entry("auth", "session", Target("ssh", "auth", "dev"), host="dev", tracked=True)
 
         self.assertEqual(local.host, "localhost")
@@ -4741,11 +4685,11 @@ class SidebarDrawTest(unittest.TestCase):
         screen = FakeScreen(size=(9, 30))
 
         with patch("letee.sidebar._ascii", return_value=False):
-            _draw(screen, [Entry("laptop", "host", host=""), Entry("work", "session", Target("local", "work"))], 1, "ok", "")
+            _draw(screen, [Entry("work", "session", Target("local", "work")), Entry("chat", "session", Target("ssh", "chat", "dev"), host="dev")], 0, "ok", "")
 
         text = "\n".join(str(call) for call in screen.calls)
         self.assertIn("● work", text)
-        self.assertIn("💻 laptop ＋", text)
+        self.assertIn("◆ chat", text)
 
     def test_selection_pointer_and_active_color_are_independent(self):
         active = Target("local", "active")
@@ -4873,7 +4817,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
                 captured = []
 
                 def draw_spy(*args, **kwargs):
-                    captured.append(args[12] if len(args) > 12 else None)
+                    captured.append(args[11] if len(args) > 11 else None)
                     return (2, None)
 
                 screen = FakeScreen([curses.KEY_MOUSE, STOP], size=(8, 30))
@@ -4898,7 +4842,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         def draw_spy(*args, **kwargs):
             selected = args[2]
-            scroll_offset = args[12] if len(args) > 12 else None
+            scroll_offset = args[11] if len(args) > 11 else None
             captured.append((selected, scroll_offset))
             return (2, None)
 
@@ -4927,7 +4871,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         def draw_spy(*args, **kwargs):
             selected = args[2]
-            scroll_offset = args[12] if len(args) > 12 else None
+            scroll_offset = args[11] if len(args) > 11 else None
             captured.append((selected, scroll_offset))
             return (2, None)
 
@@ -4957,7 +4901,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
-            captured.append(args[12] if len(args) > 12 else None)
+            captured.append(args[11] if len(args) > 11 else None)
             return (1, None)
 
         with (
@@ -4984,7 +4928,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE, -1, STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
-            captured.append(args[12] if len(args) > 12 else None)
+            captured.append(args[11] if len(args) > 11 else None)
             return (1, None)
 
         with (
@@ -5014,7 +4958,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(8, 30))
 
         def draw_spy(*args, **kwargs):
-            captured.append(args[12] if len(args) > 12 else None)
+            captured.append(args[11] if len(args) > 11 else None)
             return (2, None)
 
         with (
@@ -5038,7 +4982,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         def draw_spy(*args, **kwargs):
             selected = args[2]
-            scroll_offset = args[12] if len(args) > 12 else None
+            scroll_offset = args[11] if len(args) > 11 else None
             captured.append((selected, scroll_offset))
             return (2, None)
 
@@ -5068,7 +5012,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         def draw_spy(*args, **kwargs):
             selected = args[2]
-            scroll_offset = args[12] if len(args) > 12 else None
+            scroll_offset = args[11] if len(args) > 11 else None
             captured.append((selected, scroll_offset))
             return (2, None)
 
@@ -5097,7 +5041,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
 
         def draw_spy(*args, **kwargs):
             selected = args[2]
-            scroll_offset = args[12] if len(args) > 12 else None
+            scroll_offset = args[11] if len(args) > 11 else None
             captured.append((selected, scroll_offset))
             return (2, None)
 
