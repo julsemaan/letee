@@ -4552,10 +4552,12 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=target),
             patch("letee.sidebar.cockpit.clear_current_target"),
+            patch("letee.sidebar.cockpit.set_current_target") as set_current_target,
             patch("letee.sidebar.sessions.kill", side_effect=SystemExit("kill local:work failed: denied")),
         ):
             run(screen)
 
+        set_current_target.assert_called_once_with(target)
         error = next(call for call in screen.calls if call[0] == "addnstr" and "kill local:work failed: denied" in call[3])
         self.assertEqual(error[1], 1)
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]

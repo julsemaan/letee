@@ -700,6 +700,10 @@ def switch(
     )
 
 
+def set_current_target(target: Target) -> None:
+    tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
+
+
 def clear_current_target() -> None:
     tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
 
