@@ -4,6 +4,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -118,9 +119,13 @@ def read_exact(stream, size, timeout=2):
 
 
 class SshLatencyProxyTest(unittest.TestCase):
-    def start_proxy(self, port, delay_ms=0):
+    def start_proxy(self, port, delay_ms=0, disconnect_while_file=None):
+        command = [sys.executable, str(PROXY), "--delay-ms", str(delay_ms)]
+        if disconnect_while_file is not None:
+            command.extend(("--disconnect-while-file", str(disconnect_while_file)))
+        command.extend(("127.0.0.1", str(port)))
         return subprocess.Popen(
-            [sys.executable, str(PROXY), "--delay-ms", str(delay_ms), "127.0.0.1", str(port)],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -200,6 +205,37 @@ class SshLatencyProxyTest(unittest.TestCase):
             self.assertGreaterEqual(elapsed, 0.08)
             self.assertLess(elapsed, 1.0)
 
+    def test_disconnects_active_connection_when_marker_exists(self):
+        with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
+            marker = Path(directory) / "outage"
+            self.proxy = self.start_proxy(server.port, disconnect_while_file=marker)
+            server.wait_connected()
+
+            marker.touch()
+
+            self.assertEqual(self.proxy.wait(timeout=2), 0)
+            self.assertEqual(self.proxy.stdout.read(), b"")
+
+    def test_rejects_new_connection_while_marker_exists(self):
+        with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
+            marker = Path(directory) / "outage"
+            marker.touch()
+            self.proxy = self.start_proxy(server.port, disconnect_while_file=marker)
+
+            self.assertEqual(self.proxy.wait(timeout=2), 1)
+            self.assertIn("marker", self.proxy.stderr.read().decode())
+            self.assertFalse(server.connected.is_set())
+            self.proxy.stdin.close()
+            self.proxy.stdout.close()
+            self.proxy.stderr.close()
+            self.proxy = None
+
+            marker.unlink()
+            self.proxy = self.start_proxy(server.port, disconnect_while_file=marker)
+            server.wait_connected()
+            self.proxy.stdin.close()
+            self.assertEqual(self.proxy.wait(timeout=2), 0)
+
     def test_ctrl_c_exits_cleanly(self):
         with LocalTcpServer() as server:
             self.proxy = self.start_proxy(server.port)
@@ -233,7 +269,7 @@ class SshLatencyProxyTest(unittest.TestCase):
             self.assertEqual(self.proxy.wait(timeout=2), 0)
 
     def test_connect_uses_ten_second_timeout(self):
-        connection = object()
+        connection = mock.Mock()
         with (
             mock.patch.object(
                 ssh_latency_proxy.socket,
@@ -245,6 +281,20 @@ class SshLatencyProxyTest(unittest.TestCase):
             self.assertEqual(ssh_latency_proxy.main(["example.com", "22"]), 0)
 
         create_connection.assert_called_once_with(("example.com", 22), timeout=10)
+
+    def test_connected_socket_uses_blocking_reads(self):
+        connection = mock.Mock()
+        with (
+            mock.patch.object(
+                ssh_latency_proxy.socket,
+                "create_connection",
+                return_value=connection,
+            ),
+            mock.patch.object(ssh_latency_proxy, "_forward", return_value=0),
+        ):
+            self.assertEqual(ssh_latency_proxy.main(["example.com", "22"]), 0)
+
+        connection.settimeout.assert_called_once_with(None)
 
     def test_connection_failure_returns_nonzero_with_stderr(self):
         with socket.socket() as socket_:

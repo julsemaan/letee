@@ -688,6 +688,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(calls[0], ("set-option", "-p", "-t", "%2", "remain-on-exit", "on"))
         self.assertEqual(calls[1][:4], ("set-hook", "-t", "letee", "pane-died"))
         self.assertIn("Active session is unavailable.", command)
+        self.assertIn("respawn-pane -t %2", command)
+        self.assertNotIn("respawn-pane -k -t %2", command)
         self.assertNotIn("set-option -u -t letee @letee_current_target", command)
         self.assertIn("select-pane -t %1", command)
 
