@@ -1113,15 +1113,28 @@ class AddFlowTest(unittest.TestCase):
         self.assertFalse(sidebar._selectable(entries))
         self.assertTrue(any("No available locations" in entry.label for entry in entries))
 
-    def test_search_lists_only_untracked_sessions_on_the_chosen_host(self):
+    def test_search_lists_all_discovered_sessions_on_chosen_host(self):
         tracked = Target("local", "work")
-        data = snapshot(local=("work", "notes"), remotes={"dev": source("ssh", ("chat",), host="dev")})
+        tracked_remote = Target("ssh", "chat", "dev")
+        data = snapshot(
+            local=("work", "notes"),
+            remotes={"dev": source("ssh", ("chat", "build"), host="dev")},
+        )
 
-        local = sidebar._search_entries("", "", data, [tracked])
-        self.assertEqual([(entry.label, entry.kind) for entry in local], [("notes", "session")])
+        local = sidebar._search_entries("", "", data, [tracked, tracked_remote])
+        self.assertEqual(
+            [(entry.target, entry.kind) for entry in local],
+            [(Target("local", "work"), "session"), (Target("local", "notes"), "session")],
+        )
 
-        remote = sidebar._search_entries("dev", "", data, [])
-        self.assertEqual([entry.target for entry in remote], [Target("ssh", "chat", "dev")])
+        remote = sidebar._search_entries("dev", "", data, [tracked, tracked_remote])
+        self.assertEqual(
+            [(entry.target, entry.kind) for entry in remote],
+            [
+                (Target("ssh", "chat", "dev"), "session"),
+                (Target("ssh", "build", "dev"), "session"),
+            ],
+        )
 
     def test_search_shows_create_row_only_for_a_free_valid_name(self):
         data = snapshot(local=("work",))
@@ -1142,8 +1155,10 @@ class AddFlowTest(unittest.TestCase):
             ]
 
         empty_state = [("No sessions", "empty"), ("Type a session name to create", "hint")]
-        # A tracked name still conflicts, even though it is not listed.
-        self.assertEqual(entries_for("work", [Target("local", "work")]), empty_state)
+        # A tracked name remains available as a switch target.
+        tracked_entries = sidebar._search_entries("", "work", data, [Target("local", "work")])
+        self.assertEqual([(entry.label, entry.kind) for entry in tracked_entries], [("work", "session")])
+        self.assertEqual(sidebar._selectable(tracked_entries), [0])
         # Invalid names never create.
         self.assertEqual(entries_for("bad name"), empty_state)
 
@@ -1211,7 +1226,7 @@ class AddFlowTest(unittest.TestCase):
         sidebar._add_back(single, snapshot(local=("work",)))
         self.assertIsNone(single.add_view)
 
-    def test_search_typing_reports_conflicts_and_invalid_names(self):
+    def test_search_typing_allows_existing_names_and_reports_invalid_names(self):
         data = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
         state = SidebarState(add_view="search", creation_host="dev")
 
@@ -1221,7 +1236,7 @@ class AddFlowTest(unittest.TestCase):
             self.assertTrue(_search_key(state, ord(letter), data))
 
         self.assertEqual(state.filter_text, "work")
-        self.assertEqual(state.status, "Session already exists on this host")
+        self.assertEqual(state.status, "")
 
         self.assertTrue(_search_key(state, ord(" "), data))
         self.assertEqual(state.status, "Invalid session name")
@@ -1251,7 +1266,7 @@ class AddFlowTest(unittest.TestCase):
             add_view="search",
             creation_host="dev",
             filter_text="work",
-            status="Session already exists on this host",
+            status="stale",
             status_region="agents",
             status_deadline=123.0,
         )
@@ -1402,7 +1417,7 @@ class AddMouseTest(unittest.TestCase):
 
 
 class AddRunLoopTest(unittest.TestCase):
-    def _run_add_flow(self, keys, data, getmouse=None):
+    def _run_add_flow(self, keys, data, getmouse=None, favorites=()):
         screen = FakeScreen(keys, size=(14, 40))
         poller = unittest.mock.Mock(
             snapshot=data,
@@ -1416,7 +1431,7 @@ class AddRunLoopTest(unittest.TestCase):
             patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
             patch("letee.sidebar.DiscoveryPoller"),
             patch("letee.sidebar.load_hosts", return_value=[]),
-            patch("letee.sidebar.load_sessions", return_value=[]),
+            patch("letee.sidebar.load_sessions", return_value=list(favorites)),
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -1463,6 +1478,24 @@ class AddRunLoopTest(unittest.TestCase):
         create.assert_not_called()
         save.assert_called_once_with([Target("local", "existing")])
         switch.assert_called_once_with(Target("local", "existing"), "attach")
+
+    def test_enter_on_tracked_match_switches_without_creating_or_persisting(self):
+        target = Target("local", "existing")
+        with (
+            patch("letee.sidebar.sessions.create") as create,
+            patch("letee.sidebar.save_sessions") as save,
+            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.cockpit.switch") as switch,
+        ):
+            self._run_add_flow(
+                [curses.KEY_F11, *map(ord, "existing"), curses.KEY_ENTER, STOP],
+                snapshot(local=("existing",)),
+                favorites=[target],
+            )
+
+        create.assert_not_called()
+        save.assert_not_called()
+        switch.assert_called_once_with(target, "attach")
 
     def test_enter_on_location_immediately_lists_that_hosts_sessions(self):
         data = snapshot(local=("work",), remotes={"dev": source("ssh", ("notes",), host="dev")})
@@ -1539,14 +1572,14 @@ class SidebarStateTest(unittest.TestCase):
         self.assertFalse(_search_key(state, 10, data))
         self.assertEqual(state.filter_text, "w")
 
-    def test_search_key_ignores_invalid_and_taken_names(self):
+    def test_search_key_allows_existing_names_and_reports_invalid_names(self):
         data = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
         state = SidebarState(add_view="search", creation_host="dev")
 
         for letter in "work":
             _search_key(state, ord(letter), data)
 
-        self.assertEqual(state.status, "Session already exists on this host")
+        self.assertEqual(state.status, "")
 
         state.filter_text = "bad name"
         self.assertTrue(_search_key(state, ord("!"), data))

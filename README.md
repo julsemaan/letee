@@ -39,7 +39,7 @@ Inner local and remote sessions use `letee.inner`, one shared server per host. N
 ## Open or add a local tmux session
 
 1. Use your mouse and click "+ add" or use the keyboard equivalent:
-  1. Press `C-s +`, type a session name, and press `Enter`. Letee filters untracked sessions as you type, so pressing `Enter` on a match tracks and opens it, and pressing `Enter` on a free name creates it.
+  1. Press `C-s +`, type a session name, and press `Enter`. Letee searches every discovered session on the chosen host, including tracked sessions. Pressing `Enter` on a tracked match switches to it, an untracked match tracks and opens it, and a free name creates and tracks it.
 
 ## Configure agent discovery
 
@@ -67,7 +67,7 @@ For keyboard enthusiasts, these are the default keys.
 
 ### Add session
 
-`C-s +` opens the Add session screen. With one location available it opens the session search directly, otherwise pick a location first. Typing filters untracked sessions on that host, and a `＋` row appears for a free name. Press `Enter` on a match to track and open it, or on the `＋` row to create a new session.
+`C-s +` opens the Add session screen. With one location available it opens the session search directly, otherwise pick a location first. Typing searches every discovered session on that host, including tracked sessions. Press `Enter` on a tracked match to switch to it, an untracked match to track and open it, or the `＋` row to create and track a new session.
 
 ### Open selection
 

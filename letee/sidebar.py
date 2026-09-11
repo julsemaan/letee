@@ -541,7 +541,7 @@ def _search_entries(
     needle = filter_text.lower()
     matches = [
         target for target in source.sessions
-        if target not in favorites and needle in target.session.lower()
+        if needle in target.session.lower()
     ]
     matches.sort(key=lambda target: target.session != filter_text)
     entries: list[Entry] = []
@@ -1588,8 +1588,6 @@ def _search_key(
     text = state.filter_text
     if text and not _valid_session_name(text):
         state.status = "Invalid session name"
-    elif text and _name_conflicts(text, state.creation_host or "", snapshot.sessions):
-        state.status = "Session already exists on this host"
     return True
 
 

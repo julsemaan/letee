@@ -120,12 +120,13 @@ Missing sessions remain launchers. Press `Enter` on one to recreate and attach i
 
 ## Add session menu
 
-The Add screen searches untracked sessions and creates new ones:
+The Add screen searches discovered sessions and creates new ones:
 
 - With exactly one local or SSH location available, `C-s +` opens the search directly. With multiple locations, it opens a location picker first and the search afterwards.
-- Typing filters untracked sessions on the chosen host's `letee.inner` server. A `＋` row appears when the typed name is free and valid.
-- `Enter` on a session tracks it and switches to it. `Enter` on the `＋` row creates a session with the typed name. `Esc` goes back one level, or closes the Add screen.
-- Selecting or creating a session persists it and switches to it immediately.
+- Typing searches every discovered session on the chosen host's `letee.inner` server, including tracked sessions. A `＋` row appears when the typed name is free and valid.
+- `Enter` on a tracked session switches to it without changing tracked-session state.
+- `Enter` on an untracked session tracks it and switches to it.
+- `Enter` on the `＋` row creates, tracks, and switches to a new session. `Esc` goes back one level, or closes the Add screen.
 
 When the Add menu is closed, the independently navigable Agents region remains below the `AGENTS` divider.
 
