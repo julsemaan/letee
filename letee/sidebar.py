@@ -1041,15 +1041,13 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         elif effect.kind == "kill" and isinstance(effect.target, Target):
             active = _current_target() == effect.target
             if active:
-                # Clear before the kill so the pane-died hook sees the target
-                # unset and returns the right pane to help instead of unavailable.
-                cockpit.clear_current_target()
+                cockpit.set_expected_right_pane_death(True)
             try:
                 sessions.kill(effect.target)
                 partial_success = True
             except (SystemExit, OSError, subprocess.SubprocessError):
                 if active:
-                    cockpit.set_current_target(effect.target)
+                    cockpit.set_expected_right_pane_death(False)
                 raise
             if planned != favorites:
                 save_sessions(list(planned))

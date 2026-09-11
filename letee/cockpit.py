@@ -115,6 +115,7 @@ SIDEBAR_PANE_OPTION = "@letee_sidebar_pane"
 SIDEBAR_WIDTH_OPTION = "@letee_sidebar_width"
 RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
+EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
 CURRENT_AGENT_OPTION = "@letee_current_agent"
 BELL_TARGET_OPTION = "@letee_bell_target"
 ROOT_KEYS_OPTION = "@letee_root_keys"
@@ -414,12 +415,14 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     cleanup = f"set-option -u -t {tmux.SESSION} @letee_current_agent ; set-option -u -t {tmux.SESSION} @letee_bell_target"
     help_respawn = f"respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left}"
     unavailable = f"respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left}"
-    # The sidebar clears @letee_current_target before killing the active session,
-    # so an unset option marks a letee-initiated kill (help); a set option means
-    # the pane died unexpectedly and keeps the unavailable fallback.
+    expected_death = (
+        f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} ; "
+        f"set-option -u -t {tmux.SESSION} {CURRENT_TARGET_OPTION} ; {help_respawn}"
+    )
     command = (
         f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ {cleanup} ; "
-        f"if-shell -F '#{{?@letee_current_target,0,1}}' {{ {help_respawn} }} {{ {unavailable} }} }}"
+        f"if-shell -F '#{{?{EXPECTED_RIGHT_PANE_DEATH_OPTION},1,0}}' "
+        f"{{ {expected_death} }} {{ {unavailable} }} }}"
     )
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
@@ -700,12 +703,11 @@ def switch(
     )
 
 
-def set_current_target(target: Target) -> None:
-    tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
-
-
-def clear_current_target() -> None:
-    tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
+def set_expected_right_pane_death(expected: bool) -> None:
+    if expected:
+        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION, "1")
+    else:
+        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION)
 
 
 def rename_target(old: Target, new: Target) -> None:

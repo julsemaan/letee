@@ -679,7 +679,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 expected.insert(0, unittest.mock.call("select-pane", "-t", "%7"))
             self.assertEqual(tmux_call.call_args_list, expected)
 
-    def test_right_pane_reset_helps_after_kill_and_unavailable_after_unexpected_death(self):
+    def test_right_pane_reset_uses_expected_death_marker(self):
         calls = []
 
         with (
@@ -692,20 +692,30 @@ class CockpitLayoutTest(unittest.TestCase):
         command = calls[1][4]
         self.assertEqual(calls[0], ("set-option", "-p", "-t", "%2", "remain-on-exit", "on"))
         self.assertEqual(calls[1][:4], ("set-hook", "-t", "letee", "pane-died"))
-        # Target cleared before a letee-initiated kill: right pane returns to help.
-        self.assertIn("#{?@letee_current_target,0,1}", command)
-        self.assertIn(shlex.quote(cockpit.help_command("C-x")), command)
-        # Target still set on an unexpected death: unavailable fallback survives.
+        expected_marker = "set-option -u -t letee @letee_expected_right_pane_death"
+        current_target = "set-option -u -t letee @letee_current_target"
+        help_command = shlex.quote(cockpit.help_command("C-x"))
+        # The expected-death branch consumes its marker and clears the target before help.
+        self.assertIn("#{?@letee_expected_right_pane_death,1,0}", command)
+        self.assertNotIn("#{?@letee_current_target,0,1}", command)
+        self.assertLess(command.index(expected_marker), command.index(current_target))
+        self.assertLess(command.index(current_target), command.index(help_command))
+        self.assertIn(help_command, command)
+        # A markerless death uses the unavailable fallback, even without a target marker.
         self.assertIn("Active session is unavailable.", command)
-        self.assertNotIn("set-option -u -t letee @letee_current_target", command)
         self.assertIn("select-pane -t %1", command)
 
-    def test_clear_current_target_unsets_session_option(self):
+    def test_set_expected_right_pane_death_sets_or_unsets_session_option(self):
         with patch.object(cockpit.tmux, "tmux") as tmux_call:
-            cockpit.clear_current_target()
+            cockpit.set_expected_right_pane_death(True)
+            cockpit.set_expected_right_pane_death(False)
 
-        tmux_call.assert_called_once_with(
-            "set-option", "-u", "-t", "letee", cockpit.CURRENT_TARGET_OPTION
+        self.assertEqual(
+            tmux_call.call_args_list,
+            [
+                call("set-option", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION, "1"),
+                call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION),
+            ],
         )
 
     def test_session_menu_targets_sidebar_at_click_coordinates(self):
