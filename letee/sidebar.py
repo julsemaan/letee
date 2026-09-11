@@ -3607,8 +3607,8 @@ def run(stdscr: curses.window) -> None:
                             decision = "open_add"
                         else:
                             _add_back(state, poller.snapshot)
-                            sync_cursor()
                             decision = "activate_add_back"
+                        sync_cursor()
                         rebuild()
                         trace_mouse_decision(
                             mouse_input_id, decision, row, mouse_col,

@@ -4123,11 +4123,14 @@ class SidebarDrawTest(unittest.TestCase):
             ),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar._current_target", return_value=None),
+            patch("letee.sidebar._available_locations", return_value=[("localhost", "")]),
+            patch("letee.sidebar.curses.curs_set") as curs_set,
         ):
             run(screen)
 
         text = [call[3] for call in screen.calls if call[0] == "addnstr"]
         self.assertTrue(any("Add session" in line for line in text))
+        self.assertEqual(curs_set.call_args_list, [call(0), call(1)])
 
     def test_synthesized_short_click_switches_session(self):
         entries = [
