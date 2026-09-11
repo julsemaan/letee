@@ -2996,6 +2996,7 @@ def run(stdscr: curses.window) -> None:
                     pending_navigation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
+                sync_cursor()
                 unavailable_target_shown = _reconcile_active_session_effect(
                     unavailable_target_shown, result
                 )

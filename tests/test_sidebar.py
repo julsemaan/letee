@@ -1557,6 +1557,80 @@ class AddRunLoopTest(unittest.TestCase):
 
         create.assert_called_once_with(Target("local", "new"))
 
+    def test_async_results_hide_cursor_after_add_editor_closes(self):
+        cases = (
+            (
+                "create",
+                [curses.KEY_F11, *map(ord, "new"), curses.KEY_ENTER, STOP],
+                snapshot(local=("existing",)),
+                (),
+                sidebar.EffectResult(Effect("create", Target("local", "new")), ()),
+                None,
+            ),
+            (
+                "add-switch",
+                [curses.KEY_F11, curses.KEY_ENTER, STOP],
+                snapshot(local=("existing",)),
+                (),
+                sidebar.EffectResult(
+                    Effect("add_switch", Target("local", "existing")),
+                    (Target("local", "existing"),),
+                ),
+                None,
+            ),
+            (
+                "rename",
+                [ord("e"), *([curses.KEY_BACKSPACE] * 3), *map(ord, "new"), curses.KEY_ENTER, STOP],
+                snapshot(local=("old",)),
+                (Target("local", "old"),),
+                sidebar.EffectResult(
+                    Effect("rename", Target("local", "old"), message="new"),
+                    (Target("local", "new"),),
+                ),
+                Target("local", "old"),
+            ),
+        )
+
+        for name, keys, data, favorites, result, current_target in cases:
+            with self.subTest(name=name):
+                screen = FakeScreen(keys, size=(14, 40))
+                poller = unittest.mock.Mock(
+                    snapshot=data,
+                    current_target=current_target,
+                    bell_target=None,
+                    current_agent=None,
+                    pane_active=True,
+                )
+                poller.tick.return_value = False
+                runner = unittest.mock.Mock(blocks_favorite_changes=False, busy=False)
+                pending_results = [result]
+                submitted = False
+
+                def submit(*_args, **_kwargs):
+                    nonlocal submitted
+                    submitted = True
+                    return True
+
+                def poll():
+                    return pending_results.pop(0) if submitted and pending_results else None
+
+                runner.submit.side_effect = submit
+                runner.poll.side_effect = poll
+                with (
+                    patch("letee.sidebar.AsyncStatusPoller", return_value=poller),
+                    patch("letee.sidebar.DiscoveryPoller"),
+                    patch("letee.sidebar.load_hosts", return_value=[]),
+                    patch("letee.sidebar.load_sessions", return_value=list(favorites)),
+                    patch("letee.sidebar._current_target", return_value=current_target),
+                    patch("letee.sidebar.EffectRunner", return_value=runner),
+                    patch("letee.sidebar.curses.curs_set") as curs_set,
+                    patch("letee.sidebar.curses.mousemask"),
+                    patch("letee.sidebar._init_colors"),
+                ):
+                    run(screen)
+
+                self.assertEqual(curs_set.call_args_list[-1], call(0))
+
 
 class SidebarStateTest(unittest.TestCase):
     def test_search_key_edits_the_name_and_ignores_navigation(self):
