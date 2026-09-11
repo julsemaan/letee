@@ -1584,6 +1584,10 @@ def _search_key(
         state.filter_text += chr(key)
     else:
         return False
+    state.selected_target = None
+    state.selected_index = 0
+    state.selected_tracked = False
+    state.add_button_selected = False
     _clear_status(state)
     text = state.filter_text
     if text and not _valid_session_name(text):

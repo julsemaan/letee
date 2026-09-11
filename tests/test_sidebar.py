@@ -1598,6 +1598,39 @@ class SidebarStateTest(unittest.TestCase):
             [("work", "create")],
         )
 
+    def test_search_edit_resets_an_existing_match_selection(self):
+        data = snapshot(local=("existing",))
+        state = SidebarState(
+            add_view="search",
+            creation_host="",
+            filter_text="existing",
+            selected_target=Target("local", "existing"),
+        )
+
+        self.assertTrue(_search_key(state, curses.KEY_BACKSPACE, data))
+        self.assertEqual(
+            (state.selected_target, state.selected_index, state.selected_tracked, state.add_button_selected),
+            (None, 0, False, False),
+        )
+
+        entries = sidebar._search_entries("", state.filter_text, data, [])
+        _sync_selection(state, entries)
+        self.assertEqual(entries[state.selected_index].kind, "create")
+
+    def test_search_edit_resets_a_selected_back_button(self):
+        data = snapshot()
+        state = SidebarState(add_view="search", creation_host="", add_button_selected=True)
+
+        self.assertTrue(_search_key(state, ord("n"), data))
+        self.assertEqual(
+            (state.selected_target, state.selected_index, state.selected_tracked, state.add_button_selected),
+            (None, 0, False, False),
+        )
+
+        entries = sidebar._search_entries("", state.filter_text, data, [])
+        _sync_selection(state, entries)
+        self.assertEqual(entries[state.selected_index].kind, "create")
+
     def test_search_key_caps_name_length_and_clears_stale_status(self):
         state = SidebarState(
             add_view="search",
