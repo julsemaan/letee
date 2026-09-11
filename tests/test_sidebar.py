@@ -1645,6 +1645,35 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.selected_target, target)
         self.assertEqual(state.status, "killed ssh:dev:work")
 
+    def test_kill_persistence_failure_keeps_destructive_state(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        state = SidebarState(selected_target=target, favorites=[target, other])
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("work", "other")))
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.cockpit, "clear_current_target"),
+            patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
+        ):
+            result = sidebar._perform_effect(Effect("kill", target=target), tuple(state.favorites))
+
+        self.assertEqual(result.error, "save failed")
+        self.assertTrue(result.partial_success)
+        status = sidebar.AsyncStatusPoller(poller, target)
+        try:
+            sidebar._apply_effect(result, state, poller, 5)
+            status.observe_effect(result)
+
+            save.assert_called_once_with([other])
+            self.assertEqual(state.favorites, [other])
+            self.assertEqual(state.status, "save failed")
+            poller.assert_has_calls([call.discard(target), call.refresh()])
+            self.assertIsNone(status.current_target)
+        finally:
+            status.close()
+
     def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
         state = SidebarState(add_view="existing")

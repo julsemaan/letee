@@ -135,6 +135,7 @@ class EffectResult:
     stale_navigation: bool = False
     action_id: str | None = None
     input_id: str | None = None
+    partial_success: bool = False
 
 
 @dataclass(frozen=True)
@@ -1007,6 +1008,7 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
+    partial_success = False
     try:
         if (
             effect.automatic
@@ -1044,6 +1046,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 cockpit.clear_current_target()
             try:
                 sessions.kill(effect.target)
+                partial_success = True
             except (SystemExit, OSError, subprocess.SubprocessError):
                 if active:
                     cockpit.set_current_target(effect.target)
@@ -1064,7 +1067,12 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             **_trace_effect(effect),
             error_type=type(error).__name__,
         )
-        return EffectResult(effect, planned, _effect_error(effect, error))
+        return EffectResult(
+            effect,
+            planned,
+            _effect_error(effect, error),
+            partial_success=partial_success,
+        )
     return EffectResult(effect, planned)
 
 
@@ -1101,7 +1109,7 @@ def _apply_effect(
     status_timeout: float,
 ) -> bool:
     effect = result.effect
-    if result.error:
+    if result.error and not result.partial_success:
         if effect.kind == "create" and isinstance(effect.target, Target):
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.target.session
@@ -1179,6 +1187,13 @@ def _apply_effect(
         _set_status(state, effect.message, status_timeout)
     elif effect.kind == "status":
         _set_status(state, effect.message, status_timeout)
+    if result.error:
+        _set_status(
+            state,
+            result.error,
+            status_timeout,
+            "agents" if effect.kind == "kill_agent" else "sessions",
+        )
     _log_effect_applied(result, state)
     return False
 
@@ -1545,7 +1560,7 @@ class AsyncStatusPoller:
         return changed
 
     def observe_effect(self, result: EffectResult) -> None:
-        if result.error or result.stale_navigation:
+        if (result.error and not result.partial_success) or result.stale_navigation:
             return
         target = result.effect.target
         if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
