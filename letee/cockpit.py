@@ -387,16 +387,15 @@ def _unavailable_command(target: Target | None = None) -> str:
     return f"printf %s {shlex.quote(text)}; exec sh"
 
 
-def _missing_command(target: Target) -> str:
-    text = f"Session {target.format()} is missing.\n\nSelect it in the sidebar. Press Enter to recreate it.\n"
-    return f"printf %s {shlex.quote(text)}; exec sh"
-
-
-def _reconnecting_command(target: Target) -> str:
+def _animated_command(target: Target, title: str, progress: str) -> str:
     reset, cyan, dim = "\033[0m", "\033[38;5;81m", "\033[2m"
-    ascii_mode = os.environ.get("LETEE_ASCII") == "1"
-    banner = "+-- Connection interrupted --+" if ascii_mode else "╭─ Connection interrupted ─╮"
-    underline = "+----------------------------+" if ascii_mode else "╰──────────────────────────╯"
+    ascii_mode = os.environ.get("LETEE_ASCII") == "1" or "utf" not in locale.getpreferredencoding(False).lower()
+    if ascii_mode:
+        banner = f"+-- {title} --+"
+        underline = f"+{'-' * (len(banner) - 2)}+"
+    else:
+        banner = f"╭─ {title} ─╮"
+        underline = f"╰{'─' * (len(banner) - 2)}╯"
     indent = "    "
     text = f"\n{indent}{cyan}{banner}\n{indent}{underline}{reset}\n\n{indent}{dim}Session{reset}  {target.session}\n{indent}{dim}Host{reset}     {target.host or 'local'}\n\n"
     frames = ("|", "/", "-", "\\") if ascii_mode else ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -404,9 +403,17 @@ def _reconnecting_command(target: Target) -> str:
     colors = (45, 51, 87, 123, 159, 123, 87, 51)
     states = " ".join(shlex.quote(f"{color}:{frame}:{dots[index % len(dots)]}") for index, (color, frame) in enumerate(zip(colors, frames)))
     save_cursor = shlex.quote("\0337")
-    spinner = shlex.quote(f"\0338\033[2K{indent}\033[38;5;%sm%s\033[0m Reconnecting%s")
+    spinner = shlex.quote(f"\0338\033[2K{indent}\033[38;5;%sm%s\033[0m {progress}%s")
     animate = 'color=${state%%:*}; rest=${state#*:}; frame=${rest%%:*}; dots=${rest#*:}'
     return f"printf %s {shlex.quote(text)}; printf %s {save_cursor}; while :; do for state in {states}; do {animate}; printf {spinner} \"$color\" \"$frame\" \"$dots\"; sleep 0.1; done; done"
+
+
+def _missing_command(target: Target) -> str:
+    return _animated_command(target, "Session missing", "Waiting for session")
+
+
+def _reconnecting_command(target: Target) -> str:
+    return _animated_command(target, "Connection interrupted", "Reconnecting")
 
 
 def _install_right_pane_reset(left: str, right: str) -> None:
