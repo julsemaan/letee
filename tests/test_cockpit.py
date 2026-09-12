@@ -736,6 +736,27 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Session ssh:dev:work is unavailable.", command)
         self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", tmux_call.call_args.args[4])
 
+    def test_resolve_success_restores_help_when_pane_is_already_unavailable(self):
+        target = Target("local", "work")
+
+        with (
+            patch.object(cockpit, "_option", side_effect=["%1", "%2"]),
+            patch.object(cockpit, "load_prefix", return_value="C-x"),
+            patch.object(cockpit, "help_command", return_value="help"),
+            patch.object(cockpit.tmux, "out", return_value="sh") as tmux_out,
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.resolve_expected_right_pane_death(target, True)
+
+        tmux_out.assert_called_once_with(
+            "display-message", "-p", "-t", "%2", "#{pane_current_command}", check=False
+        )
+        self.assertEqual(tmux_call.call_args.args[:3], ("if-shell", "-F", "1"))
+        action = tmux_call.call_args.args[3]
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", action)
+        self.assertIn("set-option -u -t letee @letee_current_target", action)
+        self.assertIn("respawn-pane -k -t %2 help", action)
+
     def test_set_current_target_sets_session_option(self):
         target = Target("ssh", "work", "dev")
 

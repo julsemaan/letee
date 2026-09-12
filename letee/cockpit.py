@@ -749,6 +749,9 @@ def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
         succeeded=succeeded,
         target=target,
     )
+    if succeeded and tmux.out("display-message", "-p", "-t", right, "#{pane_current_command}", check=False) == "sh":
+        tmux.tmux("if-shell", "-F", "1", action)
+        return
     if succeeded:
         unresolved = f"set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED}"
     else:
