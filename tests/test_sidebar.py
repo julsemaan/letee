@@ -1917,13 +1917,13 @@ class SidebarStateTest(unittest.TestCase):
         with (
             patch.object(sidebar, "_current_target", return_value=target),
             patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
-            patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda: events.append(("reset",))) as reset,
+            patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda _target: events.append(("reset",))) as reset,
             patch.object(sidebar.sessions, "kill") as kill,
         ):
             _execute(effect, state, poller, 5)
 
         save.assert_called_once_with((other,))
-        reset.assert_called_once_with()
+        reset.assert_called_once_with(target)
         kill.assert_not_called()
         poller.observe_effect.assert_called_once_with(unittest.mock.ANY)
         self.assertEqual(events, [("save", (other,)), ("reset",)])

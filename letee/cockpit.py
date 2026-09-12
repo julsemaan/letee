@@ -732,7 +732,11 @@ def switch(
         debug.emit(f"switch_{kind}", **fields, stage=name, status="completed")
 
     def update_markers() -> None:
-        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
+        marker_update = (
+            f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())} ; "
+            f"{_clear_expected_right_pane_death()}"
+        )
+        tmux.tmux("if-shell", "-F", "1", marker_update)
         if agent_id:
             tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_AGENT_OPTION, agent_id)
         else:
@@ -762,8 +766,11 @@ def set_expected_right_pane_death(target: Target | None) -> None:
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION)
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION)
     else:
-        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION, target.format())
-        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION, _EXPECTED_RIGHT_PANE_DEATH_PENDING)
+        marker = (
+            f"set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION} {shlex.quote(target.format())} ; "
+            f"set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_PENDING}"
+        )
+        tmux.tmux("if-shell", "-F", _option_equals(CURRENT_TARGET_OPTION, target.format()), marker)
 
 
 def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
@@ -793,13 +800,13 @@ def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
     tmux.tmux("if-shell", "-F", "1", _guard_expected_right_pane_death(target, resolution))
 
 
-def reset_to_help() -> None:
+def reset_to_help(target: Target) -> None:
     left = _option(SIDEBAR_PANE_OPTION)
     right = _option(RIGHT_PANE_OPTION)
     if not left or not right:
         return
     action = _right_pane_death_action(left, right, load_prefix(), succeeded=True)
-    tmux.tmux("if-shell", "-F", "1", action)
+    tmux.tmux("if-shell", "-F", _option_equals(CURRENT_TARGET_OPTION, target.format()), action)
 
 
 def set_current_target(target: Target) -> None:

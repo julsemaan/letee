@@ -729,8 +729,13 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             tmux_call.call_args_list,
             [
-                call("set-option", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION, "local:work"),
-                call("set-option", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION, "1"),
+                call(
+                    "if-shell",
+                    "-F",
+                    "#{==:#{@letee_current_target},local:work}",
+                    "set-option -t letee @letee_expected_right_pane_death_target local:work ; "
+                    "set-option -t letee @letee_expected_right_pane_death 1",
+                ),
                 call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION),
                 call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION),
             ],
@@ -785,17 +790,20 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("set-option -u -t letee @letee_current_target", action)
         self.assertIn("respawn-pane -k -t %2 help", action)
 
-    def test_reset_to_help_reuses_successful_pane_death_cleanup(self):
+    def test_reset_to_help_reuses_successful_pane_death_cleanup_for_target(self):
+        target = Target("local", "work")
         with (
             patch.object(cockpit, "_option", side_effect=["%1", "%2"]),
             patch.object(cockpit, "load_prefix", return_value="C-x"),
             patch.object(cockpit, "_right_pane_death_action", return_value="reset action") as death_action,
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
-            cockpit.reset_to_help()
+            cockpit.reset_to_help(target)
 
         death_action.assert_called_once_with("%1", "%2", "C-x", succeeded=True)
-        tmux_call.assert_called_once_with("if-shell", "-F", "1", "reset action")
+        tmux_call.assert_called_once_with(
+            "if-shell", "-F", "#{==:#{@letee_current_target},local:work}", "reset action"
+        )
 
     def test_set_current_target_sets_session_option(self):
         target = Target("ssh", "work", "dev")
@@ -1007,7 +1015,14 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("set-option", "-t", "letee", "@letee_current_target", "local:work"),
+                (
+                    "if-shell",
+                    "-F",
+                    "1",
+                    "set-option -t letee @letee_current_target local:work ; "
+                    "set-option -u -t letee @letee_expected_right_pane_death ; "
+                    "set-option -u -t letee @letee_expected_right_pane_death_target",
+                ),
                 ("set-option", "-u", "-t", "letee", "@letee_current_agent"),
                 ("set-option", "-u", "-t", "letee", "@letee_bell_target"),
                 ("respawn-pane", "-k", "-t", "%2", "attach work"),

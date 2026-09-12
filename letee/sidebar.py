@@ -1062,7 +1062,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         elif effect.kind == "save_favorites":
             save_sessions(planned)
             if isinstance(effect.target, Target) and _current_target() == effect.target:
-                cockpit.reset_to_help()
+                cockpit.reset_to_help(effect.target)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
         diagnostics.log(
             "effect_error",
