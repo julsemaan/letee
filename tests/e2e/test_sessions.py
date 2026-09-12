@@ -9,6 +9,7 @@ import pexpect
 import pytest
 
 from .conftest import TmuxTestClient
+from .helpers import assert_right_pane_contains
 
 
 # -- Helpers --
@@ -492,6 +493,40 @@ def test_tui_remove_favorite(client: TmuxTestClient) -> None:
 
     client.stop_cockpit()
     _kill_session_inner(client, "keepme")
+
+
+def test_tui_kill_active_session_shows_help(client: TmuxTestClient) -> None:
+    """Killing the active session returns the right pane to the startup help."""
+    env = {"LETEE_CONFIG_DIR": "/tmp/letee-e2e-tui-kill"}
+
+    _create_session_inner(client, "doomed")
+    _write_favorites(client, env["LETEE_CONFIG_DIR"], "local:doomed")
+
+    client.start_cockpit(env=env)
+    assert client.wait_for_sidebar_text("letee", timeout=10)
+
+    # Activate the session so it becomes the active target.
+    _send_sidebar_special(client, "Enter")
+    time.sleep(0.5)
+    assert _current_target(client) == "local:doomed", \
+        f"Current target should be local:doomed, got: {_current_target(client)}"
+
+    # Kill and remove it from the Sessions list, confirming the prompt.
+    _send_sidebar(client, "x")
+    time.sleep(0.2)
+    _send_sidebar(client, "y")
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _inner_tmux_ok(client, "has-session", "-t", "doomed"):
+        time.sleep(0.1)
+    assert not _inner_tmux_ok(client, "has-session", "-t", "doomed"), \
+        f"Session doomed should be killed:\n{client.sidebar_text()}"
+
+    # The right pane returns to the startup help instead of a dead-end message.
+    assert_right_pane_contains(client, "Session actions")
+
+    client.stop_cockpit()
+    _kill_session_inner(client, "doomed")
 
 
 def test_prefix_number_switch(client: TmuxTestClient) -> None:

@@ -146,6 +146,7 @@ class EffectResult:
     stale_navigation: bool = False
     action_id: str | None = None
     input_id: str | None = None
+    partial_success: bool = False
 
 
 @dataclass(frozen=True)
@@ -919,6 +920,7 @@ def _transition(
         state.selected_target = None if unavailable else target
         return Effect(
             "save_favorites",
+            target=target,
             favorites=tuple(state.favorites),
             message=f"removed {target.format()}",
         )
@@ -1004,6 +1006,7 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
+    partial_success = False
     try:
         if (
             effect.automatic
@@ -1034,9 +1037,24 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             if planned != favorites:
                 save_sessions(list(planned))
         elif effect.kind == "kill" and isinstance(effect.target, Target):
-            sessions.kill(effect.target)
-            if planned != favorites:
-                save_sessions(list(planned))
+            active = _current_target() == effect.target
+            if active:
+                cockpit.set_expected_right_pane_death(effect.target)
+            try:
+                sessions.kill(effect.target)
+            except (SystemExit, OSError, subprocess.SubprocessError):
+                if active:
+                    cockpit.resolve_expected_right_pane_death(effect.target, False)
+                raise
+            partial_success = True
+            try:
+                if active:
+                    cockpit.resolve_expected_right_pane_death(effect.target, True)
+                else:
+                    cockpit.reset_to_help(effect.target)
+            finally:
+                if planned != favorites:
+                    save_sessions(list(planned))
         elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
             cockpit.show_reconnecting(effect.target)
         elif effect.kind == "show_missing" and isinstance(effect.target, Target):
@@ -1045,13 +1063,20 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             cockpit.show_unavailable(effect.target)
         elif effect.kind == "save_favorites":
             save_sessions(planned)
+            if isinstance(effect.target, Target) and _current_target() == effect.target:
+                cockpit.reset_to_help(effect.target)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
         diagnostics.log(
             "effect_error",
             **_trace_effect(effect),
             error_type=type(error).__name__,
         )
-        return EffectResult(effect, planned, _effect_error(effect, error))
+        return EffectResult(
+            effect,
+            planned,
+            _effect_error(effect, error),
+            partial_success=partial_success,
+        )
     return EffectResult(effect, planned)
 
 
@@ -1088,8 +1113,11 @@ def _apply_effect(
     status_timeout: float,
 ) -> bool:
     effect = result.effect
-    if result.error:
-        if effect.kind == "rename" and isinstance(effect.target, Target):
+    if result.error and not result.partial_success:
+        if effect.kind == "create" and isinstance(effect.target, Target):
+            state.creation_host = "" if effect.target.kind == "local" else effect.target.host
+            state.creation_text = effect.target.session
+        elif effect.kind == "rename" and isinstance(effect.target, Target):
             state.rename_target = effect.target
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.message
@@ -1162,6 +1190,13 @@ def _apply_effect(
         _set_status(state, effect.message, status_timeout)
     elif effect.kind == "status":
         _set_status(state, effect.message, status_timeout)
+    if result.error:
+        _set_status(
+            state,
+            result.error,
+            status_timeout,
+            "agents" if effect.kind == "kill_agent" else "sessions",
+        )
     _log_effect_applied(result, state)
     return False
 
@@ -1195,7 +1230,10 @@ def _execute(
         result = _perform_effect(effect, tuple(state.favorites))
     if action_id is not None:
         result = replace(result, action_id=action_id, input_id=input_id)
-    return _apply_effect(result, state, poller, status_timeout)
+    applied = _apply_effect(result, state, poller, status_timeout)
+    if not applied:
+        poller.observe_effect(result)
+    return applied
 
 
 class EffectRunner:
@@ -1449,6 +1487,7 @@ class AsyncStatusPoller:
         self._refresh_pending = False
         self._refresh_target: Target | None = None
         self._pending_agent: tuple[PaneTarget, str] | None = None
+        self._suppressed_target: Target | None = None
 
     def _sample(
         self,
@@ -1464,7 +1503,14 @@ class AsyncStatusPoller:
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
+            if (
+                self._suppressed_target is not None
+                and status.current_target != self._suppressed_target
+            ):
+                self._suppressed_target = None
             current_target = status.current_target if status.current_target is not None else self.current_target
+            if current_target == self._suppressed_target:
+                current_target = None
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
             bell_target = status.bell_target
@@ -1528,15 +1574,17 @@ class AsyncStatusPoller:
         return changed
 
     def observe_effect(self, result: EffectResult) -> None:
-        if result.error or result.stale_navigation:
+        if (result.error and not result.partial_success) or result.stale_navigation:
             return
         target = result.effect.target
         if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
+            self._suppressed_target = None
             self.current_target = target
             self.current_agent = None
             self._pending_agent = None
             self._generation += 1
         elif result.effect.kind == "switch_pane" and isinstance(target, PaneTarget):
+            self._suppressed_target = None
             self.current_target = target.target
             self.current_agent = result.effect.message or None
             self._pending_agent = (
@@ -1553,6 +1601,15 @@ class AsyncStatusPoller:
             if self.bell_target == target:
                 self.bell_target = renamed
             self._generation += 1
+        elif result.effect.kind == "kill" and isinstance(target, Target):
+            if self.current_target == target:
+                self._suppressed_target = target
+                self.current_target = None
+                self._generation += 1
+        elif result.effect.kind == "save_favorites" and isinstance(target, Target):
+            if target not in result.favorites and self.current_target == target:
+                self.current_target = None
+                self._generation += 1
 
     @property
     def refresh_pending(self) -> bool:

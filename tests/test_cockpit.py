@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import signal
 import tempfile
 import unittest
@@ -391,7 +392,7 @@ class CockpitLayoutTest(unittest.TestCase):
         fix_layout.assert_called_once_with("%1", 52)
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
-        install_right_pane_reset.assert_called_once_with("%1", "%2")
+        install_right_pane_reset.assert_called_once_with("%1", "%2", "C-x")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
@@ -428,7 +429,7 @@ class CockpitLayoutTest(unittest.TestCase):
         fix_layout.assert_called_once_with("%1", 52)
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
-        install_right_pane_reset.assert_called_once_with("%1", "%1")
+        install_right_pane_reset.assert_called_once_with("%1", "%1", "C-x")
         install_bindings.assert_called_once_with("C-x", "%1", "%1")
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
@@ -678,18 +679,153 @@ class CockpitLayoutTest(unittest.TestCase):
                 expected.insert(0, unittest.mock.call("select-pane", "-t", "%7"))
             self.assertEqual(tmux_call.call_args_list, expected)
 
-    def test_right_pane_reset_shows_unavailable_message_and_preserves_target(self):
+    def test_right_pane_reset_uses_expected_death_marker(self):
         calls = []
 
-        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
-            cockpit._install_right_pane_reset("%1", "%2")
+        with (
+            patch.dict(cockpit.os.environ, {"LETEE_ASCII": "0"}),
+            patch.object(cockpit.locale, "getpreferredencoding", return_value="UTF-8"),
+            patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)),
+        ):
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
 
         command = calls[1][4]
         self.assertEqual(calls[0], ("set-option", "-p", "-t", "%2", "remain-on-exit", "on"))
         self.assertEqual(calls[1][:4], ("set-hook", "-t", "letee", "pane-died"))
+        expected_marker = "set-option -u -t letee @letee_expected_right_pane_death"
+        current_target = "set-option -u -t letee @letee_current_target"
+        help_command = shlex.quote(cockpit.help_command("C-x"))
+        consumed = "set-option -t letee @letee_expected_right_pane_death consumed"
+        self.assertIn("#{==:#{@letee_expected_right_pane_death},1}", command)
+        self.assertIn(consumed, command)
+        self.assertIn("#{==:#{@letee_expected_right_pane_death},succeeded}", command)
+        # The success branch clears the marker and target only after the kill reports success.
+        self.assertLess(command.index(expected_marker), command.index(current_target))
+        self.assertLess(command.index(current_target), command.index(help_command))
+        self.assertIn(help_command, command)
+        # A markerless death uses the unavailable fallback, even without a target marker.
         self.assertIn("Active session is unavailable.", command)
-        self.assertNotIn("set-option -u -t letee @letee_current_target", command)
         self.assertIn("select-pane -t %1", command)
+
+    def test_right_pane_death_uses_process_generation_after_switch(self):
+        calls = []
+
+        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+
+        command = calls[1][4]
+        target_match = "#{==:#{@letee_expected_right_pane_death_target},#{@letee_current_target}}"
+        generation_match = "#{==:#{@letee_expected_right_pane_death_generation},#{pane_pid}}"
+        fallback = cockpit._right_pane_death_action("%1", "%2", "", succeeded=False)
+        stale_ack = (
+            f"if-shell -F '{generation_match}' {{ {cockpit._clear_expected_right_pane_death()} }} "
+            f"{{ {fallback} }}"
+        )
+        self.assertIn(target_match, command)
+        self.assertIn(generation_match, command)
+        self.assertIn(stale_ack, command)
+
+    def test_set_expected_right_pane_death_sets_or_unsets_session_options(self):
+        target = Target("local", "work")
+
+        with (
+            patch.object(cockpit, "_option", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.set_expected_right_pane_death(target)
+            cockpit.set_expected_right_pane_death(None)
+
+        self.assertEqual(
+            tmux_call.call_args_list,
+            [
+                call(
+                    "if-shell",
+                    "-F",
+                    "#{==:#{@letee_current_target},local:work}",
+                    "set-option -t letee @letee_expected_right_pane_death_target local:work ; "
+                    "set-option -F -t %2 @letee_expected_right_pane_death_generation '#{pane_pid}' ; "
+                    "set-option -t letee @letee_expected_right_pane_death 1",
+                ),
+                call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION),
+                call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION),
+                call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION),
+            ],
+        )
+
+    def test_resolve_failed_expected_death_restores_target_when_hook_consumed_marker(self):
+        target = Target("ssh", "work", "dev")
+
+        with (
+            patch.object(cockpit, "_option", side_effect=["%1", "%2"]),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.resolve_expected_right_pane_death(target, False)
+
+        condition = "1"
+        self.assertEqual(tmux_call.call_args.args[:3], ("if-shell", "-F", condition))
+        command = tmux_call.call_args.args[3]
+        self.assertIn("#{==:#{@letee_expected_right_pane_death_target},ssh:dev:work}", command)
+        self.assertIn("#{==:#{@letee_current_target},ssh:dev:work}", command)
+        self.assertIn("set-option -t letee @letee_current_target ssh:dev:work", command)
+        self.assertIn("Session ssh:dev:work is unavailable.", command)
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", command)
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death_target", command)
+        self.assertIn(
+            "if-shell -F '#{==:#{@letee_expected_right_pane_death_target},ssh:dev:work}' { "
+            "set-option -u -t letee @letee_expected_right_pane_death ; "
+            "set-option -u -t letee @letee_expected_right_pane_death_target ; "
+            "set-option -u -t letee @letee_expected_right_pane_death_generation }",
+            command,
+        )
+
+    def test_resolve_success_restores_help_when_pane_is_already_unavailable(self):
+        target = Target("local", "work")
+
+        with (
+            patch.object(cockpit, "_option", side_effect=["%1", "%2"]),
+            patch.object(cockpit, "load_prefix", return_value="C-x"),
+            patch.object(cockpit, "help_command", return_value="help"),
+            patch.object(cockpit.tmux, "out", return_value="sh") as tmux_out,
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.resolve_expected_right_pane_death(target, True)
+
+        tmux_out.assert_called_once_with(
+            "display-message", "-p", "-t", "%2", "#{pane_current_command}", check=False
+        )
+        self.assertEqual(tmux_call.call_args.args[:3], ("if-shell", "-F", "1"))
+        action = tmux_call.call_args.args[3]
+        self.assertIn("#{==:#{@letee_expected_right_pane_death_target},local:work}", action)
+        self.assertIn("#{==:#{@letee_current_target},local:work}", action)
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", action)
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death_target", action)
+        self.assertIn("set-option -u -t letee @letee_current_target", action)
+        self.assertIn("respawn-pane -k -t %2 help", action)
+
+    def test_reset_to_help_reuses_successful_pane_death_cleanup_for_target(self):
+        target = Target("local", "work")
+        with (
+            patch.object(cockpit, "_option", side_effect=["%1", "%2"]),
+            patch.object(cockpit, "load_prefix", return_value="C-x"),
+            patch.object(cockpit, "_right_pane_death_action", return_value="reset action") as death_action,
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.reset_to_help(target)
+
+        death_action.assert_called_once_with("%1", "%2", "C-x", succeeded=True)
+        tmux_call.assert_called_once_with(
+            "if-shell", "-F", "#{==:#{@letee_current_target},local:work}", "reset action"
+        )
+
+    def test_set_current_target_sets_session_option(self):
+        target = Target("ssh", "work", "dev")
+
+        with patch.object(cockpit.tmux, "tmux") as tmux_call:
+            cockpit.set_current_target(target)
+
+        tmux_call.assert_called_once_with(
+            "set-option", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION, "ssh:dev:work"
+        )
 
     def test_session_menu_targets_sidebar_at_click_coordinates(self):
         with (
@@ -891,7 +1027,12 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("set-option", "-t", "letee", "@letee_current_target", "local:work"),
+                (
+                    "if-shell",
+                    "-F",
+                    "1",
+                    "set-option -t letee @letee_current_target local:work",
+                ),
                 ("set-option", "-u", "-t", "letee", "@letee_current_agent"),
                 ("set-option", "-u", "-t", "letee", "@letee_bell_target"),
                 ("respawn-pane", "-k", "-t", "%2", "attach work"),
