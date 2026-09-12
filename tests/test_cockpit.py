@@ -707,22 +707,31 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Active session is unavailable.", command)
         self.assertIn("select-pane -t %1", command)
 
-    def test_right_pane_death_ignores_stale_kill_marker_after_switch(self):
+    def test_right_pane_death_uses_process_generation_after_switch(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_right_pane_reset("%1", "%2", "C-x")
 
         command = calls[1][4]
-        self.assertIn(
-            "#{==:#{@letee_expected_right_pane_death_target},#{@letee_current_target}}",
-            command,
+        target_match = "#{==:#{@letee_expected_right_pane_death_target},#{@letee_current_target}}"
+        generation_match = "#{==:#{@letee_expected_right_pane_death_generation},#{pane_pid}}"
+        fallback = cockpit._right_pane_death_action("%1", "%2", "", succeeded=False)
+        stale_ack = (
+            f"if-shell -F '{generation_match}' {{ {cockpit._clear_expected_right_pane_death()} }} "
+            f"{{ {fallback} }}"
         )
+        self.assertIn(target_match, command)
+        self.assertIn(generation_match, command)
+        self.assertIn(stale_ack, command)
 
     def test_set_expected_right_pane_death_sets_or_unsets_session_options(self):
         target = Target("local", "work")
 
-        with patch.object(cockpit.tmux, "tmux") as tmux_call:
+        with (
+            patch.object(cockpit, "_option", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
             cockpit.set_expected_right_pane_death(target)
             cockpit.set_expected_right_pane_death(None)
 
@@ -734,10 +743,12 @@ class CockpitLayoutTest(unittest.TestCase):
                     "-F",
                     "#{==:#{@letee_current_target},local:work}",
                     "set-option -t letee @letee_expected_right_pane_death_target local:work ; "
+                    "set-option -F -t %2 @letee_expected_right_pane_death_generation '#{pane_pid}' ; "
                     "set-option -t letee @letee_expected_right_pane_death 1",
                 ),
                 call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION),
                 call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION),
+                call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION),
             ],
         )
 
@@ -762,7 +773,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn(
             "if-shell -F '#{==:#{@letee_expected_right_pane_death_target},ssh:dev:work}' { "
             "set-option -u -t letee @letee_expected_right_pane_death ; "
-            "set-option -u -t letee @letee_expected_right_pane_death_target }",
+            "set-option -u -t letee @letee_expected_right_pane_death_target ; "
+            "set-option -u -t letee @letee_expected_right_pane_death_generation }",
             command,
         )
 
@@ -1019,9 +1031,7 @@ class CockpitLayoutTest(unittest.TestCase):
                     "if-shell",
                     "-F",
                     "1",
-                    "set-option -t letee @letee_current_target local:work ; "
-                    "set-option -u -t letee @letee_expected_right_pane_death ; "
-                    "set-option -u -t letee @letee_expected_right_pane_death_target",
+                    "set-option -t letee @letee_current_target local:work",
                 ),
                 ("set-option", "-u", "-t", "letee", "@letee_current_agent"),
                 ("set-option", "-u", "-t", "letee", "@letee_bell_target"),
