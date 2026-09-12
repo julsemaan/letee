@@ -707,16 +707,32 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Active session is unavailable.", command)
         self.assertIn("select-pane -t %1", command)
 
-    def test_set_expected_right_pane_death_sets_or_unsets_session_option(self):
+    def test_right_pane_death_ignores_stale_kill_marker_after_switch(self):
+        calls = []
+
+        with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+
+        command = calls[1][4]
+        self.assertIn(
+            "#{==:#{@letee_expected_right_pane_death_target},#{@letee_current_target}}",
+            command,
+        )
+
+    def test_set_expected_right_pane_death_sets_or_unsets_session_options(self):
+        target = Target("local", "work")
+
         with patch.object(cockpit.tmux, "tmux") as tmux_call:
-            cockpit.set_expected_right_pane_death(True)
-            cockpit.set_expected_right_pane_death(False)
+            cockpit.set_expected_right_pane_death(target)
+            cockpit.set_expected_right_pane_death(None)
 
         self.assertEqual(
             tmux_call.call_args_list,
             [
+                call("set-option", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION, "local:work"),
                 call("set-option", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION, "1"),
                 call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION),
+                call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION),
             ],
         )
 
@@ -729,12 +745,21 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             cockpit.resolve_expected_right_pane_death(target, False)
 
-        condition = "#{==:#{@letee_expected_right_pane_death},consumed}"
+        condition = "1"
         self.assertEqual(tmux_call.call_args.args[:3], ("if-shell", "-F", condition))
         command = tmux_call.call_args.args[3]
+        self.assertIn("#{==:#{@letee_expected_right_pane_death_target},ssh:dev:work}", command)
+        self.assertIn("#{==:#{@letee_current_target},ssh:dev:work}", command)
         self.assertIn("set-option -t letee @letee_current_target ssh:dev:work", command)
         self.assertIn("Session ssh:dev:work is unavailable.", command)
-        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", tmux_call.call_args.args[4])
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", command)
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death_target", command)
+        self.assertIn(
+            "if-shell -F '#{==:#{@letee_expected_right_pane_death_target},ssh:dev:work}' { "
+            "set-option -u -t letee @letee_expected_right_pane_death ; "
+            "set-option -u -t letee @letee_expected_right_pane_death_target }",
+            command,
+        )
 
     def test_resolve_success_restores_help_when_pane_is_already_unavailable(self):
         target = Target("local", "work")
@@ -753,7 +778,10 @@ class CockpitLayoutTest(unittest.TestCase):
         )
         self.assertEqual(tmux_call.call_args.args[:3], ("if-shell", "-F", "1"))
         action = tmux_call.call_args.args[3]
+        self.assertIn("#{==:#{@letee_expected_right_pane_death_target},local:work}", action)
+        self.assertIn("#{==:#{@letee_current_target},local:work}", action)
         self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", action)
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death_target", action)
         self.assertIn("set-option -u -t letee @letee_current_target", action)
         self.assertIn("respawn-pane -k -t %2 help", action)
 

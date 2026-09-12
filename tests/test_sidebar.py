@@ -2057,7 +2057,7 @@ class SidebarStateTest(unittest.TestCase):
         ):
             result = sidebar._perform_effect(Effect("kill", target=target), tuple(state.favorites))
 
-        expected_death.assert_called_once_with(True)
+        expected_death.assert_called_once_with(target)
         resolve.assert_called_once_with(target, True)
         self.assertEqual(result.error, "save failed")
         self.assertTrue(result.partial_success)
@@ -2095,7 +2095,7 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(result.error, "kill local:work failed: denied")
         current_target.assert_called_once_with()
-        expected_death.assert_called_once_with(True)
+        expected_death.assert_called_once_with(target)
         handshake.assert_called_once_with(target, False)
         self.assertEqual(events, ["kill", "resolve False"])
 
@@ -5028,7 +5028,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        expected_death.assert_called_once_with(True)
+        expected_death.assert_called_once_with(target)
         error = next(call for call in screen.calls if call[0] == "addnstr" and "kill local:work failed: denied" in call[3])
         self.assertEqual(error[1], 1)
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
@@ -6386,7 +6386,7 @@ class PrefixActionTest(unittest.TestCase):
             self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), STOP], [stale, active], active, data)
 
         kill.assert_called_once_with(active)
-        expected_death.assert_called_once_with(True)
+        expected_death.assert_called_once_with(active)
         self.assertEqual(order, ["mark", "kill", "resolve"])
         save.assert_called_once_with([stale])
 
@@ -7102,7 +7102,7 @@ class SidebarKeybindingTest(unittest.TestCase):
             screen3 = FakeScreen([ord("X"), ord("y"), STOP], size=(10, 40))
             sidebar.run(screen3)
         kill.assert_called_once_with(target_a)
-        expected_death.assert_called_once_with(True)
+        expected_death.assert_called_once_with(target_a)
         resolve.assert_called_once_with(target_a, True)
         save_kill.assert_called_once_with([target_b])
 

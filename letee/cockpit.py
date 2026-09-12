@@ -116,6 +116,7 @@ SIDEBAR_WIDTH_OPTION = "@letee_sidebar_width"
 RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
 EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
+EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION = "@letee_expected_right_pane_death_target"
 _EXPECTED_RIGHT_PANE_DEATH_PENDING = "1"
 _EXPECTED_RIGHT_PANE_DEATH_CONSUMED = "consumed"
 _EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED = "succeeded"
@@ -413,6 +414,27 @@ def _reconnecting_command(target: Target) -> str:
     return f"printf %s {shlex.quote(text)}; printf %s {save_cursor}; while :; do for state in {states}; do {animate}; printf {spinner} \"$color\" \"$frame\" \"$dots\"; sleep 0.1; done; done"
 
 
+def _clear_expected_right_pane_death() -> str:
+    return (
+        f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} ; "
+        f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}"
+    )
+
+
+def _option_equals(name: str, value: str) -> str:
+    return f"#{{==:#{{{name}}},{value}}}"
+
+
+def _guard_expected_right_pane_death(target: Target, action: str) -> str:
+    expected_target = _option_equals(EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION, target.format())
+    current_target = _option_equals(CURRENT_TARGET_OPTION, target.format())
+    stale_cleanup = f"if-shell -F '{expected_target}' {{ {_clear_expected_right_pane_death()} }} {{ }}"
+    return (
+        f"if-shell -F '{expected_target}' "
+        f"{{ if-shell -F '{current_target}' {{ {action} }} {{ {stale_cleanup} }} }} {{ }}"
+    )
+
+
 def _right_pane_death_action(
     left: str,
     right: str,
@@ -422,7 +444,7 @@ def _right_pane_death_action(
     target: Target | None = None,
 ) -> str:
     cleanup = "set-option -u -t letee @letee_current_agent ; set-option -u -t letee @letee_bell_target"
-    marker_cleanup = f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION}"
+    marker_cleanup = _clear_expected_right_pane_death()
     if succeeded:
         return (
             f"{cleanup} ; {marker_cleanup} ; "
@@ -442,12 +464,18 @@ def _right_pane_death_action(
 
 def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
-    expected_death = (
+    target_match = f"#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}}},#{{{CURRENT_TARGET_OPTION}}}}}"
+    state_action = (
         f"if-shell -F '#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_PENDING}}}' "
         f"{{ set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_CONSUMED} }} "
         f"{{ if-shell -F '#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED}}}' "
         f"{{ {_right_pane_death_action(left, right, prefix, succeeded=True)} }} "
         f"{{ {_right_pane_death_action(left, right, prefix, succeeded=False)} }} }}"
+    )
+    expected_death = (
+        f"if-shell -F '#{{?{EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION},1,0}}' "
+        f"{{ if-shell -F '{target_match}' {{ {state_action} }} {{ {_clear_expected_right_pane_death()} }} }} "
+        f"{{ {_right_pane_death_action(left, right, prefix, succeeded=False)} }}"
     )
     command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ {expected_death} }}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
@@ -729,18 +757,20 @@ def switch(
     )
 
 
-def set_expected_right_pane_death(expected: bool) -> None:
-    if expected:
-        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION, _EXPECTED_RIGHT_PANE_DEATH_PENDING)
-    else:
+def set_expected_right_pane_death(target: Target | None) -> None:
+    if target is None:
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION)
+        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION)
+    else:
+        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION, target.format())
+        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION, _EXPECTED_RIGHT_PANE_DEATH_PENDING)
 
 
 def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
     left = _option(SIDEBAR_PANE_OPTION)
     right = _option(RIGHT_PANE_OPTION)
     if not left or not right:
-        set_expected_right_pane_death(False)
+        tmux.tmux("if-shell", "-F", "1", _guard_expected_right_pane_death(target, _clear_expected_right_pane_death()))
         return
     action = _right_pane_death_action(
         left,
@@ -750,19 +780,17 @@ def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
         target=target,
     )
     if succeeded and tmux.out("display-message", "-p", "-t", right, "#{pane_current_command}", check=False) == "sh":
-        tmux.tmux("if-shell", "-F", "1", action)
+        tmux.tmux("if-shell", "-F", "1", _guard_expected_right_pane_death(target, action))
         return
     if succeeded:
         unresolved = f"set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED}"
     else:
-        unresolved = f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION}"
-    tmux.tmux(
-        "if-shell",
-        "-F",
-        f"#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_CONSUMED}}}",
-        action,
-        unresolved,
+        unresolved = _clear_expected_right_pane_death()
+    resolution = (
+        f"if-shell -F '#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_CONSUMED}}}' "
+        f"{{ {action} }} {{ {unresolved} }}"
     )
+    tmux.tmux("if-shell", "-F", "1", _guard_expected_right_pane_death(target, resolution))
 
 
 def reset_to_help() -> None:

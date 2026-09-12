@@ -1039,7 +1039,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         elif effect.kind == "kill" and isinstance(effect.target, Target):
             active = _current_target() == effect.target
             if active:
-                cockpit.set_expected_right_pane_death(True)
+                cockpit.set_expected_right_pane_death(effect.target)
             try:
                 sessions.kill(effect.target)
                 partial_success = True
