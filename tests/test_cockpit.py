@@ -1094,8 +1094,9 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("⠋", command)
         self.assertNotIn("╭", command)
 
-    def test_show_missing_guides_session_recreation(self):
+    def test_show_missing_displays_waiting_state_with_session_details(self):
         with (
+            patch.dict(cockpit.os.environ, {}, clear=True),
             patch.object(cockpit, "right_pane", return_value="%2"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
@@ -1103,9 +1104,43 @@ class CockpitLayoutTest(unittest.TestCase):
 
         command = tmux_call.call_args.args
         self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
-        self.assertIn("Session ssh:dev:work is missing.", command[4])
-        self.assertIn("Press Enter", command[4])
-        self.assertIn("recreate", command[4])
+        self.assertIn("Session missing", command[4])
+        self.assertIn("    \x1b[2mSession\x1b[0m  work", command[4])
+        self.assertIn("    \x1b[2mHost\x1b[0m     dev", command[4])
+        self.assertIn("Waiting for session%s", command[4])
+        self.assertIn("⠋", command[4])
+        self.assertIn("while :", command[4])
+        self.assertNotIn("Press Enter", command[4])
+        self.assertNotIn("recreate", command[4])
+
+    def test_show_missing_uses_ascii_waiting_state_when_requested(self):
+        with (
+            patch.dict(cockpit.os.environ, {"LETEE_ASCII": "1"}),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.show_missing(cockpit.Target("ssh", "work", "dev"))
+
+        command = tmux_call.call_args.args[4]
+        self.assertIn("+-- Session missing --+", command)
+        self.assertIn("45:|:.  ", command)
+        self.assertIn("Waiting for session%s", command)
+        self.assertNotIn("⠋", command)
+        self.assertNotIn("╭", command)
+        self.assertNotIn("Press Enter", command)
+        self.assertNotIn("recreate", command)
+
+    def test_missing_animation_uses_ascii_for_non_utf_encoding(self):
+        with (
+            patch.dict(cockpit.os.environ, {}, clear=True),
+            patch.object(cockpit.locale, "getpreferredencoding", return_value="ANSI_X3.4-1968"),
+        ):
+            command = cockpit._missing_command(cockpit.Target("ssh", "work", "dev"))
+
+        self.assertIn("+-- Session missing --+", command)
+        self.assertIn("45:|:.  ", command)
+        self.assertNotIn("⠋", command)
+        self.assertNotIn("╭", command)
 
     def test_show_unavailable_replaces_frozen_session_with_message(self):
         with (
