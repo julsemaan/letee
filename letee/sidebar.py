@@ -4,7 +4,6 @@ import curses
 import locale
 import os
 import platform
-import socket
 import subprocess
 import textwrap
 import threading
@@ -30,6 +29,7 @@ from .names import PaneTarget, Target, validate_name
 
 
 UI_POLL_INTERVAL_MS = 50
+MAX_INPUT_BURST = 32
 DEFAULT_AGENT_PANEL_PERCENTAGE = 40
 MOVE_SCROLL_INTERVAL = 0.2
 MOVE_HANDLE_WIDTH = 3
@@ -56,6 +56,18 @@ _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 
 
 @dataclass(frozen=True)
+class InputEvent:
+    key_code: object
+    input_id: str | None = None
+    mouse: tuple[object, ...] | None = None
+    mouse_error: str | None = None
+
+    @property
+    def key(self) -> object:
+        return self.key_code
+
+
+@dataclass(frozen=True)
 class Effect:
     kind: Literal[
         "switch", "switch_pane", "add_switch", "create", "kill", "kill_agent", "rename",
@@ -72,8 +84,7 @@ class Effect:
 @dataclass
 class SidebarState:
     filter_text: str = ""
-    filtering: bool = False
-    add_view: Literal["choice", "existing", "location", "name"] | None = None
+    add_view: Literal["location", "search", "name"] | None = None
     creation_host: str | None = None
     creation_text: str = ""
     rename_target: Target | None = None
@@ -114,7 +125,7 @@ class SidebarState:
 @dataclass(frozen=True)
 class Entry:
     label: str
-    kind: str  # section | header | host | session | unavailable
+    kind: str  # section | session | agent | order | create | location | unavailable
     target: Target | None = None
     host: str | None = None
     unavailable_favorite: bool = False
@@ -319,8 +330,8 @@ def _ascii() -> bool:
 
 def _icons() -> dict[str, str]:
     if _ascii():
-        return {"local": "*", "remote": "*", "local_header": "LOCAL", "remote_header": "SSH", "create": "+", "unavailable": "!", "selected": ">", "enter": "<-"}
-    return {"local": "●", "remote": "◆", "local_header": "💻", "remote_header": "🌐", "create": "＋", "unavailable": "⚠", "selected": "›", "enter": "↵"}
+        return {"local": "*", "remote": "*", "create": "+", "unavailable": "!", "selected": ">", "enter": "<-"}
+    return {"local": "●", "remote": "◆", "create": "＋", "unavailable": "⚠", "selected": "›", "enter": "↵"}
 
 
 def _spinner_frame(now: float) -> str:
@@ -461,65 +472,26 @@ def _reconcile_active_session_effect(
     return unavailable_target_shown
 
 
-def _entries(
-    filter_text: str,
-    snapshot: SessionSnapshot,
-    favorites: list[Target] | None = None,
-    adding: bool = False,
-) -> list[Entry]:
-    needle = filter_text.lower()
-    adding = adding or favorites is None
+def _entries(snapshot: SessionSnapshot, favorites: list[Target] | None = None) -> list[Entry]:
     favorites = favorites or []
-    hostname = socket.gethostname()
-    if not adding:
-        slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
-        out: list[Entry] = []
-        for target in favorites:
-            status = _target_status(target, snapshot)
-            out.append(Entry(
-                target.session,
-                "session",
-                target,
-                target.host or "localhost",
-                unavailable_favorite=status is not None,
-                tracked=True,
-                shortcut_slot=slots.get(target),
-                status=status,
-            ))
-        return out or [
-            Entry("No sessions yet", "empty"),
-            Entry("Press Enter to add one.", "hint"),
-        ]
-
-    icons = _icons()
+    slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
     out: list[Entry] = []
-    local_kind = "host" if snapshot.local.available and not filter_text else "header"
-    local_label = hostname if local_kind == "host" else f"{icons['local_header']} {hostname}"
-    out.append(Entry(local_label, local_kind, host=""))
-    if not snapshot.local.available:
-        label = f"unavailable: {snapshot.local.error}" if snapshot.local.error else "unavailable"
-        out.append(Entry(label, "unavailable", host=""))
-    else:
-        for target in snapshot.local.sessions:
-            if target not in favorites and needle in target.session.lower():
-                out.append(Entry(target.session, "session", target))
-
-    for host, source in snapshot.remotes.items():
-        available = source is not None and source.available
-        host_kind = "host" if available and not filter_text else "header"
-        host_label = host if host_kind == "host" else f"{icons['remote_header']} {host}"
-        out.append(Entry(host_label, host_kind, host=host))
-        if source is None:
-            out.append(Entry("connecting…", "unavailable", host=host))
-            continue
-        if not source.available:
-            label = f"reconnecting…: {source.error}" if source.error else "reconnecting…"
-            out.append(Entry(label, "unavailable", host=host))
-            continue
-        for target in source.sessions:
-            if target not in favorites and needle in target.session.lower():
-                out.append(Entry(target.session, "session", target, host))
-    return out
+    for target in favorites:
+        status = _target_status(target, snapshot)
+        out.append(Entry(
+            target.session,
+            "session",
+            target,
+            target.host or "localhost",
+            unavailable_favorite=status is not None,
+            tracked=True,
+            shortcut_slot=slots.get(target),
+            status=status,
+        ))
+    return out or [
+        Entry("No sessions yet", "empty"),
+        Entry("Press Enter to add one.", "hint"),
+    ]
 
 
 def _available_locations(snapshot: SessionSnapshot) -> list[tuple[str, str]]:
@@ -531,60 +503,96 @@ def _available_locations(snapshot: SessionSnapshot) -> list[tuple[str, str]]:
     return locations
 
 
-def _add_entries(
-    view: Literal["choice", "existing", "location"],
+def _valid_session_name(name: str) -> bool:
+    try:
+        validate_name(name, "session")
+    except SystemExit:
+        return False
+    return True
+
+
+def _name_conflicts(
+    name: str,
+    host: str,
+    existing_sessions: tuple[Target, ...],
+    ignore: Target | None = None,
+) -> bool:
+    kind = "local" if host == "" else "ssh"
+    return any(
+        target != ignore
+        and target.kind == kind
+        and target.host == (None if kind == "local" else host)
+        and target.session == name
+        for target in existing_sessions
+    )
+
+
+def _search_entries(
+    host: str,
     filter_text: str,
     snapshot: SessionSnapshot,
     favorites: list[Target],
 ) -> list[Entry]:
-    if view == "choice":
-        return [Entry("New session", "choice_new"), Entry("Existing session", "choice_existing")]
-    if view == "existing":
-        grouped: list[Entry] = []
-        entries = _entries(filter_text, snapshot, favorites, adding=True)
-        for index, entry in enumerate(entries):
-            if entry.kind in ("host", "header"):
-                label = "localhost" if entry.host == "" else entry.label
-                grouped.append(Entry(label, "header", host=entry.host))
-                if index + 1 == len(entries) or entries[index + 1].kind in ("host", "header"):
-                    grouped.append(Entry("No sessions", "empty", host=entry.host))
-            else:
-                grouped.append(entry)
-        return grouped
-    entries = [Entry("Select where to create", "section")]
-    entries.extend(Entry(label, "location", host=host) for label, host in _available_locations(snapshot))
+    source = snapshot.local if host == "" else snapshot.remotes.get(host)
+    if source is None:
+        return [Entry("connecting…", "unavailable", host=host)]
+    if not source.available:
+        label = f"reconnecting…: {source.error}" if source.error else "reconnecting…"
+        return [Entry(label, "unavailable", host=host)]
+    needle = filter_text.lower()
+    matches = [
+        target for target in source.sessions
+        if needle in target.session.lower()
+    ]
+    matches.sort(key=lambda target: target.session != filter_text)
+    entries: list[Entry] = []
+    if (
+        filter_text
+        and _valid_session_name(filter_text)
+        and not _name_conflicts(filter_text, host, snapshot.sessions)
+    ):
+        entries.append(Entry(filter_text, "create", host=host))
+    entries.extend(Entry(target.session, "session", target, target.host) for target in matches)
+    if not entries:
+        return [
+            Entry("No sessions", "empty", host=host),
+            Entry("Type a session name to create", "hint", host=host),
+        ]
+    return entries
+
+
+def _add_entries(
+    view: Literal["location", "search"],
+    filter_text: str,
+    snapshot: SessionSnapshot,
+    favorites: list[Target],
+    host: str | None = None,
+) -> list[Entry]:
+    if view == "search":
+        return _search_entries(host or "", filter_text, snapshot, favorites)
+    entries = [Entry("Select a location", "section")]
+    entries.extend(Entry(label, "location", host=entry_host) for label, entry_host in _available_locations(snapshot))
     if not snapshot.local.available:
         entries.append(Entry("localhost: unavailable", "unavailable", host=""))
-    for host, source in snapshot.remotes.items():
+    for remote_host, source in snapshot.remotes.items():
         if source is None or not source.available:
-            entries.append(Entry(f"{host}: unavailable", "unavailable", host=host))
+            entries.append(Entry(f"{remote_host}: unavailable", "unavailable", host=remote_host))
     if not entries or not any(entry.kind == "location" for entry in entries):
         entries.append(Entry("No available locations", "hint"))
     return entries
 
 
-def _open_add(state: SidebarState, view: Literal["choice", "existing"] = "choice") -> None:
-    _clear_status(state)
-    state.add_view = view
-    state.filtering = view == "existing"
-    state.filter_text = ""
-    state.creation_host = None
-    state.creation_text = ""
-    state.rename_target = None
+def _open_add(state: SidebarState, snapshot: SessionSnapshot) -> None:
+    _reset_add(state)
+    state.focused_region = "sessions"
     state.selected_index = 0
     state.selected_target = None
-    state.add_button_selected = False
-
-
-def _start_new(state: SidebarState, snapshot: SessionSnapshot) -> None:
-    _clear_status(state)
     locations = _available_locations(snapshot)
     if len(locations) == 1:
-        _select_location(state, locations[0][1])
+        state.add_view = "search"
+        state.creation_host = locations[0][1]
     else:
         state.add_view = "location"
-        state.filtering = False
-        state.selected_index = 0
 
 
 def _select_location(state: SidebarState, host: str) -> None:
@@ -592,14 +600,15 @@ def _select_location(state: SidebarState, host: str) -> None:
     state.creation_host = host
     state.creation_text = ""
     state.rename_target = None
-    state.add_view = "name"
-    state.filtering = False
+    state.add_view = "search"
+    state.filter_text = ""
+    state.selected_index = 0
+    state.selected_target = None
 
 
 def _start_rename(state: SidebarState, target: Target) -> None:
     _clear_status(state)
     state.add_view = "name"
-    state.filtering = False
     state.creation_host = "" if target.kind == "local" else target.host
     state.creation_text = target.session
     state.rename_target = target
@@ -608,25 +617,21 @@ def _start_rename(state: SidebarState, target: Target) -> None:
 def _add_back(state: SidebarState, snapshot: SessionSnapshot) -> None:
     _clear_status(state)
     state.add_button_selected = False
-    if state.add_view == "name":
-        if state.rename_target is not None:
-            _reset_add(state)
-            return
-        state.add_view = "location" if len(_available_locations(snapshot)) > 1 else "choice"
-        state.creation_host = None
-        state.creation_text = ""
-    elif state.add_view in ("location", "existing"):
-        state.add_view = "choice"
-        state.filtering = False
+    if (
+        state.rename_target is None
+        and state.add_view == "search"
+        and len(_available_locations(snapshot)) > 1
+    ):
+        state.add_view = "location"
         state.filter_text = ""
-    elif state.add_view == "choice":
-        state.add_view = None
+        state.creation_host = None
+        return
+    _reset_add(state)
 
 
 def _reset_add(state: SidebarState) -> None:
     _clear_status(state)
     state.add_view = None
-    state.filtering = False
     state.add_button_selected = False
     state.filter_text = ""
     state.creation_host = None
@@ -769,14 +774,7 @@ def _update_agent_alerts(
 
 
 def _selectable(entries: list[Entry]) -> list[int]:
-    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "host", "location", "choice_new", "choice_existing")]
-
-
-def _should_auto_create(entries: list[Entry]) -> bool:
-    """True when exactly one host and no sessions — skip host selection step."""
-    hosts = [e for e in entries if e.kind == "host"]
-    sessions = [e for e in entries if e.kind == "session"]
-    return len(hosts) == 1 and len(sessions) == 0
+    return [i for i, entry in enumerate(entries) if entry.kind in ("session", "location", "create")]
 
 
 def _selected_index(entries: list[Entry], target: Target | None) -> int:
@@ -784,10 +782,9 @@ def _selected_index(entries: list[Entry], target: Target | None) -> int:
         for i, entry in enumerate(entries):
             if entry.target == target:
                 return i
-    for kind in ("session", "host"):
-        for i, entry in enumerate(entries):
-            if entry.kind == kind:
-                return i
+    for i, entry in enumerate(entries):
+        if entry.kind == "session":
+            return i
     return 0
 
 
@@ -1128,7 +1125,6 @@ def _apply_effect(
     if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
         if not result.stale_navigation:
             state.filter_text = ""
-            state.filtering = False
             state.selected_target = effect.target
         if effect.kind == "add_switch":
             if effect.target not in state.favorites:
@@ -1609,48 +1605,27 @@ class AsyncStatusPoller:
         self._poller.close()
 
 
-def _creation_conflicts(state: SidebarState, existing_sessions: tuple[Target, ...]) -> bool:
-    kind = "local" if state.creation_host == "" else "ssh"
-    return any(
-        target != state.rename_target
-        and target.kind == kind
-        and target.host == (None if kind == "local" else state.creation_host)
-        and target.session == state.creation_text
-        for target in existing_sessions
-    )
-
-
-def _creation_key(
+def _search_key(
     state: SidebarState,
     key: int,
-    existing_sessions: tuple[Target, ...] = (),
-) -> Effect | None:
-    if key in (27, 3):
-        state.creation_host = None
-        state.creation_text = ""
-    elif key in (curses.KEY_BACKSPACE, 8, 127):
-        state.creation_text = state.creation_text[:-1]
-    elif key in (10, 13, curses.KEY_ENTER):
-        name = validate_name(state.creation_text, "session")
-        if _creation_conflicts(state, existing_sessions):
-            raise SystemExit("Session already exists on this host")
-        if state.rename_target is not None:
-            if name == state.rename_target.session:
-                _reset_add(state)
-                return None
-            return Effect("rename", target=state.rename_target, message=name)
-        host = state.creation_host
-        target = Target("local", name) if host == "" else Target("ssh", name, host)
-        state.creation_host = None
-        state.creation_text = ""
-        return Effect("create", target)
-    elif 32 <= key <= 126 and len(state.creation_text) < 64:
-        state.creation_text += chr(key)
-
+    snapshot: SessionSnapshot,
+) -> bool:
+    if key in (curses.KEY_BACKSPACE, 8, 127):
+        state.filter_text = state.filter_text[:-1]
+    elif 32 <= key <= 126:
+        if len(state.filter_text) < 64:
+            state.filter_text += chr(key)
+    else:
+        return False
+    state.selected_target = None
+    state.selected_index = 0
+    state.selected_tracked = False
+    state.add_button_selected = False
     _clear_status(state)
-    if _creation_conflicts(state, existing_sessions):
-        state.status = "Session already exists on this host"
-    return None
+    text = state.filter_text
+    if text and not _valid_session_name(text):
+        state.status = "Invalid session name"
+    return True
 
 
 def _rename_key(
@@ -1660,7 +1635,30 @@ def _rename_key(
 ) -> Effect | None:
     if state.rename_target is None:
         return None
-    return _creation_key(state, key, existing_sessions)
+    if key in (27, 3):
+        _reset_add(state)
+        return None
+    if key in (curses.KEY_BACKSPACE, 8, 127):
+        state.creation_text = state.creation_text[:-1]
+    elif key in (10, 13, curses.KEY_ENTER):
+        name = validate_name(state.creation_text, "session")
+        if _name_conflicts(
+            name, state.creation_host or "", existing_sessions, state.rename_target
+        ):
+            raise SystemExit("Session already exists on this host")
+        if name == state.rename_target.session:
+            _reset_add(state)
+            return None
+        return Effect("rename", target=state.rename_target, message=name)
+    elif 32 <= key <= 126 and len(state.creation_text) < 64:
+        state.creation_text += chr(key)
+
+    _clear_status(state)
+    if _name_conflicts(
+        state.creation_text, state.creation_host or "", existing_sessions, state.rename_target
+    ):
+        state.status = "Session already exists on this host"
+    return None
 
 
 def _agent_layout(
@@ -1668,10 +1666,10 @@ def _agent_layout(
     footer_height: int,
     agent_entries: list[Entry],
     agent_percentage: int,
-    filtering: bool,
+    name_input: bool,
 ) -> tuple[int, int, int, int]:
     footer_top = height - footer_height
-    session_top = 3 if filtering else 2
+    session_top = 3 if name_input else 2
     minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
     available = footer_top - session_top - 1
     wanted = max(minimum_agent_rows, round(available * agent_percentage / 100))
@@ -1685,22 +1683,23 @@ def _agent_prompt_row(
     footer_height: int,
     agent_entries: list[Entry],
     agent_percentage: int,
-    filtering: bool,
+    name_input: bool,
 ) -> int:
     h, _ = stdscr.getmaxyx()
-    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_percentage, filtering)
+    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_percentage, name_input)
     return max(0, min(h - 1, separator + 2))
 
 
 def _read_key(
     stdscr: curses.window,
     prompt: str,
-    filtering: bool = False,
+    name_input: bool = False,
     row: int | None = None,
     input_callback: Callable[[int], object] | None = None,
+    input_reader: Callable[[], object] | None = None,
 ) -> int:
     h, w = stdscr.getmaxyx()
-    row = row if row is not None else (2 if filtering else 1)
+    row = row if row is not None else (2 if name_input else 1)
     row = max(0, min(h - 1, row))
     width = max(1, w)
     attr = (_color("danger") or 0) | curses.A_BOLD
@@ -1709,7 +1708,9 @@ def _read_key(
         stdscr.addnstr(row, 0, " " * width, width)
         stdscr.addnstr(row, 0, _truncate_cells(prompt, width), width, attr)
         stdscr.refresh()
-        key = stdscr.getch()
+        key = input_reader() if input_reader is not None else stdscr.getch()
+        if isinstance(key, InputEvent):
+            key = key.key_code
         if input_callback is not None:
             input_callback(key)
         return key
@@ -1717,14 +1718,6 @@ def _read_key(
         stdscr.addnstr(row, 0, " " * width, width)
         stdscr.refresh()
         stdscr.timeout(UI_POLL_INTERVAL_MS)
-
-
-def _filter_key(filter_text: str, key: int) -> str | None:
-    if key in (curses.KEY_BACKSPACE, 8, 127):
-        return filter_text[:-1]
-    if 32 <= key <= 126:
-        return filter_text + chr(key)
-    return None
 
 
 def _bell_targets(
@@ -1739,7 +1732,7 @@ def _bell_targets(
 
 
 def _entry_height(entry: Entry) -> int:
-    if entry.kind in ("choice_new", "choice_existing", "order"):
+    if entry.kind == "order":
         return 2
     return 2 if entry.tracked or entry.kind == "agent" else 1
 
@@ -1809,7 +1802,7 @@ def _entry_at_row(
     for index in range(start, end):
         if entry_row < _entry_height(entries[index]):
             return index if entries[index].kind in (
-                "session", "host", "agent", "order", "choice_new", "choice_existing", "location"
+                "session", "agent", "order", "create", "location"
             ) else None
         entry_row -= _entry_height(entries[index])
     return None
@@ -1919,15 +1912,17 @@ def _draw_title(
     w: int,
     entries: list[Entry],
     filter_text: str,
-    filtering: bool = False,
     dimmed: bool = False,
     adding: bool = False,
     add_button_selected: bool = False,
+    creation_host: str | None = None,
 ) -> tuple[int, int | None]:
     width = max(1, w)
     brand = " letee" if _ascii() else "  letee"
     if adding:
-        section = "Add existing" if filtering else "New session" if any(entry.kind == "location" for entry in entries) else "Add session"
+        section = "Add session"
+        if creation_host is not None:
+            section += f" · {'localhost' if creation_host == '' else creation_host}"
         left = f"{brand} / {section}"
     else:
         left = brand
@@ -1946,8 +1941,8 @@ def _draw_title(
     return (min(width - 1, len(left)), add_col)
 
 
-def _draw_filter(stdscr: curses.window, w: int, filter_text: str, dimmed: bool) -> tuple[int, int]:
-    prefix = " Filter: "
+def _draw_name_input(stdscr: curses.window, w: int, filter_text: str, dimmed: bool) -> tuple[int, int]:
+    prefix = " Name: "
     text = _truncate_cells(filter_text, max(0, w - _cell_width(prefix)))
     line = prefix + text
     attr = _color("hints") or curses.A_DIM
@@ -1995,8 +1990,6 @@ def _entry_lines(
     bell_targets: set[Target],
     current_target: Target | None,
     width: int,
-    creation_host: str | None = None,
-    creation_text: str = "",
     now: datetime | None = None,
     agent_alerts: set[tuple[PaneTarget, str]] | None = None,
     spinner_frame: str | None = None,
@@ -2009,32 +2002,11 @@ def _entry_lines(
         if len(entry.label) + 1 >= width:
             return [_truncate(entry.label + " ", width)]
         return [entry.label + " " + rule * (width - len(entry.label) - 1)]
-    if entry.kind == "header":
-        return [_truncate(entry.label, width)]
-    if entry.kind in ("choice_new", "choice_existing"):
-        symbol = "+" if entry.kind == "choice_new" else "=" if _ascii() else "≡"
-        detail = "Create a fresh tmux session" if entry.kind == "choice_new" else "Add a running tmux session"
-        return [
-            _truncate_cells(f"{pointer} {symbol} {entry.label}", width),
-            _truncate_cells(f"    {detail}", width),
-        ]
+    if entry.kind == "create":
+        return [_truncate_cells(f"{pointer} {icon['create']} {entry.label}", width)]
     if entry.kind == "location":
         location_icon = icon["local"] if entry.host == "" else icon["remote"]
         return [_truncate_cells(f"{pointer} {location_icon} {entry.label}", width)]
-    if entry.kind == "add":
-        label = f"{pointer} {icon['create']} {entry.label}"
-        truncated = _truncate_cells(label, width)
-        return [truncated + " " * (width - _cell_width(truncated))]
-    if entry.kind == "spacer":
-        return [""]
-    if entry.kind == "host":
-        suffix = f" {icon['create']}"
-        if selected:
-            label = _truncate_cells(f"{pointer} {entry.label}", max(0, width - _cell_width(suffix) - 1))
-        else:
-            host_icon = icon["local_header"] if entry.host == "" else icon["remote_header"]
-            label = _truncate_cells(f"{host_icon} {entry.label}", max(0, width - _cell_width(suffix) - 1))
-        return [_truncate(label + suffix, width)]
     if entry.kind == "order":
         pointer = icon["selected"] if selected else (" " if _ascii() else "⇅")
         if _ascii():
@@ -2117,14 +2089,8 @@ def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, move_source
         attr = _color("section") or curses.A_BOLD
     elif entry.kind == "section":
         attr = _color("section") or curses.A_BOLD
-    elif entry.kind == "add":
-        attr = _color("add_entry") or (curses.A_BOLD | curses.A_REVERSE)
-    elif entry.kind == "choice_new":
+    elif entry.kind == "create":
         attr = (_color("create") or 0) | curses.A_BOLD
-    elif entry.kind == "choice_existing":
-        attr = (_color("remote") or 0) | curses.A_BOLD
-    elif entry.kind in ("header", "host"):
-        attr = curses.A_BOLD
     elif entry.unavailable_favorite:
         attr = _color("unavailable") or curses.A_DIM
     elif entry.kind == "session":
@@ -2151,8 +2117,6 @@ def _draw_entries(
     bell_targets: set[Target],
     current_target: Target | None,
     dimmed: bool = False,
-    creation_host: str | None = None,
-    creation_text: str = "",
     top: int = 1,
     scroll_offset: int | None = None,
     active_agent_id: str | None = None,
@@ -2164,8 +2128,7 @@ def _draw_entries(
     move_target_entry: int | None = None,
     selection_pointer_visible: bool = True,
     pane_active: bool = True,
-) -> tuple[int, int] | None:
-    cursor = None
+) -> None:
     start, end = _viewport(entries, selected, h - top + 1, scroll_offset)
     row = top
     if start:
@@ -2186,7 +2149,7 @@ def _draw_entries(
         )
         lines = _entry_lines(
             entry, selected_entry and not dimmed and selection_pointer_visible and pane_active, bell_targets, current_target, entry_width,
-            creation_host, creation_text, now, agent_alerts, spinner_frame, agent_ordering,
+            now, agent_alerts, spinner_frame, agent_ordering,
         )
         # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
         is_move_source = move_source_entry is not None and idx == move_source_entry
@@ -2252,25 +2215,25 @@ def _draw_entries(
                         max(0, w - column),
                         _fade(active_attr) if dimmed else active_attr,
                     )
-            if entry.kind == "host" and entry.host == creation_host:
-                cursor = (row, min(w - 1, _cell_width(line)))
             row += 1
     if end < len(entries) and row < h - 1:
         attr = _color("hints") or curses.A_DIM
         stdscr.addnstr(h - 2, 0, "↓ more", w - 1, _fade(attr) if dimmed else attr)
-    return cursor
 
 
 def _draw_footer(
     stdscr: curses.window,
     h: int,
     w: int,
-    filtering: bool = False,
+    name_input: bool = False,
     dimmed: bool = False,
     adding: bool = False,
 ) -> int:
-    if filtering:
-        logical_rows = ["type to filter  backspace edit", f"esc clear  {'Enter' if _ascii() else '↵'} switch"]
+    if name_input:
+        logical_rows = [
+            "type a name  backspace edit",
+            f"esc back  {'Enter' if _ascii() else '↵'} create or switch",
+        ]
     elif adding:
         logical_rows = [f"{'Enter' if _ascii() else '↵'} select · Esc back" if not _ascii() else "Enter select  Esc back"]
     else:
@@ -2291,10 +2254,7 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     width = max(1, w)
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     ascii_mode = _ascii()
-    if state.rename_target is None:
-        title = " + New session" if ascii_mode else " ＋ New session"
-    else:
-        title = " e Rename session" if ascii_mode else " ✎ Rename session"
+    title = " e Rename session" if ascii_mode else " ✎ Rename session"
     back_col = _draw_back_title(stdscr, width, title, attr, dimmed)
     host = "localhost" if state.creation_host == "" else (state.creation_host or "")
     host_icon = "*" if ascii_mode else ("●" if state.creation_host == "" else "◆")
@@ -2310,10 +2270,7 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
         message = f" ! {state.status}" if ascii_mode and state.status else f" ✕ {state.status}" if state.status else " Letters, numbers, . _ -"
         message_attr = (_color("danger") or curses.A_BOLD) if state.status else (_color("hints") or curses.A_DIM)
         stdscr.addnstr(4, 0, _truncate_cells(message, width), width, _fade(message_attr) if dimmed else message_attr)
-    if state.rename_target is None:
-        footer = "Esc back  Enter create" if ascii_mode else "Esc back · ↵ create"
-    else:
-        footer = "Esc cancel  Enter rename" if ascii_mode else "Esc cancel · ↵ rename"
+    footer = "Esc cancel  Enter rename" if ascii_mode else "Esc cancel · ↵ rename"
     footer_width = max(0, width - 1)
     stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
     if width > 1:
@@ -2329,12 +2286,11 @@ def _draw(
     selected: int,
     status: str,
     filter_text: str,
-    filtering: bool = False,
+    name_input: bool = False,
     bell_targets: set[Target] | None = None,
     current_target: Target | None = None,
     dimmed: bool = False,
     creation_host: str | None = None,
-    creation_text: str = "",
     adding: bool = False,
     scroll_offset: int | None = None,
     agent_entries: list[Entry] | None = None,
@@ -2356,12 +2312,12 @@ def _draw(
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     cursor, add_col = _draw_title(
-        stdscr, w, entries, filter_text, filtering, dimmed, adding,
-        add_button_selected and pane_active,
+        stdscr, w, entries, filter_text, dimmed, adding,
+        add_button_selected and pane_active, creation_host,
     )
-    if filtering:
-        cursor = _draw_filter(stdscr, w, filter_text, dimmed)
-    message_row = 2 if filtering else 1
+    if name_input:
+        cursor = _draw_name_input(stdscr, w, filter_text, dimmed)
+    message_row = 2 if name_input else 1
     message_attr = _color("hints") or curses.A_DIM
     status = status.replace("\r", " ").replace("\n", " ")
     if status_region == "agents" and status:
@@ -2374,33 +2330,31 @@ def _draw(
             message_row, 0, message, max(1, w),
             _fade(message_attr) if dimmed else message_attr,
         )
-    footer_height = _draw_footer(stdscr, h, w, filtering, dimmed, adding)
+    footer_height = _draw_footer(stdscr, h, w, name_input, dimmed, adding)
     if agent_entries is None:
-        creation_cursor = _draw_entries(
+        _draw_entries(
             stdscr, entries, selected, h - footer_height + 1, w, bell_targets or set(), current_target,
-            dimmed, creation_host, creation_text, 3 if filtering else 2, scroll_offset,
+            dimmed, 3 if name_input else 2, scroll_offset,
             move_source_entry=move_source_entry, move_target_entry=move_target_entry,
             selection_pointer_visible=not add_button_selected,
             pane_active=pane_active,
         )
-        if creation_cursor:
-            stdscr.move(*creation_cursor)
-        elif filtering:
+        if name_input:
             stdscr.move(*cursor)
         stdscr.refresh()
         return footer_height, add_col
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
     footer_top, session_top, minimum_agent_rows, separator = _agent_layout(
-        h, footer_height, agents, agent_percentage, filtering
+        h, footer_height, agents, agent_percentage, name_input
     )
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
         stdscr.refresh()
         return footer_height, add_col
-    creation_cursor = _draw_entries(
+    _draw_entries(
         stdscr, entries, selected, separator + 1, w, bell_targets or set(), current_target,
-        dimmed or focused_region != "sessions", creation_host, creation_text, session_top, scroll_offset,
+        dimmed or focused_region != "sessions", session_top, scroll_offset,
         move_source_entry=move_source_entry, move_target_entry=move_target_entry,
         selection_pointer_visible=not add_button_selected,
         pane_active=pane_active,
@@ -2430,9 +2384,7 @@ def _draw(
             separator + 2, 0, message, max(1, w),
             _fade(message_attr) if dimmed else message_attr,
         )
-    if creation_cursor:
-        stdscr.move(*creation_cursor)
-    elif filtering:
+    if name_input:
         stdscr.move(*cursor)
     stdscr.refresh()
     return footer_height, add_col
@@ -2477,7 +2429,7 @@ def run(stdscr: curses.window) -> None:
             current_target=_trace_target(initial_target),
             pane_active=poller.pane_active,
         )
-    entries = _entries(state.filter_text, poller.snapshot, state.favorites)
+    entries = _entries(poller.snapshot, state.favorites)
     _update_agent_alerts(
         state, poller.snapshot, state.selected_target, hidden_agents=state.hidden_agents
     )
@@ -2499,10 +2451,14 @@ def run(stdscr: curses.window) -> None:
     add_col: int | None = None
     move_scroll_direction = 0
     next_move_scroll: float | None = None
-    pending_key: int | None = None
-    pending_input_id: str | None = None
-    pending_mouse: tuple[int, int, int, int, int] | None = None
-    pending_mouse_input_id: str | None = None
+    burst_count = 0
+    force_render = False
+    layout_dirty = True
+    layout_dirty_kind = "state"
+    last_event: InputEvent | None = None
+    last_event_applied = False
+    last_event_outcome = "ignored"
+    last_event_marked = False
     failed_mouse: tuple[str | None, int, bool] | None = None
     last_current_target = initial_target
     last_pane_active = poller.pane_active
@@ -2526,6 +2482,107 @@ def run(stdscr: curses.window) -> None:
             pane_active=poller.pane_active,
         )
         return input_id
+
+    def read_input(timeout_ms: int) -> InputEvent | None:
+        stdscr.timeout(timeout_ms)
+        try:
+            key = stdscr.getch()
+        except KeyboardInterrupt:
+            if state.add_view is None:
+                raise
+            key = 3
+        if key == -1:
+            return None
+        input_id = trace_input(key)
+        if key is getattr(stdscr, "_letee_test_stop", None) or key != curses.KEY_MOUSE:
+            return InputEvent(key, input_id)
+        try:
+            mouse = curses.getmouse()
+            if not isinstance(mouse, (tuple, list)) or len(mouse) != 5:
+                raise ValueError("invalid mouse event")
+            mouse_event = tuple(mouse)
+            mouse_error = (
+                "invalid_row_or_state"
+                if not isinstance(mouse_event[2], int) or not isinstance(mouse_event[4], int)
+                else None
+            )
+        except (curses.error, TypeError, ValueError) as error:
+            return InputEvent(key, input_id, mouse_error=type(error).__name__)
+        return InputEvent(key, input_id, mouse_event, mouse_error)
+
+    def event_is_wheel(event: InputEvent) -> bool:
+        if event.key_code != curses.KEY_MOUSE or event.mouse_error is not None:
+            return False
+        if event.mouse is None or len(event.mouse) != 5 or not isinstance(event.mouse[4], int):
+            return False
+        wheel = (
+            (getattr(curses, "BUTTON4_PRESSED", 0) or 0)
+            | (getattr(curses, "BUTTON5_PRESSED", 0) or 0)
+        )
+        return bool(event.mouse[4] & wheel)
+
+    def event_burst_safe(event: InputEvent) -> bool:
+        key = event.key_code
+        if key == curses.KEY_MOUSE:
+            if event.mouse_error is not None or event.mouse is None or len(event.mouse) != 5:
+                return False
+            mouse_state = event.mouse[4]
+            if not isinstance(mouse_state, int):
+                return False
+            wheel = (
+                (getattr(curses, "BUTTON4_PRESSED", 0) or 0)
+                | (getattr(curses, "BUTTON5_PRESSED", 0) or 0)
+            )
+            motion = getattr(curses, "REPORT_MOUSE_POSITION", 0) or 0
+            buttons = (
+                (getattr(curses, "BUTTON1_PRESSED", 0) or 0)
+                | (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+                | (getattr(curses, "BUTTON1_CLICKED", 0) or 0)
+                | (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
+                | wheel
+            )
+            return bool(mouse_state & wheel) or bool(
+                mouse_state & motion
+                and (not mouse_state & buttons or state.move_source is not None)
+            )
+        if key in (curses.KEY_UP, curses.KEY_DOWN, ord(sidebar_keys["navigate_up"]), ord(sidebar_keys["navigate_down"])):
+            return True
+        if key in (curses.KEY_BACKSPACE, 8, 127):
+            return state.add_view in ("search", "name")
+        return isinstance(key, int) and 32 <= key <= 126 and (
+            state.add_view in ("search", "name")
+        )
+
+    def trace_processed(
+        event: InputEvent,
+        applied: bool,
+        outcome: str,
+    ) -> None:
+        if not debug.enabled or event.input_id is None:
+            return
+        debug.emit(
+            "input_processed",
+            input_id=event.input_id,
+            key_code=event.key_code,
+            key_name=_key_name(event.key_code) if isinstance(event.key_code, int) else str(event.key_code),
+            applied=applied,
+            ignored=not applied,
+            outcome=outcome,
+        )
+
+    def mark_input(applied: bool, outcome: str) -> None:
+        nonlocal last_event_applied, last_event_marked, last_event_outcome
+        last_event_applied = applied
+        last_event_marked = True
+        last_event_outcome = outcome
+
+    def mark_layout_dirty(scroll_only: bool = False) -> None:
+        nonlocal layout_dirty, layout_dirty_kind
+        if not layout_dirty:
+            layout_dirty = True
+            layout_dirty_kind = "scroll" if scroll_only else "state"
+        elif not scroll_only:
+            layout_dirty_kind = "state"
 
     def remember_mouse_failure(input_id: str | None) -> None:
         nonlocal failed_mouse
@@ -2674,43 +2731,80 @@ def run(stdscr: curses.window) -> None:
     ) -> None:
         _set_status(state, message, status_timeout, region)
 
+    def sync_cursor() -> None:
+        curses.curs_set(1 if state.add_view in ("search", "name") else 0)
+
     def read_prompt(
         prompt: str,
-        filtering: bool = False,
+        name_input: bool = False,
         row: int | None = None,
-    ) -> int:
-        if debug.enabled:
-            if row is None:
-                return _read_key(
-                    stdscr, prompt, filtering, input_callback=trace_input
-                )
-            return _read_key(
-                stdscr, prompt, filtering, row, input_callback=trace_input
-            )
+    ) -> InputEvent:
+        prompt_event: InputEvent | None = None
+
+        def read_prompt_event() -> object:
+            nonlocal prompt_event
+            prompt_event = read_input(-1)
+            return prompt_event if prompt_event is not None else -1
+
         if row is None:
-            return _read_key(stdscr, prompt, filtering)
-        return _read_key(stdscr, prompt, filtering, row)
+            _read_key(stdscr, prompt, name_input, input_reader=read_prompt_event)
+        else:
+            _read_key(stdscr, prompt, name_input, row, input_reader=read_prompt_event)
+        if prompt_event is None:
+            return InputEvent(-1)
+        if prompt_event.key_code == curses.KEY_MOUSE:
+            raw = prompt_event.mouse or ()
+            prompt_row = raw[2] if len(raw) > 2 and isinstance(raw[2], int) else None
+            mouse_col = raw[1] if len(raw) > 1 else None
+            mouse_state = raw[4] if len(raw) > 4 and isinstance(raw[4], int) else None
+            debug.emit(
+                "mouse_received",
+                input_id=prompt_event.input_id,
+                raw=list(raw) if raw else None,
+                column=mouse_col,
+                row=prompt_row,
+                mouse_state=mouse_state,
+                decoded_button_flags=_mouse_button_flags(mouse_state) if mouse_state is not None else {},
+                decode_error=prompt_event.mouse_error,
+                layout={"mode": "prompt"},
+            )
+            trace_mouse_decision(
+                prompt_event.input_id,
+                "ignored_mouse",
+                prompt_row,
+                mouse_col,
+                reason="prompt_confirmation",
+            )
+        trace_processed(
+            prompt_event,
+            prompt_event.key_code == ord("y"),
+            "prompt_confirmation",
+        )
+        return prompt_event
 
     def queue_effect(effect: Effect, input_id: str | None = None) -> bool:
         if input_id is None:
             return actions.submit(effect, tuple(state.favorites))
         return actions.submit(effect, tuple(state.favorites), input_id=input_id)
 
-    def dispatch(effect: Effect, input_id: str | None = None) -> None:
+    def dispatch(effect: Effect, input_id: str | None = None) -> bool:
         nonlocal pending_navigation
         if effect.kind in ("save_favorites", "status"):
             _execute(effect, state, poller, status_timeout, input_id)
-            return
+            return True
         if not queue_effect(effect, input_id):
             show_status("another action is still running")
-        elif effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
+            return False
+        if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
             pending_navigation = (effect.target, None)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             pending_navigation = (effect.target.target, effect.message or None)
+        return True
 
     def cancel_move() -> None:
         nonlocal move_scroll_direction, next_move_scroll
         if state.move_source is not None:
+            mark_layout_dirty()
             _mouse_mask(False)
         state.move_source = None
         state.move_target = None
@@ -2719,12 +2813,16 @@ def run(stdscr: curses.window) -> None:
 
     def rebuild() -> None:
         nonlocal entries, agent_entries
+        mark_layout_dirty()
         known_agents = {(agent.pane_target, agent.agent_id) for agent in poller.snapshot.agents}
         state.hidden_agents.intersection_update(known_agents)
         entries = (
-            _add_entries(state.add_view, state.filter_text, poller.snapshot, state.favorites)
-            if state.add_view in ("choice", "existing", "location")
-            else _entries(state.filter_text, poller.snapshot, state.favorites)
+            _add_entries(
+                state.add_view, state.filter_text, poller.snapshot, state.favorites,
+                state.creation_host,
+            )
+            if state.add_view in ("location", "search")
+            else _entries(poller.snapshot, state.favorites)
         )
         agent_entries = [Entry("", "order")] + _agent_entries(
             poller.snapshot,
@@ -2744,14 +2842,14 @@ def run(stdscr: curses.window) -> None:
 
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
         if action == "add":
-            _open_add(state)
+            _open_add(state, poller.snapshot)
             state.focused_region = "sessions"
-            curses.curs_set(0)
+            sync_cursor()
             rebuild()
             return None
         if state.add_view is not None:
             _reset_add(state)
-            curses.curs_set(0)
+            sync_cursor()
             rebuild()
         if action in ("remove", "kill"):
             state.focused_region = "sessions"
@@ -2775,7 +2873,7 @@ def run(stdscr: curses.window) -> None:
             if actions.busy:
                 show_status("another action is still running")
                 return None
-            if read_prompt(f"kill {current_target.format()}? y/N", state.filtering) != ord("y"):
+            if read_prompt(f"kill {current_target.format()}? y/N", state.add_view == "search").key_code != ord("y"):
                 return None
             return _transition(state, "kill", current_target)
         state.focused_region = "agents"
@@ -2787,6 +2885,7 @@ def run(stdscr: curses.window) -> None:
     def start_move(target: Target) -> None:
         state.move_source = target
         state.move_target = None
+        mark_layout_dirty()
         _mouse_mask(True)
 
     def commit_move(destination: Target, input_id: str | None = None) -> None:
@@ -2810,18 +2909,119 @@ def run(stdscr: curses.window) -> None:
         cancel_move()
         rebuild()
 
+    def render_sidebar(
+        now: float,
+        current_target: Target | None,
+        agent_alert: bool = False,
+        force: bool = False,
+    ) -> None:
+        nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered
+        selectable = _selectable(entries)
+        if selectable and state.selected_index not in selectable:
+            state.selected_index = selectable[0]
+        cockpit_bell_target = poller.bell_target
+        bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
+        if pending_navigation is None:
+            display_target = current_target
+            active_agent_id = poller.current_agent
+        else:
+            display_target, active_agent_id = pending_navigation
+        visible_bells = bell_targets - ({display_target} if display_target else set())
+        if visible_bells - state.rang_bells or agent_alert:
+            curses.beep()
+        state.rang_bells = bell_targets
+        working_agents = any(entry.status == "working" for entry in agent_entries)
+        spinner_frame = _spinner_frame(now) if working_agents else None
+        if state.agent_scroll_offset is not None:
+            footer_top, _, _, separator = _agent_layout(
+                stdscr.getmaxyx()[0], footer_height, agent_entries,
+                state.agent_percentage, state.add_view == "search",
+            )
+            state.agent_scroll_offset = min(
+                state.agent_scroll_offset,
+                _max_scroll_offset(agent_entries, footer_top - separator + 1),
+            )
+        render_state = (
+            tuple(entries), state.selected_index, state.status, state.status_region, state.filter_text,
+            state.add_view == "search", state.add_view, state.creation_host, state.creation_text,
+            frozenset(bell_targets), display_target, poller.pane_active, stdscr.getmaxyx(),
+            state.scroll_offset, state.agent_scroll_offset, tuple(agent_entries),
+            state.agent_selected_index, state.focused_region, state.agent_percentage, active_agent_id,
+            frozenset(state.agent_alerts), spinner_frame,
+            int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
+            state.agent_ordering,
+            state.add_button_selected, state.move_source, state.move_target,
+        )
+        if force or render_state != rendered:
+            if state.add_view == "name":
+                add_col = _draw_name(stdscr, state, False)
+                footer_height = 1
+            else:
+                move_src_entry = _tracked_session_index(entries, state.move_source)
+                move_tgt_entry = _tracked_session_index(entries, state.move_target)
+                footer_height, add_col = _draw(
+                    stdscr, entries, state.selected_index, state.status, state.filter_text,
+                    state.add_view == "search", bell_targets, display_target, False,
+                    state.creation_host, state.add_view is not None, state.scroll_offset,
+                    agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_percentage,
+                    active_agent_id, agent_alerts=state.agent_alerts,
+                    spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
+                    add_button_selected=state.add_button_selected,
+                    move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
+                    pane_active=poller.pane_active, status_region=state.status_region,
+                    agent_scroll_offset=state.agent_scroll_offset,
+                )
+            rendered = render_state
+        layout_dirty = False
+        layout_dirty_kind = "state"
+
     try:
         while True:
+            if last_event is not None:
+                safe_event = event_burst_safe(last_event)
+                if safe_event:
+                    if not last_event_marked:
+                        last_event_applied = True
+                        last_event_outcome = "safe_event"
+                    burst_count += 1
+                    if burst_count >= MAX_INPUT_BURST:
+                        burst_count = 0
+                        force_render = True
+                else:
+                    burst_count = 0
+                trace_processed(last_event, last_event_applied, last_event_outcome)
+                last_event = None
             now = time.monotonic()
-            if pending_key is None:
-                stdscr.timeout(0)
-                raw_key = stdscr.getch()
-                pending_input_id = trace_input(raw_key)
-                pending_key = raw_key if raw_key != -1 else None
-                if pending_key is None:
-                    pending_input_id = None
+            event: InputEvent | None = None
+            event_already_read = False
+            queued_input = False
+            if burst_count:
+                event = read_input(0)
+                event_already_read = True
+                if event is None:
+                    burst_count = 0
+                else:
+                    queued_input = True
+                    if event_burst_safe(event):
+                        if event.key_code == curses.KEY_MOUSE and (
+                            not event_is_wheel(event)
+                            or layout_dirty_kind != "scroll"
+                            or not rendered
+                            or rendered[12] != stdscr.getmaxyx()
+                        ) and (
+                            layout_dirty
+                            or not rendered
+                            or rendered[12] != stdscr.getmaxyx()
+                        ):
+                            render_sidebar(now, poller.current_target)
+                    else:
+                        burst_count = 0
+            if not burst_count:
+                if not event_already_read:
+                    event = read_input(0)
+                    queued_input = event is not None
                 stdscr.timeout(UI_POLL_INTERVAL_MS)
-            result = actions.poll()
+            result = actions.poll() if not burst_count else None
             if result is not None:
                 if not result.stale_navigation and result.effect.kind in (
                     "switch", "add_switch", "switch_pane"
@@ -2829,6 +3029,7 @@ def run(stdscr: curses.window) -> None:
                     pending_navigation = None
                 if _apply_effect(result, state, poller, status_timeout):
                     return
+                sync_cursor()
                 unavailable_target_shown = _reconcile_active_session_effect(
                     unavailable_target_shown, result
                 )
@@ -2836,14 +3037,16 @@ def run(stdscr: curses.window) -> None:
                 rebuild()
             current_target = poller.current_target
             if (
-                state.move_source is not None
+                not burst_count
+                and state.move_source is not None
                 and move_scroll_direction
                 and next_move_scroll is not None
                 and now >= next_move_scroll
             ):
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
-                    h, footer_height, agent_entries, state.agent_percentage, state.filtering
+                    h, footer_height, agent_entries, state.agent_percentage,
+                    state.add_view == "search",
                 )
                 if state.add_view is not None:
                     separator = footer_top
@@ -2853,6 +3056,7 @@ def run(stdscr: curses.window) -> None:
                 can_scroll = start > 0 if move_scroll_direction < 0 else end < len(entries)
                 if can_scroll:
                     state.scroll_offset = max(0, start + move_scroll_direction)
+                    mark_layout_dirty()
                     start, end = _viewport(entries, state.selected_index, separator - session_top + 2, state.scroll_offset)
                     edge = start if move_scroll_direction < 0 else end - 1
                     if entries[edge].tracked:
@@ -2861,10 +3065,10 @@ def run(stdscr: curses.window) -> None:
                 else:
                     move_scroll_direction = 0
                     next_move_scroll = None
-            if state.status_deadline is not None and now >= state.status_deadline:
+            if not burst_count and state.status_deadline is not None and now >= state.status_deadline:
                 _clear_status(state)
             agent_alert = False
-            if poller.tick(now):
+            if not burst_count and poller.tick(now):
                 current_target = poller.current_target
                 agent_alert = _update_agent_alerts(
                     state,
@@ -2876,9 +3080,11 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
-            trace_transitions(poller.current_target)
+            if not burst_count:
+                trace_transitions(poller.current_target)
             if (
-                pending_key is None
+                not burst_count
+                and not queued_input
                 and not actions.busy
                 and getattr(poller, "refresh_pending", False) is not True
             ):
@@ -2891,225 +3097,214 @@ def run(stdscr: curses.window) -> None:
                     )
                 except SystemExit as error:
                     show_status(str(error))
-            selectable = _selectable(entries)
-            if selectable and state.selected_index not in selectable:
-                state.selected_index = selectable[0]
-            cockpit_bell_target = poller.bell_target
-            bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
-            if pending_navigation is None:
-                display_target = current_target
-                active_agent_id = poller.current_agent
-            else:
-                display_target, active_agent_id = pending_navigation
-            visible_bells = bell_targets - ({display_target} if display_target else set())
-            if visible_bells - state.rang_bells or agent_alert:
-                curses.beep()
-            state.rang_bells = bell_targets
-            dimmed = False
-            working_agents = any(entry.status == "working" for entry in agent_entries)
-            spinner_frame = _spinner_frame(now) if working_agents else None
-            if state.agent_scroll_offset is not None:
-                footer_top, _, _, separator = _agent_layout(
-                    stdscr.getmaxyx()[0], footer_height, agent_entries,
-                    state.agent_percentage, state.filtering,
-                )
-                state.agent_scroll_offset = min(
-                    state.agent_scroll_offset,
-                    _max_scroll_offset(agent_entries, footer_top - separator + 1),
-                )
-            render_state = (
-                tuple(entries), state.selected_index, state.status, state.status_region, state.filter_text,
-                state.filtering, state.add_view, state.creation_host, state.creation_text,
-                frozenset(bell_targets), display_target, poller.pane_active, stdscr.getmaxyx(),
-                state.scroll_offset, state.agent_scroll_offset, tuple(agent_entries),
-                state.agent_selected_index, state.focused_region, state.agent_percentage, active_agent_id,
-                frozenset(state.agent_alerts), spinner_frame,
-                int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
-                state.agent_ordering,
-                state.add_button_selected, state.move_source, state.move_target,
-            )
-            if render_state != rendered:
-                if state.add_view == "name":
-                    add_col = _draw_name(stdscr, state, dimmed)
-                    footer_height = 1
-                else:
-                    move_src_entry = _tracked_session_index(entries, state.move_source)
-                    move_tgt_entry = _tracked_session_index(entries, state.move_target)
-                    footer_height, add_col = _draw(
-                        stdscr, entries, state.selected_index, state.status, state.filter_text,
-                        state.filtering, bell_targets, display_target, dimmed,
-                        state.creation_host, state.creation_text, state.add_view is not None, state.scroll_offset,
-                        agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_percentage,
-                        active_agent_id, agent_alerts=state.agent_alerts,
-                        spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
-                        add_button_selected=state.add_button_selected,
-                        move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
-                        pane_active=poller.pane_active, status_region=state.status_region,
-                        agent_scroll_offset=state.agent_scroll_offset,
-                    )
-                rendered = render_state
-            try:
-                if pending_key is None:
-                    key = stdscr.getch()
-                    input_id = trace_input(key)
-                else:
-                    key, pending_key = pending_key, None
-                    input_id, pending_input_id = pending_input_id, None
-            except KeyboardInterrupt:
-                if state.add_view is None:
-                    raise
-                key = 3
-                input_id = trace_input(key)
-            if key == -1:
+            if not burst_count:
+                render_sidebar(now, current_target, agent_alert, force=force_render)
+                force_render = False
+            if event is None:
+                event = read_input(UI_POLL_INTERVAL_MS)
+            if event is None:
                 continue
+            key = event.key_code
+            input_id = event.input_id
+            last_event = event
+            last_event_applied = False
+            last_event_marked = False
+            last_event_outcome = "ignored"
             # Tests use private sentinel; removed q cannot terminate loop.
             if key is getattr(stdscr, "_letee_test_stop", None):
+                if burst_count or layout_dirty:
+                    render_sidebar(now, current_target)
                 return
             if key != curses.KEY_MOUSE:
                 clear_mouse_failure()
-            if key in (curses.KEY_F6, curses.KEY_F7):
+            if key == getattr(curses, "KEY_RESIZE", -999):
+                mark_layout_dirty()
+                mark_input(True, "resize")
+                continue
+            if key in (curses.KEY_F6, curses.KEY_F7) and state.add_view is None:
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
+                mark_input(True, "focus_region")
                 continue
             if key in _PREFIX_ACTIONS:
                 effect = prefix_action(_PREFIX_ACTIONS[key], current_target)
                 if effect:
-                    dispatch(effect, input_id)
+                    mark_input(dispatch(effect, input_id), "prefix_action")
                     rebuild()
+                else:
+                    mark_input(True, "prefix_action")
                 continue
             if state.add_view == "name":
-                while state.add_view == "name":
-                    if key in (curses.KEY_F6, curses.KEY_F7):
-                        state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
-                        _reset_selection(state, entries, state.focused_region)
-                    elif key in (27, 3):
-                        _add_back(state, poller.snapshot)
-                        curses.curs_set(0)
-                        rebuild()
-                        break
-                    elif key == curses.KEY_MOUSE:
-                        try:
-                            mouse_event = curses.getmouse()
-                            _, mouse_col, row, _, mouse_state = mouse_event
-                        except (curses.error, TypeError, ValueError) as error:
-                            remember_mouse_failure(input_id)
-                            debug.emit(
-                                "mouse_received",
-                                input_id=input_id,
-                                raw=None,
-                                decoded_button_flags={},
-                                decode_error=type(error).__name__,
-                                mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
-                                mode="name",
-                            )
-                            trace_mouse_decision(
-                                input_id, "malformed_event", None, reason="getmouse_failed"
-                            )
-                        else:
-                            debug.emit(
-                                "mouse_received",
-                                input_id=input_id,
-                                raw=list(mouse_event),
-                                mouse_id=mouse_event[0],
-                                column=mouse_col,
-                                row=row,
-                                mouse_state=mouse_state,
-                                decoded_button_flags=(
-                                    _mouse_button_flags(mouse_state)
-                                    if isinstance(mouse_state, int) else {}
-                                ),
-                                layout={"mode": "name"},
-                            )
-                            if isinstance(mouse_state, int) and mouse_state & (getattr(curses, "BUTTON1_RELEASED", 0) or 0):
-                                trace_mouse_recovery_candidate(
-                                    input_id, "name", row, mouse_col, mouse_state
-                                )
+                if key in (curses.KEY_F6, curses.KEY_F7):
+                    state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
+                    _reset_selection(state, entries, state.focused_region)
+                    mark_input(True, "focus_region")
+                elif key in (27, 3):
+                    _add_back(state, poller.snapshot)
+                    curses.curs_set(0)
+                    rebuild()
+                    mark_input(True, "escape")
+                    continue
+                elif key == curses.KEY_MOUSE:
+                    try:
+                        if event.mouse_error is not None:
+                            raise ValueError(event.mouse_error)
+                        mouse_event = event.mouse
+                        if mouse_event is None:
+                            raise ValueError("mouse event unavailable")
+                        _, mouse_col, row, _, mouse_state = mouse_event
+                    except (curses.error, TypeError, ValueError) as error:
+                        remember_mouse_failure(input_id)
+                        raw = event.mouse
+                        row = raw[2] if raw is not None and len(raw) > 2 else None
+                        mouse_col = raw[1] if raw is not None and len(raw) > 1 else None
+                        decode_error = event.mouse_error or type(error).__name__
+                        reason = (
+                            "invalid_row_or_state"
+                            if event.mouse_error == "invalid_row_or_state"
+                            else "getmouse_failed"
+                        )
+                        debug.emit(
+                            "mouse_received",
+                            input_id=input_id,
+                            raw=list(raw) if raw is not None else None,
+                            column=mouse_col,
+                            row=row,
+                            decoded_button_flags={},
+                            decode_error=decode_error,
+                            mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
+                            mode="name",
+                        )
+                        trace_mouse_decision(
+                            input_id, "malformed_event", row, mouse_col, reason=reason
+                        )
+                        if event.mouse_error == "invalid_row_or_state":
+                            if (
+                                raw is not None
+                                and len(raw) > 4
+                                and isinstance(raw[4], int)
+                                and raw[4] & (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+                            ):
+                                trace_mouse_recovery_candidate(input_id, None, row, mouse_col, raw[4])
                             else:
                                 clear_mouse_failure()
-                            valid_back = (
-                                isinstance(mouse_col, int)
-                                and isinstance(row, int)
-                                and isinstance(mouse_state, int)
-                                and row == 0
-                                and add_col is not None
-                                and add_col <= mouse_col < stdscr.getmaxyx()[1]
-                                and _mouse_activates(mouse_state)
-                            )
-                            if valid_back:
-                                trace_mouse_map(input_id, "name", row, mouse_col, None, None)
-                                _add_back(state, poller.snapshot)
-                                trace_mouse_decision(
-                                    input_id, "activate_add_back", row, mouse_col
-                                )
-                                curses.curs_set(0)
-                                rebuild()
-                                break
-                            trace_mouse_decision(
-                                input_id, "ignored_mouse", row, mouse_col,
-                                reason="outside_back_button",
-                            )
+                        mark_input(False, "malformed_mouse")
                     else:
-                        try:
-                            effect = (
-                                _rename_key(state, key, poller.snapshot.sessions)
-                                if state.rename_target is not None
-                                else _creation_key(state, key, poller.snapshot.sessions)
+                        debug.emit(
+                            "mouse_received",
+                            input_id=input_id,
+                            raw=list(mouse_event),
+                            mouse_id=mouse_event[0],
+                            column=mouse_col,
+                            row=row,
+                            mouse_state=mouse_state,
+                            decoded_button_flags=(
+                                _mouse_button_flags(mouse_state)
+                                if isinstance(mouse_state, int) else {}
+                            ),
+                            layout={"mode": "name"},
+                        )
+                        if isinstance(mouse_state, int) and mouse_state & (getattr(curses, "BUTTON1_RELEASED", 0) or 0):
+                            trace_mouse_recovery_candidate(
+                                input_id, "name", row, mouse_col, mouse_state
                             )
-                        except SystemExit as error:
-                            show_status(str(error))
                         else:
-                            if effect:
-                                if actions.busy:
-                                    show_status("another action is still running")
-                                else:
-                                    curses.curs_set(0)
-                                    dispatch(effect, input_id)
-                                    rebuild()
-                                    break
-                            elif state.add_view != "name":
-                                curses.curs_set(0)
-                                rebuild()
-                                break
-                    add_col = _draw_name(stdscr, state, dimmed)
+                            clear_mouse_failure()
+                        valid_back = (
+                            isinstance(mouse_col, int)
+                            and isinstance(row, int)
+                            and isinstance(mouse_state, int)
+                            and row == 0
+                            and add_col is not None
+                            and add_col <= mouse_col < stdscr.getmaxyx()[1]
+                            and _mouse_activates(mouse_state)
+                        )
+                        if valid_back:
+                            trace_mouse_map(input_id, "name", row, mouse_col, None, None)
+                            _add_back(state, poller.snapshot)
+                            trace_mouse_decision(
+                                input_id, "activate_add_back", row, mouse_col
+                            )
+                            curses.curs_set(0)
+                            rebuild()
+                            mark_input(True, "activate_add_back")
+                            continue
+                        trace_mouse_decision(
+                            input_id, "ignored_mouse", row, mouse_col,
+                            reason="outside_back_button",
+                        )
+                        mark_input(False, "ignored_mouse")
+                else:
                     try:
-                        key = stdscr.getch()
-                    except KeyboardInterrupt:
-                        key = 3
-                        input_id = trace_input(key)
+                        effect = _rename_key(state, key, poller.snapshot.sessions)
+                    except SystemExit as error:
+                        show_status(str(error))
                     else:
-                        input_id = trace_input(key)
-                    if key is getattr(stdscr, "_letee_test_stop", None):
-                        return
-                    if key == -1:
-                        break
-                    if key != curses.KEY_MOUSE:
-                        clear_mouse_failure()
+                        if effect:
+                            if actions.busy:
+                                show_status("another action is still running")
+                            else:
+                                sync_cursor()
+                                mark_input(dispatch(effect, input_id), "submit_effect")
+                                rebuild()
+                                continue
+                        elif state.add_view != "name":
+                            curses.curs_set(0)
+                            rebuild()
+                            mark_input(True, "editor_closed")
+                            continue
+                        elif key in (curses.KEY_BACKSPACE, 8, 127) or (isinstance(key, int) and 32 <= key <= 126):
+                            mark_layout_dirty()
+                            mark_input(True, "edit")
+                    if event_burst_safe(event) and not last_event_marked:
+                        mark_input(False, "ignored_name_input")
                 continue
             if key == curses.KEY_MOUSE:
                 mouse_input_id = input_id
                 try:
-                    if pending_mouse is not None:
-                        mouse_event = pending_mouse
-                        mouse_input_id = pending_mouse_input_id
-                        pending_mouse = None
-                        pending_mouse_input_id = None
-                    else:
-                        mouse_event = curses.getmouse()
+                    if event.mouse_error is not None:
+                        raise ValueError(event.mouse_error)
+                    mouse_event = event.mouse
+                    if mouse_event is None:
+                        raise ValueError("mouse event unavailable")
                     _, mouse_col, row, _, mouse_state = mouse_event
-                    input_id = mouse_input_id
                 except (curses.error, TypeError, ValueError) as error:
                     remember_mouse_failure(mouse_input_id)
+                    raw = event.mouse
+                    row = raw[2] if raw is not None and len(raw) > 2 else None
+                    mouse_col = raw[1] if raw is not None and len(raw) > 1 else None
+                    decode_error = event.mouse_error or type(error).__name__
+                    reason = (
+                        "invalid_row_or_state"
+                        if event.mouse_error == "invalid_row_or_state"
+                        else "getmouse_failed"
+                    )
                     debug.emit(
                         "mouse_received",
                         input_id=mouse_input_id,
-                        raw=None,
+                        raw=list(raw) if raw is not None else None,
+                        column=mouse_col,
+                        row=row,
                         decoded_button_flags={},
-                        decode_error=type(error).__name__,
+                        decode_error=decode_error,
                         mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
                     )
                     trace_mouse_decision(
-                        mouse_input_id, "malformed_event", None, reason="getmouse_failed"
+                        mouse_input_id, "malformed_event", row, mouse_col, reason=reason
                     )
+                    if event.mouse_error == "invalid_row_or_state":
+                        if (
+                            raw is not None
+                            and len(raw) > 4
+                            and isinstance(raw[4], int)
+                            and raw[4] & (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
+                        ):
+                            trace_mouse_recovery_candidate(
+                                mouse_input_id, None, row, mouse_col, raw[4]
+                            )
+                        else:
+                            clear_mouse_failure()
+                    mark_input(False, "malformed_mouse")
                     continue
                 if not isinstance(row, int) or not isinstance(mouse_state, int):
                     debug.emit(
@@ -3132,6 +3327,7 @@ def run(stdscr: curses.window) -> None:
                         mouse_input_id, "malformed_event", row, mouse_col,
                         reason="invalid_row_or_state",
                     )
+                    mark_input(False, "malformed_mouse")
                     continue
                 motion = getattr(curses, "REPORT_MOUSE_POSITION", 0) or 0
                 button_bits = (
@@ -3145,7 +3341,8 @@ def run(stdscr: curses.window) -> None:
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
-                    h, footer_height, agent_entries, state.agent_percentage, state.filtering
+                    h, footer_height, agent_entries, state.agent_percentage,
+                    state.add_view == "search",
                 )
                 if state.add_view is not None:
                     separator = footer_top
@@ -3190,7 +3387,7 @@ def run(stdscr: curses.window) -> None:
                     if region_hint == "sessions":
                         recovery_index = _entry_at_row(
                             entries, state.selected_index, row, separator + 1, 0,
-                            3 if state.filtering else 2, state.scroll_offset,
+                            session_top, state.scroll_offset,
                         )
                         if recovery_index is not None and not _move_handle_hit(
                             mouse_col, stdscr.getmaxyx()[1]
@@ -3202,6 +3399,7 @@ def run(stdscr: curses.window) -> None:
                     trace_mouse_decision(
                         mouse_input_id, "ignored_motion", row, mouse_col, reason="not_moving"
                     )
+                    mark_input(False, "ignored_motion")
                     continue
                 if state.move_source is not None:
                     start, end = _viewport(
@@ -3223,6 +3421,7 @@ def run(stdscr: curses.window) -> None:
                         if index is not None and entries[index].tracked
                         else None
                     )
+                    mark_layout_dirty()
                     trace_mouse_map(
                         mouse_input_id,
                         "sessions",
@@ -3238,6 +3437,7 @@ def run(stdscr: curses.window) -> None:
                                 mouse_input_id, "cancel_move", row, mouse_col,
                                 reason="empty_row",
                             )
+                            mark_input(False, "cancel_move")
                         elif entries[index].target == state.move_source and _move_handle_hit(
                             mouse_col, stdscr.getmaxyx()[1]
                         ):
@@ -3246,23 +3446,27 @@ def run(stdscr: curses.window) -> None:
                                 mouse_input_id, "cancel_move", row, mouse_col,
                                 reason="source_handle",
                             )
+                            mark_input(False, "cancel_move")
                         elif entries[index].tracked and entries[index].target:
                             commit_move(entries[index].target, mouse_input_id)
                             trace_mouse_decision(
                                 mouse_input_id, "move_destination", row, mouse_col,
                                 target=_trace_target(entries[index].target),
                             )
+                            mark_input(True, "move_destination")
                         else:
                             trace_mouse_decision(
                                 mouse_input_id, "ignored_move_destination", row, mouse_col,
                                 reason="untracked_row",
                             )
+                            mark_input(False, "ignored_move_destination")
                         continue
                     if mouse_state & motion:
                         trace_mouse_decision(
                             mouse_input_id, "move_hover", row, mouse_col,
                             target=_trace_target(state.move_target),
                         )
+                        mark_input(True, "move_hover")
                         continue
                 release_or_click = (
                     (getattr(curses, "BUTTON1_RELEASED", 0) or 0)
@@ -3281,7 +3485,7 @@ def run(stdscr: curses.window) -> None:
                     else:
                         release_index = _entry_at_row(
                             entries, state.selected_index, row, separator + 1, 0,
-                            3 if state.filtering else 2, state.scroll_offset,
+                            session_top, state.scroll_offset,
                         )
                         trace_mouse_map(
                             mouse_input_id, "sessions", row, mouse_col, release_index,
@@ -3291,125 +3495,58 @@ def run(stdscr: curses.window) -> None:
                         mouse_input_id, "ignored_release", row, mouse_col,
                         reason="release_without_press",
                     )
+                    mark_input(False, "ignored_release")
                     continue
                 wheel_up = getattr(curses, "BUTTON4_PRESSED", 0) or 0
                 wheel_down = getattr(curses, "BUTTON5_PRESSED", 0) or 0
                 if mouse_state & (wheel_up | wheel_down):
-                    # ponytail: drain queued wheel events before slow tmux polling so direction changes stay responsive.
-                    stdscr.timeout(0)
-                    try:
-                        while True:
-                            over_agents = (
-                                state.add_view is None and separator < row < footer_top
+                    over_agents = state.add_view is None and separator < row < footer_top
+                    over_sessions = session_top <= row < separator
+                    if over_agents or over_sessions:
+                        scroll_entries = agent_entries if over_agents else entries
+                        selected = state.agent_selected_index if over_agents else state.selected_index
+                        viewport_height = (
+                            footer_top - separator + 1
+                            if over_agents
+                            else separator - session_top + 2
+                        )
+                        scroll_offset = state.agent_scroll_offset if over_agents else state.scroll_offset
+                        if scroll_offset is None:
+                            start, _ = _viewport(scroll_entries, selected, viewport_height)
+                            scroll_offset = start
+                        if mouse_state & wheel_up:
+                            scroll_offset = max(0, scroll_offset - 1)
+                        else:
+                            scroll_offset = min(
+                                _max_scroll_offset(scroll_entries, viewport_height),
+                                scroll_offset + 1,
                             )
-                            over_sessions = session_top <= row < separator
-                            if over_agents or over_sessions:
-                                scroll_entries = agent_entries if over_agents else entries
-                                selected = (
-                                    state.agent_selected_index if over_agents else state.selected_index
-                                )
-                                viewport_height = (
-                                    footer_top - separator + 1
-                                    if over_agents
-                                    else separator - session_top + 2
-                                )
-                                scroll_offset = (
-                                    state.agent_scroll_offset if over_agents else state.scroll_offset
-                                )
-                                if scroll_offset is None:
-                                    start, _ = _viewport(
-                                        scroll_entries, selected, viewport_height
-                                    )
-                                    scroll_offset = start
-                                if mouse_state & wheel_up:
-                                    scroll_offset = max(0, scroll_offset - 1)
-                                else:
-                                    scroll_offset = min(
-                                        _max_scroll_offset(scroll_entries, viewport_height),
-                                        scroll_offset + 1,
-                                    )
-                                if over_agents:
-                                    state.agent_scroll_offset = scroll_offset
-                                else:
-                                    state.scroll_offset = scroll_offset
-                                trace_mouse_decision(
-                                    mouse_input_id,
-                                    "scroll" if over_agents or over_sessions else "ignored_wheel",
-                                    row,
-                                    mouse_col,
-                                    region="agents" if over_agents else "sessions" if over_sessions else None,
-                                    direction="up" if mouse_state & wheel_up else "down",
-                                )
-                            else:
-                                trace_mouse_decision(
-                                    mouse_input_id,
-                                    "ignored_wheel",
-                                    row,
-                                    mouse_col,
-                                    direction="up" if mouse_state & wheel_up else "down",
-                                )
-
-                            next_key = stdscr.getch()
-                            next_input_id = trace_input(next_key)
-                            if next_key != curses.KEY_MOUSE:
-                                pending_key = next_key if next_key != -1 else None
-                                pending_input_id = next_input_id if pending_key is not None else None
-                                break
-                            try:
-                                next_mouse = curses.getmouse()
-                                _, next_col, next_row, _, next_state = next_mouse
-                            except (curses.error, TypeError, ValueError) as error:
-                                remember_mouse_failure(next_input_id)
-                                debug.emit(
-                                    "mouse_received",
-                                    input_id=next_input_id,
-                                    raw=None,
-                                    decoded_button_flags={},
-                                    decode_error=type(error).__name__,
-                                    mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
-                                )
-                                trace_mouse_decision(
-                                    next_input_id, "malformed_event", None,
-                                    reason="getmouse_failed",
-                                )
-                                break
-                            if not isinstance(next_row, int) or not isinstance(next_state, int):
-                                debug.emit(
-                                    "mouse_received",
-                                    input_id=next_input_id,
-                                    raw=list(next_mouse),
-                                    column=next_col,
-                                    row=next_row,
-                                    mouse_state=next_state,
-                                    decoded_button_flags={},
-                                    decode_error="invalid_row_or_state",
-                                )
-                                trace_mouse_decision(
-                                    next_input_id, "malformed_event", next_row, next_col,
-                                    reason="invalid_row_or_state",
-                                )
-                                break
-                            if not next_state & (wheel_up | wheel_down):
-                                pending_key = curses.KEY_MOUSE
-                                pending_mouse = next_mouse
-                                pending_mouse_input_id = next_input_id
-                                break
-                            trace_mouse_received(
-                                next_input_id,
-                                tuple(next_mouse),
-                                next_row,
-                                next_col,
-                                next_state,
-                                layout,
-                            )
-                            mouse_input_id = next_input_id
-                            mouse_col = next_col
-                            row = next_row
-                            mouse_state = next_state
-                    finally:
-                        stdscr.timeout(UI_POLL_INTERVAL_MS)
+                        if over_agents:
+                            state.agent_scroll_offset = scroll_offset
+                        else:
+                            state.scroll_offset = scroll_offset
+                        mark_layout_dirty(scroll_only=True)
+                        trace_mouse_decision(
+                            mouse_input_id,
+                            "scroll",
+                            row,
+                            mouse_col,
+                            region="agents" if over_agents else "sessions",
+                            direction="up" if mouse_state & wheel_up else "down",
+                        )
+                        mark_input(True, "scroll")
+                    else:
+                        trace_mouse_decision(
+                            mouse_input_id,
+                            "ignored_wheel",
+                            row,
+                            mouse_col,
+                            direction="up" if mouse_state & wheel_up else "down",
+                        )
+                        mark_input(False, "ignored_wheel")
                     if state.move_source is not None:
                         state.move_target = None
+                        mark_layout_dirty()
                     continue
                 right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
                 if right_click:
@@ -3444,15 +3581,17 @@ def run(stdscr: curses.window) -> None:
                                 mouse_input_id, "open_agent_menu", row, mouse_col,
                                 target=_trace_target(entry.target),
                             )
+                            mark_input(True, "open_agent_menu")
                         else:
                             trace_mouse_decision(
                                 mouse_input_id, "ignored_right_click", row, mouse_col,
                                 reason="unmapped_agent_row",
                             )
+                            mark_input(False, "ignored_right_click")
                         continue
                     index = _entry_at_row(
                         entries, state.selected_index, row, separator + 1, 0,
-                        3 if state.filtering else 2,
+                        session_top,
                         state.scroll_offset,
                     )
                     trace_mouse_map(
@@ -3481,11 +3620,13 @@ def run(stdscr: curses.window) -> None:
                             mouse_input_id, "open_session_menu", row, mouse_col,
                             target=_trace_target(entry.target),
                         )
+                        mark_input(True, "open_session_menu")
                     else:
                         trace_mouse_decision(
                             mouse_input_id, "ignored_right_click", row, mouse_col,
                             reason="unmapped_session_row",
                         )
+                        mark_input(False, "ignored_right_click")
                     continue
                 if (
                     row == 0
@@ -3496,21 +3637,23 @@ def run(stdscr: curses.window) -> None:
                 ):
                     if _mouse_activates(mouse_state):
                         if state.add_view is None:
-                            _open_add(state)
+                            _open_add(state, poller.snapshot)
                             decision = "open_add"
                         else:
                             _add_back(state, poller.snapshot)
-                            curses.curs_set(0)
                             decision = "activate_add_back"
+                        sync_cursor()
                         rebuild()
                         trace_mouse_decision(
                             mouse_input_id, decision, row, mouse_col,
                         )
+                        mark_input(True, decision)
                     else:
                         trace_mouse_decision(
                             mouse_input_id, "ignored_add_button", row, mouse_col,
                             reason="not_activation",
                         )
+                        mark_input(False, "ignored_add_button")
                     continue
                 else:
                     if separator < row < footer_top and state.add_view is None and agent_entries:
@@ -3527,6 +3670,7 @@ def run(stdscr: curses.window) -> None:
                                 mouse_input_id, "empty_row", row, mouse_col,
                                 region="agents",
                             )
+                            mark_input(False, "empty_row")
                             continue
                         state.focused_region = "agents"
                         state.agent_selected_index = index
@@ -3554,6 +3698,7 @@ def run(stdscr: curses.window) -> None:
                                 mouse_input_id, decision, row, mouse_col,
                                 region="agents", ordering=state.agent_ordering,
                             )
+                            mark_input(decision == "change_order", decision)
                             continue
                         if _mouse_activates(mouse_state) and entry.pane_target:
                             dispatch(
@@ -3564,15 +3709,17 @@ def run(stdscr: curses.window) -> None:
                                 mouse_input_id, "activate", row, mouse_col,
                                 region="agents", target=_trace_target(entry.target),
                             )
+                            mark_input(True, "activate")
                         else:
                             trace_mouse_decision(
                                 mouse_input_id, "select", row, mouse_col,
                                 region="agents", target=_trace_target(entry.target),
                             )
+                            mark_input(True, "select")
                         continue
                     index = _entry_at_row(
                         entries, state.selected_index, row, separator + 1, 0,
-                        3 if state.filtering else 2,
+                        session_top,
                         state.scroll_offset,
                     )
                     trace_mouse_map(
@@ -3584,6 +3731,7 @@ def run(stdscr: curses.window) -> None:
                             mouse_input_id, "empty_row", row, mouse_col,
                             region="sessions",
                         )
+                        mark_input(False, "empty_row")
                         continue
                     state.focused_region = "sessions"
                     state.add_button_selected = False
@@ -3601,6 +3749,7 @@ def run(stdscr: curses.window) -> None:
                             mouse_input_id, "move_handle", row, mouse_col,
                             target=_trace_target(entries[index].target),
                         )
+                        mark_input(True, "move_handle")
                         continue
                     if _mouse_activates(mouse_state):
                         key = curses.KEY_ENTER
@@ -3608,33 +3757,34 @@ def run(stdscr: curses.window) -> None:
                             mouse_input_id, "activate", row, mouse_col,
                             region="sessions", target=_trace_target(entries[index].target),
                         )
+                        mark_input(True, "activate")
                     else:
                         trace_mouse_decision(
                             mouse_input_id, "select", row, mouse_col,
                             region="sessions", target=_trace_target(entries[index].target),
                         )
+                        mark_input(True, "select")
                         continue
             if key in (27, 3) and state.move_source is not None:
                 cancel_move()
+                mark_input(True, "escape")
                 continue
-            if state.filtering:
+            if state.add_view == "search":
                 if key in (27, 3):
-                    if state.add_view == "existing":
-                        _add_back(state, poller.snapshot)
-                    else:
-                        state.filter_text = ""
-                        state.filtering = False
-                    curses.curs_set(0)
+                    _add_back(state, poller.snapshot)
+                    sync_cursor()
                     rebuild()
+                    mark_input(True, "escape")
                     continue
-                new_filter = _filter_key(state.filter_text, key)
-                if new_filter is not None:
-                    state.filter_text = new_filter
+                if _search_key(state, key, poller.snapshot):
                     rebuild()
+                    mark_input(True, "filter_edit")
                     continue
             if key in (27, 3) and state.add_view is not None:
                 _add_back(state, poller.snapshot)
+                sync_cursor()
                 rebuild()
+                mark_input(True, "escape")
                 continue
             selectable = _selectable(entries)
             effect: Effect | None = None
@@ -3648,20 +3798,27 @@ def run(stdscr: curses.window) -> None:
                         ),
                     ),
                 )
+                mark_layout_dirty()
+                mark_input(True, "resize_panel")
             elif state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
                 state.agent_scroll_offset = None
                 state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
                 rebuild()
+                mark_input(True, "change_order")
             elif state.focused_region == "agents" and key in (curses.KEY_DOWN, ord(sidebar_keys["navigate_down"])) and agent_entries:
                 state.agent_scroll_offset = None
+                mark_layout_dirty()
                 state.agent_selected_index = (state.agent_selected_index + 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]
                 state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
+                mark_input(True, "navigate")
             elif state.focused_region == "agents" and key in (curses.KEY_UP, ord(sidebar_keys["navigate_up"])) and agent_entries:
                 state.agent_scroll_offset = None
+                mark_layout_dirty()
                 state.agent_selected_index = (state.agent_selected_index - 1) % len(agent_entries)
                 entry = agent_entries[state.agent_selected_index]
                 state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
+                mark_input(True, "navigate")
             elif state.focused_region == "agents" and key in (10, 13, curses.KEY_ENTER):
                 if agent_entries:
                     entry = agent_entries[state.agent_selected_index]
@@ -3676,17 +3833,17 @@ def run(stdscr: curses.window) -> None:
                         else:
                             confirmation = read_prompt(
                                 f"kill {entry.label} in {entry.pane_target.target.format()}? y/N",
-                                state.filtering,
+                                state.add_view == "search",
                                 row=_agent_prompt_row(
                                     stdscr,
                                     footer_height,
                                     agent_entries,
                                     state.agent_percentage,
-                                    state.filtering,
+                                    state.add_view == "search",
                                 ),
                             )
                             rendered = None
-                            if confirmation == ord("y"):
+                            if confirmation.key_code == ord("y"):
                                 effect = Effect(
                                     "kill_agent",
                                     entry.pane_target,
@@ -3697,6 +3854,7 @@ def run(stdscr: curses.window) -> None:
                 effect = Effect("status", message="agent panes are automatic")
             elif key in (curses.KEY_DOWN, ord(sidebar_keys["navigate_down"])) and (selectable or state.add_view is not None):
                 state.scroll_offset = None
+                mark_layout_dirty()
                 if state.add_button_selected:
                     if selectable:
                         state.add_button_selected = False
@@ -3709,8 +3867,10 @@ def run(stdscr: curses.window) -> None:
                     state.selected_index = selectable[(selectable.index(state.selected_index) + 1) % len(selectable)]
                     state.selected_target = entries[state.selected_index].target
                     state.selected_tracked = entries[state.selected_index].tracked
+                mark_input(True, "navigate")
             elif key in (curses.KEY_UP, ord(sidebar_keys["navigate_up"])) and (selectable or state.add_view is not None):
                 state.scroll_offset = None
+                mark_layout_dirty()
                 if state.add_view is not None:
                     if not state.add_button_selected and (not selectable or state.selected_index == selectable[0]):
                         state.add_button_selected = True
@@ -3729,6 +3889,7 @@ def run(stdscr: curses.window) -> None:
                     state.selected_index = selectable[(selectable.index(state.selected_index) - 1) % len(selectable)]
                     state.selected_target = entries[state.selected_index].target
                     state.selected_tracked = entries[state.selected_index].tracked
+                mark_input(True, "navigate")
             elif key == ord(sidebar_keys["move_up"]):
                 if actions.blocks_favorite_changes:
                     show_status("another action is still changing sessions")
@@ -3748,7 +3909,8 @@ def run(stdscr: curses.window) -> None:
                         show_status("Session unavailable; rename a running session")
                     else:
                         _start_rename(state, entry.target)
-                        curses.curs_set(1)
+                        sync_cursor()
+                        mark_input(True, "open_rename")
             elif key == ord(sidebar_keys["remove"]) and state.add_view is None and entries:
                 entry = entries[state.selected_index]
                 if entry.kind == "session" and entry.target:
@@ -3758,35 +3920,33 @@ def run(stdscr: curses.window) -> None:
                         effect = _transition(state, "remove_session", entry.target)
             elif key in (10, 13, curses.KEY_ENTER):
                 state.scroll_offset = None
+                mark_layout_dirty()
                 if state.add_button_selected:
                     state.add_button_selected = False
                     if state.add_view is None:
-                        _open_add(state)
+                        _open_add(state, poller.snapshot)
                     else:
                         _add_back(state, poller.snapshot)
-                        curses.curs_set(0)
+                    sync_cursor()
                     rebuild()
+                    mark_input(True, "activate_add_button")
                     continue
                 if not entries:
+                    mark_input(False, "empty_view")
                     continue
                 entry = entries[state.selected_index]
-                if entry.kind == "choice_new":
-                    _start_new(state, poller.snapshot)
-                    rebuild()
-                    if state.add_view == "name":
-                        curses.curs_set(1)
-                    continue
-                if entry.kind == "choice_existing":
-                    _open_add(state, "existing")
-                    rebuild()
-                    curses.curs_set(1)
-                    continue
-                if entry.kind == "location":
+                if entry.kind == "create":
+                    host = state.creation_host or ""
+                    target = Target("local", entry.label) if host == "" else Target("ssh", entry.label, host)
+                    effect = Effect("create", target)
+                elif entry.kind == "location":
                     _select_location(state, entry.host or "")
-                    curses.curs_set(1)
+                    sync_cursor()
+                    rebuild()
+                    mark_input(True, "open_session_search")
                     continue
-                if entry.target:
-                    effect = _transition(state, "add_switch" if state.add_view == "existing" else "switch", entry.target)
+                elif entry.target:
+                    effect = _transition(state, "add_switch" if state.add_view == "search" else "switch", entry.target)
             elif key == ord(sidebar_keys["kill"]):
                 if not entries:
                     continue
@@ -3796,13 +3956,15 @@ def run(stdscr: curses.window) -> None:
                 if entry.unavailable_favorite:
                     show_status(f"Session already missing; press {sidebar_keys['remove']} to remove")
                     continue
-                if read_prompt(f"kill {entry.target.format()}? y/N", state.filtering) != ord("y"):
+                if read_prompt(f"kill {entry.target.format()}? y/N", state.add_view == "search").key_code != ord("y"):
                     continue
                 effect = _transition(state, "kill", entry.target)
+            if event_burst_safe(event) and not last_event_marked:
+                mark_input(False, "ignored_input")
             if effect:
-                dispatch(effect, input_id)
+                mark_input(dispatch(effect, input_id), "submit_effect")
                 if effect.kind in ("switch", "create"):
-                    curses.curs_set(0)
+                    sync_cursor()
                 rebuild()
     finally:
         cancel_move()

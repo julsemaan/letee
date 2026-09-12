@@ -34,6 +34,10 @@ def _port(value):
     return number
 
 
+def _disconnect_requested(marker):
+    return marker is not None and os.path.exists(marker)
+
+
 def _read_stdin():
     return os.read(0, BUFFER_SIZE)
 
@@ -106,7 +110,7 @@ def _shutdown_write(connection, stop, errors):
         return
 
 
-def _forward(connection, delay):
+def _forward(connection, delay, disconnect_while_file=None):
     stop = threading.Event()
     errors = []
 
@@ -145,7 +149,14 @@ def _forward(connection, delay):
         thread.start()
 
     try:
-        stop.wait()
+        if disconnect_while_file is None:
+            stop.wait()
+        else:
+            while not stop.is_set():
+                if _disconnect_requested(disconnect_while_file):
+                    stop.set()
+                    break
+                stop.wait(0.1)
     except KeyboardInterrupt:
         stop.set()
     finally:
@@ -162,6 +173,7 @@ def _forward(connection, delay):
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--delay-ms", type=_nonnegative_int, default=0)
+    parser.add_argument("--disconnect-while-file")
     parser.add_argument("host")
     parser.add_argument("port", type=_port)
     return parser
@@ -175,6 +187,10 @@ def main(argv=None):
         print("ssh latency proxy: delay is too large", file=sys.stderr)
         return 1
 
+    if _disconnect_requested(args.disconnect_while_file):
+        print("ssh latency proxy: disconnect marker exists", file=sys.stderr)
+        return 1
+
     try:
         connection = socket.create_connection((args.host, args.port), timeout=10)
     except KeyboardInterrupt:
@@ -184,7 +200,10 @@ def main(argv=None):
         return 1
 
     try:
-        return _forward(connection, delay)
+        connection.settimeout(None)
+        if args.disconnect_while_file is None:
+            return _forward(connection, delay)
+        return _forward(connection, delay, args.disconnect_while_file)
     except KeyboardInterrupt:
         connection.close()
         return 0

@@ -58,6 +58,39 @@ persistent_ssh = false
 ssh dev-slow
 ```
 
+### Reconnecting SSH sessions
+
+Use a separate alias and marker file to disconnect active `ProxyCommand` connections. While the marker exists, new proxy connections fail too.
+
+```sshconfig
+Host dev-reconnect
+    HostName dev.example.com
+    User me
+    ProxyCommand python3 /absolute/path/tools/ssh_latency_proxy.py --disconnect-while-file /tmp/letee-dev-reconnect.outage %h %p
+```
+
+Configure letee to use the alias with persistent SSH enabled:
+
+```toml
+hosts = ["dev-reconnect"]
+persistent_ssh = true
+```
+
+Start letee, then run this loop in another terminal:
+
+```sh
+outage=/tmp/letee-dev-reconnect.outage
+rm -f "$outage"
+for cycle in 1 2 3 4 5; do
+    touch "$outage"
+    sleep 3
+    rm -f "$outage"
+    sleep 8
+done
+```
+
+The right pane should reconnect after each cycle without another sidebar click.
+
 ## Preparing a release
 
 Use GitHub UI to create release PR:
