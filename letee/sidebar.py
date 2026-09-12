@@ -1050,6 +1050,8 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             try:
                 if active:
                     cockpit.resolve_expected_right_pane_death(effect.target, True)
+                else:
+                    cockpit.reset_to_help(effect.target)
             finally:
                 if planned != favorites:
                     save_sessions(list(planned))

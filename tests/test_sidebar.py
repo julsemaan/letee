@@ -2042,6 +2042,34 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.selected_target, target)
         self.assertEqual(state.status, "killed ssh:dev:work")
 
+    def test_inactive_kill_resets_only_if_navigation_selects_target(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+
+        for navigation_target, reset_expected in ((target, True), (other, False)):
+            with self.subTest(navigation_target=navigation_target):
+                current_target = [other]
+                events = []
+
+                def kill(_target):
+                    events.append("kill")
+                    current_target[0] = navigation_target
+
+                def reset_to_help(reset_target):
+                    if current_target[0] == reset_target:
+                        events.append("reset")
+
+                with (
+                    patch.object(sidebar, "_current_target", side_effect=lambda: current_target[0]),
+                    patch.object(sidebar.cockpit, "reset_to_help", side_effect=reset_to_help) as reset,
+                    patch.object(sidebar.sessions, "kill", side_effect=kill),
+                ):
+                    result = sidebar._perform_effect(Effect("kill", target=target), ())
+
+                self.assertFalse(result.error)
+                reset.assert_called_once_with(target)
+                self.assertEqual(events, ["kill", "reset"] if reset_expected else ["kill"])
+
     def test_kill_persistence_failure_keeps_destructive_state(self):
         target = Target("local", "work")
         other = Target("local", "other")
