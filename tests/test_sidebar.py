@@ -2074,6 +2074,32 @@ class SidebarStateTest(unittest.TestCase):
         finally:
             status.close()
 
+    def test_kill_cleanup_failure_still_persists_favorites_without_failure_handshake(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        events = []
+
+        def resolve(_target, succeeded):
+            events.append(f"resolve {succeeded}")
+            if succeeded:
+                raise SystemExit("cleanup failed")
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=resolve) as handshake,
+            patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
+        ):
+            result = sidebar._perform_effect(Effect("kill", target=target), (target, other))
+
+        self.assertEqual(result.error, "cleanup failed")
+        self.assertTrue(result.partial_success)
+        expected_death.assert_called_once_with(target)
+        handshake.assert_called_once_with(target, True)
+        save.assert_called_once_with([other])
+        self.assertEqual(events, ["resolve True", ("save", [other])])
+
     def test_failed_active_kill_uses_failure_handshake_without_racy_target_check(self):
         target = Target("local", "work")
         events = []

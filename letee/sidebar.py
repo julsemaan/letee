@@ -1042,15 +1042,17 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 cockpit.set_expected_right_pane_death(effect.target)
             try:
                 sessions.kill(effect.target)
-                partial_success = True
-                if active:
-                    cockpit.resolve_expected_right_pane_death(effect.target, True)
             except (SystemExit, OSError, subprocess.SubprocessError):
                 if active:
                     cockpit.resolve_expected_right_pane_death(effect.target, False)
                 raise
-            if planned != favorites:
-                save_sessions(list(planned))
+            partial_success = True
+            try:
+                if active:
+                    cockpit.resolve_expected_right_pane_death(effect.target, True)
+            finally:
+                if planned != favorites:
+                    save_sessions(list(planned))
         elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
             cockpit.show_reconnecting(effect.target)
         elif effect.kind == "show_missing" and isinstance(effect.target, Target):
