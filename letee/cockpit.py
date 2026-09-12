@@ -116,6 +116,9 @@ SIDEBAR_WIDTH_OPTION = "@letee_sidebar_width"
 RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
 EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
+_EXPECTED_RIGHT_PANE_DEATH_PENDING = "1"
+_EXPECTED_RIGHT_PANE_DEATH_CONSUMED = "consumed"
+_EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED = "succeeded"
 CURRENT_AGENT_OPTION = "@letee_current_agent"
 BELL_TARGET_OPTION = "@letee_bell_target"
 ROOT_KEYS_OPTION = "@letee_root_keys"
@@ -410,20 +413,43 @@ def _reconnecting_command(target: Target) -> str:
     return f"printf %s {shlex.quote(text)}; printf %s {save_cursor}; while :; do for state in {states}; do {animate}; printf {spinner} \"$color\" \"$frame\" \"$dots\"; sleep 0.1; done; done"
 
 
+def _right_pane_death_action(
+    left: str,
+    right: str,
+    prefix: str,
+    *,
+    succeeded: bool,
+    target: Target | None = None,
+) -> str:
+    cleanup = "set-option -u -t letee @letee_current_agent ; set-option -u -t letee @letee_bell_target"
+    marker_cleanup = f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION}"
+    if succeeded:
+        return (
+            f"{cleanup} ; {marker_cleanup} ; "
+            f"set-option -u -t {tmux.SESSION} {CURRENT_TARGET_OPTION} ; "
+            f"respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left}"
+        )
+    restore_target = (
+        f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())} ; "
+        if target is not None
+        else ""
+    )
+    return (
+        f"{cleanup} ; {restore_target}{marker_cleanup} ; "
+        f"respawn-pane -k -t {right} {shlex.quote(_unavailable_command(target))} ; select-pane -t {left}"
+    )
+
+
 def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
-    cleanup = f"set-option -u -t {tmux.SESSION} @letee_current_agent ; set-option -u -t {tmux.SESSION} @letee_bell_target"
-    help_respawn = f"respawn-pane -k -t {right} {shlex.quote(help_command(prefix))} ; select-pane -t {left}"
-    unavailable = f"respawn-pane -k -t {right} {shlex.quote(_unavailable_command())} ; select-pane -t {left}"
     expected_death = (
-        f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} ; "
-        f"set-option -u -t {tmux.SESSION} {CURRENT_TARGET_OPTION} ; {help_respawn}"
+        f"if-shell -F '#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_PENDING}}}' "
+        f"{{ set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_CONSUMED} }} "
+        f"{{ if-shell -F '#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED}}}' "
+        f"{{ {_right_pane_death_action(left, right, prefix, succeeded=True)} }} "
+        f"{{ {_right_pane_death_action(left, right, prefix, succeeded=False)} }} }}"
     )
-    command = (
-        f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ {cleanup} ; "
-        f"if-shell -F '#{{?{EXPECTED_RIGHT_PANE_DEATH_OPTION},1,0}}' "
-        f"{{ {expected_death} }} {{ {unavailable} }} }}"
-    )
+    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ {expected_death} }}"
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
@@ -705,9 +731,35 @@ def switch(
 
 def set_expected_right_pane_death(expected: bool) -> None:
     if expected:
-        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION, "1")
+        tmux.tmux("set-option", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION, _EXPECTED_RIGHT_PANE_DEATH_PENDING)
     else:
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION)
+
+
+def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
+    left = _option(SIDEBAR_PANE_OPTION)
+    right = _option(RIGHT_PANE_OPTION)
+    if not left or not right:
+        set_expected_right_pane_death(False)
+        return
+    action = _right_pane_death_action(
+        left,
+        right,
+        load_prefix() if succeeded else "",
+        succeeded=succeeded,
+        target=target,
+    )
+    if succeeded:
+        unresolved = f"set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED}"
+    else:
+        unresolved = f"set-option -u -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION}"
+    tmux.tmux(
+        "if-shell",
+        "-F",
+        f"#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_CONSUMED}}}",
+        action,
+        unresolved,
+    )
 
 
 def set_current_target(target: Target) -> None:

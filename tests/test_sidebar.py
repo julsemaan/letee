@@ -1654,12 +1654,14 @@ class SidebarStateTest(unittest.TestCase):
         with (
             patch.object(sidebar, "_current_target", return_value=target),
             patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death") as resolve,
             patch.object(sidebar.sessions, "kill"),
             patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
         ):
             result = sidebar._perform_effect(Effect("kill", target=target), tuple(state.favorites))
 
         expected_death.assert_called_once_with(True)
+        resolve.assert_called_once_with(target, True)
         self.assertEqual(result.error, "save failed")
         self.assertTrue(result.partial_success)
         status = sidebar.AsyncStatusPoller(poller, target)
@@ -1675,38 +1677,30 @@ class SidebarStateTest(unittest.TestCase):
         finally:
             status.close()
 
-    def test_failed_active_kill_restores_target_after_pane_death(self):
+    def test_failed_active_kill_uses_failure_handshake_without_racy_target_check(self):
         target = Target("local", "work")
-        current = target
         events = []
 
-        def current_target():
-            events.append("current")
-            return current
-
         def fail_kill(_target):
-            nonlocal current
             events.append("kill")
-            current = None
             raise SystemExit("kill local:work failed: denied")
 
-        def clear_marker(expected):
-            events.append(f"marker {expected}")
+        def resolve(_target, succeeded):
+            events.append(f"resolve {succeeded}")
 
         with (
-            patch.object(sidebar, "_current_target", side_effect=current_target),
-            patch.object(sidebar.cockpit, "set_expected_right_pane_death", side_effect=clear_marker) as expected_death,
-            patch.object(sidebar.cockpit, "set_current_target", side_effect=lambda _target: events.append("restore")) as set_current_target,
-            patch.object(sidebar.cockpit, "show_unavailable", side_effect=lambda _target: events.append("unavailable")) as show_unavailable,
+            patch.object(sidebar, "_current_target", return_value=target) as current_target,
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=resolve) as handshake,
             patch.object(sidebar.sessions, "kill", side_effect=fail_kill),
         ):
             result = sidebar._perform_effect(Effect("kill", target=target), (target,))
 
         self.assertEqual(result.error, "kill local:work failed: denied")
-        self.assertEqual(events, ["current", "marker True", "kill", "marker False", "current", "restore", "unavailable"])
-        self.assertEqual(expected_death.call_args_list, [call(True), call(False)])
-        set_current_target.assert_called_once_with(target)
-        show_unavailable.assert_called_once_with(target)
+        current_target.assert_called_once_with()
+        expected_death.assert_called_once_with(True)
+        handshake.assert_called_once_with(target, False)
+        self.assertEqual(events, ["kill", "resolve False"])
 
     def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
@@ -4615,11 +4609,12 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=target),
             patch("letee.sidebar.cockpit.set_expected_right_pane_death") as expected_death,
+            patch("letee.sidebar.cockpit.resolve_expected_right_pane_death"),
             patch("letee.sidebar.sessions.kill", side_effect=SystemExit("kill local:work failed: denied")),
         ):
             run(screen)
 
-        expected_death.assert_has_calls([call(True), call(False)])
+        expected_death.assert_called_once_with(True)
         error = next(call for call in screen.calls if call[0] == "addnstr" and "kill local:work failed: denied" in call[3])
         self.assertEqual(error[1], 1)
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
@@ -5796,12 +5791,13 @@ class PrefixActionTest(unittest.TestCase):
             patch.object(sidebar.sessions, "kill", side_effect=record("kill")) as kill,
             patch.object(sidebar, "save_sessions") as save,
             patch.object(sidebar.cockpit, "set_expected_right_pane_death", side_effect=record("mark")) as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=lambda *_args: order.append("resolve")),
         ):
             self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), STOP], [stale, active], active, data)
 
         kill.assert_called_once_with(active)
         expected_death.assert_called_once_with(True)
-        self.assertEqual(order, ["mark", "kill"])
+        self.assertEqual(order, ["mark", "kill", "resolve"])
         save.assert_called_once_with([stale])
 
     def test_kill_of_inactive_session_keeps_current_target(self):
@@ -6503,12 +6499,14 @@ class SidebarKeybindingTest(unittest.TestCase):
             patch.object(sidebar, "_bell_targets", return_value=set()),
             patch.object(sidebar.sessions, "kill") as kill,
             patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death") as resolve,
             patch.object(sidebar, "save_sessions") as save_kill,
         ):
             screen3 = FakeScreen([ord("X"), ord("y"), STOP], size=(10, 40))
             sidebar.run(screen3)
         kill.assert_called_once_with(target_a)
         expected_death.assert_called_once_with(True)
+        resolve.assert_called_once_with(target_a, True)
         save_kill.assert_called_once_with([target_b])
 
         # N should move selected session down via custom binding

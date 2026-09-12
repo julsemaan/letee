@@ -695,9 +695,11 @@ class CockpitLayoutTest(unittest.TestCase):
         expected_marker = "set-option -u -t letee @letee_expected_right_pane_death"
         current_target = "set-option -u -t letee @letee_current_target"
         help_command = shlex.quote(cockpit.help_command("C-x"))
-        # The expected-death branch consumes its marker and clears the target before help.
-        self.assertIn("#{?@letee_expected_right_pane_death,1,0}", command)
-        self.assertNotIn("#{?@letee_current_target,0,1}", command)
+        consumed = "set-option -t letee @letee_expected_right_pane_death consumed"
+        self.assertIn("#{==:#{@letee_expected_right_pane_death},1}", command)
+        self.assertIn(consumed, command)
+        self.assertIn("#{==:#{@letee_expected_right_pane_death},succeeded}", command)
+        # The success branch clears the marker and target only after the kill reports success.
         self.assertLess(command.index(expected_marker), command.index(current_target))
         self.assertLess(command.index(current_target), command.index(help_command))
         self.assertIn(help_command, command)
@@ -717,6 +719,22 @@ class CockpitLayoutTest(unittest.TestCase):
                 call("set-option", "-u", "-t", "letee", cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION),
             ],
         )
+
+    def test_resolve_failed_expected_death_restores_target_when_hook_consumed_marker(self):
+        target = Target("ssh", "work", "dev")
+
+        with (
+            patch.object(cockpit, "_option", side_effect=["%1", "%2"]),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.resolve_expected_right_pane_death(target, False)
+
+        condition = "#{==:#{@letee_expected_right_pane_death},consumed}"
+        self.assertEqual(tmux_call.call_args.args[:3], ("if-shell", "-F", condition))
+        command = tmux_call.call_args.args[3]
+        self.assertIn("set-option -t letee @letee_current_target ssh:dev:work", command)
+        self.assertIn("Session ssh:dev:work is unavailable.", command)
+        self.assertIn("set-option -u -t letee @letee_expected_right_pane_death", tmux_call.call_args.args[4])
 
     def test_set_current_target_sets_session_option(self):
         target = Target("ssh", "work", "dev")

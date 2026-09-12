@@ -1045,12 +1045,11 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             try:
                 sessions.kill(effect.target)
                 partial_success = True
+                if active:
+                    cockpit.resolve_expected_right_pane_death(effect.target, True)
             except (SystemExit, OSError, subprocess.SubprocessError):
                 if active:
-                    cockpit.set_expected_right_pane_death(False)
-                    if _current_target() is None:
-                        cockpit.set_current_target(effect.target)
-                        cockpit.show_unavailable(effect.target)
+                    cockpit.resolve_expected_right_pane_death(effect.target, False)
                 raise
             if planned != favorites:
                 save_sessions(list(planned))
