@@ -2524,6 +2524,33 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertIsNone(status.current_target)
         self.assertEqual(status._generation, generation + 1)
 
+    def test_status_poller_ignores_stale_target_after_kill_until_navigation(self):
+        killed = Target("ssh", "work", "dev")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        )
+        status = sidebar.AsyncStatusPoller(poller, killed)
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+            with patch.object(
+                sidebar.cockpit,
+                "status_snapshot",
+                side_effect=(
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(None, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                ),
+            ):
+                self.assertIsNone(status._sample((), status._generation).current_target)
+                self.assertIsNone(status._sample((), status._generation).current_target)
+
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("switch", target=killed), (killed,))
+                )
+                self.assertEqual(status._sample((), status._generation).current_target, killed)
+        finally:
+            status.close()
+
     def test_status_poller_keeps_current_target_after_kill_of_other_session(self):
         killed = Target("local", "killed")
         active = Target("local", "active")

@@ -1485,6 +1485,7 @@ class AsyncStatusPoller:
         self._refresh_pending = False
         self._refresh_target: Target | None = None
         self._pending_agent: tuple[PaneTarget, str] | None = None
+        self._suppressed_target: Target | None = None
 
     def _sample(
         self,
@@ -1501,6 +1502,8 @@ class AsyncStatusPoller:
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
             current_target = status.current_target if status.current_target is not None else self.current_target
+            if current_target == self._suppressed_target:
+                current_target = None
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
             bell_target = status.bell_target
@@ -1568,11 +1571,13 @@ class AsyncStatusPoller:
             return
         target = result.effect.target
         if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
+            self._suppressed_target = None
             self.current_target = target
             self.current_agent = None
             self._pending_agent = None
             self._generation += 1
         elif result.effect.kind == "switch_pane" and isinstance(target, PaneTarget):
+            self._suppressed_target = None
             self.current_target = target.target
             self.current_agent = result.effect.message or None
             self._pending_agent = (
@@ -1591,6 +1596,7 @@ class AsyncStatusPoller:
             self._generation += 1
         elif result.effect.kind == "kill" and isinstance(target, Target):
             if self.current_target == target:
+                self._suppressed_target = target
                 self.current_target = None
                 self._generation += 1
         elif result.effect.kind == "save_favorites" and isinstance(target, Target):
