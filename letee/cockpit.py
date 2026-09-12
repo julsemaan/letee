@@ -389,7 +389,7 @@ def _unavailable_command(target: Target | None = None) -> str:
 
 def _animated_command(target: Target, title: str, progress: str) -> str:
     reset, cyan, dim = "\033[0m", "\033[38;5;81m", "\033[2m"
-    ascii_mode = os.environ.get("LETEE_ASCII") == "1"
+    ascii_mode = os.environ.get("LETEE_ASCII") == "1" or "utf" not in locale.getpreferredencoding(False).lower()
     if ascii_mode:
         banner = f"+-- {title} --+"
         underline = f"+{'-' * (len(banner) - 2)}+"

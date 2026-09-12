@@ -989,6 +989,18 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("Press Enter", command)
         self.assertNotIn("recreate", command)
 
+    def test_missing_animation_uses_ascii_for_non_utf_encoding(self):
+        with (
+            patch.dict(cockpit.os.environ, {}, clear=True),
+            patch.object(cockpit.locale, "getpreferredencoding", return_value="ANSI_X3.4-1968"),
+        ):
+            command = cockpit._missing_command(cockpit.Target("ssh", "work", "dev"))
+
+        self.assertIn("+-- Session missing --+", command)
+        self.assertIn("45:|:.  ", command)
+        self.assertNotIn("⠋", command)
+        self.assertNotIn("╭", command)
+
     def test_show_unavailable_replaces_frozen_session_with_message(self):
         with (
             patch.object(cockpit, "right_pane", return_value="%2"),
