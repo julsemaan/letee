@@ -2551,6 +2551,28 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         finally:
             status.close()
 
+    def test_status_poller_expires_kill_suppression_after_external_navigation(self):
+        killed = Target("local", "killed")
+        other = Target("local", "other")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "other")))
+        status = sidebar.AsyncStatusPoller(poller, killed)
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+            with patch.object(
+                sidebar.cockpit,
+                "status_snapshot",
+                side_effect=(
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(other, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                ),
+            ):
+                self.assertIsNone(status._sample((), status._generation).current_target)
+                self.assertEqual(status._sample((), status._generation).current_target, other)
+                self.assertEqual(status._sample((), status._generation).current_target, killed)
+        finally:
+            status.close()
+
     def test_status_poller_keeps_current_target_after_kill_of_other_session(self):
         killed = Target("local", "killed")
         active = Target("local", "active")

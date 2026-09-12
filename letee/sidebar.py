@@ -1501,6 +1501,11 @@ class AsyncStatusPoller:
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
+            if (
+                self._suppressed_target is not None
+                and status.current_target != self._suppressed_target
+            ):
+                self._suppressed_target = None
             current_target = status.current_target if status.current_target is not None else self.current_target
             if current_target == self._suppressed_target:
                 current_target = None
