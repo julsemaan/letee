@@ -757,6 +757,18 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("set-option -u -t letee @letee_current_target", action)
         self.assertIn("respawn-pane -k -t %2 help", action)
 
+    def test_reset_to_help_reuses_successful_pane_death_cleanup(self):
+        with (
+            patch.object(cockpit, "_option", side_effect=["%1", "%2"]),
+            patch.object(cockpit, "load_prefix", return_value="C-x"),
+            patch.object(cockpit, "_right_pane_death_action", return_value="reset action") as death_action,
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.reset_to_help()
+
+        death_action.assert_called_once_with("%1", "%2", "C-x", succeeded=True)
+        tmux_call.assert_called_once_with("if-shell", "-F", "1", "reset action")
+
     def test_set_current_target_sets_session_option(self):
         target = Target("ssh", "work", "dev")
 

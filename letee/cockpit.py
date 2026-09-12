@@ -765,6 +765,15 @@ def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
     )
 
 
+def reset_to_help() -> None:
+    left = _option(SIDEBAR_PANE_OPTION)
+    right = _option(RIGHT_PANE_OPTION)
+    if not left or not right:
+        return
+    action = _right_pane_death_action(left, right, load_prefix(), succeeded=True)
+    tmux.tmux("if-shell", "-F", "1", action)
+
+
 def set_current_target(target: Target) -> None:
     tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
 

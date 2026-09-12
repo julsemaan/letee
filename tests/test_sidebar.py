@@ -1898,9 +1898,77 @@ class SidebarStateTest(unittest.TestCase):
         effect = _transition(state, "remove_session")
 
         self.assertEqual(state.favorites, [])
-        self.assertEqual(effect, Effect("save_favorites", favorites=(), message="removed local:work"))
+        self.assertEqual(
+            effect,
+            Effect("save_favorites", target=target, favorites=(), message="removed local:work"),
+        )
 
         self.assertIsNone(_transition(SidebarState(selected_target=target), "remove_session"))
+
+    def test_remove_active_session_persists_before_resetting_pane(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        state = SidebarState(selected_target=target, favorites=[target, other])
+        poller = unittest.mock.Mock()
+        events = []
+
+        effect = _transition(state, "remove_session")
+        self.assertIsNotNone(effect)
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
+            patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda: events.append(("reset",))) as reset,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            _execute(effect, state, poller, 5)
+
+        save.assert_called_once_with((other,))
+        reset.assert_called_once_with()
+        kill.assert_not_called()
+        poller.observe_effect.assert_called_once_with(unittest.mock.ANY)
+        self.assertEqual(events, [("save", (other,)), ("reset",)])
+
+    def test_remove_inactive_session_does_not_reset_pane(self):
+        removed = Target("local", "removed")
+        active = Target("local", "active")
+        state = SidebarState(selected_target=removed, favorites=[removed, active])
+        poller = unittest.mock.Mock()
+        effect = _transition(state, "remove_session")
+        self.assertIsNotNone(effect)
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=active),
+            patch.object(sidebar, "save_sessions") as save,
+            patch.object(sidebar.cockpit, "reset_to_help") as reset,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            _execute(effect, state, poller, 5)
+
+        save.assert_called_once_with((active,))
+        reset.assert_not_called()
+        kill.assert_not_called()
+
+    def test_remove_persistence_failure_does_not_reset_active_pane(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        state = SidebarState(selected_target=target, favorites=[target, other])
+        poller = unittest.mock.Mock()
+        effect = _transition(state, "remove_session")
+        self.assertIsNotNone(effect)
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
+            patch.object(sidebar.cockpit, "reset_to_help") as reset,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            _execute(effect, state, poller, 5)
+
+        save.assert_called_once_with((other,))
+        reset.assert_not_called()
+        kill.assert_not_called()
+        self.assertEqual(state.favorites, [other])
+        self.assertEqual(state.status, "save failed")
 
     def test_reorder_favorite_swaps_and_keeps_selection(self):
         first = Target("local", "first")
@@ -2443,6 +2511,43 @@ class AsyncSidebarWorkTest(unittest.TestCase):
 
         self.assertEqual(status.current_target, active)
         self.assertEqual(status._generation, generation)
+
+    def test_status_poller_drops_removed_active_target_and_rejects_stale_result(self):
+        removed = Target("local", "removed")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("removed",)))
+        status = sidebar.AsyncStatusPoller(poller, removed)
+        generation = status._generation
+        status._next_poll = float("inf")
+        stale = sidebar.StatusResult(
+            poller.snapshot,
+            removed,
+            removed,
+            "agent",
+            False,
+            generation,
+        )
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(
+                    Effect("save_favorites", target=removed, favorites=()),
+                    (),
+                )
+            )
+
+            self.assertIsNone(status.current_target)
+            self.assertEqual(status._generation, generation + 1)
+
+            status._future = unittest.mock.Mock()
+            status._future.done.return_value = True
+            status._future.result.return_value = stale
+            status.tick(0)
+        finally:
+            status.close()
+
+        self.assertIsNone(status.current_target)
+        self.assertIsNone(status.bell_target)
+        self.assertIsNone(status.current_agent)
+        self.assertTrue(status.pane_active)
 
     def test_status_poller_keeps_refresh_pending_until_renamed_remote_session_is_seen(self):
         old = Target("ssh", "old", "dev")

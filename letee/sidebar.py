@@ -920,6 +920,7 @@ def _transition(
         state.selected_target = None if unavailable else target
         return Effect(
             "save_favorites",
+            target=target,
             favorites=tuple(state.favorites),
             message=f"removed {target.format()}",
         )
@@ -1058,6 +1059,8 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             cockpit.show_unavailable(effect.target)
         elif effect.kind == "save_favorites":
             save_sessions(planned)
+            if isinstance(effect.target, Target) and _current_target() == effect.target:
+                cockpit.reset_to_help()
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
         diagnostics.log(
             "effect_error",
@@ -1223,7 +1226,10 @@ def _execute(
         result = _perform_effect(effect, tuple(state.favorites))
     if action_id is not None:
         result = replace(result, action_id=action_id, input_id=input_id)
-    return _apply_effect(result, state, poller, status_timeout)
+    applied = _apply_effect(result, state, poller, status_timeout)
+    if not applied:
+        poller.observe_effect(result)
+    return applied
 
 
 class EffectRunner:
@@ -1583,6 +1589,10 @@ class AsyncStatusPoller:
             self._generation += 1
         elif result.effect.kind == "kill" and isinstance(target, Target):
             if self.current_target == target:
+                self.current_target = None
+                self._generation += 1
+        elif result.effect.kind == "save_favorites" and isinstance(target, Target):
+            if target not in result.favorites and self.current_target == target:
                 self.current_target = None
                 self._generation += 1
 
