@@ -2826,6 +2826,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 self.assertFalse(poller.tick(0))
                 self.assertTrue(started.wait(1))
                 self.assertEqual(poller.snapshot.sessions, ())
+                poller._next_poll = float("inf")
                 poller.observe_effect(
                     sidebar.EffectResult(
                         Effect("switch", selected_target, automatic=True), ()
@@ -2833,9 +2834,11 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 )
                 release.set()
                 deadline = time.monotonic() + 1
-                while not poller.tick(1) and time.monotonic() < deadline:
+                while poller._future is not None and time.monotonic() < deadline:
+                    poller.tick(1)
                     time.sleep(0.001)
-                self.assertEqual(poller.snapshot.sessions, (target,))
+                self.assertIsNone(poller._future)
+                self.assertEqual(poller.snapshot.sessions, ())
                 self.assertEqual(poller.current_target, selected_target)
                 self.assertEqual(poller._generation, 1)
                 self.assertIsNone(poller.bell_target)
@@ -2890,6 +2893,62 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 self.assertIsNone(status._future)
                 self.assertEqual(status._suppressed_target, killed_target)
                 self.assertIsNone(status._sample((), status._generation).current_target)
+        finally:
+            release.set()
+            status.close()
+
+
+    def test_blocked_sample_does_not_publish_after_target_change(self):
+        started = threading.Event()
+        release = threading.Event()
+        stale_target = Target("ssh", "work", "old")
+        new_target = Target("ssh", "work", "new")
+        stale_snapshot = snapshot(remotes={"old": source("ssh", ("work",), host="old")})
+        fresh_snapshot = snapshot(remotes={"new": source("ssh", ("work",), host="new")})
+
+        class BlockingPoller:
+            snapshot = stale_snapshot
+
+            def tick(self, active_host):
+                self.active_host = active_host
+                self.snapshot = fresh_snapshot
+                return True
+
+            def refresh(self):
+                return False
+
+            def discard(self, target):
+                pass
+
+            def close(self):
+                pass
+
+        poller = BlockingPoller()
+        status = sidebar.AsyncStatusPoller(poller, stale_target)
+
+        def read_status():
+            started.set()
+            self.assertTrue(release.wait(1))
+            return sidebar.cockpit.StatusSnapshot(None, None, None, True)
+
+        try:
+            with patch.object(sidebar.cockpit, "status_snapshot", side_effect=read_status):
+                self.assertFalse(status.tick(0))
+                self.assertTrue(started.wait(1))
+                status._next_poll = float("inf")
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("switch", target=new_target), ())
+                )
+                release.set()
+
+                deadline = time.monotonic() + 1
+                while status._future is not None and time.monotonic() < deadline:
+                    status.tick(1)
+                    time.sleep(0.001)
+
+            self.assertEqual(poller.active_host, "old")
+            self.assertEqual(status.snapshot, stale_snapshot)
+            self.assertEqual(status.current_target, new_target)
         finally:
             release.set()
             status.close()

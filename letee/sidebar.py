@@ -162,6 +162,16 @@ class StatusResult:
     suppression_expired: bool = False
 
 
+@dataclass(frozen=True)
+class StatusPollState:
+    snapshot: SessionSnapshot
+    current_target: Target | None
+    bell_target: Target | None
+    current_agent: str | None
+    pane_active: bool
+    suppressed_target: Target | None
+
+
 def _trace_target(value: Target | PaneTarget | None) -> str | None:
     if isinstance(value, PaneTarget):
         return value.target.format()
@@ -1493,11 +1503,28 @@ class AsyncStatusPoller:
         self._pending_agent: tuple[PaneTarget, str] | None = None
         self._suppressed_target: Target | None = None
 
+    def _poll_state(self) -> StatusPollState:
+        return StatusPollState(
+            self.snapshot,
+            self.current_target,
+            self.bell_target,
+            self.current_agent,
+            self.pane_active,
+            self._suppressed_target,
+        )
+
     def _sample(
         self,
         commands: tuple[tuple[str, Target | None], ...],
         generation: int,
+        state: StatusPollState | None = None,
     ) -> StatusResult:
+        state = state or self._poll_state()
+        snapshot = state.snapshot
+        current_target = state.current_target
+        bell_target = state.bell_target
+        stored_agent = state.current_agent
+        pane_active = state.pane_active
         suppression_expired = False
         try:
             for command, target in commands:
@@ -1508,31 +1535,27 @@ class AsyncStatusPoller:
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
-            suppressed_target = self._suppressed_target
+            suppressed_target = state.suppressed_target
             suppression_expired = (
                 suppressed_target is not None
                 and status.current_target != suppressed_target
             )
             if suppression_expired:
                 suppressed_target = None
-            current_target = status.current_target if status.current_target is not None else self.current_target
+            current_target = status.current_target if status.current_target is not None else state.current_target
             if current_target == suppressed_target:
                 current_target = None
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
+            snapshot = self._poller.snapshot
             bell_target = status.bell_target
             stored_agent = status.current_agent
             pane_active = status.pane_active
         except (OSError, SystemExit, subprocess.SubprocessError):
-            current_target = self.current_target
-            bell_target = self.bell_target
-            stored_agent = self.current_agent
-            pane_active = self.pane_active
-        current_agent = _focused_agent_id(
-            self._poller.snapshot, current_target, stored_agent
-        )
+            pass
+        current_agent = _focused_agent_id(snapshot, current_target, stored_agent)
         return StatusResult(
-            self._poller.snapshot,
+            snapshot,
             current_target,
             bell_target,
             current_agent,
@@ -1547,22 +1570,22 @@ class AsyncStatusPoller:
         if self._future is not None and self._future.done():
             result = self._future.result()
             self._future = None
-            changed = result.snapshot != self.snapshot
-            self.snapshot = result.snapshot
-            if result.refreshed is True:
-                self._refresh_pending = any(
-                    command == "refresh" for command, _ in self._commands
-                )
-            if self._refresh_target is not None:
-                target = self._refresh_target
-                source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
-                if (
-                    target in self.snapshot.sessions
-                    or (result.refreshed is True and target.kind == "local")
-                    or (source is not None and not source.available)
-                ):
-                    self._refresh_target = None
             if result.generation == self._generation:
+                changed = result.snapshot != self.snapshot
+                self.snapshot = result.snapshot
+                if result.refreshed is True:
+                    self._refresh_pending = any(
+                        command == "refresh" for command, _ in self._commands
+                    )
+                if self._refresh_target is not None:
+                    target = self._refresh_target
+                    source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
+                    if (
+                        target in self.snapshot.sessions
+                        or (result.refreshed is True and target.kind == "local")
+                        or (source is not None and not source.available)
+                    ):
+                        self._refresh_target = None
                 if result.suppression_expired:
                     self._suppressed_target = None
                 self.current_target = result.current_target
@@ -1578,7 +1601,7 @@ class AsyncStatusPoller:
         if self._future is None and now >= self._next_poll:
             commands, self._commands = tuple(self._commands), []
             self._future = self._executor.submit(
-                self._sample, commands, self._generation
+                self._sample, commands, self._generation, self._poll_state()
             )
             self._next_poll = now + STATUS_POLL_INTERVAL
         return changed
