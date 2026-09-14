@@ -2056,8 +2056,10 @@ class SidebarStateTest(unittest.TestCase):
                     current_target[0] = navigation_target
 
                 def reset_to_help(reset_target):
-                    if current_target[0] == reset_target:
+                    matched = current_target[0] == reset_target
+                    if matched:
                         events.append("reset")
+                    return matched
 
                 with (
                     patch.object(sidebar, "_current_target", side_effect=lambda: current_target[0]),
@@ -2067,8 +2069,48 @@ class SidebarStateTest(unittest.TestCase):
                     result = sidebar._perform_effect(Effect("kill", target=target), ())
 
                 self.assertFalse(result.error)
+                self.assertEqual(result.reset_matched, reset_expected)
                 reset.assert_called_once_with(target)
                 self.assertEqual(events, ["kill", "reset"] if reset_expected else ["kill"])
+
+    def test_numbered_navigation_during_inactive_kill_clears_cached_target(self):
+        killed = Target("local", "killed")
+        previous = Target("local", "previous")
+        current_target = [previous]
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "previous")))
+        status_poller = sidebar.AsyncStatusPoller(poller, previous)
+
+        def kill(_target):
+            # A numbered shortcut makes the inactive target current while kill blocks.
+            current_target[0] = killed
+
+        def reset_to_help(reset_target):
+            matched = current_target[0] == reset_target
+            if matched:
+                current_target[0] = None
+            return matched
+
+        try:
+            with (
+                patch.object(sidebar, "_current_target", side_effect=lambda: current_target[0]),
+                patch.object(sidebar.cockpit, "reset_to_help", side_effect=reset_to_help),
+                patch.object(sidebar.sessions, "kill", side_effect=kill),
+            ):
+                result = sidebar._perform_effect(Effect("kill", target=killed), ())
+
+            self.assertTrue(result.reset_matched)
+            status_poller.observe_effect(result)
+            with patch.object(
+                sidebar.cockpit,
+                "status_snapshot",
+                return_value=sidebar.cockpit.StatusSnapshot(None, None, None, True),
+            ):
+                sampled = status_poller._sample((), status_poller._generation)
+
+            self.assertIsNone(status_poller.current_target)
+            self.assertIsNone(sampled.current_target)
+        finally:
+            status_poller.close()
 
     def test_kill_persistence_failure_keeps_destructive_state(self):
         target = Target("local", "work")

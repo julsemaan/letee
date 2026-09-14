@@ -147,6 +147,7 @@ class EffectResult:
     action_id: str | None = None
     input_id: str | None = None
     partial_success: bool = False
+    reset_matched: bool = False
 
 
 @dataclass(frozen=True)
@@ -1008,6 +1009,7 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
     partial_success = False
+    reset_matched = False
     try:
         if (
             effect.automatic
@@ -1052,7 +1054,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 if active:
                     cockpit.resolve_expected_right_pane_death(effect.target, True)
                 else:
-                    cockpit.reset_to_help(effect.target)
+                    reset_matched = cockpit.reset_to_help(effect.target)
             finally:
                 if planned != favorites:
                     save_sessions(list(planned))
@@ -1077,8 +1079,9 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             planned,
             _effect_error(effect, error),
             partial_success=partial_success,
+            reset_matched=reset_matched,
         )
-    return EffectResult(effect, planned)
+    return EffectResult(effect, planned, reset_matched=reset_matched)
 
 
 def _effect_state_trace(state: SidebarState) -> dict[str, object]:
@@ -1609,7 +1612,7 @@ class AsyncStatusPoller:
                 self.bell_target = renamed
             self._generation += 1
         elif result.effect.kind == "kill" and isinstance(target, Target):
-            if self.current_target == target:
+            if result.reset_matched or self.current_target == target:
                 self._suppressed_target = target
                 self.current_target = None
                 self._generation += 1

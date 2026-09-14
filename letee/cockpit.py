@@ -819,13 +819,15 @@ def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
     tmux.tmux("if-shell", "-F", "1", _guard_expected_right_pane_death(target, resolution))
 
 
-def reset_to_help(target: Target) -> None:
+def reset_to_help(target: Target) -> bool:
     left = _option(SIDEBAR_PANE_OPTION)
     right = _option(RIGHT_PANE_OPTION)
     if not left or not right:
-        return
+        return False
+    matched = _option(CURRENT_TARGET_OPTION) == target.format()
     action = _right_pane_death_action(left, right, load_prefix(), succeeded=True)
     tmux.tmux("if-shell", "-F", _option_equals(CURRENT_TARGET_OPTION, target.format()), action)
+    return matched
 
 
 def set_current_target(target: Target) -> None:
