@@ -2596,7 +2596,14 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 ),
             ):
                 self.assertIsNone(status._sample((), status._generation).current_target)
-                self.assertEqual(status._sample((), status._generation).current_target, other)
+                expired = status._sample((), status._generation)
+                self.assertEqual(expired.current_target, other)
+                status._next_poll = float("inf")
+                status._future = unittest.mock.Mock()
+                status._future.done.return_value = True
+                status._future.result.return_value = expired
+                status.tick(0)
+                self.assertIsNone(status._suppressed_target)
                 self.assertEqual(status._sample((), status._generation).current_target, killed)
         finally:
             status.close()
@@ -2795,6 +2802,55 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             finally:
                 release.set()
                 poller.close()
+
+    def test_stale_in_flight_status_result_does_not_clear_newer_kill_suppression(self):
+        started = threading.Event()
+        release = threading.Event()
+        stale_target = Target("local", "stale")
+        killed_target = Target("local", "killed")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("stale", "killed")))
+
+        status_reads = 0
+
+        def read_status():
+            nonlocal status_reads
+            if status_reads == 0:
+                started.set()
+                self.assertTrue(release.wait(1))
+                result = sidebar.cockpit.StatusSnapshot(stale_target, None, None, True)
+            else:
+                result = sidebar.cockpit.StatusSnapshot(killed_target, None, None, True)
+            status_reads += 1
+            return result
+
+        status = sidebar.AsyncStatusPoller(poller, stale_target)
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(sidebar.Effect("kill", target=stale_target), ())
+            )
+            with patch.object(sidebar.cockpit, "status_snapshot", side_effect=read_status):
+                self.assertFalse(status.tick(0))
+                self.assertTrue(started.wait(1))
+                status._next_poll = float("inf")
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("switch", target=killed_target), ())
+                )
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("kill", target=killed_target), ())
+                )
+                release.set()
+
+                deadline = time.monotonic() + 1
+                while status._future is not None and time.monotonic() < deadline:
+                    status.tick(1)
+                    time.sleep(0.001)
+
+                self.assertIsNone(status._future)
+                self.assertEqual(status._suppressed_target, killed_target)
+                self.assertIsNone(status._sample((), status._generation).current_target)
+        finally:
+            release.set()
+            status.close()
 
 
 class SidebarColorTest(unittest.TestCase):

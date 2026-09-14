@@ -158,6 +158,7 @@ class StatusResult:
     pane_active: bool
     generation: int
     refreshed: bool = False
+    suppression_expired: bool = False
 
 
 def _trace_target(value: Target | PaneTarget | None) -> str | None:
@@ -1494,6 +1495,7 @@ class AsyncStatusPoller:
         commands: tuple[tuple[str, Target | None], ...],
         generation: int,
     ) -> StatusResult:
+        suppression_expired = False
         try:
             for command, target in commands:
                 if command == "discard" and target is not None:
@@ -1503,13 +1505,15 @@ class AsyncStatusPoller:
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
-            if (
-                self._suppressed_target is not None
-                and status.current_target != self._suppressed_target
-            ):
-                self._suppressed_target = None
+            suppressed_target = self._suppressed_target
+            suppression_expired = (
+                suppressed_target is not None
+                and status.current_target != suppressed_target
+            )
+            if suppression_expired:
+                suppressed_target = None
             current_target = status.current_target if status.current_target is not None else self.current_target
-            if current_target == self._suppressed_target:
+            if current_target == suppressed_target:
                 current_target = None
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
@@ -1532,6 +1536,7 @@ class AsyncStatusPoller:
             pane_active,
             generation,
             any(command == "refresh" for command, _ in commands),
+            suppression_expired,
         )
 
     def tick(self, now: float) -> bool:
@@ -1555,6 +1560,8 @@ class AsyncStatusPoller:
                 ):
                     self._refresh_target = None
             if result.generation == self._generation:
+                if result.suppression_expired:
+                    self._suppressed_target = None
                 self.current_target = result.current_target
                 self.bell_target = result.bell_target
                 if self._pending_agent is None:
