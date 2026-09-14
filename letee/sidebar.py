@@ -146,6 +146,8 @@ class EffectResult:
     stale_navigation: bool = False
     action_id: str | None = None
     input_id: str | None = None
+    partial_success: bool = False
+    reset_matched: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,17 @@ class StatusResult:
     pane_active: bool
     generation: int
     refreshed: bool = False
+    suppression_expired: bool = False
+
+
+@dataclass(frozen=True)
+class StatusPollState:
+    snapshot: SessionSnapshot
+    current_target: Target | None
+    bell_target: Target | None
+    current_agent: str | None
+    pane_active: bool
+    suppressed_target: Target | None
 
 
 def _trace_target(value: Target | PaneTarget | None) -> str | None:
@@ -919,6 +932,7 @@ def _transition(
         state.selected_target = None if unavailable else target
         return Effect(
             "save_favorites",
+            target=target,
             favorites=tuple(state.favorites),
             message=f"removed {target.format()}",
         )
@@ -1004,6 +1018,8 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
+    partial_success = False
+    reset_matched = False
     try:
         if (
             effect.automatic
@@ -1034,9 +1050,24 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             if planned != favorites:
                 save_sessions(list(planned))
         elif effect.kind == "kill" and isinstance(effect.target, Target):
-            sessions.kill(effect.target)
-            if planned != favorites:
-                save_sessions(list(planned))
+            active = _current_target() == effect.target
+            if active:
+                cockpit.set_expected_right_pane_death(effect.target)
+            try:
+                sessions.kill(effect.target)
+            except (SystemExit, OSError, subprocess.SubprocessError):
+                if active:
+                    cockpit.resolve_expected_right_pane_death(effect.target, False)
+                raise
+            partial_success = True
+            try:
+                if active:
+                    cockpit.resolve_expected_right_pane_death(effect.target, True)
+                else:
+                    reset_matched = cockpit.reset_to_help(effect.target)
+            finally:
+                if planned != favorites:
+                    save_sessions(list(planned))
         elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
             cockpit.show_reconnecting(effect.target)
         elif effect.kind == "show_missing" and isinstance(effect.target, Target):
@@ -1045,14 +1076,22 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             cockpit.show_unavailable(effect.target)
         elif effect.kind == "save_favorites":
             save_sessions(planned)
+            if isinstance(effect.target, Target) and _current_target() == effect.target:
+                cockpit.reset_to_help(effect.target)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
         diagnostics.log(
             "effect_error",
             **_trace_effect(effect),
             error_type=type(error).__name__,
         )
-        return EffectResult(effect, planned, _effect_error(effect, error))
-    return EffectResult(effect, planned)
+        return EffectResult(
+            effect,
+            planned,
+            _effect_error(effect, error),
+            partial_success=partial_success,
+            reset_matched=reset_matched,
+        )
+    return EffectResult(effect, planned, reset_matched=reset_matched)
 
 
 def _effect_state_trace(state: SidebarState) -> dict[str, object]:
@@ -1088,8 +1127,11 @@ def _apply_effect(
     status_timeout: float,
 ) -> bool:
     effect = result.effect
-    if result.error:
-        if effect.kind == "rename" and isinstance(effect.target, Target):
+    if result.error and not result.partial_success:
+        if effect.kind == "create" and isinstance(effect.target, Target):
+            state.creation_host = "" if effect.target.kind == "local" else effect.target.host
+            state.creation_text = effect.target.session
+        elif effect.kind == "rename" and isinstance(effect.target, Target):
             state.rename_target = effect.target
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.message
@@ -1162,6 +1204,13 @@ def _apply_effect(
         _set_status(state, effect.message, status_timeout)
     elif effect.kind == "status":
         _set_status(state, effect.message, status_timeout)
+    if result.error:
+        _set_status(
+            state,
+            result.error,
+            status_timeout,
+            "agents" if effect.kind == "kill_agent" else "sessions",
+        )
     _log_effect_applied(result, state)
     return False
 
@@ -1195,7 +1244,10 @@ def _execute(
         result = _perform_effect(effect, tuple(state.favorites))
     if action_id is not None:
         result = replace(result, action_id=action_id, input_id=input_id)
-    return _apply_effect(result, state, poller, status_timeout)
+    applied = _apply_effect(result, state, poller, status_timeout)
+    if not applied:
+        poller.observe_effect(result)
+    return applied
 
 
 class EffectRunner:
@@ -1449,12 +1501,31 @@ class AsyncStatusPoller:
         self._refresh_pending = False
         self._refresh_target: Target | None = None
         self._pending_agent: tuple[PaneTarget, str] | None = None
+        self._suppressed_target: Target | None = None
+
+    def _poll_state(self) -> StatusPollState:
+        return StatusPollState(
+            self.snapshot,
+            self.current_target,
+            self.bell_target,
+            self.current_agent,
+            self.pane_active,
+            self._suppressed_target,
+        )
 
     def _sample(
         self,
         commands: tuple[tuple[str, Target | None], ...],
         generation: int,
+        state: StatusPollState | None = None,
     ) -> StatusResult:
+        state = state or self._poll_state()
+        snapshot = state.snapshot
+        current_target = state.current_target
+        bell_target = state.bell_target
+        stored_agent = state.current_agent
+        pane_active = state.pane_active
+        suppression_expired = False
         try:
             for command, target in commands:
                 if command == "discard" and target is not None:
@@ -1464,28 +1535,34 @@ class AsyncStatusPoller:
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
-            current_target = status.current_target if status.current_target is not None else self.current_target
+            suppressed_target = state.suppressed_target
+            suppression_expired = (
+                suppressed_target is not None
+                and status.current_target != suppressed_target
+            )
+            if suppression_expired:
+                suppressed_target = None
+            current_target = status.current_target if status.current_target is not None else state.current_target
+            if current_target == suppressed_target:
+                current_target = None
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
+            snapshot = self._poller.snapshot
             bell_target = status.bell_target
             stored_agent = status.current_agent
             pane_active = status.pane_active
         except (OSError, SystemExit, subprocess.SubprocessError):
-            current_target = self.current_target
-            bell_target = self.bell_target
-            stored_agent = self.current_agent
-            pane_active = self.pane_active
-        current_agent = _focused_agent_id(
-            self._poller.snapshot, current_target, stored_agent
-        )
+            pass
+        current_agent = _focused_agent_id(snapshot, current_target, stored_agent)
         return StatusResult(
-            self._poller.snapshot,
+            snapshot,
             current_target,
             bell_target,
             current_agent,
             pane_active,
             generation,
             any(command == "refresh" for command, _ in commands),
+            suppression_expired,
         )
 
     def tick(self, now: float) -> bool:
@@ -1493,22 +1570,24 @@ class AsyncStatusPoller:
         if self._future is not None and self._future.done():
             result = self._future.result()
             self._future = None
-            changed = result.snapshot != self.snapshot
-            self.snapshot = result.snapshot
-            if result.refreshed is True:
-                self._refresh_pending = any(
-                    command == "refresh" for command, _ in self._commands
-                )
-            if self._refresh_target is not None:
-                target = self._refresh_target
-                source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
-                if (
-                    target in self.snapshot.sessions
-                    or (result.refreshed is True and target.kind == "local")
-                    or (source is not None and not source.available)
-                ):
-                    self._refresh_target = None
             if result.generation == self._generation:
+                changed = result.snapshot != self.snapshot
+                self.snapshot = result.snapshot
+                if result.refreshed is True:
+                    self._refresh_pending = any(
+                        command == "refresh" for command, _ in self._commands
+                    )
+                if self._refresh_target is not None:
+                    target = self._refresh_target
+                    source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
+                    if (
+                        target in self.snapshot.sessions
+                        or (result.refreshed is True and target.kind == "local")
+                        or (source is not None and not source.available)
+                    ):
+                        self._refresh_target = None
+                if result.suppression_expired:
+                    self._suppressed_target = None
                 self.current_target = result.current_target
                 self.bell_target = result.bell_target
                 if self._pending_agent is None:
@@ -1522,21 +1601,23 @@ class AsyncStatusPoller:
         if self._future is None and now >= self._next_poll:
             commands, self._commands = tuple(self._commands), []
             self._future = self._executor.submit(
-                self._sample, commands, self._generation
+                self._sample, commands, self._generation, self._poll_state()
             )
             self._next_poll = now + STATUS_POLL_INTERVAL
         return changed
 
     def observe_effect(self, result: EffectResult) -> None:
-        if result.error or result.stale_navigation:
+        if (result.error and not result.partial_success) or result.stale_navigation:
             return
         target = result.effect.target
         if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
+            self._suppressed_target = None
             self.current_target = target
             self.current_agent = None
             self._pending_agent = None
             self._generation += 1
         elif result.effect.kind == "switch_pane" and isinstance(target, PaneTarget):
+            self._suppressed_target = None
             self.current_target = target.target
             self.current_agent = result.effect.message or None
             self._pending_agent = (
@@ -1553,6 +1634,15 @@ class AsyncStatusPoller:
             if self.bell_target == target:
                 self.bell_target = renamed
             self._generation += 1
+        elif result.effect.kind == "kill" and isinstance(target, Target):
+            if result.reset_matched or self.current_target == target:
+                self._suppressed_target = target
+                self.current_target = None
+                self._generation += 1
+        elif result.effect.kind == "save_favorites" and isinstance(target, Target):
+            if target not in result.favorites and self.current_target == target:
+                self.current_target = None
+                self._generation += 1
 
     @property
     def refresh_pending(self) -> bool:

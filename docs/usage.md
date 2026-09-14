@@ -81,7 +81,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s +` | Show the sidebar and open the Add session menu. Recreate it if it was quit. |
 | `C-s a` | Show the sidebar and focus Agents. Recreate it if it was quit. |
 | `C-s r` | Remove the active right-pane session from letee without killing its tmux session. |
-| `C-s x` | Kill and remove the active right-pane session after `y/N` confirmation. |
+| `C-s x` | Kill and remove the active right-pane session after `y/N` confirmation. The right pane returns to the startup help screen. |
 | `C-s !` | Show Agents and jump to the first alerted agent. If there is no alert, leave the right pane focused. |
 | `C-s w` | Focus the right pane. |
 | `C-s h` | Hide or show the sidebar. The sidebar remains alive while hidden. |
@@ -100,7 +100,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `e` | Rename the selected available tracked session. |
 | `r` | Remove the selected target without killing it. |
 | `K` / `J` | Move the selected tracked target up or down without wrapping. |
-| `x` in Sessions | Kill and remove the selected tracked session after confirmation. |
+| `x` in Sessions | Kill and remove the selected tracked session after confirmation. Killing the active session returns the right pane to the startup help screen. |
 | `x` in Agents | Terminate the selected agent foreground job with `SIGTERM` after confirmation. The pane and shell survive. |
 | `[` / `]` | Increase or decrease the Agents share by the configured percentage points for the current run. |
 | `Left` / `Right` | Cycle agent ordering, Priority or Session, when the ordering row is selected. |

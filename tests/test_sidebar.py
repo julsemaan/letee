@@ -1898,9 +1898,77 @@ class SidebarStateTest(unittest.TestCase):
         effect = _transition(state, "remove_session")
 
         self.assertEqual(state.favorites, [])
-        self.assertEqual(effect, Effect("save_favorites", favorites=(), message="removed local:work"))
+        self.assertEqual(
+            effect,
+            Effect("save_favorites", target=target, favorites=(), message="removed local:work"),
+        )
 
         self.assertIsNone(_transition(SidebarState(selected_target=target), "remove_session"))
+
+    def test_remove_active_session_persists_before_resetting_pane(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        state = SidebarState(selected_target=target, favorites=[target, other])
+        poller = unittest.mock.Mock()
+        events = []
+
+        effect = _transition(state, "remove_session")
+        self.assertIsNotNone(effect)
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
+            patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda _target: events.append(("reset",))) as reset,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            _execute(effect, state, poller, 5)
+
+        save.assert_called_once_with((other,))
+        reset.assert_called_once_with(target)
+        kill.assert_not_called()
+        poller.observe_effect.assert_called_once_with(unittest.mock.ANY)
+        self.assertEqual(events, [("save", (other,)), ("reset",)])
+
+    def test_remove_inactive_session_does_not_reset_pane(self):
+        removed = Target("local", "removed")
+        active = Target("local", "active")
+        state = SidebarState(selected_target=removed, favorites=[removed, active])
+        poller = unittest.mock.Mock()
+        effect = _transition(state, "remove_session")
+        self.assertIsNotNone(effect)
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=active),
+            patch.object(sidebar, "save_sessions") as save,
+            patch.object(sidebar.cockpit, "reset_to_help") as reset,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            _execute(effect, state, poller, 5)
+
+        save.assert_called_once_with((active,))
+        reset.assert_not_called()
+        kill.assert_not_called()
+
+    def test_remove_persistence_failure_does_not_reset_active_pane(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        state = SidebarState(selected_target=target, favorites=[target, other])
+        poller = unittest.mock.Mock()
+        effect = _transition(state, "remove_session")
+        self.assertIsNotNone(effect)
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
+            patch.object(sidebar.cockpit, "reset_to_help") as reset,
+            patch.object(sidebar.sessions, "kill") as kill,
+        ):
+            _execute(effect, state, poller, 5)
+
+        save.assert_called_once_with((other,))
+        reset.assert_not_called()
+        kill.assert_not_called()
+        self.assertEqual(state.favorites, [other])
+        self.assertEqual(state.status, "save failed")
 
     def test_reorder_favorite_swaps_and_keeps_selection(self):
         first = Target("local", "first")
@@ -1973,6 +2041,159 @@ class SidebarStateTest(unittest.TestCase):
         poller.assert_has_calls([unittest.mock.call.discard(target), unittest.mock.call.refresh()])
         self.assertEqual(state.selected_target, target)
         self.assertEqual(state.status, "killed ssh:dev:work")
+
+    def test_inactive_kill_resets_only_if_navigation_selects_target(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+
+        for navigation_target, reset_expected in ((target, True), (other, False)):
+            with self.subTest(navigation_target=navigation_target):
+                current_target = [other]
+                events = []
+
+                def kill(_target):
+                    events.append("kill")
+                    current_target[0] = navigation_target
+
+                def reset_to_help(reset_target):
+                    matched = current_target[0] == reset_target
+                    if matched:
+                        events.append("reset")
+                    return matched
+
+                with (
+                    patch.object(sidebar, "_current_target", side_effect=lambda: current_target[0]),
+                    patch.object(sidebar.cockpit, "reset_to_help", side_effect=reset_to_help) as reset,
+                    patch.object(sidebar.sessions, "kill", side_effect=kill),
+                ):
+                    result = sidebar._perform_effect(Effect("kill", target=target), ())
+
+                self.assertFalse(result.error)
+                self.assertEqual(result.reset_matched, reset_expected)
+                reset.assert_called_once_with(target)
+                self.assertEqual(events, ["kill", "reset"] if reset_expected else ["kill"])
+
+    def test_numbered_navigation_during_inactive_kill_clears_cached_target(self):
+        killed = Target("local", "killed")
+        previous = Target("local", "previous")
+        current_target = [previous]
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "previous")))
+        status_poller = sidebar.AsyncStatusPoller(poller, previous)
+
+        def kill(_target):
+            # A numbered shortcut makes the inactive target current while kill blocks.
+            current_target[0] = killed
+
+        def reset_to_help(reset_target):
+            matched = current_target[0] == reset_target
+            if matched:
+                current_target[0] = None
+            return matched
+
+        try:
+            with (
+                patch.object(sidebar, "_current_target", side_effect=lambda: current_target[0]),
+                patch.object(sidebar.cockpit, "reset_to_help", side_effect=reset_to_help),
+                patch.object(sidebar.sessions, "kill", side_effect=kill),
+            ):
+                result = sidebar._perform_effect(Effect("kill", target=killed), ())
+
+            self.assertTrue(result.reset_matched)
+            status_poller.observe_effect(result)
+            with patch.object(
+                sidebar.cockpit,
+                "status_snapshot",
+                return_value=sidebar.cockpit.StatusSnapshot(None, None, None, True),
+            ):
+                sampled = status_poller._sample((), status_poller._generation)
+
+            self.assertIsNone(status_poller.current_target)
+            self.assertIsNone(sampled.current_target)
+        finally:
+            status_poller.close()
+
+    def test_kill_persistence_failure_keeps_destructive_state(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        state = SidebarState(selected_target=target, favorites=[target, other])
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("work", "other")))
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death") as resolve,
+            patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
+        ):
+            result = sidebar._perform_effect(Effect("kill", target=target), tuple(state.favorites))
+
+        expected_death.assert_called_once_with(target)
+        resolve.assert_called_once_with(target, True)
+        self.assertEqual(result.error, "save failed")
+        self.assertTrue(result.partial_success)
+        status = sidebar.AsyncStatusPoller(poller, target)
+        try:
+            sidebar._apply_effect(result, state, poller, 5)
+            status.observe_effect(result)
+
+            save.assert_called_once_with([other])
+            self.assertEqual(state.favorites, [other])
+            self.assertEqual(state.status, "save failed")
+            poller.assert_has_calls([call.discard(target), call.refresh()])
+            self.assertIsNone(status.current_target)
+        finally:
+            status.close()
+
+    def test_kill_cleanup_failure_still_persists_favorites_without_failure_handshake(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        events = []
+
+        def resolve(_target, succeeded):
+            events.append(f"resolve {succeeded}")
+            if succeeded:
+                raise SystemExit("cleanup failed")
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=resolve) as handshake,
+            patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
+        ):
+            result = sidebar._perform_effect(Effect("kill", target=target), (target, other))
+
+        self.assertEqual(result.error, "cleanup failed")
+        self.assertTrue(result.partial_success)
+        expected_death.assert_called_once_with(target)
+        handshake.assert_called_once_with(target, True)
+        save.assert_called_once_with([other])
+        self.assertEqual(events, ["resolve True", ("save", [other])])
+
+    def test_failed_active_kill_uses_failure_handshake_without_racy_target_check(self):
+        target = Target("local", "work")
+        events = []
+
+        def fail_kill(_target):
+            events.append("kill")
+            raise SystemExit("kill local:work failed: denied")
+
+        def resolve(_target, succeeded):
+            events.append(f"resolve {succeeded}")
+
+        with (
+            patch.object(sidebar, "_current_target", return_value=target) as current_target,
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=resolve) as handshake,
+            patch.object(sidebar.sessions, "kill", side_effect=fail_kill),
+        ):
+            result = sidebar._perform_effect(Effect("kill", target=target), (target,))
+
+        self.assertEqual(result.error, "kill local:work failed: denied")
+        current_target.assert_called_once_with()
+        expected_death.assert_called_once_with(target)
+        handshake.assert_called_once_with(target, False)
+        self.assertEqual(events, ["kill", "resolve False"])
 
     def test_add_switch_tracks_then_switches(self):
         target = Target("local", "work")
@@ -2360,6 +2581,126 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertEqual(status.current_target, renamed)
         self.assertEqual(status.bell_target, renamed)
 
+    def test_status_poller_drops_current_target_after_kill_effect(self):
+        killed = Target("local", "killed")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "other")))
+        status = sidebar.AsyncStatusPoller(poller, killed)
+        generation = status._generation
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+        finally:
+            status.close()
+
+        self.assertIsNone(status.current_target)
+        self.assertEqual(status._generation, generation + 1)
+
+    def test_status_poller_ignores_stale_target_after_kill_until_navigation(self):
+        killed = Target("ssh", "work", "dev")
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        )
+        status = sidebar.AsyncStatusPoller(poller, killed)
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+            with patch.object(
+                sidebar.cockpit,
+                "status_snapshot",
+                side_effect=(
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(None, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                ),
+            ):
+                self.assertIsNone(status._sample((), status._generation).current_target)
+                self.assertIsNone(status._sample((), status._generation).current_target)
+
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("switch", target=killed), (killed,))
+                )
+                self.assertEqual(status._sample((), status._generation).current_target, killed)
+        finally:
+            status.close()
+
+    def test_status_poller_expires_kill_suppression_after_external_navigation(self):
+        killed = Target("local", "killed")
+        other = Target("local", "other")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "other")))
+        status = sidebar.AsyncStatusPoller(poller, killed)
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+            with patch.object(
+                sidebar.cockpit,
+                "status_snapshot",
+                side_effect=(
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(other, None, None, True),
+                    sidebar.cockpit.StatusSnapshot(killed, None, None, True),
+                ),
+            ):
+                self.assertIsNone(status._sample((), status._generation).current_target)
+                expired = status._sample((), status._generation)
+                self.assertEqual(expired.current_target, other)
+                status._next_poll = float("inf")
+                status._future = unittest.mock.Mock()
+                status._future.done.return_value = True
+                status._future.result.return_value = expired
+                status.tick(0)
+                self.assertIsNone(status._suppressed_target)
+                self.assertEqual(status._sample((), status._generation).current_target, killed)
+        finally:
+            status.close()
+
+    def test_status_poller_keeps_current_target_after_kill_of_other_session(self):
+        killed = Target("local", "killed")
+        active = Target("local", "active")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("killed", "active")))
+        status = sidebar.AsyncStatusPoller(poller, active)
+        generation = status._generation
+        try:
+            status.observe_effect(sidebar.EffectResult(Effect("kill", target=killed), ()))
+        finally:
+            status.close()
+
+        self.assertEqual(status.current_target, active)
+        self.assertEqual(status._generation, generation)
+
+    def test_status_poller_drops_removed_active_target_and_rejects_stale_result(self):
+        removed = Target("local", "removed")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("removed",)))
+        status = sidebar.AsyncStatusPoller(poller, removed)
+        generation = status._generation
+        status._next_poll = float("inf")
+        stale = sidebar.StatusResult(
+            poller.snapshot,
+            removed,
+            removed,
+            "agent",
+            False,
+            generation,
+        )
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(
+                    Effect("save_favorites", target=removed, favorites=()),
+                    (),
+                )
+            )
+
+            self.assertIsNone(status.current_target)
+            self.assertEqual(status._generation, generation + 1)
+
+            status._future = unittest.mock.Mock()
+            status._future.done.return_value = True
+            status._future.result.return_value = stale
+            status.tick(0)
+        finally:
+            status.close()
+
+        self.assertIsNone(status.current_target)
+        self.assertIsNone(status.bell_target)
+        self.assertIsNone(status.current_agent)
+        self.assertTrue(status.pane_active)
+
     def test_status_poller_keeps_refresh_pending_until_renamed_remote_session_is_seen(self):
         old = Target("ssh", "old", "dev")
         renamed = Target("ssh", "renamed", "dev")
@@ -2485,6 +2826,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 self.assertFalse(poller.tick(0))
                 self.assertTrue(started.wait(1))
                 self.assertEqual(poller.snapshot.sessions, ())
+                poller._next_poll = float("inf")
                 poller.observe_effect(
                     sidebar.EffectResult(
                         Effect("switch", selected_target, automatic=True), ()
@@ -2492,9 +2834,11 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                 )
                 release.set()
                 deadline = time.monotonic() + 1
-                while not poller.tick(1) and time.monotonic() < deadline:
+                while poller._future is not None and time.monotonic() < deadline:
+                    poller.tick(1)
                     time.sleep(0.001)
-                self.assertEqual(poller.snapshot.sessions, (target,))
+                self.assertIsNone(poller._future)
+                self.assertEqual(poller.snapshot.sessions, ())
                 self.assertEqual(poller.current_target, selected_target)
                 self.assertEqual(poller._generation, 1)
                 self.assertIsNone(poller.bell_target)
@@ -2503,6 +2847,111 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             finally:
                 release.set()
                 poller.close()
+
+    def test_stale_in_flight_status_result_does_not_clear_newer_kill_suppression(self):
+        started = threading.Event()
+        release = threading.Event()
+        stale_target = Target("local", "stale")
+        killed_target = Target("local", "killed")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("stale", "killed")))
+
+        status_reads = 0
+
+        def read_status():
+            nonlocal status_reads
+            if status_reads == 0:
+                started.set()
+                self.assertTrue(release.wait(1))
+                result = sidebar.cockpit.StatusSnapshot(stale_target, None, None, True)
+            else:
+                result = sidebar.cockpit.StatusSnapshot(killed_target, None, None, True)
+            status_reads += 1
+            return result
+
+        status = sidebar.AsyncStatusPoller(poller, stale_target)
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(sidebar.Effect("kill", target=stale_target), ())
+            )
+            with patch.object(sidebar.cockpit, "status_snapshot", side_effect=read_status):
+                self.assertFalse(status.tick(0))
+                self.assertTrue(started.wait(1))
+                status._next_poll = float("inf")
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("switch", target=killed_target), ())
+                )
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("kill", target=killed_target), ())
+                )
+                release.set()
+
+                deadline = time.monotonic() + 1
+                while status._future is not None and time.monotonic() < deadline:
+                    status.tick(1)
+                    time.sleep(0.001)
+
+                self.assertIsNone(status._future)
+                self.assertEqual(status._suppressed_target, killed_target)
+                self.assertIsNone(status._sample((), status._generation).current_target)
+        finally:
+            release.set()
+            status.close()
+
+
+    def test_blocked_sample_does_not_publish_after_target_change(self):
+        started = threading.Event()
+        release = threading.Event()
+        stale_target = Target("ssh", "work", "old")
+        new_target = Target("ssh", "work", "new")
+        stale_snapshot = snapshot(remotes={"old": source("ssh", ("work",), host="old")})
+        fresh_snapshot = snapshot(remotes={"new": source("ssh", ("work",), host="new")})
+
+        class BlockingPoller:
+            snapshot = stale_snapshot
+
+            def tick(self, active_host):
+                self.active_host = active_host
+                self.snapshot = fresh_snapshot
+                return True
+
+            def refresh(self):
+                return False
+
+            def discard(self, target):
+                pass
+
+            def close(self):
+                pass
+
+        poller = BlockingPoller()
+        status = sidebar.AsyncStatusPoller(poller, stale_target)
+
+        def read_status():
+            started.set()
+            self.assertTrue(release.wait(1))
+            return sidebar.cockpit.StatusSnapshot(None, None, None, True)
+
+        try:
+            with patch.object(sidebar.cockpit, "status_snapshot", side_effect=read_status):
+                self.assertFalse(status.tick(0))
+                self.assertTrue(started.wait(1))
+                status._next_poll = float("inf")
+                status.observe_effect(
+                    sidebar.EffectResult(sidebar.Effect("switch", target=new_target), ())
+                )
+                release.set()
+
+                deadline = time.monotonic() + 1
+                while status._future is not None and time.monotonic() < deadline:
+                    status.tick(1)
+                    time.sleep(0.001)
+
+            self.assertEqual(poller.active_host, "old")
+            self.assertEqual(status.snapshot, stale_snapshot)
+            self.assertEqual(status.current_target, new_target)
+        finally:
+            release.set()
+            status.close()
 
 
 class SidebarColorTest(unittest.TestCase):
@@ -4833,10 +5282,13 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._current_target", return_value=target),
+            patch("letee.sidebar.cockpit.set_expected_right_pane_death") as expected_death,
+            patch("letee.sidebar.cockpit.resolve_expected_right_pane_death"),
             patch("letee.sidebar.sessions.kill", side_effect=SystemExit("kill local:work failed: denied")),
         ):
             run(screen)
 
+        expected_death.assert_called_once_with(target)
         error = next(call for call in screen.calls if call[0] == "addnstr" and "kill local:work failed: denied" in call[3])
         self.assertEqual(error[1], 1)
         footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
@@ -6179,11 +6631,40 @@ class PrefixActionTest(unittest.TestCase):
         active = Target("local", "active")
         data = snapshot(local=("stale", "active"))
 
-        with patch.object(sidebar.sessions, "kill") as kill, patch.object(sidebar, "save_sessions") as save:
+        # The marker must be set before the kill so the pane-died hook knows why it died.
+        order = []
+
+        def record(name):
+            return lambda *args, **kwargs: order.append(name)
+
+        with (
+            patch.object(sidebar.sessions, "kill", side_effect=record("kill")) as kill,
+            patch.object(sidebar, "save_sessions") as save,
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death", side_effect=record("mark")) as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=lambda *_args: order.append("resolve")),
+        ):
             self._run([curses.KEY_F6, curses.KEY_F9, ord("y"), STOP], [stale, active], active, data)
 
         kill.assert_called_once_with(active)
+        expected_death.assert_called_once_with(active)
+        self.assertEqual(order, ["mark", "kill", "resolve"])
         save.assert_called_once_with([stale])
+
+    def test_kill_of_inactive_session_keeps_current_target(self):
+        stale = Target("local", "stale")
+        active = Target("local", "active")
+        data = snapshot(local=("stale", "active"))
+
+        with (
+            patch.object(sidebar.sessions, "kill") as kill,
+            patch.object(sidebar, "save_sessions") as save,
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+        ):
+            self._run([ord("x"), ord("y"), STOP], [stale, active], active, data)
+
+        kill.assert_called_once_with(stale)
+        expected_death.assert_not_called()
+        save.assert_called_once_with([active])
 
     def test_missing_session_kill_prefix_guides_custom_removal(self):
         target = Target("local", "active")
@@ -6874,11 +7355,15 @@ class SidebarKeybindingTest(unittest.TestCase):
             patch.object(sidebar, "_draw", return_value=(1, None)),
             patch.object(sidebar, "_bell_targets", return_value=set()),
             patch.object(sidebar.sessions, "kill") as kill,
+            patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
+            patch.object(sidebar.cockpit, "resolve_expected_right_pane_death") as resolve,
             patch.object(sidebar, "save_sessions") as save_kill,
         ):
             screen3 = FakeScreen([ord("X"), ord("y"), STOP], size=(10, 40))
             sidebar.run(screen3)
         kill.assert_called_once_with(target_a)
+        expected_death.assert_called_once_with(target_a)
+        resolve.assert_called_once_with(target_a, True)
         save_kill.assert_called_once_with([target_b])
 
         # N should move selected session down via custom binding
