@@ -60,7 +60,7 @@ ssh dev-slow
 
 ### Reconnecting SSH sessions
 
-Use a separate alias and marker file to disconnect active `ProxyCommand` connections. While the marker exists, new proxy connections fail too.
+Use a separate alias and marker file to disconnect active `ProxyCommand` connections. While the marker exists, new proxy connections fail too. This does not produce TCP `connection refused`: the proxy exits before connecting, so OpenSSH reports that the remote connection closed during key exchange.
 
 ```sshconfig
 Host dev-reconnect
@@ -90,6 +90,26 @@ done
 ```
 
 The right pane should reconnect after each cycle without another sidebar click.
+
+### Pausing SSH traffic
+
+Use `--timeout-while-file` to pause forwarding in both directions without closing the SSH connection. Removing the marker resumes forwarding if SSH has not given up.
+
+```sshconfig
+Host dev-timeout
+    HostName dev.example.com
+    User me
+    ProxyCommand python3 /absolute/path/tools/ssh_latency_proxy.py --timeout-while-file /tmp/letee-dev-timeout.outage %h %p
+```
+
+You can combine both modes in one `ProxyCommand`. Use separate marker files. The disconnect marker takes precedence: it rejects a new connection at startup and closes an active connection even while the timeout marker exists.
+
+```sshconfig
+Host dev-reconnect-timeout
+    HostName dev.example.com
+    User me
+    ProxyCommand python3 /absolute/path/tools/ssh_latency_proxy.py --disconnect-while-file /tmp/letee-dev-disconnect.outage --timeout-while-file /tmp/letee-dev-timeout.outage %h %p
+```
 
 ## Preparing a release
 

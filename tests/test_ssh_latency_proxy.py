@@ -85,8 +85,8 @@ class LocalTcpServer:
         if not self.connected.wait(2):
             raise AssertionError("proxy did not connect to local TCP server")
 
-    def wait_received(self, size):
-        deadline = time.monotonic() + 2
+    def wait_received(self, size, timeout=2):
+        deadline = time.monotonic() + timeout
         with self.condition:
             while len(self.received) < size:
                 remaining = deadline - time.monotonic()
@@ -96,6 +96,16 @@ class LocalTcpServer:
                     )
                 self.condition.wait(remaining)
             return bytes(self.received[:size])
+
+    def assert_not_received(self, timeout=0.2):
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while not self.received:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self.condition.wait(remaining)
+            raise AssertionError(f"server received unexpected data: {self.received!r}")
 
     def send(self, data):
         self.wait_connected()
@@ -118,11 +128,24 @@ def read_exact(stream, size, timeout=2):
     return b"".join(chunks)
 
 
+def assert_no_data(stream, timeout=0.2):
+    if select.select([stream], [], [], timeout)[0]:
+        raise AssertionError(f"stream produced unexpected data: {os.read(stream.fileno(), 1)!r}")
+
+
 class SshLatencyProxyTest(unittest.TestCase):
-    def start_proxy(self, port, delay_ms=0, disconnect_while_file=None):
+    def start_proxy(
+        self,
+        port,
+        delay_ms=0,
+        disconnect_while_file=None,
+        timeout_while_file=None,
+    ):
         command = [sys.executable, str(PROXY), "--delay-ms", str(delay_ms)]
         if disconnect_while_file is not None:
             command.extend(("--disconnect-while-file", str(disconnect_while_file)))
+        if timeout_while_file is not None:
+            command.extend(("--timeout-while-file", str(timeout_while_file)))
         command.extend(("127.0.0.1", str(port)))
         return subprocess.Popen(
             command,
@@ -215,6 +238,102 @@ class SshLatencyProxyTest(unittest.TestCase):
 
             self.assertEqual(self.proxy.wait(timeout=2), 0)
             self.assertEqual(self.proxy.stdout.read(), b"")
+
+    def test_pauses_active_connection_while_timeout_marker_exists(self):
+        with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
+            marker = Path(directory) / "timeout"
+            self.proxy = self.start_proxy(server.port, timeout_while_file=marker)
+            server.wait_connected()
+            marker.touch()
+
+            from_client = b"client payload"
+            self.proxy.stdin.write(from_client)
+            self.proxy.stdin.flush()
+            server.assert_not_received()
+
+            from_server = b"server payload"
+            server.send(from_server)
+            assert_no_data(self.proxy.stdout)
+
+            marker.unlink()
+            self.assertEqual(server.wait_received(len(from_client)), from_client)
+            self.assertEqual(read_exact(self.proxy.stdout, len(from_server)), from_server)
+
+    def test_stalls_new_connection_when_timeout_marker_exists(self):
+        with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
+            marker = Path(directory) / "timeout"
+            marker.touch()
+            self.proxy = self.start_proxy(server.port, timeout_while_file=marker)
+            server.wait_connected()
+
+            from_client = b"client payload"
+            self.proxy.stdin.write(from_client)
+            self.proxy.stdin.flush()
+            server.assert_not_received()
+
+            from_server = b"server payload"
+            server.send(from_server)
+            assert_no_data(self.proxy.stdout)
+
+            marker.unlink()
+            self.assertEqual(server.wait_received(len(from_client)), from_client)
+            self.assertEqual(read_exact(self.proxy.stdout, len(from_server)), from_server)
+
+    def test_accepts_timeout_and_disconnect_markers_together(self):
+        with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
+            timeout_marker = Path(directory) / "timeout"
+            disconnect_marker = Path(directory) / "disconnect"
+            self.proxy = self.start_proxy(
+                server.port,
+                disconnect_while_file=disconnect_marker,
+                timeout_while_file=timeout_marker,
+            )
+            server.wait_connected()
+
+            payload = b"combined marker options"
+            self.proxy.stdin.write(payload)
+            self.proxy.stdin.flush()
+            self.assertEqual(server.wait_received(len(payload)), payload)
+
+    def test_disconnect_marker_interrupts_active_timeout(self):
+        with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
+            timeout_marker = Path(directory) / "timeout"
+            disconnect_marker = Path(directory) / "disconnect"
+            timeout_marker.touch()
+            self.proxy = self.start_proxy(
+                server.port,
+                disconnect_while_file=disconnect_marker,
+                timeout_while_file=timeout_marker,
+            )
+            server.wait_connected()
+
+            self.proxy.stdin.write(b"blocked payload")
+            self.proxy.stdin.flush()
+            server.assert_not_received()
+
+            disconnect_marker.touch()
+            self.assertEqual(self.proxy.wait(timeout=2), 0)
+            self.assertEqual(self.proxy.stdout.read(), b"")
+
+    def test_disconnect_marker_wins_when_both_markers_exist_at_startup(self):
+        with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
+            timeout_marker = Path(directory) / "timeout"
+            disconnect_marker = Path(directory) / "disconnect"
+            timeout_marker.touch()
+            disconnect_marker.touch()
+            self.proxy = self.start_proxy(
+                server.port,
+                disconnect_while_file=disconnect_marker,
+                timeout_while_file=timeout_marker,
+            )
+
+            self.assertEqual(self.proxy.wait(timeout=2), 1)
+            self.assertIn("disconnect marker", self.proxy.stderr.read().decode())
+            self.assertFalse(server.connected.is_set())
+            self.proxy.stdin.close()
+            self.proxy.stdout.close()
+            self.proxy.stderr.close()
+            self.proxy = None
 
     def test_rejects_new_connection_while_marker_exists(self):
         with tempfile.TemporaryDirectory() as directory, LocalTcpServer() as server:
