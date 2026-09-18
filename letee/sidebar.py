@@ -1069,7 +1069,10 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 if planned != favorites:
                     save_sessions(list(planned))
         elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
-            cockpit.show_reconnecting(effect.target)
+            if effect.automatic:
+                cockpit.show_reconnecting(effect.target)
+            else:
+                cockpit.switch_reconnecting(effect.target)
         elif effect.kind == "show_missing" and isinstance(effect.target, Target):
             cockpit.show_missing(effect.target)
         elif effect.kind == "show_unavailable" and isinstance(effect.target, Target):
@@ -1360,8 +1363,8 @@ class EffectRunner:
         if self._future is not None:
             if (
                 self._effect is not None
-                and self._effect.kind in ("switch", "switch_pane")
-                and effect.kind in ("switch", "switch_pane")
+                and self._effect.kind in ("switch", "switch_pane", "show_reconnecting")
+                and effect.kind in ("switch", "switch_pane", "show_reconnecting")
             ):
                 if self._pending_navigation is not None:
                     old_effect, _, old_action_id, old_input_id = self._pending_navigation
@@ -1623,6 +1626,16 @@ class AsyncStatusPoller:
             self._pending_agent = (
                 (target, result.effect.message) if result.effect.message else None
             )
+            self._generation += 1
+        elif (
+            result.effect.kind == "show_reconnecting"
+            and not result.effect.automatic
+            and isinstance(target, Target)
+        ):
+            self._suppressed_target = None
+            self.current_target = target
+            self.current_agent = None
+            self._pending_agent = None
             self._generation += 1
         elif result.effect.kind == "rename" and isinstance(target, Target):
             renamed = _renamed_target(result.effect)
@@ -2853,7 +2866,7 @@ def run(stdscr: curses.window) -> None:
         if not queue_effect(effect, input_id):
             show_status("another action is still running")
             return False
-        if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
+        if effect.kind in ("switch", "add_switch", "show_reconnecting") and isinstance(effect.target, Target):
             pending_navigation = (effect.target, None)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             pending_navigation = (effect.target.target, effect.message or None)
@@ -3082,7 +3095,7 @@ def run(stdscr: curses.window) -> None:
             result = actions.poll() if not burst_count else None
             if result is not None:
                 if not result.stale_navigation and result.effect.kind in (
-                    "switch", "add_switch", "switch_pane"
+                    "switch", "add_switch", "switch_pane", "show_reconnecting"
                 ):
                     pending_navigation = None
                 if _apply_effect(result, state, poller, status_timeout):
@@ -4004,7 +4017,10 @@ def run(stdscr: curses.window) -> None:
                     mark_input(True, "open_session_search")
                     continue
                 elif entry.target:
-                    effect = _transition(state, "add_switch" if state.add_view == "search" else "switch", entry.target)
+                    if entry.status in ("connecting…", "reconnecting…"):
+                        effect = Effect("show_reconnecting", target=entry.target)
+                    else:
+                        effect = _transition(state, "add_switch" if state.add_view == "search" else "switch", entry.target)
             elif key == ord(sidebar_keys["kill"]):
                 if not entries:
                     continue
