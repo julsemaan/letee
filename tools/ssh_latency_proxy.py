@@ -77,7 +77,27 @@ def _write_stdout(data):
         view = view[os.write(1, view):]
 
 
-def _write_stream(pending, write, on_eof, stop, errors):
+def _wait_for_forwarding(timeout_marker, disconnect_marker, stop):
+    while not stop.is_set():
+        if _disconnect_requested(disconnect_marker):
+            stop.set()
+            return False
+        if timeout_marker is None or not os.path.exists(timeout_marker):
+            return True
+        if stop.wait(0.1):
+            return False
+    return False
+
+
+def _write_stream(
+    pending,
+    write,
+    on_eof,
+    stop,
+    errors,
+    timeout_marker=None,
+    disconnect_marker=None,
+):
     try:
         while True:
             try:
@@ -92,6 +112,8 @@ def _write_stream(pending, write, on_eof, stop, errors):
                 return
             deadline, data = item
             if not _wait_until(deadline, stop):
+                return
+            if not _wait_for_forwarding(timeout_marker, disconnect_marker, stop):
                 return
             write(data)
     except OSError as error:
@@ -110,7 +132,12 @@ def _shutdown_write(connection, stop, errors):
         return
 
 
-def _forward(connection, delay, disconnect_while_file=None):
+def _forward(
+    connection,
+    delay,
+    disconnect_while_file=None,
+    timeout_while_file=None,
+):
     stop = threading.Event()
     errors = []
 
@@ -131,6 +158,8 @@ def _forward(connection, delay, disconnect_while_file=None):
                 lambda: _shutdown_write(connection, stop, errors),
                 stop,
                 errors,
+                timeout_while_file,
+                disconnect_while_file,
             ),
             daemon=True,
         ),
@@ -141,7 +170,15 @@ def _forward(connection, delay, disconnect_while_file=None):
         ),
         threading.Thread(
             target=_write_stream,
-            args=(stdout_queue, _write_stdout, lambda: stop.set(), stop, errors),
+            args=(
+                stdout_queue,
+                _write_stdout,
+                lambda: stop.set(),
+                stop,
+                errors,
+                timeout_while_file,
+                disconnect_while_file,
+            ),
             daemon=True,
         ),
     ]
@@ -174,6 +211,7 @@ def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--delay-ms", type=_nonnegative_int, default=0)
     parser.add_argument("--disconnect-while-file")
+    parser.add_argument("--timeout-while-file")
     parser.add_argument("host")
     parser.add_argument("port", type=_port)
     return parser
@@ -201,9 +239,12 @@ def main(argv=None):
 
     try:
         connection.settimeout(None)
-        if args.disconnect_while_file is None:
-            return _forward(connection, delay)
-        return _forward(connection, delay, args.disconnect_while_file)
+        return _forward(
+            connection,
+            delay,
+            args.disconnect_while_file,
+            args.timeout_while_file,
+        )
     except KeyboardInterrupt:
         connection.close()
         return 0
