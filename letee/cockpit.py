@@ -639,7 +639,8 @@ def cockpit() -> int:
 
 def focus_sidebar(region: str = "sessions") -> int:
     ensure_config()
-    ensure_cockpit()
+    if region != "alert" or not _valid():
+        ensure_cockpit()
     pane = _option(SIDEBAR_PANE_OPTION)
     if region != "alert":
         tmux.tmux("select-pane", "-t", pane)

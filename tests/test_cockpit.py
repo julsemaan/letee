@@ -659,11 +659,7 @@ class CockpitLayoutTest(unittest.TestCase):
         )
 
     def test_focus_sidebar_injects_distinct_action_keys_after_recreation(self):
-        for region, injected_key, focus_key, selects_sidebar in (
-            ("remove", "F8", "F6", True),
-            ("kill", "F9", "F6", True),
-            ("alert", "F10", "F7", False),
-        ):
+        for region, injected_key in (("remove", "F8"), ("kill", "F9")):
             with self.subTest(region=region), patch.object(
                 cockpit, "ensure_config"
             ), patch.object(cockpit, "ensure_cockpit") as ensure_cockpit, patch.object(
@@ -672,12 +668,41 @@ class CockpitLayoutTest(unittest.TestCase):
                 cockpit.focus_sidebar(region)
 
             ensure_cockpit.assert_called_once_with()
-            expected = [
-                unittest.mock.call("send-keys", "-t", "%7", focus_key, injected_key),
-            ]
-            if selects_sidebar:
-                expected.insert(0, unittest.mock.call("select-pane", "-t", "%7"))
-            self.assertEqual(tmux_call.call_args_list, expected)
+            self.assertEqual(
+                tmux_call.call_args_list,
+                [
+                    unittest.mock.call("select-pane", "-t", "%7"),
+                    unittest.mock.call("send-keys", "-t", "%7", "F6", injected_key),
+                ],
+            )
+
+    def test_focus_sidebar_alert_keeps_valid_hidden_cockpit(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit, "_valid", return_value=True) as valid,
+            patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
+            patch.object(cockpit, "_option", return_value="%7"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.focus_sidebar("alert")
+
+        valid.assert_called_once_with()
+        ensure_cockpit.assert_not_called()
+        tmux_call.assert_called_once_with("send-keys", "-t", "%7", "F7", "F10")
+
+    def test_focus_sidebar_alert_recreates_invalid_cockpit(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit, "_valid", return_value=False) as valid,
+            patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
+            patch.object(cockpit, "_option", return_value="%7"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            cockpit.focus_sidebar("alert")
+
+        valid.assert_called_once_with()
+        ensure_cockpit.assert_called_once_with()
+        tmux_call.assert_called_once_with("send-keys", "-t", "%7", "F7", "F10")
 
     def test_right_pane_reset_uses_expected_death_marker(self):
         calls = []
