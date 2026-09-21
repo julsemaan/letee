@@ -1,6 +1,11 @@
+import os
+import select
+import signal
 import subprocess
+import sys
+import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from letee.discovery import (
     DiscoveryPoller,
@@ -11,6 +16,7 @@ from letee.discovery import (
     _parse_source_snapshot,
     _read_agents,
     _source_result,
+    _stop_process,
     _ssh_command,
     discover,
     local_snapshot,
@@ -21,7 +27,45 @@ from datetime import datetime, timezone
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
 
 
+REAL_POPEN = subprocess.Popen
 EMPTY_LOCAL = SourceSnapshot(True, (), frozenset())
+
+
+_LEAKING_PROCESS = """
+import os
+import signal
+import sys
+import time
+
+write_fd = int(sys.argv[1])
+child_pid = os.fork()
+if child_pid == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    os.write(write_fd, f"{os.getpid()}:{os.getpgrp()}\\n".encode())
+    while True:
+        time.sleep(1)
+time.sleep(0.05)
+os._exit(0)
+"""
+
+
+def _spawn_leaking_process(write_fd, kwargs):
+    process = REAL_POPEN(
+        [sys.executable, "-c", _LEAKING_PROCESS, str(write_fd)],
+        stdout=kwargs["stdout"],
+        stderr=kwargs["stderr"],
+        start_new_session=kwargs.get("start_new_session", False),
+        pass_fds=(write_fd,),
+    )
+    os.close(write_fd)
+    return process
+
+
+def _read_child_info(read_fd):
+    pipe = os.fdopen(read_fd, "rb", buffering=0)
+    line = pipe.readline().decode().strip()
+    child_pid, process_group = (int(value) for value in line.split(":", 1))
+    return pipe, child_pid, process_group
 
 
 class DiscoverySnapshotTest(unittest.TestCase):
@@ -201,27 +245,101 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(snapshot.agents, ())
 
     def test_remote_snapshot_resolves_persistence_for_command(self):
-        proc = Mock(returncode=0, stdout="", stderr="")
+        proc = FakeProcess(0)
         with (
             patch("letee.discovery.load_persistent_ssh", return_value=False),
-            patch("letee.discovery.subprocess.run", return_value=proc) as run,
+            patch("letee.discovery.subprocess.Popen", return_value=proc) as popen,
         ):
             remote_snapshot("dev")
 
-        self.assertNotIn("ControlMaster=auto", run.call_args.args[0])
+        self.assertNotIn("ControlMaster=auto", popen.call_args.args[0])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
     def test_remote_snapshot_rejects_oversized_output_and_distinguishes_no_server(self):
         def oversized(command, **kwargs):
             kwargs["stdout"].write(b"x" * (1024 * 1024 + 1))
             kwargs["stderr"].write(b"diagnostic")
-            return Mock(returncode=0)
+            return FakeProcess(0)
 
-        with patch("letee.discovery.subprocess.run", side_effect=oversized):
+        with patch("letee.discovery.subprocess.Popen", side_effect=oversized):
             self.assertEqual(remote_snapshot("dev").error, "output exceeded 1 MiB")
 
-        no_server = Mock(returncode=1, stdout="", stderr="no server running on /tmp/tmux-1000/letee.inner\n")
-        with patch("letee.discovery.subprocess.run", return_value=no_server):
+        no_server = FakeProcess(1)
+        no_server.stderr = "no server running on /tmp/tmux-1000/letee.inner\n"
+        with patch("letee.discovery.subprocess.Popen", return_value=no_server):
             self.assertEqual(remote_snapshot("dev"), SourceSnapshot(True, (), frozenset()))
+
+    def test_remote_snapshot_cleans_exited_parent_and_its_child_process_group(self):
+        read_fd, write_fd = os.pipe()
+        pipe = None
+        child_pid = None
+        leader_pid = None
+        try:
+            def popen(command, **kwargs):
+                nonlocal leader_pid
+                process = _spawn_leaking_process(write_fd, kwargs)
+                leader_pid = process.pid
+                return process
+
+            with patch("letee.discovery.subprocess.Popen", side_effect=popen):
+                self.assertTrue(remote_snapshot("dev").available)
+
+            pipe, child_pid, process_group = _read_child_info(read_fd)
+            self.assertEqual(process_group, leader_pid)
+            readable, _, _ = select.select((pipe,), (), (), 2)
+            self.assertEqual(readable, [pipe])
+            self.assertEqual(pipe.read(), b"")
+        finally:
+            if pipe is not None:
+                pipe.close()
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                os.close(read_fd)
+
+    def test_remote_snapshot_cleans_completed_failure_process_group(self):
+        process = FakeProcess(255, stderr="ssh failed\n", pid=106)
+        with (
+            patch("letee.discovery.subprocess.Popen", return_value=process) as popen,
+            patch("letee.discovery.os.killpg") as killpg,
+        ):
+            snapshot = remote_snapshot("dev")
+
+        self.assertEqual(snapshot.error, "ssh failed")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertEqual(killpg.call_args_list, [call(106, signal.SIGTERM), call(106, signal.SIGKILL)])
+        self.assertTrue(process.communicated)
+
+    def test_remote_snapshot_timeout_cleans_process_group(self):
+        process = GroupTimeoutProcess(pid=107)
+        with (
+            patch("letee.discovery.subprocess.Popen", return_value=process),
+            patch("letee.discovery.os.killpg") as killpg,
+        ):
+            snapshot = remote_snapshot("dev")
+
+        self.assertEqual(snapshot.error, "timed out")
+        self.assertEqual(killpg.call_args_list, [call(107, signal.SIGTERM), call(107, signal.SIGKILL)])
+        self.assertEqual(process.wait_timeouts, [10, 1, None])
+        self.assertTrue(process.communicated)
+
+    def test_remote_snapshot_interruption_cleans_process_group_before_reraising(self):
+        process = Mock(pid=108)
+        process.poll.return_value = None
+        process.wait.side_effect = [KeyboardInterrupt(), subprocess.TimeoutExpired("ssh", 1), -9]
+        process.communicate.return_value = (None, None)
+        with (
+            patch("letee.discovery.subprocess.Popen", return_value=process),
+            patch("letee.discovery.os.killpg") as killpg,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                remote_snapshot("dev")
+
+        self.assertEqual(killpg.call_args_list, [call(108, signal.SIGTERM), call(108, signal.SIGKILL)])
+        process.communicate.assert_called_once_with()
 
     def test_discover_returns_common_snapshot(self):
         local = SourceSnapshot(True, (Target("local", "work"),), frozenset())
@@ -235,9 +353,11 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
 
 class FakeProcess:
-    def __init__(self, returncode=None, stdout=""):
+    def __init__(self, returncode=None, stdout="", stderr="", pid=None):
         self.returncode = returncode
         self.stdout = stdout
+        self.stderr = stderr
+        self.pid = pid
         self.terminated = False
         self.communicated = False
         self.killed = False
@@ -248,7 +368,7 @@ class FakeProcess:
 
     def communicate(self):
         self.communicated = True
-        return self.stdout, ""
+        return self.stdout, self.stderr
 
     def terminate(self):
         self.terminated = True
@@ -274,7 +394,24 @@ class TerminateIgnoringProcess(FakeProcess):
         return self.returncode
 
 
+class GroupTimeoutProcess(FakeProcess):
+    def wait(self, timeout=None):
+        self.wait_timeouts.append(timeout)
+        if timeout is not None and self.returncode is None:
+            raise subprocess.TimeoutExpired("ssh", timeout)
+        self.returncode = self.returncode if self.returncode is not None else -9
+        return self.returncode
+
+
 class DiscoveryPollerTest(unittest.TestCase):
+    def test_removed_process_group_is_already_cleaned_up(self):
+        process = FakeProcess(0, stdout="output", pid=109)
+        with patch("letee.discovery.os.killpg", side_effect=ProcessLookupError):
+            stdout, stderr = _stop_process(process)
+
+        self.assertEqual((stdout, stderr), ("output", ""))
+        self.assertTrue(process.communicated)
+
     def make_poller(self, hosts, **kwargs):
         return DiscoveryPoller(hosts, local=kwargs.pop("local", Mock(return_value=EMPTY_LOCAL)), **kwargs)
 
@@ -319,6 +456,7 @@ class DiscoveryPollerTest(unittest.TestCase):
 
         load.assert_called_once_with()
         self.assertNotIn("ControlMaster=auto", popen.call_args.args[0])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
         poller.close()
 
     def test_pending_process_does_not_duplicate_or_block(self):
@@ -404,16 +542,66 @@ class DiscoveryPollerTest(unittest.TestCase):
         poller.close()
 
     def test_completed_and_failed_processes_update_snapshots(self):
-        healthy = FakeProcess(0, "work:@1:%1:1:!:/tmp/tmux\n")
-        failed = FakeProcess(255)
+        healthy = FakeProcess(0, "work:@1:%1:1:!:/tmp/tmux\n", pid=101)
+        failed = FakeProcess(255, pid=102)
         poller = self.make_poller(["dev", "off"], popen=Mock(side_effect=[healthy, failed]), clock=Mock(return_value=0))
 
-        self.assertTrue(poller.tick())
+        with patch("letee.discovery.os.killpg") as killpg:
+            self.assertTrue(poller.tick())
+
         work = Target("ssh", "work", "dev")
         self.assertEqual(poller.snapshot.remotes["dev"].sessions, (work,))
         self.assertEqual(poller.snapshot.remotes["dev"].bells, frozenset({work}))
         self.assertEqual(poller.snapshot.remotes["off"].error, "remote command exited 255")
         self.assertTrue(healthy.communicated)
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                call(101, signal.SIGTERM),
+                call(101, signal.SIGKILL),
+                call(102, signal.SIGTERM),
+                call(102, signal.SIGKILL),
+            ],
+        )
+
+    def test_completed_poller_request_cleans_exited_parent_and_its_child_process_group(self):
+        read_fd, write_fd = os.pipe()
+        pipe = None
+        child_pid = None
+        leader_pid = None
+        poller = None
+        try:
+            def popen(command, **kwargs):
+                nonlocal leader_pid
+                process = _spawn_leaking_process(write_fd, kwargs)
+                leader_pid = process.pid
+                return process
+
+            poller = self.make_poller(["dev"], popen=popen, clock=Mock(return_value=0))
+            poller.tick()
+            pipe, child_pid, process_group = _read_child_info(read_fd)
+            self.assertEqual(process_group, leader_pid)
+            for _ in range(100):
+                if poller.snapshot.remotes["dev"] is not None:
+                    break
+                time.sleep(0.01)
+                poller.tick()
+            self.assertIsNotNone(poller.snapshot.remotes["dev"])
+            readable, _, _ = select.select((pipe,), (), (), 2)
+            self.assertEqual(readable, [pipe])
+            self.assertEqual(pipe.read(), b"")
+        finally:
+            if poller is not None:
+                poller.close()
+            if pipe is not None:
+                pipe.close()
+            else:
+                os.close(read_fd)
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_spawn_failure_becomes_unavailable_snapshot(self):
         poller = self.make_poller(["dev"], popen=Mock(side_effect=OSError("no ssh")), clock=Mock(return_value=0))
@@ -497,9 +685,21 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertTrue(process.killed)
         self.assertEqual(process.wait_timeouts, [1, None])
 
+    def test_timeout_kills_remaining_process_group_and_reaps_leader(self):
+        process = GroupTimeoutProcess(pid=103)
+        poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=Mock(side_effect=[0, 0, 11]))
+
+        with patch("letee.discovery.os.killpg") as killpg:
+            poller.tick()
+            self.assertTrue(poller.tick())
+
+        self.assertEqual(killpg.call_args_list, [call(103, signal.SIGTERM), call(103, signal.SIGKILL)])
+        self.assertEqual(process.wait_timeouts, [1, None])
+        self.assertTrue(process.communicated)
+
     def test_discard_removes_target_and_cancels_stale_request(self):
         completed = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n")
-        stale = FakeProcess()
+        stale = FakeProcess(pid=104)
         poller = self.make_poller(
             ["dev"], popen=Mock(side_effect=[completed, stale]),
             clock=Mock(side_effect=[0, 0, 1, 1]),
@@ -509,20 +709,22 @@ class DiscoveryPollerTest(unittest.TestCase):
         poller.refresh()
         poller.tick()
 
-        poller.discard(target)
+        with patch("letee.discovery.os.killpg") as killpg:
+            poller.discard(target)
 
         self.assertNotIn(target, poller.snapshot.sessions)
-        self.assertTrue(stale.terminated)
+        self.assertEqual(killpg.call_args_list, [call(104, signal.SIGTERM), call(104, signal.SIGKILL)])
         self.assertTrue(stale.communicated)
 
     def test_close_terminates_and_reaps_active_process(self):
-        process = FakeProcess()
+        process = FakeProcess(pid=105)
         poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=Mock(return_value=0))
         poller.tick()
 
-        poller.close()
+        with patch("letee.discovery.os.killpg") as killpg:
+            poller.close()
 
-        self.assertTrue(process.terminated)
+        self.assertEqual(killpg.call_args_list, [call(105, signal.SIGTERM), call(105, signal.SIGKILL)])
         self.assertTrue(process.communicated)
 
 
