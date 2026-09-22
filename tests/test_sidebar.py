@@ -557,6 +557,68 @@ class SidebarViewModeTest(unittest.TestCase):
         self.assertEqual(entry.status, "unavailable")
 
 
+class ReconnectingSelectionTest(unittest.TestCase):
+    def test_enter_on_reconnecting_session_shows_progress_without_attaching(self):
+        target = Target("ssh", "work", "dev")
+        data = snapshot(
+            remotes={"dev": source("ssh", host="dev", available=False, error="connection refused")}
+        )
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        poller.observe_effect.side_effect = lambda result: setattr(poller, "current_target", target)
+        results = []
+        actions = unittest.mock.Mock(busy=False)
+
+        def submit(effect, favorites, **_kwargs):
+            results.append(sidebar._perform_effect(effect, favorites))
+            return True
+
+        actions.submit.side_effect = submit
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
+        screen = FakeScreen([curses.KEY_ENTER, -1, STOP], size=(12, 40))
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar.cockpit, "show_reconnecting") as show_reconnecting,
+            patch.object(sidebar.sessions, "attach_command") as attach_command,
+        ):
+            run(screen)
+
+        self.assertEqual(
+            [call.args[0] for call in actions.submit.call_args_list],
+            [Effect("show_reconnecting", target)],
+        )
+        switch.assert_called_once_with(target, sidebar.cockpit._reconnecting_command(target))
+        show_reconnecting.assert_not_called()
+        attach_command.assert_not_called()
+
+    def test_user_reconnecting_effect_updates_status_poller_target(self):
+        target = Target("ssh", "work", "dev")
+        discovery = unittest.mock.Mock(snapshot=snapshot())
+        poller = sidebar.AsyncStatusPoller(discovery, None)
+        try:
+            poller.observe_effect(sidebar.EffectResult(Effect("show_reconnecting", target), ()))
+            self.assertEqual(poller.current_target, target)
+            self.assertIsNone(poller.current_agent)
+        finally:
+            poller.close()
 
 
     def test_bells_are_limited_to_tracked(self):
@@ -2448,6 +2510,38 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                     time.sleep(0.001)
 
             self.assertEqual(performed, [first, latest])
+            self.assertTrue(results[0].stale_navigation)
+            self.assertFalse(results[1].stale_navigation)
+        finally:
+            release.set()
+            runner.close()
+
+    def test_effect_runner_coalesces_reconnecting_navigation_to_latest_target(self):
+        release = threading.Event()
+        reconnecting = Effect("show_reconnecting", Target("ssh", "one", "dev"))
+        latest = Effect("switch", Target("local", "two"))
+        performed = []
+
+        def perform(effect, favorites):
+            performed.append(effect)
+            if effect == reconnecting:
+                release.wait(1)
+            return sidebar.EffectResult(effect, favorites)
+
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(reconnecting, ()))
+                self.assertTrue(runner.submit(latest, ()))
+                release.set()
+                results = []
+                deadline = time.monotonic() + 1
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if result := runner.poll():
+                        results.append(result)
+                    time.sleep(0.001)
+
+            self.assertEqual(performed, [reconnecting, latest])
             self.assertTrue(results[0].stale_navigation)
             self.assertFalse(results[1].stale_navigation)
         finally:

@@ -897,6 +897,10 @@ def show_reconnecting(target: Target) -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _reconnecting_command(target))
 
 
+def switch_reconnecting(target: Target) -> None:
+    switch(target, _reconnecting_command(target))
+
+
 def _parse_target_option(text: str) -> Target | None:
     if not text:
         return None

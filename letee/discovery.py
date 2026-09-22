@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -282,14 +283,33 @@ def remote_snapshot(host: str) -> SourceSnapshot:
     host = validate_host(host)
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         try:
-            proc = subprocess.run(_ssh_command(host, load_persistent_ssh()), stdout=output, stderr=errors, timeout=10)
-        except subprocess.TimeoutExpired:
-            return SourceSnapshot(False, (), frozenset(), "timed out")
+            proc = subprocess.Popen(
+                _ssh_command(host, load_persistent_ssh()),
+                stdout=output,
+                stderr=errors,
+                start_new_session=True,
+            )
         except OSError as error:
             return SourceSnapshot(False, (), frozenset(), error.strerror or str(error))
-        text = _read_output(output, getattr(proc, "stdout", None))
-        error = _read_output(errors, getattr(proc, "stderr", None))
-    return _source_result(proc.returncode, text, error, kind="ssh", host=host)
+        timed_out = False
+        wait_error: OSError | None = None
+        returncode = None
+        try:
+            try:
+                returncode = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+            except OSError as error:
+                wait_error = error
+        finally:
+            stdout, stderr = _stop_process(proc)
+        if timed_out:
+            return SourceSnapshot(False, (), frozenset(), "timed out")
+        if wait_error is not None:
+            return SourceSnapshot(False, (), frozenset(), wait_error.strerror or str(wait_error))
+        text = _read_output(output, stdout)
+        error = _read_output(errors, stderr)
+    return _source_result(returncode, text, error, kind="ssh", host=host)
 
 
 def discover() -> SessionSnapshot:
@@ -304,15 +324,34 @@ class _Request:
     errors: object
 
 
-def _stop_process(process: object) -> None:
-    if process.poll() is None:
-        process.terminate()
+def _stop_process(process: object) -> tuple[object, object]:
+    running = process.poll() is None
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        if running:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        return process.communicate()
+
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    if running:
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-    process.communicate()
+            pass
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+    return process.communicate()
 
 
 class DiscoveryPoller:
@@ -348,9 +387,9 @@ class DiscoveryPoller:
         self._next[host] = now + FAILURE_POLL_INTERVAL
 
     def _finish_request(self, host: str, request: _Request, now: float, returncode: int) -> bool:
-        stdout, _ = request.process.communicate()
+        stdout, stderr = _stop_process(request.process)
         text = _read_output(request.output, stdout)
-        error = _read_output(request.errors)
+        error = _read_output(request.errors, stderr)
         request.output.close()
         request.errors.close()
         snapshot = _source_result(returncode, text, error, kind="ssh", host=host)
@@ -364,7 +403,12 @@ class DiscoveryPoller:
         output = tempfile.TemporaryFile()
         errors = tempfile.TemporaryFile()
         try:
-            process = self._popen(_ssh_command(host, self._persistent_ssh), stdout=output, stderr=errors)
+            process = self._popen(
+                _ssh_command(host, self._persistent_ssh),
+                stdout=output,
+                stderr=errors,
+                start_new_session=True,
+            )
         except OSError as error:
             output.close()
             errors.close()
