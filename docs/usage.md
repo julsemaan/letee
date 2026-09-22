@@ -82,7 +82,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s a` | Show the sidebar and focus Agents. Recreate it if it was quit. |
 | `C-s r` | Remove the active right-pane session from letee without killing its tmux session. |
 | `C-s x` | Kill and remove the active right-pane session after `y/N` confirmation. The right pane returns to the startup help screen. |
-| `C-s !` | Jump to the first alerted agent without restoring a healthy hidden sidebar, including across sessions. If recovery recreates an invalid cockpit, the normal split layout may return. With no alert, leave the right pane focused. |
+| `C-s Enter` | Jump to the first alerted agent without restoring a healthy hidden sidebar, including across sessions. If recovery recreates an invalid cockpit, the normal split layout may return. With no alert, leave the right pane focused. |
 | `C-s w` | Focus the right pane. |
 | `C-s h` | Hide or show the sidebar. The sidebar remains alive while hidden. |
 | `C-s q` | Quit the outer letee session. |
@@ -108,7 +108,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 
 `›` marks keyboard selection and left-pane focus. The mint reverse highlight marks the active session independently. An unfocused sidebar hides the pointer while preserving selection, viewport, colors, and the active-session highlight.
 
-These controls stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F6` through `F11`, and session slots `1` through `9`. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
+These sidebar controls stay fixed and cannot be remapped: bare `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F6` through `F11`, and session slots `1` through `9`. The outer `C-s Enter` alert binding is configurable. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
 
 ## Tracked sessions and ordering
 

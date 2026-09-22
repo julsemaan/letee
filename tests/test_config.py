@@ -229,6 +229,7 @@ class KeybindingConfigTest(unittest.TestCase):
     def test_keybindings_default_without_table(self):
         self.write_config("hosts = []\n")
         self.assertEqual(config.load_keybindings(), config.DEFAULT_KEYBINDINGS)
+        self.assertEqual(config.load_keybindings()["jump_alert"], "prefix+Enter")
         self.assertEqual(config.load_sidebar_keybindings(), config.DEFAULT_SIDEBAR_KEYBINDINGS)
 
     def test_partial_override_merges_with_defaults(self):
@@ -251,6 +252,16 @@ class KeybindingConfigTest(unittest.TestCase):
         # plain without prefix is global binding
         self.write_config('[keybindings]\nfocus_agents = "C-a"\n')
         self.assertEqual(config.load_keybindings()["focus_agents"], "C-a")
+
+    def test_named_enter_key_is_accepted(self):
+        self.write_config('[keybindings]\njump_alert = "prefix+Enter"\n')
+
+        self.assertEqual(config.load_keybindings()["jump_alert"], "prefix+Enter")
+
+    def test_existing_alert_binding_override_remains_valid(self):
+        self.write_config('[keybindings]\njump_alert = "prefix+!"\n')
+
+        self.assertEqual(config.load_keybindings()["jump_alert"], "prefix+!")
 
     def test_outer_alias_normalizes_to_canonical_action(self):
         self.write_config('[keybindings]\nagents = "C-a"\n')

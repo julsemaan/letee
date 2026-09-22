@@ -66,7 +66,7 @@ focus_sessions = "prefix+s"
 add_session = "prefix++"
 remove_active = "prefix+r"
 kill_active = "prefix+x"
-jump_alert = "prefix+!"
+jump_alert = "prefix+Enter"
 focus_right = "prefix+w"
 toggle_sidebar = "prefix+h"
 quit = "prefix+q"
@@ -85,7 +85,9 @@ resize_inc = "["
 resize_dec = "]"
 ```
 
-Outer values are tmux key tokens such as `a`, `+`, `C-a`, `M-x`, or `F1`. Prefix a value with `prefix+` to require the outer prefix. For example, `prefix+a` means `C-s` then `a` when `prefix = "C-s"`, while `prefix+C-a` means the outer prefix followed by `C-a`. A value without `prefix+`, such as `C-a`, binds globally without `C-s` using tmux `bind-key -n`.
+Outer values are tmux key tokens such as `a`, `+`, `C-a`, `M-x`, `F1`, or `Enter`. Prefix a value with `prefix+` to require the outer prefix. For example, `prefix+a` means `C-s` then `a` when `prefix = "C-s"`, while `prefix+C-a` means the outer prefix followed by `C-a`. A value without `prefix+`, such as `C-a`, binds globally without `C-s` using tmux `bind-key -n`.
+
+The default alert binding is `prefix+Enter`. Bare `Enter` remains the fixed sidebar action and cannot be remapped.
 
 Sidebar values are single printable ASCII characters such as `j` or `[`. The following action aliases are also accepted for compatibility:
 
@@ -100,10 +102,10 @@ Prefer the canonical action names shown in the configuration example.
 - Two actions in the same table may not use the same binding. In the outer table, `a` and `prefix+a` are different bindings because one is global and one uses the prefix table.
 - Outer and sidebar bindings may not use the reserved session slots `1` through `9`.
 - An outer binding may not use the effective key that equals the configured `prefix`, such as `prefix+C-s` when `prefix = "C-s"`.
-- Outer bindings must be a non-empty, printable, whitespace-free tmux key token such as `a`, `+`, `C-a`, or `F1`, optionally prefixed with `prefix+`.
+- Outer bindings must be a non-empty, printable, whitespace-free tmux key token such as `a`, `+`, `C-a`, `F1`, or `Enter`, optionally prefixed with `prefix+`.
 - Sidebar bindings must be exactly one printable ASCII character.
 
-These inputs stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F6` through `F11`, and session slots `1` through `9`.
+These sidebar inputs stay fixed and cannot be remapped: bare `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F6` through `F11`, and session slots `1` through `9`.
 
 Bindings load once at startup. After editing `~/.config/letee/config.toml`, rerun `letee` to apply outer and sidebar changes. Sidebar changes also require a sidebar restart. `letee` does that automatically when it recreates the cockpit.
 
