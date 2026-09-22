@@ -571,6 +571,7 @@ class ReconnectingSelectionTest(unittest.TestCase):
             pane_active=True,
         )
         poller.tick.return_value = False
+        poller.observe_effect.side_effect = lambda result: setattr(poller, "current_target", target)
         results = []
         actions = unittest.mock.Mock(busy=False)
 
@@ -580,7 +581,7 @@ class ReconnectingSelectionTest(unittest.TestCase):
 
         actions.submit.side_effect = submit
         actions.poll.side_effect = lambda: results.pop(0) if results else None
-        screen = FakeScreen([curses.KEY_ENTER, STOP], size=(12, 40))
+        screen = FakeScreen([curses.KEY_ENTER, -1, STOP], size=(12, 40))
 
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
@@ -600,7 +601,10 @@ class ReconnectingSelectionTest(unittest.TestCase):
         ):
             run(screen)
 
-        self.assertEqual(actions.submit.call_args.args[0], Effect("show_reconnecting", target))
+        self.assertEqual(
+            [call.args[0] for call in actions.submit.call_args_list],
+            [Effect("show_reconnecting", target)],
+        )
         switch.assert_called_once_with(target, sidebar.cockpit._reconnecting_command(target))
         show_reconnecting.assert_not_called()
         attach_command.assert_not_called()

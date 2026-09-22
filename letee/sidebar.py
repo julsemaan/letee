@@ -472,7 +472,11 @@ def _reconcile_active_session_effect(
     unavailable_target_shown: Target | None,
     result: EffectResult,
 ) -> Target | None:
-    if result.error or result.stale_navigation or not result.effect.automatic:
+    if (
+        result.error
+        or result.stale_navigation
+        or (not result.effect.automatic and result.effect.kind != "show_reconnecting")
+    ):
         return unavailable_target_shown
     target = result.effect.target
     if not isinstance(target, Target):
