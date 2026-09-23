@@ -5499,8 +5499,8 @@ class SidebarDrawTest(unittest.TestCase):
 
 
 class SidebarBurstInputTest(unittest.TestCase):
-    def _run(self, keys, data, favorites=(), mouse_events=(), size=(12, 40)):
-        screen = FakeScreen(keys, size=size)
+    def _run(self, keys, data, favorites=(), mouse_events=(), size=(12, 40), screen_class=FakeScreen):
+        screen = screen_class(keys, size=size)
         poller = unittest.mock.Mock(
             snapshot=data,
             current_target=None,
@@ -5556,6 +5556,32 @@ class SidebarBurstInputTest(unittest.TestCase):
         )
 
         self.assertEqual(draws[-1]["target"], favorites[-1])
+
+    def test_fragmented_arrow_sequences_are_read_during_burst_polling(self):
+        class FragmentedArrowScreen(FakeScreen):
+            def __init__(self, keys, size=(12, 40)):
+                super().__init__(keys, size=size)
+                self._arrow_count = 0
+
+            def getch(self):
+                if self.keys and self.keys[0] in (curses.KEY_UP, curses.KEY_DOWN):
+                    key = self.keys.pop(0)
+                    self._arrow_count += 1
+                    if self.timeout_value == 0 and self._arrow_count > 1:
+                        return 27  # The escape prefix arrives before the sequence is complete.
+                    self.calls.append(("getch",))
+                    return key
+                return super().getch()
+
+        favorites = [Target("local", name) for name in ("one", "two", "three", "four")]
+        _, _, draws, _ = self._run(
+            [curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_UP, curses.KEY_UP, STOP],
+            snapshot(local=tuple(target.session for target in favorites)),
+            favorites,
+            screen_class=FragmentedArrowScreen,
+        )
+
+        self.assertEqual(draws[-1]["target"], favorites[0])
 
     def test_rapid_add_existing_navigation_applies_every_key_in_order(self):
         _, _, draws, _ = self._run(

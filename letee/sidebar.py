@@ -3071,7 +3071,7 @@ def run(stdscr: curses.window) -> None:
             event_already_read = False
             queued_input = False
             if burst_count:
-                event = read_input(0)
+                event = read_input(UI_POLL_INTERVAL_MS)
                 event_already_read = True
                 if event is None:
                     burst_count = 0
@@ -3175,7 +3175,7 @@ def run(stdscr: curses.window) -> None:
             if not burst_count:
                 render_sidebar(now, current_target, agent_alert, force=force_render)
                 force_render = False
-            if event is None:
+            if event is None and not event_already_read:
                 event = read_input(UI_POLL_INTERVAL_MS)
             if event is None:
                 continue
