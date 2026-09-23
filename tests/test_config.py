@@ -306,6 +306,15 @@ class KeybindingConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "duplicate"):
             config.load_keybindings()
 
+    def test_tmux_aliases_are_duplicate_bindings(self):
+        self.write_config('[keybindings]\nfocus_agents = "prefix+C-m"\n')
+        with self.assertRaisesRegex(SystemExit, "duplicate"):
+            config.load_keybindings()
+
+        self.write_config('[keybindings]\nfocus_agents = "prefix+C-A"\nfocus_sessions = "prefix+C-a"\n')
+        with self.assertRaisesRegex(SystemExit, "duplicate"):
+            config.load_keybindings()
+
     def test_duplicate_sidebar_binding_fails(self):
         self.write_config('[sidebar_keybindings]\nrename = "x"\nremove = "x"\n')
         with self.assertRaisesRegex(SystemExit, "duplicate"):
@@ -324,6 +333,9 @@ class KeybindingConfigTest(unittest.TestCase):
             config.load_keybindings()
         # default that conflicts with new prefix also fails
         self.write_config('prefix = "a"\n')
+        with self.assertRaisesRegex(SystemExit, "conflicts with prefix"):
+            config.load_keybindings()
+        self.write_config('prefix = "C-S"\n[keybindings]\nfocus_agents = "C-s"\n')
         with self.assertRaisesRegex(SystemExit, "conflicts with prefix"):
             config.load_keybindings()
 
