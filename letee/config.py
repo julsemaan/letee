@@ -21,7 +21,7 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "add_session": "prefix++",
     "remove_active": "prefix+r",
     "kill_active": "prefix+x",
-    "jump_alert": "prefix+!",
+    "jump_alert": "prefix+j",
     "focus_right": "prefix+w",
     "toggle_sidebar": "prefix+h",
     "quit": "prefix+q",

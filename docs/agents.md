@@ -98,7 +98,7 @@ Set `LETEE_ASCII=1` to use ASCII icons, spinner frames, the `>` selection cursor
 
 Select an agent and press `Enter` to switch to its exact tmux server, window, and pane. Letee uses the recorded tmux socket and pane ID, so it does not rely on the selected session's current window.
 
-`C-s !` navigates the Agents view and jumps to the first alerted agent using the current Agents ordering without selecting the sidebar pane. A healthy hidden sidebar stays hidden, including when the alerted agent is in another session. If the cockpit or sidebar is invalid, letee recreates it and may restore the normal split layout. It clears only that agent's alert after a successful exact-pane switch. If there is no alert, letee reports `no agent alerts` in Agents and leaves the right pane focused.
+`C-s j` navigates the Agents view and jumps to the first alerted agent using the current Agents ordering without selecting the sidebar pane. A healthy hidden sidebar stays hidden, including when the alerted agent is in another session. If the cockpit or sidebar is invalid, letee recreates it and may restore the normal split layout. It clears only that agent's alert after a successful exact-pane switch. If there is no alert, letee reports `no agent alerts` in Agents and leaves the right pane focused.
 
 ## Terminating an agent
 
