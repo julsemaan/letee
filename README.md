@@ -49,7 +49,7 @@ Use the [local agent discovery guide](https://github.com/julsemaan/letee/blob/ma
 
 Start an agent inside a session, then press `C-s a`. Select the agent with `j` and `k` and press `Enter`. Letee opens the agent's exact tmux pane. Agents outside tracked sessions do not appear.
 
-When an agent needs attention, press `C-s Enter` to open Agents and jump to the first alert. See the [agent integration guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md) for alert states and termination behavior.
+When an agent needs attention, press `C-s j` to open Agents and jump to the first alert. See the [agent integration guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md) for alert states and termination behavior.
 
 ## Essential controls
 

@@ -229,7 +229,7 @@ class KeybindingConfigTest(unittest.TestCase):
     def test_keybindings_default_without_table(self):
         self.write_config("hosts = []\n")
         self.assertEqual(config.load_keybindings(), config.DEFAULT_KEYBINDINGS)
-        self.assertEqual(config.load_keybindings()["jump_alert"], "prefix+Enter")
+        self.assertEqual(config.load_keybindings()["jump_alert"], "prefix+j")
         self.assertEqual(config.load_sidebar_keybindings(), config.DEFAULT_SIDEBAR_KEYBINDINGS)
 
     def test_partial_override_merges_with_defaults(self):
@@ -252,11 +252,6 @@ class KeybindingConfigTest(unittest.TestCase):
         # plain without prefix is global binding
         self.write_config('[keybindings]\nfocus_agents = "C-a"\n')
         self.assertEqual(config.load_keybindings()["focus_agents"], "C-a")
-
-    def test_named_enter_key_is_accepted(self):
-        self.write_config('[keybindings]\njump_alert = "prefix+Enter"\n')
-
-        self.assertEqual(config.load_keybindings()["jump_alert"], "prefix+Enter")
 
     def test_existing_alert_binding_override_remains_valid(self):
         self.write_config('[keybindings]\njump_alert = "prefix+!"\n')
@@ -306,15 +301,6 @@ class KeybindingConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "duplicate"):
             config.load_keybindings()
 
-    def test_tmux_aliases_are_duplicate_bindings(self):
-        self.write_config('[keybindings]\nfocus_agents = "prefix+C-m"\n')
-        with self.assertRaisesRegex(SystemExit, "duplicate"):
-            config.load_keybindings()
-
-        self.write_config('[keybindings]\nfocus_agents = "prefix+C-A"\nfocus_sessions = "prefix+C-a"\n')
-        with self.assertRaisesRegex(SystemExit, "duplicate"):
-            config.load_keybindings()
-
     def test_duplicate_sidebar_binding_fails(self):
         self.write_config('[sidebar_keybindings]\nrename = "x"\nremove = "x"\n')
         with self.assertRaisesRegex(SystemExit, "duplicate"):
@@ -335,12 +321,9 @@ class KeybindingConfigTest(unittest.TestCase):
         self.write_config('prefix = "a"\n')
         with self.assertRaisesRegex(SystemExit, "conflicts with prefix"):
             config.load_keybindings()
-        self.write_config('prefix = "C-S"\n[keybindings]\nfocus_agents = "C-s"\n')
-        with self.assertRaisesRegex(SystemExit, "conflicts with prefix"):
-            config.load_keybindings()
 
     def test_invalid_tmux_tokens_are_rejected(self):
-        for token in ('"C-"', '""', '"C x"', '"invalid"'):
+        for token in ('"C-"', '""', '"C x"', '"invalid"', '"prefix+Enter"'):
             with self.subTest(token=token):
                 self.write_config(f"[keybindings]\nfocus_agents = {token}\n")
                 with self.assertRaisesRegex(SystemExit, "tmux key token"):

@@ -21,7 +21,7 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "add_session": "prefix++",
     "remove_active": "prefix+r",
     "kill_active": "prefix+x",
-    "jump_alert": "prefix+Enter",
+    "jump_alert": "prefix+j",
     "focus_right": "prefix+w",
     "toggle_sidebar": "prefix+h",
     "quit": "prefix+q",
@@ -39,8 +39,8 @@ DEFAULT_SIDEBAR_KEYBINDINGS: dict[str, str] = {
     "resize_inc": "[",
     "resize_dec": "]",
 }
-# ponytail: simple regex covers common tmux tokens and the named Enter key.
-_TMUX_TOKEN_RE = re.compile(r"^(?:(?:C|M|S)-)*(?:Enter|[A-Za-z0-9]|[!@#$%^&*()_+\-=\[\]{};':\",./<>?`~|\\]|F[0-9]{1,2})$")
+# ponytail: simple regex covers common tmux tokens; extend only if real configs need Space/Enter etc.
+_TMUX_TOKEN_RE = re.compile(r"^(?:(?:C|M|S)-)*(?:[A-Za-z0-9]|[!@#$%^&*()_+\-=\[\]{};':\",./<>?`~|\\]|F[0-9]{1,2})$")
 _RESERVED_SLOTS = {str(n) for n in range(1, 10)}
 _KEYBINDING_ALIASES = {
     "agents": "focus_agents",
@@ -135,15 +135,6 @@ def _effective_token(value: str, *, sidebar: bool) -> str:
     return eff
 
 
-def _canonicalize_tmux_token(token: str) -> str:
-    if token == "Enter":
-        return "C-m"
-    match = re.fullmatch(r"((?:C-|M-|S-)*)([A-Za-z])", token)
-    if match and "C-" in match[1]:
-        return f"{match[1]}{match[2].lower()}"
-    return token
-
-
 def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str, defaults: dict[str, str], *, sidebar: bool) -> dict[str, str]:
     raw = data.get(block_name, {})
     if raw is None:
@@ -151,7 +142,6 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
     if not isinstance(raw, dict):
         raise SystemExit(f"Invalid config {cfg}: [{block_name}] must be a table")
     aliases = _SIDEBAR_ALIASES if sidebar else _KEYBINDING_ALIASES
-    canonical_prefix = _canonicalize_tmux_token(prefix) if not sidebar else prefix
     normalized: dict[str, str] = {}
     for key, value in raw.items():
         canon = aliases.get(key, key)
@@ -182,14 +172,14 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is not a valid tmux key token")
             if eff in _RESERVED_SLOTS:
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is reserved (session slots 1 through 9)")
-            if _canonicalize_tmux_token(eff) == canonical_prefix:
+            if eff == prefix:
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} conflicts with prefix {prefix!r}")
         merged[action] = value
-    # Compare canonical tmux keys within their prefix/global tables.
+    # duplicate bindings: normalized, table-sensitive (prefix+ lowercased; `a` vs `prefix+a` remain distinct)
     seen: dict[tuple[bool, str], str] = {}
     for action, token in merged.items():
         has_pref, eff = _split_prefix(token) if not sidebar else (False, token)
-        identity = (has_pref, _canonicalize_tmux_token(eff) if not sidebar else eff)
+        identity = (has_pref, eff)
         if identity in seen:
             raise SystemExit(f"Invalid config {cfg}: duplicate binding {token!r} for {seen[identity]!r} and {action!r} in [{block_name}]")
         seen[identity] = action
@@ -197,7 +187,7 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
     if not sidebar:
         for action, token in merged.items():
             _, eff = _split_prefix(token)
-            if _canonicalize_tmux_token(eff) == canonical_prefix and action not in raw:
+            if eff == prefix and action not in raw:
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {token!r} conflicts with prefix {prefix!r}")
     return merged
 
