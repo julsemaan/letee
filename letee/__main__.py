@@ -7,7 +7,7 @@ import stat
 import subprocess
 import sys
 
-from . import config, cockpit, sessions, tmux
+from . import __version__, config, cockpit, sessions, tmux
 from .config import ensure_config, load_sessions, save_sessions
 from .discovery import discover
 from .names import (
@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("cockpit", help="launch or attach cockpit")
+    sub.add_parser("version", help="show letee version")
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
     focus_sidebar = sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
     focus_sidebar.add_argument(
@@ -167,6 +168,9 @@ def _configure_server(server: str | None) -> None:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(argv)
+    if args.command == "version":
+        print(__version__)
+        return 0
     _configure_server(args.server)
     if args.command == "sidebar":
         from .sidebar import main as sidebar_main
