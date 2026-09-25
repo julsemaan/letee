@@ -1035,16 +1035,16 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
             if effect.kind == "add_switch" and planned != favorites:
                 save_sessions(list(planned))
-            cockpit.switch(effect.target, sessions.attach_command(effect.target))
+            cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            cockpit.switch(effect.target.target, sessions.pane_attach_command(effect.target), effect.message)
+            cockpit.switch(effect.target.target, lambda: sessions.pane_attach_command(effect.target), effect.message)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
             sessions.kill_agent(effect.target)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
             if planned != favorites:
                 save_sessions(list(planned))
-            cockpit.switch(effect.target, sessions.attach_command(effect.target))
+            cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
         elif effect.kind == "rename" and isinstance(effect.target, Target):
             renamed = _renamed_target(effect)
             if renamed is None:

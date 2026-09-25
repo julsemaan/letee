@@ -9,6 +9,7 @@ import signal
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TypeVar
 
 from .config import (
     DEFAULT_KEYBINDINGS,
@@ -471,6 +472,10 @@ def _reconnecting_command(target: Target) -> str:
     return _animated_command(target, "Connection interrupted", "Reconnecting")
 
 
+def _switching_command(target: Target) -> str:
+    return _animated_command(target, "Switching session", "Preparing")
+
+
 def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
     target_match = f"#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}}},#{{{CURRENT_TARGET_OPTION}}}}}"
@@ -691,9 +696,12 @@ def _switch_fields(
     }
 
 
+_Result = TypeVar("_Result")
+
+
 def switch(
     target: Target,
-    attach_command: str,
+    attach_command: str | Callable[[], str],
     agent_id: str | None = None,
     *,
     action_id: str | None = None,
@@ -733,11 +741,11 @@ def switch(
         )
         raise error
 
-    def stage(kind: str, name: str, operation: Callable[[], None]) -> None:
+    def stage(kind: str, name: str, operation: Callable[[], _Result]) -> _Result:
         fields = _switch_fields(target, pane, switch_id, action_id, input_id)
         debug.emit(f"switch_{kind}", **fields, stage=name, status="started")
         try:
-            operation()
+            result = operation()
         except BaseException as error:
             debug.emit(f"switch_{kind}", **fields, stage=name, status="error", error_type=type(error).__name__)
             debug.emit(
@@ -748,6 +756,7 @@ def switch(
             )
             raise
         debug.emit(f"switch_{kind}", **fields, stage=name, status="completed")
+        return result
 
     def update_markers() -> None:
         marker_update = f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())}"
@@ -759,6 +768,20 @@ def switch(
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
 
     stage("marker_update", "current_target_marker", update_markers)
+    if callable(attach_command):
+        stage(
+            "respawn",
+            "switch_progress",
+            lambda: tmux.tmux("respawn-pane", "-k", "-t", pane, _switching_command(target)),
+        )
+        try:
+            attach_command = stage("prepare", "attach_command_preparation", attach_command)
+        except BaseException:
+            try:
+                tmux.tmux("respawn-pane", "-k", "-t", pane, _unavailable_command(target))
+            except BaseException:
+                pass
+            raise
     stage(
         "respawn",
         "right_pane_respawn",

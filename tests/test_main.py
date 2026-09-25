@@ -89,8 +89,12 @@ class MainTest(unittest.TestCase):
         ):
             main(["switch-session", "2"])
 
+            attach_command.assert_not_called()
+            switch.assert_called_once()
+            self.assertTrue(callable(switch.call_args.args[1]))
+            self.assertEqual(switch.call_args.args[1](), "attach")
+
         attach_command.assert_called_once_with(target)
-        switch.assert_called_once_with(target, "attach")
 
     def test_switch_session_rejects_empty_slot_without_switching(self):
         with (
@@ -108,6 +112,23 @@ class MainTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     main(["switch-session", slot])
                 switch.assert_not_called()
+
+    def test_switch_defers_attach_command_until_cockpit_switches(self):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch("letee.cockpit.right_pane", return_value="pane"),
+            patch("letee.__main__.sessions.attach_command", return_value="attach") as attach_command,
+            patch("letee.__main__.cockpit.switch") as switch,
+        ):
+            main(["switch", target.format()])
+
+            attach_command.assert_not_called()
+            switch.assert_called_once()
+            self.assertEqual(switch.call_args.args[0], target)
+            self.assertTrue(callable(switch.call_args.args[1]))
+            self.assertEqual(switch.call_args.args[1](), "attach")
+
+        attach_command.assert_called_once_with(target)
 
     def test_switch_without_cockpit_fails_before_building_attach_command(self):
         with (
@@ -203,9 +224,13 @@ class MainTest(unittest.TestCase):
         ):
             main(["create", "local", "--", "-V"])
 
+            attach_command.assert_not_called()
+            switch.assert_called_once()
+            self.assertTrue(callable(switch.call_args.args[1]))
+            self.assertEqual(switch.call_args.args[1](), "attach")
+
         create.assert_called_once_with(target)
         attach_command.assert_called_once_with(target)
-        switch.assert_called_once_with(target, "attach")
 
     def test_list_uses_session_snapshot_and_displays_local_errors(self):
         snapshot = SessionSnapshot(
@@ -393,10 +418,13 @@ class MainTest(unittest.TestCase):
             patch("letee.cockpit.switch") as switch,
         ):
             main(["create", "local", "work"])
+            attach_command = switch.call_args.args[1]
+            self.assertTrue(callable(attach_command))
+            command = attach_command()
 
         overlay.assert_called_with()
         self.assertEqual(run.call_args.args[0], ("tmux", "-L", "letee.inner", "new-session", "-d", "-s", "work"))
-        self.assertEqual(switch.call_args.args[1], "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work")
+        self.assertEqual(command, "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work")
 
     def test_create_sources_packaged_overlay_when_enabled(self):
         with (
@@ -406,10 +434,11 @@ class MainTest(unittest.TestCase):
             patch("letee.cockpit.switch") as switch,
         ):
             main(["create", "local", "work"])
+            command = switch.call_args.args[1]()
 
         self.assertEqual(run.call_args_list[0].args[0], ("tmux", "-L", "letee.inner", "new-session", "-d", "-s", "work"))
         self.assertEqual(run.call_args_list[1].args[0], ("tmux", "-L", "letee.inner", "source-file", str(sessions.OVERLAY_FILE)))
-        self.assertIn("\\; source-file", switch.call_args.args[1])
+        self.assertIn("\\; source-file", command)
 
 
 if __name__ == "__main__":
