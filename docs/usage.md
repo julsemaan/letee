@@ -42,6 +42,7 @@ The default prefix for these examples is `C-s`. `-L <name>` selects a named oute
 | Command | Action |
 | --- | --- |
 | `letee` or `letee cockpit` | Launch or attach the cockpit. |
+| `letee version` | Print the letee version. |
 | `letee init` | Create missing `config.toml` and `wrapper.tmux.conf` files. |
 | `letee list` | List discovered local and remote targets. |
 | `letee list-servers` | List running verified letee outer servers. |

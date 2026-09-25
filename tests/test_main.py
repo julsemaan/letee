@@ -3,10 +3,13 @@ import socket
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 import letee.sessions as sessions
+from letee import __version__
 from letee.__main__ import _tmux_socket_dir, main
 from letee.discovery import SessionSnapshot, SourceSnapshot
 from letee.names import Target
@@ -21,6 +24,19 @@ class MainTest(unittest.TestCase):
 
         config.set_server(None)
         tmux.set_server(None)
+
+    def test_version_prints_without_configuring_or_starting_cockpit(self):
+        output = StringIO()
+        with (
+            redirect_stdout(output),
+            patch("letee.__main__._configure_server") as configure_server,
+            patch("letee.__main__.cockpit.cockpit") as cockpit,
+        ):
+            self.assertEqual(main(["version"]), 0)
+
+        self.assertEqual(output.getvalue(), f"{__version__}\n")
+        configure_server.assert_not_called()
+        cockpit.assert_not_called()
 
     def test_socket_dir_matches_tmux_default_when_tmpdir_is_unset(self):
         with (
