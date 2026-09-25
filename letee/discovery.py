@@ -38,6 +38,7 @@ MAX_REMOTE_OUTPUT = 1024 * 1024
 LOCAL_POLL_INTERVAL = 0.5
 SUCCESS_POLL_INTERVAL = 10
 FAILURE_POLL_INTERVAL = 2
+MASTER_CHECK_TIMEOUT = 2
 
 
 @dataclass(frozen=True)
@@ -281,10 +282,11 @@ def _read_output(output: object, fallback: str | bytes | None = None) -> str | N
 
 def remote_snapshot(host: str) -> SourceSnapshot:
     host = validate_host(host)
+    persistent_ssh = load_persistent_ssh()
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         try:
             proc = subprocess.Popen(
-                _ssh_command(host, load_persistent_ssh()),
+                _ssh_command(host, persistent_ssh),
                 stdout=output,
                 stderr=errors,
                 start_new_session=True,
@@ -302,7 +304,11 @@ def remote_snapshot(host: str) -> SourceSnapshot:
             except OSError as error:
                 wait_error = error
         finally:
-            stdout, stderr = _stop_process(proc)
+            stdout, stderr = _stop_process(
+                proc,
+                keep_group=returncode is not None
+                and _persistent_master_alive(host, persistent_ssh),
+            )
         if timed_out:
             return SourceSnapshot(False, (), frozenset(), "timed out")
         if wait_error is not None:
@@ -324,10 +330,31 @@ class _Request:
     errors: object
 
 
-def _stop_process(process: object) -> tuple[object, object]:
+def _persistent_master_alive(host: str, persistent_ssh: bool) -> bool:
+    """Whether a ControlPersist master owns the host's control socket.
+
+    A master keeps its ProxyCommand inside the process group of the request
+    that created it, so that group must survive the request.
+    """
+    if not persistent_ssh:
+        return False
+    try:
+        result = subprocess.run(
+            ssh_command("-O", "check", host, persistent_ssh=persistent_ssh),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=MASTER_CHECK_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _stop_process(process: object, *, keep_group: bool = False) -> tuple[object, object]:
     running = process.poll() is None
     pid = getattr(process, "pid", None)
-    if pid is None:
+    if pid is None or (keep_group and not running):
         if running:
             process.terminate()
             try:
@@ -362,10 +389,11 @@ class DiscoveryPoller:
         popen: Callable[..., object] = subprocess.Popen,
         clock: Callable[[], float] = time.monotonic,
         local: Callable[[], SourceSnapshot] | None = None,
+        persistent_ssh: bool | None = None,
     ) -> None:
         self.hosts = tuple(validate_host(host) for host in hosts)
         self._local_snapshot = local or local_snapshot
-        self._persistent_ssh = load_persistent_ssh()
+        self._persistent_ssh = load_persistent_ssh() if persistent_ssh is None else persistent_ssh
         self.local = self._local_snapshot()
         self.remotes: dict[str, SourceSnapshot | None] = dict.fromkeys(self.hosts)
         self._popen = popen
@@ -387,7 +415,10 @@ class DiscoveryPoller:
         self._next[host] = now + FAILURE_POLL_INTERVAL
 
     def _finish_request(self, host: str, request: _Request, now: float, returncode: int) -> bool:
-        stdout, stderr = _stop_process(request.process)
+        stdout, stderr = _stop_process(
+            request.process,
+            keep_group=_persistent_master_alive(host, self._persistent_ssh),
+        )
         text = _read_output(request.output, stdout)
         error = _read_output(request.errors, stderr)
         request.output.close()

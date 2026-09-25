@@ -209,6 +209,38 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
         )
 
+    def test_failed_navigation_marks_target_for_retry(self):
+        target = Target("ssh", "work", "dev")
+
+        for kind in ("switch", "add_switch"):
+            with self.subTest(kind=kind):
+                result = sidebar.EffectResult(
+                    sidebar.Effect(kind, target), (), error="ssh failed"
+                )
+                self.assertEqual(
+                    sidebar._reconcile_active_session_effect(None, result), target
+                )
+
+    def test_failed_switch_pane_marks_host_session_for_retry(self):
+        target = Target("ssh", "work", "dev")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux-1000/letee", "editor")
+        result = sidebar.EffectResult(
+            sidebar.Effect("switch_pane", pane), (), error="ssh failed"
+        )
+
+        self.assertEqual(sidebar._reconcile_active_session_effect(None, result), target)
+
+    def test_failed_kill_leaves_marker_untouched(self):
+        shown = Target("ssh", "work", "dev")
+        result = sidebar.EffectResult(
+            sidebar.Effect("kill", Target("ssh", "other", "dev")), (),
+            error="ssh failed",
+        )
+
+        self.assertEqual(
+            sidebar._reconcile_active_session_effect(shown, result), shown
+        )
+
     def test_active_missing_session_shows_missing_then_restores_session(self):
         target = Target("local", "work")
 
@@ -241,6 +273,27 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
 
         show_reconnecting.assert_called_once_with(target)
+        _assert_deferred_switch(self, switch, target)
+        self.assertEqual(pending, target)
+        self.assertIsNone(restored)
+
+    def test_failed_switch_retries_once_snapshot_is_healthy(self):
+        target = Target("ssh", "work", "dev")
+        failed = sidebar.EffectResult(
+            sidebar.Effect("switch", target, automatic=True), (), error="ssh failed"
+        )
+        pending = sidebar._reconcile_active_session_effect(None, failed)
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            restored = sidebar._sync_active_session(
+                target,
+                snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")}),
+                pending,
+            )
+
         _assert_deferred_switch(self, switch, target)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
