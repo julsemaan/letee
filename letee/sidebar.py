@@ -477,6 +477,16 @@ def _reconcile_active_session_effect(
         or result.stale_navigation
         or (not result.effect.automatic and result.effect.kind != "show_reconnecting")
     ):
+        if (
+            result.error
+            and not result.stale_navigation
+            and result.effect.kind in ("switch", "add_switch", "switch_pane")
+        ):
+            target = result.effect.target
+            if isinstance(target, PaneTarget):
+                target = target.target
+            if isinstance(target, Target):
+                return target
         return unavailable_target_shown
     target = result.effect.target
     if not isinstance(target, Target):

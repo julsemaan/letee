@@ -9,11 +9,13 @@ from unittest.mock import Mock, call, patch
 
 from letee.discovery import (
     DiscoveryPoller,
+    MASTER_CHECK_TIMEOUT,
     REMOTE_COMMAND,
     SessionSnapshot,
     SourceSnapshot,
     _clean_env,
     _parse_source_snapshot,
+    _persistent_master_alive,
     _read_agents,
     _source_result,
     _stop_process,
@@ -255,18 +257,49 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertNotIn("ControlMaster=auto", popen.call_args.args[0])
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
+    def test_master_check_is_skipped_without_persistence(self):
+        with patch("letee.discovery.subprocess.run") as run:
+            self.assertFalse(_persistent_master_alive("dev", False))
+
+        run.assert_not_called()
+
+    def test_master_check_reports_running_master(self):
+        with patch("letee.discovery.subprocess.run", return_value=Mock(returncode=0)) as run:
+            self.assertTrue(_persistent_master_alive("dev", True))
+
+        self.assertEqual(run.call_args.args[0][0], "ssh")
+        self.assertEqual(run.call_args.args[0][-3:], ("-O", "check", "dev"))
+        self.assertEqual(run.call_args.kwargs["timeout"], MASTER_CHECK_TIMEOUT)
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+
+    def test_master_check_failure_is_not_alive(self):
+        with patch("letee.discovery.subprocess.run", return_value=Mock(returncode=255)):
+            self.assertFalse(_persistent_master_alive("dev", True))
+
+        with patch(
+            "letee.discovery.subprocess.run",
+            side_effect=subprocess.TimeoutExpired("ssh", MASTER_CHECK_TIMEOUT),
+        ):
+            self.assertFalse(_persistent_master_alive("dev", True))
+
     def test_remote_snapshot_rejects_oversized_output_and_distinguishes_no_server(self):
         def oversized(command, **kwargs):
             kwargs["stdout"].write(b"x" * (1024 * 1024 + 1))
             kwargs["stderr"].write(b"diagnostic")
             return FakeProcess(0)
 
-        with patch("letee.discovery.subprocess.Popen", side_effect=oversized):
+        with (
+            patch("letee.discovery._persistent_master_alive", return_value=False),
+            patch("letee.discovery.subprocess.Popen", side_effect=oversized),
+        ):
             self.assertEqual(remote_snapshot("dev").error, "output exceeded 1 MiB")
 
         no_server = FakeProcess(1)
         no_server.stderr = "no server running on /tmp/tmux-1000/letee.inner\n"
-        with patch("letee.discovery.subprocess.Popen", return_value=no_server):
+        with (
+            patch("letee.discovery._persistent_master_alive", return_value=False),
+            patch("letee.discovery.subprocess.Popen", return_value=no_server),
+        ):
             self.assertEqual(remote_snapshot("dev"), SourceSnapshot(True, (), frozenset()))
 
     def test_remote_snapshot_cleans_exited_parent_and_its_child_process_group(self):
@@ -281,7 +314,10 @@ class DiscoverySnapshotTest(unittest.TestCase):
                 leader_pid = process.pid
                 return process
 
-            with patch("letee.discovery.subprocess.Popen", side_effect=popen):
+            with (
+                patch("letee.discovery._persistent_master_alive", return_value=False),
+                patch("letee.discovery.subprocess.Popen", side_effect=popen),
+            ):
                 self.assertTrue(remote_snapshot("dev").available)
 
             pipe, child_pid, process_group = _read_child_info(read_fd)
@@ -303,6 +339,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
     def test_remote_snapshot_cleans_completed_failure_process_group(self):
         process = FakeProcess(255, stderr="ssh failed\n", pid=106)
         with (
+            patch("letee.discovery._persistent_master_alive", return_value=False),
             patch("letee.discovery.subprocess.Popen", return_value=process) as popen,
             patch("letee.discovery.os.killpg") as killpg,
         ):
@@ -311,6 +348,21 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(snapshot.error, "ssh failed")
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         self.assertEqual(killpg.call_args_list, [call(106, signal.SIGTERM), call(106, signal.SIGKILL)])
+        self.assertTrue(process.communicated)
+
+    def test_remote_snapshot_preserves_completed_group_for_live_master(self):
+        process = FakeProcess(0, stdout="work:@1:%1:0:-:/tmp/tmux\n", pid=110)
+        with (
+            patch("letee.discovery.load_persistent_ssh", return_value=True),
+            patch("letee.discovery._persistent_master_alive", return_value=True) as alive,
+            patch("letee.discovery.subprocess.Popen", return_value=process),
+            patch("letee.discovery.os.killpg") as killpg,
+        ):
+            snapshot = remote_snapshot("dev")
+
+        self.assertTrue(snapshot.available)
+        alive.assert_called_once_with("dev", True)
+        killpg.assert_not_called()
         self.assertTrue(process.communicated)
 
     def test_remote_snapshot_timeout_cleans_process_group(self):
@@ -413,6 +465,7 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertTrue(process.communicated)
 
     def make_poller(self, hosts, **kwargs):
+        kwargs.setdefault("persistent_ssh", False)
         return DiscoveryPoller(hosts, local=kwargs.pop("local", Mock(return_value=EMPTY_LOCAL)), **kwargs)
 
     def test_local_snapshot_is_sampled_at_startup_and_not_on_rapid_ticks(self):
@@ -451,7 +504,9 @@ class DiscoveryPollerTest(unittest.TestCase):
     def test_poller_resolves_persistence_once_and_uses_it_for_commands(self):
         popen = Mock(return_value=FakeProcess())
         with patch("letee.discovery.load_persistent_ssh", return_value=False) as load:
-            poller = self.make_poller(["dev"], popen=popen, clock=Mock(return_value=0))
+            poller = self.make_poller(
+                ["dev"], popen=popen, clock=Mock(return_value=0), persistent_ssh=None
+            )
             poller.tick()
 
         load.assert_called_once_with()
@@ -602,6 +657,25 @@ class DiscoveryPollerTest(unittest.TestCase):
                     os.kill(child_pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+    def test_completed_request_keeps_group_of_live_master(self):
+        process = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n", pid=111)
+        poller = self.make_poller(
+            ["dev"],
+            popen=Mock(return_value=process),
+            clock=Mock(return_value=0),
+            persistent_ssh=True,
+        )
+
+        with (
+            patch("letee.discovery._persistent_master_alive", return_value=True),
+            patch("letee.discovery.os.killpg") as killpg,
+        ):
+            self.assertTrue(poller.tick())
+
+        killpg.assert_not_called()
+        self.assertTrue(process.communicated)
+        self.assertEqual(poller.snapshot.remotes["dev"].sessions, (Target("ssh", "work", "dev"),))
 
     def test_spawn_failure_becomes_unavailable_snapshot(self):
         poller = self.make_poller(["dev"], popen=Mock(side_effect=OSError("no ssh")), clock=Mock(return_value=0))
