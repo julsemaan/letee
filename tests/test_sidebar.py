@@ -45,6 +45,13 @@ def snapshot(local=(), remotes=None, local_bells=(), local_available=True, local
     )
 
 
+def _assert_deferred_switch(testcase, switch, target, *extra):
+    switch.assert_called_once()
+    testcase.assertEqual(switch.call_args.args[0], target)
+    testcase.assertTrue(callable(switch.call_args.args[1]))
+    testcase.assertEqual(switch.call_args.args[2:], extra)
+
+
 class ActiveSessionAvailabilityTest(unittest.TestCase):
     def test_missing_active_session_replaces_frozen_pane_after_discovery(self):
         target = Target("ssh", "work", "dev")
@@ -214,7 +221,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             restored = sidebar._sync_active_session(target, snapshot(local=("work",)), pending)
 
         show_missing.assert_called_once_with(target)
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        _assert_deferred_switch(self, switch, target)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -234,7 +241,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
 
         show_reconnecting.assert_called_once_with(target)
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        _assert_deferred_switch(self, switch, target)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -282,7 +289,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         ):
             sidebar.run(screen)
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        _assert_deferred_switch(self, switch, target)
         self.assertEqual(draw.call_args_list[-1].args[3], "tmux unavailable")
 
     def test_production_loop_restores_reconnected_active_ssh_session_without_input(self):
@@ -331,7 +338,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             sidebar.run(screen)
 
         self.assertEqual(events, ["reconnecting", "switch"])
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        _assert_deferred_switch(self, switch, target)
         observed = [call.args[0].effect for call in poller.observe_effect.call_args_list]
         self.assertEqual(
             observed,
@@ -781,7 +788,11 @@ class AgentSidebarTest(unittest.TestCase):
         with patch("letee.sidebar.cockpit.switch") as switch:
             _execute(Effect("switch_pane", pane, message="id"), state, unittest.mock.Mock(), 5)
 
-        switch.assert_called_once_with(pane.target, "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work", "id")
+        _assert_deferred_switch(self, switch, pane.target, "id")
+        self.assertEqual(
+            switch.call_args.args[1](),
+            "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work",
+        )
         self.assertEqual(state.status, "")
         self.assertIsNone(state.status_deadline)
 
@@ -795,8 +806,8 @@ class AgentSidebarTest(unittest.TestCase):
         ):
             _execute(Effect("switch", target), SidebarState(), unittest.mock.Mock(), 5)
             _execute(Effect("switch_pane", pane, message="id"), SidebarState(), unittest.mock.Mock(), 5)
+            attach, pane_attach = (call.args[1]() for call in switch.call_args_list)
 
-        attach, pane_attach = (c.args[1] for c in switch.call_args_list)
         self.assertIn(f"tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file {source}", attach)
         self.assertIn(f"tmux -S /tmp/tmux source-file {source} \\; select-window -t work:@1", pane_attach)
 
@@ -1529,24 +1540,27 @@ class AddRunLoopTest(unittest.TestCase):
         with (
             patch("letee.sidebar.sessions.create") as create,
             patch("letee.sidebar.save_sessions") as save,
-            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.sidebar.cockpit.switch") as switch,
         ):
             self._run_add_flow(
                 [curses.KEY_F11, *map(ord, "existing"), curses.KEY_ENTER, STOP],
                 snapshot(local=("existing",)),
             )
+            attach_command.assert_not_called()
+            _assert_deferred_switch(self, switch, Target("local", "existing"))
+            self.assertEqual(switch.call_args.args[1](), "attach")
 
         create.assert_not_called()
         save.assert_called_once_with([Target("local", "existing")])
-        switch.assert_called_once_with(Target("local", "existing"), "attach")
+        attach_command.assert_called_once_with(Target("local", "existing"))
 
     def test_enter_on_tracked_match_switches_without_creating_or_persisting(self):
         target = Target("local", "existing")
         with (
             patch("letee.sidebar.sessions.create") as create,
             patch("letee.sidebar.save_sessions") as save,
-            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.sidebar.cockpit.switch") as switch,
         ):
             self._run_add_flow(
@@ -1554,17 +1568,20 @@ class AddRunLoopTest(unittest.TestCase):
                 snapshot(local=("existing",)),
                 favorites=[target],
             )
+            attach_command.assert_not_called()
+            _assert_deferred_switch(self, switch, target)
+            self.assertEqual(switch.call_args.args[1](), "attach")
 
         create.assert_not_called()
         save.assert_not_called()
-        switch.assert_called_once_with(target, "attach")
+        attach_command.assert_called_once_with(target)
 
     def test_enter_on_location_immediately_lists_that_hosts_sessions(self):
         data = snapshot(local=("work",), remotes={"dev": source("ssh", ("notes",), host="dev")})
         with (
             patch("letee.sidebar.sessions.create") as create,
             patch("letee.sidebar.save_sessions"),
-            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.sidebar.cockpit.switch") as switch,
         ):
             self._run_add_flow(
@@ -1578,11 +1595,14 @@ class AddRunLoopTest(unittest.TestCase):
                 ],
                 data,
             )
+            attach_command.assert_not_called()
+            _assert_deferred_switch(self, switch, Target("ssh", "notes", "dev"))
+            self.assertEqual(switch.call_args.args[1](), "attach")
 
         create.assert_not_called()
         # The second Enter must act on the dev search list rebuilt right after
         # selecting the location, before any new poll or keypress.
-        switch.assert_called_once_with(Target("ssh", "notes", "dev"), "attach")
+        attach_command.assert_called_once_with(Target("ssh", "notes", "dev"))
 
     def test_region_keys_do_not_steal_enter_from_the_add_search(self):
         with (
@@ -2076,13 +2096,16 @@ class SidebarStateTest(unittest.TestCase):
         with (
             patch("letee.sidebar.sessions.create") as create,
             patch("letee.sidebar.save_sessions"),
-            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.sidebar.cockpit.switch") as switch,
         ):
             self.assertFalse(_execute(Effect("create", target=target), state, poller, 5))
+            attach_command.assert_not_called()
+            _assert_deferred_switch(self, switch, target)
+            self.assertEqual(switch.call_args.args[1](), "attach")
 
         create.assert_called_once_with(target)
-        switch.assert_called_once_with(target, "attach")
+        attach_command.assert_called_once_with(target)
         self.assertEqual(state.pending_selection, target)
         poller.refresh.assert_called_once_with()
 
@@ -2263,14 +2286,17 @@ class SidebarStateTest(unittest.TestCase):
         poller = unittest.mock.Mock()
         with (
             patch("letee.sidebar.save_sessions") as save,
-            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.sidebar.cockpit.switch") as switch,
         ):
             _execute(Effect("add_switch", target=target), state, poller, 5)
+            attach_command.assert_not_called()
+            _assert_deferred_switch(self, switch, target)
+            self.assertEqual(switch.call_args.args[1](), "attach")
 
         self.assertEqual(state.favorites, [target])
         save.assert_called_once_with([target])
-        switch.assert_called_once_with(target, "attach")
+        attach_command.assert_called_once_with(target)
         self.assertEqual(state.status, "")
         self.assertIsNone(state.status_deadline)
 
@@ -4238,7 +4264,8 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(target, sidebar.sessions.pane_attach_command(second), "second")
+        _assert_deferred_switch(self, switch, target, "second")
+        self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(second))
 
     def test_body_press_activates_and_incidental_motion_does_not_start_move(self):
         target = Target("local", "one")
@@ -4297,7 +4324,7 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        _assert_deferred_switch(self, switch, target)
 
     def test_slow_session_switch_marks_target_active_before_action_completes(self):
         first = Target("local", "one")
@@ -4715,7 +4742,11 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(target, "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one")
+        _assert_deferred_switch(self, switch, target)
+        self.assertEqual(
+            switch.call_args.args[1](),
+            "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one",
+        )
 
     def test_press_release_selects_and_switches_untracked_session(self):
         target = Target("local", "one")
@@ -4741,8 +4772,10 @@ class SidebarDrawTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(
-            target, "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one"
+        _assert_deferred_switch(self, switch, target)
+        self.assertEqual(
+            switch.call_args.args[1](),
+            "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one",
         )
 
     def test_press_release_opens_add_button(self):
@@ -4790,8 +4823,10 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         target = Target("local", "two")
-        switch.assert_called_once_with(
-            target, "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s two"
+        _assert_deferred_switch(self, switch, target)
+        self.assertEqual(
+            switch.call_args.args[1](),
+            "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s two",
         )
 
     def test_right_click_press_opens_menu_without_switching(self):
@@ -5019,13 +5054,13 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._current_target", return_value=None),
             patch("letee.sidebar._draw", side_effect=draw_spy),
             patch("letee.sidebar.cockpit.switch") as switch,
-            patch("letee.sidebar.sessions.attach_command", return_value="attach"),
+            patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
         ):
             run(screen)
-
-        # selection stays at index 2 ("two") after wheel, Enter switches to "two"
-        target_two = Target("local", "two")
-        switch.assert_called_once_with(target_two, "attach")
+            # Selection stays at index 2 ("two") after wheel, Enter switches to "two".
+            target_two = Target("local", "two")
+            attach_command.assert_not_called()
+            _assert_deferred_switch(self, switch, target_two)
 
     def test_malformed_mouse_event_is_ignored(self):
         screen = FakeScreen([curses.KEY_MOUSE, STOP])
@@ -5644,7 +5679,7 @@ class SidebarBurstInputTest(unittest.TestCase):
             ],
         )
 
-        switch.assert_called_once_with(first, sidebar.sessions.attach_command(first))
+        _assert_deferred_switch(self, switch, first)
 
     def test_mouse_press_and_release_execute_once(self):
         target = Target("local", "one")
@@ -5658,7 +5693,7 @@ class SidebarBurstInputTest(unittest.TestCase):
             ],
         )
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        _assert_deferred_switch(self, switch, target)
 
     def test_wheel_then_click_renders_new_layout_before_hit_testing(self):
         targets = [Target("local", str(index)) for index in range(8)]
@@ -5724,7 +5759,7 @@ class SidebarBurstInputTest(unittest.TestCase):
             [curses.error(), (0, 0, 2, 0, curses.BUTTON1_PRESSED)],
         )
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+        _assert_deferred_switch(self, switch, target)
 
 class SidebarScrollOffsetTest(unittest.TestCase):
     def test_viewport_respects_scroll_offset(self):
@@ -6095,11 +6130,8 @@ class SidebarScrollOffsetTest(unittest.TestCase):
         ):
             run(screen)
 
-        switch.assert_called_once_with(
-            target,
-            sidebar.sessions.pane_attach_command(second),
-            "agent-2",
-        )
+        _assert_deferred_switch(self, switch, target, "agent-2")
+        self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(second))
 
     def test_right_click_maps_scrolled_agent_row_to_visible_agent(self):
         target, data = self._agent_data(4)
@@ -6944,9 +6976,8 @@ class PrefixActionTest(unittest.TestCase):
         with patch.object(sidebar.cockpit, "switch") as switch:
             self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
 
-        switch.assert_called_once_with(
-            target, sidebar.sessions.pane_attach_command(first_pane), "first"
-        )
+        _assert_deferred_switch(self, switch, target, "first")
+        self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(first_pane))
 
     def test_alert_prefix_without_alerts_shows_feedback_and_does_not_navigate(self):
         target = Target("local", "work")

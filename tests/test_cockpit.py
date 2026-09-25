@@ -1079,10 +1079,61 @@ class CockpitLayoutTest(unittest.TestCase):
             self.assertEqual(cockpit.current_agent(), "agent-1")
             self.assertIsNone(cockpit.current_agent())
 
-    def test_switch_rejects_missing_cockpit(self):
+    def test_deferred_switch_shows_spinner_before_preparing_and_attaches(self):
+        target = Target("ssh", "work", "dev")
+        events = []
+
+        def prepare():
+            events.append(("prepare",))
+            return "attach work"
+
+        def tmux_call(*args, **kwargs):
+            if args[0] == "respawn-pane":
+                events.append(("respawn", args[4]))
+            elif args[0] == "select-pane":
+                events.append(("focus", args[2]))
+
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux", side_effect=tmux_call),
+        ):
+            cockpit.switch(target, prepare)
+
+        self.assertEqual([event[0] for event in events], ["respawn", "prepare", "respawn", "focus"])
+        self.assertIn("Switching session", events[0][1])
+        self.assertIn("Preparing%s", events[0][1])
+        self.assertEqual(events[2], ("respawn", "attach work"))
+
+    def test_failed_deferred_switch_replaces_spinner_with_unavailable_message(self):
+        target = Target("ssh", "work", "dev")
+        events = []
+
+        def prepare():
+            events.append(("prepare",))
+            raise RuntimeError("ssh setup failed")
+
+        def tmux_call(*args, **kwargs):
+            if args[0] == "respawn-pane":
+                events.append(("respawn", args[4]))
+
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux", side_effect=tmux_call),
+            self.assertRaisesRegex(RuntimeError, "ssh setup failed"),
+        ):
+            cockpit.switch(target, prepare)
+
+        self.assertEqual([event[0] for event in events], ["respawn", "prepare", "respawn"])
+        self.assertIn("Switching session", events[0][1])
+        self.assertIn("Session ssh:dev:work is unavailable.", events[2][1])
+
+    def test_switch_rejects_missing_cockpit_without_preparing(self):
+        prepare = unittest.mock.Mock(return_value="attach work")
         with patch.object(cockpit, "right_pane", return_value=None):
             with self.assertRaisesRegex(SystemExit, "No valid letee"):
-                cockpit.switch(cockpit.Target("local", "work"), "attach work")
+                cockpit.switch(cockpit.Target("local", "work"), prepare)
+
+        prepare.assert_not_called()
 
     def test_show_reconnecting_displays_remote_session_details_and_unicode_spinner(self):
         with (
