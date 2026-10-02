@@ -283,6 +283,7 @@ def _read_output(output: object, fallback: str | bytes | None = None) -> str | N
 def remote_snapshot(host: str) -> SourceSnapshot:
     host = validate_host(host)
     persistent_ssh = load_persistent_ssh()
+    master_preexisting = _persistent_master_alive(host, persistent_ssh)
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         try:
             proc = subprocess.Popen(
@@ -307,6 +308,7 @@ def remote_snapshot(host: str) -> SourceSnapshot:
             stdout, stderr = _stop_process(
                 proc,
                 keep_group=returncode is not None
+                and not master_preexisting
                 and _persistent_master_alive(host, persistent_ssh),
             )
         if timed_out:
@@ -328,6 +330,7 @@ class _Request:
     started: float
     output: object
     errors: object
+    master_preexisting: bool
 
 
 def _persistent_master_alive(host: str, persistent_ssh: bool) -> bool:
@@ -417,7 +420,8 @@ class DiscoveryPoller:
     def _finish_request(self, host: str, request: _Request, now: float, returncode: int) -> bool:
         stdout, stderr = _stop_process(
             request.process,
-            keep_group=_persistent_master_alive(host, self._persistent_ssh),
+            keep_group=not request.master_preexisting
+            and _persistent_master_alive(host, self._persistent_ssh),
         )
         text = _read_output(request.output, stdout)
         error = _read_output(request.errors, stderr)
@@ -431,6 +435,7 @@ class DiscoveryPoller:
         return changed
 
     def _start_request(self, host: str, now: float) -> bool:
+        master_preexisting = _persistent_master_alive(host, self._persistent_ssh)
         output = tempfile.TemporaryFile()
         errors = tempfile.TemporaryFile()
         try:
@@ -448,7 +453,7 @@ class DiscoveryPoller:
             self.remotes[host] = snapshot
             self._schedule(host, now, False)
             return changed
-        self._active[host] = _Request(process, now, output, errors)
+        self._active[host] = _Request(process, now, output, errors, master_preexisting)
         return False
 
     def tick(self, active_remote_host: str | None = None) -> bool:

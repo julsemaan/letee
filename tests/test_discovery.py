@@ -350,8 +350,23 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(killpg.call_args_list, [call(106, signal.SIGTERM), call(106, signal.SIGKILL)])
         self.assertTrue(process.communicated)
 
-    def test_remote_snapshot_preserves_completed_group_for_live_master(self):
+    def test_remote_snapshot_preserves_group_for_master_created_by_request(self):
         process = FakeProcess(0, stdout="work:@1:%1:0:-:/tmp/tmux\n", pid=110)
+        with (
+            patch("letee.discovery.load_persistent_ssh", return_value=True),
+            patch("letee.discovery._persistent_master_alive", side_effect=(False, True)) as alive,
+            patch("letee.discovery.subprocess.Popen", return_value=process),
+            patch("letee.discovery.os.killpg") as killpg,
+        ):
+            snapshot = remote_snapshot("dev")
+
+        self.assertTrue(snapshot.available)
+        self.assertEqual(alive.call_args_list, [call("dev", True), call("dev", True)])
+        killpg.assert_not_called()
+        self.assertTrue(process.communicated)
+
+    def test_remote_snapshot_cleans_group_when_master_predates_request(self):
+        process = FakeProcess(0, stdout="work:@1:%1:0:-:/tmp/tmux\n", pid=112)
         with (
             patch("letee.discovery.load_persistent_ssh", return_value=True),
             patch("letee.discovery._persistent_master_alive", return_value=True) as alive,
@@ -362,12 +377,13 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
         self.assertTrue(snapshot.available)
         alive.assert_called_once_with("dev", True)
-        killpg.assert_not_called()
+        self.assertEqual(killpg.call_args_list, [call(112, signal.SIGTERM), call(112, signal.SIGKILL)])
         self.assertTrue(process.communicated)
 
     def test_remote_snapshot_timeout_cleans_process_group(self):
         process = GroupTimeoutProcess(pid=107)
         with (
+            patch("letee.discovery._persistent_master_alive", return_value=False),
             patch("letee.discovery.subprocess.Popen", return_value=process),
             patch("letee.discovery.os.killpg") as killpg,
         ):
@@ -384,6 +400,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         process.wait.side_effect = [KeyboardInterrupt(), subprocess.TimeoutExpired("ssh", 1), -9]
         process.communicate.return_value = (None, None)
         with (
+            patch("letee.discovery._persistent_master_alive", return_value=False),
             patch("letee.discovery.subprocess.Popen", return_value=process),
             patch("letee.discovery.os.killpg") as killpg,
         ):
@@ -658,7 +675,7 @@ class DiscoveryPollerTest(unittest.TestCase):
                 except ProcessLookupError:
                     pass
 
-    def test_completed_request_keeps_group_of_live_master(self):
+    def test_completed_request_keeps_group_of_master_it_created(self):
         process = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n", pid=111)
         poller = self.make_poller(
             ["dev"],
@@ -668,14 +685,34 @@ class DiscoveryPollerTest(unittest.TestCase):
         )
 
         with (
-            patch("letee.discovery._persistent_master_alive", return_value=True),
+            patch("letee.discovery._persistent_master_alive", side_effect=(False, True)) as alive,
             patch("letee.discovery.os.killpg") as killpg,
         ):
             self.assertTrue(poller.tick())
 
+        self.assertEqual(alive.call_args_list, [call("dev", True), call("dev", True)])
         killpg.assert_not_called()
         self.assertTrue(process.communicated)
         self.assertEqual(poller.snapshot.remotes["dev"].sessions, (Target("ssh", "work", "dev"),))
+
+    def test_completed_request_cleans_group_when_master_predates_request(self):
+        process = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n", pid=113)
+        poller = self.make_poller(
+            ["dev"],
+            popen=Mock(return_value=process),
+            clock=Mock(return_value=0),
+            persistent_ssh=True,
+        )
+
+        with (
+            patch("letee.discovery._persistent_master_alive", return_value=True) as alive,
+            patch("letee.discovery.os.killpg") as killpg,
+        ):
+            self.assertTrue(poller.tick())
+
+        alive.assert_called_once_with("dev", True)
+        self.assertEqual(killpg.call_args_list, [call(113, signal.SIGTERM), call(113, signal.SIGKILL)])
+        self.assertTrue(process.communicated)
 
     def test_spawn_failure_becomes_unavailable_snapshot(self):
         poller = self.make_poller(["dev"], popen=Mock(side_effect=OSError("no ssh")), clock=Mock(return_value=0))
