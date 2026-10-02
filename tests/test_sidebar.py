@@ -401,6 +401,66 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             ],
         )
 
+    def test_failed_manual_switch_from_other_target_waits_for_status_sample(self):
+        old = Target("local", "old")
+        target = Target("local", "work")
+        data = snapshot(local=("old", "work"))
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=old,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+            status_sampled=False,
+        )
+        samples = iter((False, False, False, True, False))
+
+        def tick(_now):
+            poller.status_sampled = next(samples, False)
+            if poller.status_sampled:
+                poller.current_target = target
+            return poller.status_sampled
+
+        poller.tick.side_effect = tick
+        results = []
+        submitted = []
+        actions = unittest.mock.Mock(busy=False)
+
+        def submit(effect, favorites):
+            submitted.append(effect)
+            results.append(sidebar.EffectResult(
+                effect,
+                tuple(favorites),
+                error="ssh failed" if len(submitted) == 1 else None,
+            ))
+            return True
+
+        actions.submit.side_effect = submit
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
+        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, -1, -1, -1, STOP])
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[old, target]),
+            patch.object(sidebar, "_current_target", return_value=old),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+
+        self.assertEqual(
+            submitted,
+            [
+                Effect("switch", target),
+                Effect("switch", target, automatic=True),
+            ],
+        )
+
     def test_busy_action_delays_automatic_restoration_until_runner_is_idle(self):
         target = Target("ssh", "work", "dev")
         connected = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
@@ -2765,6 +2825,31 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             status.close()
 
         self.assertIsNone(status.current_target)
+        self.assertEqual(status._generation, generation + 1)
+
+    def test_failed_navigation_drops_in_flight_status_sample(self):
+        old = Target("local", "old")
+        target = Target("local", "work")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("old", "work")))
+        status = sidebar.AsyncStatusPoller(poller, old)
+        status._next_poll = float("inf")
+        generation = status._generation
+        status._future = unittest.mock.Mock()
+        status._future.done.return_value = True
+        status._future.result.return_value = sidebar.StatusResult(
+            poller.snapshot, target, None, None, True, generation, sampled=True
+        )
+
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(Effect("switch", target), (), error="ssh failed")
+            )
+            status.tick(0)
+        finally:
+            status.close()
+
+        self.assertEqual(status.current_target, old)
+        self.assertFalse(status.status_sampled)
         self.assertEqual(status._generation, generation + 1)
 
     def test_status_poller_ignores_stale_target_after_kill_until_navigation(self):
