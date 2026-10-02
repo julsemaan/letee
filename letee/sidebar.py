@@ -160,6 +160,7 @@ class StatusResult:
     generation: int
     refreshed: bool = False
     suppression_expired: bool = False
+    sampled: bool = False
 
 
 @dataclass(frozen=True)
@@ -477,6 +478,16 @@ def _reconcile_active_session_effect(
         or result.stale_navigation
         or (not result.effect.automatic and result.effect.kind != "show_reconnecting")
     ):
+        if (
+            result.error
+            and not result.stale_navigation
+            and result.effect.kind in ("switch", "add_switch", "switch_pane")
+        ):
+            target = result.effect.target
+            if isinstance(target, PaneTarget):
+                target = target.target
+            if isinstance(target, Target):
+                return target
         return unavailable_target_shown
     target = result.effect.target
     if not isinstance(target, Target):
@@ -1499,6 +1510,7 @@ class AsyncStatusPoller:
         self._future: Future[StatusResult] | None = None
         self._commands: list[tuple[str, Target | None]] = []
         self._next_poll = 0.0
+        self.status_sampled = False
         self.snapshot = poller.snapshot
         self.current_target = current_target
         self.bell_target: Target | None = None
@@ -1533,6 +1545,7 @@ class AsyncStatusPoller:
         stored_agent = state.current_agent
         pane_active = state.pane_active
         suppression_expired = False
+        sampled = False
         try:
             for command, target in commands:
                 if command == "discard" and target is not None:
@@ -1542,6 +1555,7 @@ class AsyncStatusPoller:
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
+            sampled = True
             suppressed_target = state.suppressed_target
             suppression_expired = (
                 suppressed_target is not None
@@ -1570,15 +1584,21 @@ class AsyncStatusPoller:
             generation,
             any(command == "refresh" for command, _ in commands),
             suppression_expired,
+            sampled,
         )
 
     def tick(self, now: float) -> bool:
         changed = False
+        self.status_sampled = False
         if self._future is not None and self._future.done():
             result = self._future.result()
             self._future = None
             if result.generation == self._generation:
-                changed = result.snapshot != self.snapshot
+                changed = (
+                    result.snapshot != self.snapshot
+                    or result.current_target != self.current_target
+                )
+                self.status_sampled = result.sampled
                 self.snapshot = result.snapshot
                 if result.refreshed is True:
                     self._refresh_pending = any(
@@ -1614,8 +1634,16 @@ class AsyncStatusPoller:
         return changed
 
     def observe_effect(self, result: EffectResult) -> None:
-        if (result.error and not result.partial_success) or result.stale_navigation:
+        if result.stale_navigation:
             return
+        if result.error:
+            if (
+                not result.partial_success
+                and result.effect.kind in ("switch", "add_switch", "switch_pane")
+            ):
+                self._generation += 1
+            if not result.partial_success:
+                return
         target = result.effect.target
         if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
             self._suppressed_target = None
@@ -2520,6 +2548,7 @@ def run(stdscr: curses.window) -> None:
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
+    awaiting_navigation_sample = False
     pending_navigation: tuple[Target, str | None] | None = None
     rendered: tuple[object, ...] | None = None
     footer_height = 0
@@ -3105,6 +3134,12 @@ def run(stdscr: curses.window) -> None:
                 if _apply_effect(result, state, poller, status_timeout):
                     return
                 sync_cursor()
+                if (
+                    result.error
+                    and not result.stale_navigation
+                    and result.effect.kind in ("switch", "add_switch", "switch_pane")
+                ):
+                    awaiting_navigation_sample = True
                 unavailable_target_shown = _reconcile_active_session_effect(
                     unavailable_target_shown, result
                 )
@@ -3155,6 +3190,8 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
+            if getattr(poller, "status_sampled", False) is True:
+                awaiting_navigation_sample = False
             if not burst_count:
                 trace_transitions(poller.current_target)
             if (
@@ -3162,6 +3199,7 @@ def run(stdscr: curses.window) -> None:
                 and not queued_input
                 and not actions.busy
                 and getattr(poller, "refresh_pending", False) is not True
+                and not awaiting_navigation_sample
             ):
                 try:
                     unavailable_target_shown = _sync_active_session(

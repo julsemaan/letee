@@ -209,6 +209,38 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
         )
 
+    def test_failed_navigation_marks_target_for_retry(self):
+        target = Target("ssh", "work", "dev")
+
+        for kind in ("switch", "add_switch"):
+            with self.subTest(kind=kind):
+                result = sidebar.EffectResult(
+                    sidebar.Effect(kind, target), (), error="ssh failed"
+                )
+                self.assertEqual(
+                    sidebar._reconcile_active_session_effect(None, result), target
+                )
+
+    def test_failed_switch_pane_marks_host_session_for_retry(self):
+        target = Target("ssh", "work", "dev")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux-1000/letee", "editor")
+        result = sidebar.EffectResult(
+            sidebar.Effect("switch_pane", pane), (), error="ssh failed"
+        )
+
+        self.assertEqual(sidebar._reconcile_active_session_effect(None, result), target)
+
+    def test_failed_kill_leaves_marker_untouched(self):
+        shown = Target("ssh", "work", "dev")
+        result = sidebar.EffectResult(
+            sidebar.Effect("kill", Target("ssh", "other", "dev")), (),
+            error="ssh failed",
+        )
+
+        self.assertEqual(
+            sidebar._reconcile_active_session_effect(shown, result), shown
+        )
+
     def test_active_missing_session_shows_missing_then_restores_session(self):
         target = Target("local", "work")
 
@@ -241,6 +273,27 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
 
         show_reconnecting.assert_called_once_with(target)
+        _assert_deferred_switch(self, switch, target)
+        self.assertEqual(pending, target)
+        self.assertIsNone(restored)
+
+    def test_failed_switch_retries_once_snapshot_is_healthy(self):
+        target = Target("ssh", "work", "dev")
+        failed = sidebar.EffectResult(
+            sidebar.Effect("switch", target, automatic=True), (), error="ssh failed"
+        )
+        pending = sidebar._reconcile_active_session_effect(None, failed)
+
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            restored = sidebar._sync_active_session(
+                target,
+                snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")}),
+                pending,
+            )
+
         _assert_deferred_switch(self, switch, target)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
@@ -344,6 +397,66 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             observed,
             [
                 Effect("show_reconnecting", target, automatic=True),
+                Effect("switch", target, automatic=True),
+            ],
+        )
+
+    def test_failed_manual_switch_from_other_target_waits_for_status_sample(self):
+        old = Target("local", "old")
+        target = Target("local", "work")
+        data = snapshot(local=("old", "work"))
+        poller = unittest.mock.Mock(
+            snapshot=data,
+            current_target=old,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+            status_sampled=False,
+        )
+        samples = iter((False, False, False, True, False))
+
+        def tick(_now):
+            poller.status_sampled = next(samples, False)
+            if poller.status_sampled:
+                poller.current_target = target
+            return poller.status_sampled
+
+        poller.tick.side_effect = tick
+        results = []
+        submitted = []
+        actions = unittest.mock.Mock(busy=False)
+
+        def submit(effect, favorites):
+            submitted.append(effect)
+            results.append(sidebar.EffectResult(
+                effect,
+                tuple(favorites),
+                error="ssh failed" if len(submitted) == 1 else None,
+            ))
+            return True
+
+        actions.submit.side_effect = submit
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
+        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, -1, -1, -1, STOP])
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[old, target]),
+            patch.object(sidebar, "_current_target", return_value=old),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(screen)
+
+        self.assertEqual(
+            submitted,
+            [
+                Effect("switch", target),
                 Effect("switch", target, automatic=True),
             ],
         )
@@ -2712,6 +2825,31 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             status.close()
 
         self.assertIsNone(status.current_target)
+        self.assertEqual(status._generation, generation + 1)
+
+    def test_failed_navigation_drops_in_flight_status_sample(self):
+        old = Target("local", "old")
+        target = Target("local", "work")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("old", "work")))
+        status = sidebar.AsyncStatusPoller(poller, old)
+        status._next_poll = float("inf")
+        generation = status._generation
+        status._future = unittest.mock.Mock()
+        status._future.done.return_value = True
+        status._future.result.return_value = sidebar.StatusResult(
+            poller.snapshot, target, None, None, True, generation, sampled=True
+        )
+
+        try:
+            status.observe_effect(
+                sidebar.EffectResult(Effect("switch", target), (), error="ssh failed")
+            )
+            status.tick(0)
+        finally:
+            status.close()
+
+        self.assertEqual(status.current_target, old)
+        self.assertFalse(status.status_sampled)
         self.assertEqual(status._generation, generation + 1)
 
     def test_status_poller_ignores_stale_target_after_kill_until_navigation(self):
