@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call as mock_call, patch
 
 import letee.sessions as sessions
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
@@ -88,6 +88,39 @@ class SessionOperationsTest(unittest.TestCase):
                     attach_command(Target("ssh", "work", "dev")),
                     "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
                 )
+
+    def test_debug_logging_adds_distinct_verbose_logs_to_session_and_agent_attaches(self):
+        target = Target("ssh", "work", "dev")
+        pane = PaneTarget(target, "@3", "%7", "/tmp/tmux")
+        debug = Mock()
+        debug.new_ssh_log.side_effect = ("/tmp/session.log", "/tmp/agent.log")
+        with (
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False),
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.diagnostics.get_diagnostics", return_value=debug),
+        ):
+            session_command = shlex.split(attach_command(target))
+            agent_command = shlex.split(pane_attach_command(pane))
+
+        self.assertEqual(session_command[1:4], ["-vvv", "-E", "/tmp/session.log"])
+        self.assertEqual(agent_command[1:4], ["-vvv", "-E", "/tmp/agent.log"])
+        self.assertEqual(
+            debug.new_ssh_log.call_args_list,
+            [mock_call(target.format(), "session"), mock_call(target.format(), "agent_pane")],
+        )
+
+    def test_ssh_diagnostic_failure_leaves_attach_command_usable(self):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False),
+            patch("letee.sessions.load_persistent_ssh", return_value=False),
+            patch("letee.sessions.diagnostics.get_diagnostics", side_effect=OSError("log unavailable")),
+        ):
+            command = attach_command(target)
+
+        self.assertTrue(command.startswith("ssh -o ServerAliveInterval=60"))
+        self.assertNotIn("-vvv", command)
+        self.assertIn("-t dev", command)
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
         local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
@@ -619,6 +652,9 @@ class SSHPreparationTest(unittest.TestCase):
 
 
 class TmuxOverlayTest(unittest.TestCase):
+    def setUp(self):
+        sessions._INSTALLED_OVERLAY_HOSTS.clear()
+
     def test_overlay_enabled_sources_packaged_file_for_local_commands(self):
         source = shlex.quote(str(sessions.OVERLAY_FILE))
         with patch("letee.sessions.load_tmux_config_overlay", return_value=True):
@@ -687,11 +723,13 @@ class TmuxOverlayTest(unittest.TestCase):
             patch("letee.sessions.subprocess.run") as run,
         ):
             attach = attach_command(target)
+            other_attach = attach_command(Target("ssh", "another", "dev"))
             pane = pane_attach_command(PaneTarget(target, "@3", "%7", "/tmp/tmux socket"))
             create(target)
 
         install, create_call = run.call_args_list[0], run.call_args_list[-1]
-        self.assertEqual(run.call_count, 4)  # attach, pane attach, and create each install; create then runs
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(sum(call.args[0][-1] == sessions._SSH_INSTALL_OVERLAY for call in run.call_args_list), 1)
         self.assertEqual(
             install.args[0],
             (
@@ -704,9 +742,56 @@ class TmuxOverlayTest(unittest.TestCase):
         self.assertEqual(install.kwargs["input"], sessions.OVERLAY_FILE.read_text())
         self.assertTrue(create_call.args[0][-1].endswith("tmux -L letee.inner new-session -d -s work && { tmux -L letee.inner source-file ~/.config/letee/tmux-overlay.conf || true; }"))
         self.assertIn("-t dev 'tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file ~/.config/letee/tmux-overlay.conf'", attach)
+        self.assertIn("new-session -A -s another", other_attach)
         self.assertIn("source-file ~/.config/letee/tmux-overlay.conf \\; select-window -t work:@3", pane)
         self.assertLess(pane.index("source-file ~/.config/letee/tmux-overlay.conf"), pane.index("select-window -t work:@3"))
         self.assertIn("/tmp/tmux socket", pane)
+
+    def test_remote_overlay_installs_once_per_host(self):
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            attach_command(Target("ssh", "work", "dev"), overlay=True)
+            attach_command(Target("ssh", "work", "prod"), overlay=True)
+
+        uploads = [call.args[0] for call in run.call_args_list if call.args[0][-1] == sessions._SSH_INSTALL_OVERLAY]
+        self.assertEqual([command[-2] for command in uploads], ["dev", "prod"])
+
+    def test_failed_and_timed_out_overlay_installs_are_retried(self):
+        failures = (
+            subprocess.CalledProcessError(1, ["ssh"], stderr="connection refused\\n"),
+            subprocess.TimeoutExpired(["ssh"], 10),
+        )
+        with patch("letee.sessions.load_persistent_ssh", return_value=True):
+            for index, failure in enumerate(failures):
+                with self.subTest(failure=type(failure).__name__):
+                    target = Target("ssh", "work", f"retry-{index}")
+                    with patch("letee.sessions.subprocess.run", side_effect=[failure, Mock(), Mock()]) as run:
+                        with self.assertRaises(SystemExit):
+                            attach_command(target, overlay=True)
+                        attach_command(target, overlay=True)
+                        attach_command(target, overlay=True)
+
+                    self.assertEqual(run.call_count, 2)
+
+    def test_local_and_disabled_overlays_do_not_upload_remote_overlay(self):
+        local = Target("local", "work")
+        local_pane = PaneTarget(local, "@3", "%7", "/tmp/tmux")
+        remote = Target("ssh", "work", "dev")
+        remote_pane = PaneTarget(remote, "@3", "%7", "/tmp/tmux")
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.subprocess.run") as run,
+        ):
+            attach_command(local, overlay=True)
+            pane_attach_command(local_pane, overlay=True)
+            create(local, overlay=True)
+            attach_command(remote, overlay=False)
+            pane_attach_command(remote_pane, overlay=False)
+            create(remote, overlay=False)
+
+        self.assertFalse(any(call.args[0][-1] == sessions._SSH_INSTALL_OVERLAY for call in run.call_args_list))
 
     def test_remote_overlay_install_is_atomic_and_private(self):
         command = sessions._SSH_INSTALL_OVERLAY

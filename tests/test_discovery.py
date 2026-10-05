@@ -257,6 +257,29 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertNotIn("ControlMaster=auto", popen.call_args.args[0])
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
+    def test_remote_snapshot_logs_request_and_process_group_decision(self):
+        process = FakeProcess(0, pid=120)
+        with (
+            patch("letee.discovery.load_persistent_ssh", return_value=True),
+            patch("letee.discovery._persistent_master_alive", side_effect=(False, True)),
+            patch("letee.discovery.subprocess.Popen", return_value=process),
+            patch("letee.discovery.os.killpg"),
+            patch("letee.discovery.diagnostics.log") as log,
+        ):
+            self.assertTrue(remote_snapshot("dev").available)
+
+        self.assertEqual(log.call_args_list[0].args[0], "discovery_request_started")
+        self.assertEqual(log.call_args_list[0].kwargs["host"], "dev")
+        self.assertEqual(log.call_args_list[0].kwargs["pid"], 120)
+        finished = log.call_args_list[-1]
+        self.assertEqual(finished.args[0], "discovery_request_finished")
+        self.assertGreaterEqual(finished.kwargs["duration_ms"], 0)
+        self.assertEqual(finished.kwargs["exit_status"], 0)
+        self.assertFalse(finished.kwargs["timed_out"])
+        self.assertFalse(finished.kwargs["master_preexisting"])
+        self.assertTrue(finished.kwargs["master_alive_after"])
+        self.assertEqual(finished.kwargs["process_group_cleanup"], "preserve")
+
     def test_master_check_is_skipped_without_persistence(self):
         with patch("letee.discovery.subprocess.run") as run:
             self.assertFalse(_persistent_master_alive("dev", False))
@@ -386,6 +409,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
             patch("letee.discovery._persistent_master_alive", return_value=False),
             patch("letee.discovery.subprocess.Popen", return_value=process),
             patch("letee.discovery.os.killpg") as killpg,
+            patch("letee.discovery.diagnostics.log") as log,
         ):
             snapshot = remote_snapshot("dev")
 
@@ -393,6 +417,9 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(killpg.call_args_list, [call(107, signal.SIGTERM), call(107, signal.SIGKILL)])
         self.assertEqual(process.wait_timeouts, [10, 1, None])
         self.assertTrue(process.communicated)
+        finished = log.call_args_list[-1]
+        self.assertTrue(finished.kwargs["timed_out"])
+        self.assertEqual(finished.kwargs["process_group_cleanup"], "terminate")
 
     def test_remote_snapshot_interruption_cleans_process_group_before_reraising(self):
         process = Mock(pid=108)
@@ -611,6 +638,31 @@ class DiscoveryPollerTest(unittest.TestCase):
         poller.tick("dev")
 
         self.assertEqual(popen.call_count, 1)
+        poller.close()
+
+    def test_poller_logs_request_pid_duration_exit_and_cleanup(self):
+        now = [0.0]
+        process = FakeProcess(pid=121)
+        poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=lambda: now[0])
+        with (
+            patch("letee.discovery._persistent_master_alive", return_value=False),
+            patch("letee.discovery.os.killpg"),
+            patch("letee.discovery.diagnostics.log") as log,
+        ):
+            poller.tick()
+            now[0] = 1
+            process.returncode = 0
+            poller.tick()
+
+        started, finished = [call for call in log.call_args_list if call.args[0].startswith("discovery_request_")]
+        self.assertEqual(started.args[0], "discovery_request_started")
+        self.assertEqual(started.kwargs["host"], "dev")
+        self.assertEqual(started.kwargs["pid"], 121)
+        self.assertEqual(finished.args[0], "discovery_request_finished")
+        self.assertEqual(finished.kwargs["duration_ms"], 1000)
+        self.assertEqual(finished.kwargs["exit_status"], 0)
+        self.assertFalse(finished.kwargs["timed_out"])
+        self.assertEqual(finished.kwargs["process_group_cleanup"], "terminate")
         poller.close()
 
     def test_completed_and_failed_processes_update_snapshots(self):

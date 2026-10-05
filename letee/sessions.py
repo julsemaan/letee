@@ -13,6 +13,7 @@ import stat
 import subprocess
 import time
 
+from . import diagnostics
 from .config import load_persistent_ssh, load_tmux_config_overlay
 from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
 
@@ -28,6 +29,7 @@ _SSH_INSTALL_OVERLAY = (
     " && cat > \"$tmp\" && mv \"$tmp\" ~/.config/letee/tmux-overlay.conf"
     " && trap - 0 HUP INT TERM"
 )
+_INSTALLED_OVERLAY_HOSTS: set[str] = set()
 
 
 FALLBACK_AGENT_SOCKET = Path.home() / ".ssh" / "letee-agent.sock"
@@ -336,8 +338,23 @@ def _inner_server_env() -> dict[str, str]:
     return env
 
 
+def _ssh_attach_command(target: Target, command: str, attach_type: str) -> str:
+    ssh = ssh_command("-t", target.host or "", command, interactive=True)
+    try:
+        log_path = diagnostics.get_diagnostics().new_ssh_log(target.format(), attach_type)
+    except Exception:
+        log_path = None
+    if log_path:
+        ssh = (ssh[0], "-vvv", "-E", log_path, *ssh[1:])
+    return shlex.join(ssh)
+
+
 def _install_overlay(target: Target) -> None:
-    _run("overlay", target, ssh_command(target.host or "", _SSH_INSTALL_OVERLAY), input=OVERLAY_FILE.read_text())
+    host = target.host or ""
+    if host in _INSTALLED_OVERLAY_HOSTS:
+        return
+    _run("overlay", target, ssh_command(host, _SSH_INSTALL_OVERLAY), input=OVERLAY_FILE.read_text())
+    _INSTALLED_OVERLAY_HOSTS.add(host)
 
 
 def _overlay_source(target: Target) -> str:
@@ -353,7 +370,7 @@ def attach_command(target: Target, *, overlay: bool | None = None) -> str:
         new_session += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
         return f"env -u TMUX {new_session}"
-    return shlex.join(ssh_command("-t", target.host or "", new_session, interactive=True))
+    return _ssh_attach_command(target, new_session, "session")
 
 
 def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None) -> str:
@@ -372,7 +389,7 @@ def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None)
     command = f"tmux -S {shlex.quote(pane_target.socket_path)} " + " \\; ".join(parts)
     if target.kind == "local":
         return f"env -u TMUX {command}"
-    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
+    return _ssh_attach_command(target, command, "agent_pane")
 
 
 def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> str:

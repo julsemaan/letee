@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 
+from . import diagnostics
 from .config import load_hosts, load_persistent_ssh
 from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
 from .sessions import ssh_command
@@ -39,6 +40,13 @@ LOCAL_POLL_INTERVAL = 0.5
 SUCCESS_POLL_INTERVAL = 10
 FAILURE_POLL_INTERVAL = 2
 MASTER_CHECK_TIMEOUT = 2
+
+
+def _log_request(event: str, **fields: object) -> None:
+    try:
+        diagnostics.log(event, **fields)
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)
@@ -285,6 +293,7 @@ def remote_snapshot(host: str) -> SourceSnapshot:
     persistent_ssh = load_persistent_ssh()
     master_preexisting = _persistent_master_alive(host, persistent_ssh)
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        started = time.monotonic()
         try:
             proc = subprocess.Popen(
                 _ssh_command(host, persistent_ssh),
@@ -293,10 +302,31 @@ def remote_snapshot(host: str) -> SourceSnapshot:
                 start_new_session=True,
             )
         except OSError as error:
+            _log_request(
+                "discovery_request_finished",
+                host=host,
+                pid=None,
+                duration_ms=(time.monotonic() - started) * 1000,
+                exit_status=None,
+                timed_out=False,
+                master_preexisting=master_preexisting,
+                master_alive_after=None,
+                process_group_cleanup="not_started",
+                error_type=type(error).__name__,
+            )
             return SourceSnapshot(False, (), frozenset(), error.strerror or str(error))
+        _log_request(
+            "discovery_request_started",
+            host=host,
+            pid=proc.pid,
+            persistent_ssh=persistent_ssh,
+            master_preexisting=master_preexisting,
+        )
         timed_out = False
         wait_error: OSError | None = None
         returncode = None
+        master_alive_after = None
+        keep_group = False
         try:
             try:
                 returncode = proc.wait(timeout=10)
@@ -305,11 +335,21 @@ def remote_snapshot(host: str) -> SourceSnapshot:
             except OSError as error:
                 wait_error = error
         finally:
-            stdout, stderr = _stop_process(
-                proc,
-                keep_group=returncode is not None
-                and not master_preexisting
-                and _persistent_master_alive(host, persistent_ssh),
+            if returncode is not None and not master_preexisting:
+                master_alive_after = _persistent_master_alive(host, persistent_ssh)
+                keep_group = master_alive_after
+            stdout, stderr = _stop_process(proc, keep_group=keep_group)
+            _log_request(
+                "discovery_request_finished",
+                host=host,
+                pid=proc.pid,
+                duration_ms=(time.monotonic() - started) * 1000,
+                exit_status=returncode,
+                timed_out=timed_out,
+                master_preexisting=master_preexisting,
+                master_alive_after=master_alive_after,
+                process_group_cleanup="preserve" if keep_group else "terminate",
+                error_type=type(wait_error).__name__ if wait_error else None,
             )
         if timed_out:
             return SourceSnapshot(False, (), frozenset(), "timed out")
@@ -418,10 +458,23 @@ class DiscoveryPoller:
         self._next[host] = now + FAILURE_POLL_INTERVAL
 
     def _finish_request(self, host: str, request: _Request, now: float, returncode: int) -> bool:
-        stdout, stderr = _stop_process(
-            request.process,
-            keep_group=not request.master_preexisting
-            and _persistent_master_alive(host, self._persistent_ssh),
+        master_alive_after = None
+        keep_group = False
+        if not request.master_preexisting:
+            master_alive_after = _persistent_master_alive(host, self._persistent_ssh)
+            keep_group = master_alive_after
+        stdout, stderr = _stop_process(request.process, keep_group=keep_group)
+        _log_request(
+            "discovery_request_finished",
+            host=host,
+            pid=getattr(request.process, "pid", None),
+            duration_ms=(now - request.started) * 1000,
+            exit_status=returncode,
+            timed_out=False,
+            persistent_ssh=self._persistent_ssh,
+            master_preexisting=request.master_preexisting,
+            master_alive_after=master_alive_after,
+            process_group_cleanup="preserve" if keep_group else "terminate",
         )
         text = _read_output(request.output, stdout)
         error = _read_output(request.errors, stderr)
@@ -448,12 +501,31 @@ class DiscoveryPoller:
         except OSError as error:
             output.close()
             errors.close()
+            _log_request(
+                "discovery_request_finished",
+                host=host,
+                pid=None,
+                duration_ms=0,
+                exit_status=None,
+                timed_out=False,
+                master_preexisting=master_preexisting,
+                master_alive_after=None,
+                process_group_cleanup="not_started",
+                error_type=type(error).__name__,
+            )
             snapshot = SourceSnapshot(False, (), frozenset(), error.strerror or str(error))
             changed = snapshot != self.remotes[host]
             self.remotes[host] = snapshot
             self._schedule(host, now, False)
             return changed
         self._active[host] = _Request(process, now, output, errors, master_preexisting)
+        _log_request(
+            "discovery_request_started",
+            host=host,
+            pid=getattr(process, "pid", None),
+            persistent_ssh=self._persistent_ssh,
+            master_preexisting=master_preexisting,
+        )
         return False
 
     def tick(self, active_remote_host: str | None = None) -> bool:
@@ -481,6 +553,17 @@ class DiscoveryPoller:
             if returncode is None:
                 if now - request.started >= 10:
                     _stop_process(request.process)
+                    _log_request(
+                        "discovery_request_finished",
+                        host=host,
+                        pid=getattr(request.process, "pid", None),
+                        duration_ms=(now - request.started) * 1000,
+                        exit_status=getattr(request.process, "returncode", None),
+                        timed_out=True,
+                        master_preexisting=request.master_preexisting,
+                        master_alive_after=None,
+                        process_group_cleanup="terminate",
+                    )
                     request.output.close()
                     request.errors.close()
                     snapshot = SourceSnapshot(False, (), frozenset(), "timed out")
@@ -520,6 +603,14 @@ class DiscoveryPoller:
             return
         if request := self._active.pop(target.host, None):
             _stop_process(request.process)
+            _log_request(
+                "discovery_request_cancelled",
+                host=target.host,
+                pid=getattr(request.process, "pid", None),
+                duration_ms=None,
+                master_preexisting=request.master_preexisting,
+                process_group_cleanup="terminate",
+            )
             request.output.close()
             request.errors.close()
         source = self.remotes[target.host]
@@ -535,8 +626,16 @@ class DiscoveryPoller:
             )
 
     def close(self) -> None:
-        for request in self._active.values():
+        for host, request in self._active.items():
             _stop_process(request.process)
+            _log_request(
+                "discovery_request_cancelled",
+                host=host,
+                pid=getattr(request.process, "pid", None),
+                duration_ms=None,
+                master_preexisting=request.master_preexisting,
+                process_group_cleanup="terminate",
+            )
             request.output.close()
             request.errors.close()
         self._active.clear()

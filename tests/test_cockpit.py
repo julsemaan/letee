@@ -1484,6 +1484,23 @@ class CockpitDiagnosticsTest(unittest.TestCase):
         self.assertTrue(all(record["right_pane"] == "%2" for record in records if record["event"].startswith("switch_")))
         self.assertNotIn("attach work", self.log_path.read_text())
 
+    def test_switch_records_right_pane_pid_without_claiming_remote_attach_succeeded(self):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux"),
+            patch.object(cockpit.tmux, "out", return_value="431"),
+        ):
+            cockpit.switch(target, "ssh -t dev tmux attach")
+
+        records = self.records()
+        launched = next(record for record in records if record["event"] == "right_pane_process_launched")
+        self.assertEqual(launched["switch_id"], "switch-1")
+        self.assertEqual(launched["target"], target.format())
+        self.assertEqual(launched["right_pane"], "%2")
+        self.assertEqual(launched["pane_pid"], 431)
+        self.assertNotIn("attach_succeeded", {record["event"] for record in records})
+
     def test_switch_failure_records_failed_stage(self):
         target = Target("local", "work")
         with (

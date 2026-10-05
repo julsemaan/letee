@@ -787,6 +787,24 @@ def switch(
         "right_pane_respawn",
         lambda: tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command),
     )
+    if debug.enabled:
+        try:
+            pane_pid = tmux.out("display-message", "-p", "-t", pane, "#{pane_pid}", check=False).strip()
+            debug.emit(
+                "right_pane_process_launched",
+                **_switch_fields(target, pane, switch_id, action_id, input_id),
+                pane_pid=int(pane_pid) if pane_pid.isdecimal() else None,
+            )
+        except Exception as error:
+            try:
+                debug.emit(
+                    "right_pane_process_launched",
+                    **_switch_fields(target, pane, switch_id, action_id, input_id),
+                    pane_pid=None,
+                    error_type=type(error).__name__,
+                )
+            except Exception:
+                pass
     stage(
         "focus",
         "right_pane_focus",

@@ -166,4 +166,6 @@ letee -L work kill-server
 LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-click-debug.jsonl" letee -L work
 ```
 
-The startup record and any ncurses mouse decode failure include the relevant tmux and terminal mouse state. A `mouse_recovery_candidate` record links a failed mouse decode to a later button release. Eligible candidates are replayed as left-button activations for sidebar rows. After reproducing the missed click, stop or detach letee and preserve the log.
+The startup record and any ncurses mouse decode failure include the relevant tmux and terminal mouse state. A `mouse_recovery_candidate` record links a failed mouse decode to a later button release. Eligible candidates are replayed as left-button activations for sidebar rows.
+
+Each SSH session or agent-pane attach also writes OpenSSH `-vvv` output to a private `<log-name>.ssh-*/ssh.log` file. The JSONL `ssh_attach_log` event links that file to its action and target. `switch_completed` means outer tmux launched the pane command, not that the remote attach succeeded. Discovery events record SSH request PIDs, exit status, timeouts, master checks, and process-group cleanup. To capture a stalled switch, reproduce it and note whether clicking the same target again works. Stop or detach letee, then keep the JSONL log and its `.ssh-*` directories together. The SSH logs include connection and host details.

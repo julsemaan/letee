@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import stat
+import tempfile
 import threading
 import time
 import uuid
@@ -115,6 +116,33 @@ class Diagnostics:
 
     def new_action_id(self) -> str | None:
         return self.new_id("action")
+
+    def new_ssh_log(self, target: str, attach_type: str) -> str | None:
+        if not self.enabled or self.path is None:
+            return None
+        directory = None
+        try:
+            directory = Path(tempfile.mkdtemp(prefix=f"{self.path.name}.ssh-", dir=self.path.parent))
+            os.chmod(directory, stat.S_IRWXU)
+            path = directory / "ssh.log"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+            os.close(fd)
+            if self.emit(
+                "ssh_attach_log",
+                target=target,
+                attach_type=attach_type,
+                ssh_log_path=str(path),
+            ) is None:
+                raise OSError("diagnostics are closed")
+            return str(path)
+        except Exception:
+            if directory is not None:
+                try:
+                    (directory / "ssh.log").unlink(missing_ok=True)
+                    directory.rmdir()
+                except OSError:
+                    pass
+            return None
 
     def context_values(self) -> dict[str, str]:
         return dict(_CONTEXT.get())

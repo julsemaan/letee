@@ -16,6 +16,7 @@ class DiagnosticsTest(unittest.TestCase):
             diagnostics = Diagnostics()
             self.addCleanup(diagnostics.close)
             diagnostics.emit("ignored", value=1)
+            self.assertIsNone(diagnostics.new_ssh_log("ssh:dev:work", "session"))
             diagnostics.flush()
 
             self.assertFalse(list(Path(tempdir).iterdir()))
@@ -62,6 +63,31 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertTrue(all(required <= record.keys() for record in records))
         self.assertEqual({record["value"] for record in records}, set(range(100)))
         self.assertEqual(len({record["event_id"] for record in records}), 100)
+
+    def test_ssh_logs_are_unique_private_and_linked_to_the_action(self):
+        with tempfile.TemporaryDirectory() as tempdir, patch.dict(
+            os.environ, {"LETEE_DEBUG_LOG": str(Path(tempdir) / "trace.jsonl")}, clear=True
+        ):
+            diagnostics = Diagnostics()
+            with diagnostics.context(action_id="action-85"):
+                first = diagnostics.new_ssh_log("ssh:dev:work", "session")
+                second = diagnostics.new_ssh_log("ssh:dev:work", "agent_pane")
+            diagnostics.close()
+
+            first_path = Path(first)
+            second_exists = Path(second).is_file()
+            records = [json.loads(line) for line in Path(tempdir, "trace.jsonl").read_text().splitlines()]
+            first_mode = stat.S_IMODE(first_path.stat().st_mode)
+            first_dir_mode = stat.S_IMODE(first_path.parent.stat().st_mode)
+
+        self.assertNotEqual(first, second)
+        self.assertTrue(second_exists)
+        self.assertEqual(first_path.name, "ssh.log")
+        self.assertEqual(first_mode, stat.S_IRUSR | stat.S_IWUSR)
+        self.assertEqual(first_dir_mode, stat.S_IRWXU)
+        self.assertEqual([record["ssh_log_path"] for record in records], [first, second])
+        self.assertEqual([record["action_id"] for record in records], ["action-85", "action-85"])
+        self.assertEqual([record["attach_type"] for record in records], ["session", "agent_pane"])
 
     def test_log_file_is_owner_only(self):
         with tempfile.TemporaryDirectory() as tempdir, patch.dict(
