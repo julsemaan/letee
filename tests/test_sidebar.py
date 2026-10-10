@@ -7036,7 +7036,7 @@ class PrefixActionTest(unittest.TestCase):
                 data,
             )
 
-        self.assertEqual(statuses.count(("no agent alerts", "agents")), 2)
+        self.assertEqual(statuses.count(("no agents need attention", "agents")), 2)
 
     def test_busy_agents_x_skips_confirmation(self):
         target = Target("local", "work")
@@ -7117,6 +7117,57 @@ class PrefixActionTest(unittest.TestCase):
         _assert_deferred_switch(self, switch, target, "first")
         self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(first_pane))
 
+    def test_alert_prefix_jumps_to_attention_states_without_bells(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        for status in ("input-required", "auth-required", "failed", "rejected"):
+            with self.subTest(status=status), patch.object(sidebar.cockpit, "switch") as switch:
+                data = SessionSnapshot(
+                    SourceSnapshot(True, (target,), frozenset(), agents=(
+                        AgentEntry(pane, "agent", "pi", status),
+                    )), {},
+                )
+                self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data)
+
+                _assert_deferred_switch(self, switch, target, "agent")
+                self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(pane))
+
+    def test_alert_prefix_mixed_bell_and_state_candidates_follow_current_order(self):
+        target = Target("local", "work")
+        first_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        second_pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        for bell_first in (True, False):
+            with self.subTest(bell_first=bell_first), patch.object(sidebar.cockpit, "switch") as switch:
+                bell_pane = first_pane if bell_first else second_pane
+                data = SessionSnapshot(
+                    SourceSnapshot(True, (target,), frozenset(), agents=(
+                        AgentEntry(first_pane, "first", "pi", "working" if bell_first else "input-required"),
+                        AgentEntry(second_pane, "second", "pi", "input-required" if bell_first else "working"),
+                    )), {},
+                )
+
+                def seed_alerts(state, *_args, **_kwargs):
+                    state.agent_alerts.add((bell_pane, "first" if bell_first else "second"))
+                    return False
+
+                self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
+
+                _assert_deferred_switch(self, switch, target, "first")
+                self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(first_pane))
+
+    def test_alert_prefix_other_states_without_bells_do_not_navigate(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        for status in ("working", "submitted", "idle", "completed", "canceled", "unknown"):
+            with self.subTest(status=status), patch.object(sidebar.cockpit, "switch") as switch:
+                data = SessionSnapshot(
+                    SourceSnapshot(True, (target,), frozenset(), agents=(
+                        AgentEntry(pane, "agent", "pi", status),
+                    )), {},
+                )
+                self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data)
+                switch.assert_not_called()
+
     def test_alert_prefix_without_alerts_shows_feedback_and_does_not_navigate(self):
         target = Target("local", "work")
         data = snapshot(local=("work",))
@@ -7127,9 +7178,9 @@ class PrefixActionTest(unittest.TestCase):
         switch.assert_not_called()
         message = next(
             call for call in screen.calls
-            if call[0] == "addnstr" and "no agent alerts" in call[3]
+            if call[0] == "addnstr" and "no agents need attention" in call[3]
         )
-        self.assertTrue(message[3].startswith("⚠ no agent alerts"))
+        self.assertTrue(message[3].startswith("⚠ no agents need attention"))
         self.assertGreater(message[1], 2)
 
     def test_no_alert_message_uses_danger_color_and_warning_icon(self):
@@ -7141,7 +7192,7 @@ class PrefixActionTest(unittest.TestCase):
                 screen,
                 [],
                 0,
-                "no agent alerts",
+                "no agents need attention",
                 "",
                 agent_entries=[],
                 focused_region="agents",
@@ -7150,9 +7201,9 @@ class PrefixActionTest(unittest.TestCase):
 
         message = next(
             call for call in screen.calls
-            if call[0] == "addnstr" and "no agent alerts" in call[3]
+            if call[0] == "addnstr" and "no agents need attention" in call[3]
         )
-        self.assertEqual(message[3], "⚠ no agent alerts")
+        self.assertEqual(message[3], "⚠ no agents need attention")
         self.assertEqual(message[5], 123 | curses.A_BOLD)
 
     def test_failed_alert_switch_preserves_alert(self):

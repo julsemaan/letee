@@ -944,7 +944,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x +  add session", command)
         self.assertIn("C-x r  remove active session", command)
         self.assertIn("C-x x  kill and remove active session", command)
-        self.assertIn("C-x j  jump to first alerted agent", command)
+        self.assertIn("C-x j  jump to first agent needing attention", command)
         self.assertIn("C-x w  focus right pane", command)
         self.assertIn("C-x h  hide/show sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)

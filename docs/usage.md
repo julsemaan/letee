@@ -83,7 +83,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s a` | Show the sidebar and focus Agents. Recreate it if it was quit. |
 | `C-s r` | Remove the active right-pane session from letee without killing its tmux session. |
 | `C-s x` | Kill and remove the active right-pane session after `y/N` confirmation. The right pane returns to the startup help screen. |
-| `C-s j` | Jump to the first alerted agent without restoring a healthy hidden sidebar, including across sessions. If recovery recreates an invalid cockpit, the normal split layout may return. With no alert, leave the right pane focused. |
+| `C-s j` | Jump to the first agent in the current Agents ordering with a stored bell alert or an `input-required`, `auth-required`, `failed`, or `rejected` state, including across sessions. A healthy hidden sidebar stays hidden. If recovery recreates an invalid cockpit, the normal split layout may return. With no eligible agent, report `no agents need attention` and leave the right pane focused. |
 | `C-s w` | Focus the right pane. |
 | `C-s h` | Hide or show the sidebar. The sidebar remains alive while hidden. |
 | `C-s q` | Quit the outer letee session. |
