@@ -38,6 +38,7 @@ LAYOUT_REPAIR_INTERVAL = 0.5
 STATUS_POLL_INTERVAL = 0.1
 UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 ASCII_SPINNER = "|/-\\"
+_ATTENTION_STATES = {"input-required", "auth-required", "failed", "rejected"}
 UNICODE_STATUS_ICONS = {
     "submitted": "◷", "idle": "○", "completed": "✓", "input-required": "?",
     "auth-required": "⚿", "failed": "✕", "rejected": "⊘", "canceled": "−", "unknown": "?",
@@ -898,7 +899,10 @@ def _alerted_agent_index(
             index
             for index, entry in enumerate(entries)
             if entry.kind == "agent"
-            and (entry.pane_target, entry.agent_id) in alerts
+            and (
+                (entry.pane_target, entry.agent_id) in alerts
+                or entry.status in _ATTENTION_STATES
+            )
         ),
         None,
     )
@@ -2172,7 +2176,7 @@ def _status_attr(status: str) -> int:
         return _color("agent_working") or 0
     if status == "submitted":
         return _color("agent_submitted") or 0
-    if status in ("input-required", "auth-required", "failed", "rejected"):
+    if status in _ATTENTION_STATES:
         return (_color("agent_" + status.replace("-", "_")) or 0) | curses.A_BOLD
     if status == "completed":
         return _color("agent_completed") or 0
@@ -2983,7 +2987,7 @@ def run(stdscr: curses.window) -> None:
         state.focused_region = "agents"
         effect = _select_alerted_agent(state, agent_entries)
         if effect is None:
-            show_status("no agent alerts", "agents")
+            show_status("no agents need attention", "agents")
         return effect
 
     def start_move(target: Target) -> None:
