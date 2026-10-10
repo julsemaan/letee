@@ -111,7 +111,7 @@ Examples
 
 SIDEBAR = f"{shlex.quote(sys.executable)} -m letee sidebar"
 FOCUS_SIDEBAR = f"{shlex.quote(sys.executable)} -m letee focus-sidebar"
-SIDEBAR_ACTION_KEYS = {"add": "F11", "remove": "F8", "kill": "F9", "alert": "F10", "previous_agent": "F12", "next_agent": "F13"}
+SIDEBAR_ACTION_KEYS = {"add": "F11", "remove": "F8", "kill": "F9", "alert": "F10", "previous_agent": "F12", "next_agent": "F5"}
 TARGET = f"{tmux.SESSION}:{tmux.WINDOW}"
 COCKPIT_OPTION = "@letee_cockpit"
 SIDEBAR_PANE_OPTION = "@letee_sidebar_pane"

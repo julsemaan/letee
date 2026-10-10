@@ -107,7 +107,7 @@ Prefer the canonical action names shown in the configuration example.
 - Outer bindings must be a non-empty, printable, whitespace-free tmux key token such as `a`, `+`, `C-a`, `Left`, `Right`, or `F1`, optionally prefixed with `prefix+`.
 - Sidebar bindings must be exactly one printable ASCII character.
 
-These inputs stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F6` through `F13`, and session slots `1` through `9`.
+These inputs stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F5` through `F12`, and session slots `1` through `9`.
 
 Bindings load once at startup. After editing `~/.config/letee/config.toml`, rerun `letee` to apply outer and sidebar changes. Sidebar changes also require a sidebar restart. `letee` does that automatically when it recreates the cockpit.
 

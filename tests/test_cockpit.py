@@ -680,8 +680,14 @@ class CockpitLayoutTest(unittest.TestCase):
                 ],
             )
 
+    def test_internal_action_keys_fit_screen_terminal_function_key_range(self):
+        # screen terminfo defines F1 through F12, but not F13.
+        for action, key in cockpit.SIDEBAR_ACTION_KEYS.items():
+            with self.subTest(action=action):
+                self.assertLessEqual(int(key.removeprefix("F")), 12)
+
     def test_agent_cycle_keeps_healthy_hidden_sidebar_and_recovers_invalid_cockpit(self):
-        for region, key in (("previous_agent", "F12"), ("next_agent", "F13")):
+        for region, key in (("previous_agent", "F12"), ("next_agent", "F5")):
             for healthy in (True, False):
                 with (
                     self.subTest(region=region, healthy=healthy),

@@ -52,7 +52,7 @@ _PREFIX_ACTION_KEYS = {
     "kill": curses.KEY_F9,
     "alert": curses.KEY_F10,
     "previous_agent": curses.KEY_F12,
-    "next_agent": curses.KEY_F13,
+    "next_agent": curses.KEY_F5,
 }
 _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 

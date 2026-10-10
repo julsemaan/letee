@@ -6912,9 +6912,9 @@ class PrefixActionTest(unittest.TestCase):
         data = SessionSnapshot(SourceSnapshot(True, (first, second), frozenset(), agents=agents), {})
         # Equal-priority agents follow tracked session order, not discovery order.
         cases = (
-            ("0", [curses.KEY_F13] * 3, [2, 1, 0]),
+            ("0", [curses.KEY_F5] * 3, [2, 1, 0]),
             ("0", [curses.KEY_F12] * 3, [1, 2, 0]),
-            (None, [curses.KEY_F13], [0]),
+            (None, [curses.KEY_F5], [0]),
             ("missing", [curses.KEY_F12], [1]),
         )
         for active, keys, expected in cases:
@@ -6939,7 +6939,7 @@ class PrefixActionTest(unittest.TestCase):
                 actions.submit.return_value = True
                 data = SessionSnapshot(SourceSnapshot(True, (target,), frozenset(), agents=agents), {})
                 with patch.object(sidebar, "EffectRunner", return_value=actions):
-                    self._run([curses.KEY_F12, curses.KEY_F13, STOP], [target], target, data, current_agent="id")
+                    self._run([curses.KEY_F12, curses.KEY_F5, STOP], [target], target, data, current_agent="id")
                 self.assertEqual(actions.submit.call_count, 2 if agents else 0)
                 for call in actions.submit.call_args_list:
                     self.assertEqual(call.args[0], Effect("switch_pane", pane, message="id"))

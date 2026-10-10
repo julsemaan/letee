@@ -114,7 +114,7 @@ The focus commands reveal the selected row even after scrolling. Without a match
 
 `›` marks keyboard selection and left-pane focus. The mint reverse highlight marks the active session independently. An unfocused sidebar hides the pointer while preserving selection, viewport, colors, and the active-session highlight.
 
-These controls stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F6` through `F13`, and session slots `1` through `9`. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
+These controls stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F5` through `F12`, and session slots `1` through `9`. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
 
 ## Tracked sessions and ordering
 
