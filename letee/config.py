@@ -22,6 +22,8 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "remove_active": "prefix+r",
     "kill_active": "prefix+x",
     "jump_alert": "prefix+j",
+    "previous_agent": "prefix+Left",
+    "next_agent": "prefix+Right",
     "focus_right": "prefix+w",
     "toggle_sidebar": "prefix+h",
     "quit": "prefix+q",
@@ -40,7 +42,7 @@ DEFAULT_SIDEBAR_KEYBINDINGS: dict[str, str] = {
     "resize_dec": "]",
 }
 # ponytail: simple regex covers common tmux tokens; extend only if real configs need Space/Enter etc.
-_TMUX_TOKEN_RE = re.compile(r"^(?:(?:C|M|S)-)*(?:[A-Za-z0-9]|[!@#$%^&*()_+\-=\[\]{};':\",./<>?`~|\\]|F[0-9]{1,2})$")
+_TMUX_TOKEN_RE = re.compile(r"^(?:(?:C|M|S)-)*(?:[A-Za-z0-9]|[!@#$%^&*()_+\-=\[\]{};':\",./<>?`~|\\]|F[0-9]{1,2}|Left|Right)$")
 _RESERVED_SLOTS = {str(n) for n in range(1, 10)}
 _KEYBINDING_ALIASES = {
     "agents": "focus_agents",

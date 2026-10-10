@@ -4563,7 +4563,7 @@ class SidebarDrawTest(unittest.TestCase):
         )
         active_agents = []
         screen = FakeScreen(
-            [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_DOWN, curses.KEY_ENTER, -1, -1, STOP],
+            [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_ENTER, -1, -1, -1, STOP],
             size=(14, 30),
         )
 
@@ -6880,12 +6880,12 @@ class AgentOrderingTest(unittest.TestCase):
 
 
 class PrefixActionTest(unittest.TestCase):
-    def _run(self, keys, favorites, current_target, data, *, seed_alerts=None):
+    def _run(self, keys, favorites, current_target, data, *, seed_alerts=None, current_agent=None):
         poller = unittest.mock.Mock(
             snapshot=data,
             current_target=current_target,
             bell_target=None,
-            current_agent=None,
+            current_agent=current_agent,
             pane_active=True,
         )
         poller.tick.return_value = False
@@ -6904,6 +6904,82 @@ class PrefixActionTest(unittest.TestCase):
         with patches[0], patches[1], patches[2], patches[3], patches[4], alert_patch:
             run(screen)
         return screen
+
+    def test_cycle_agents_in_display_order_with_pending_navigation(self):
+        first, second = Target("local", "first"), Target("local", "second")
+        panes = [PaneTarget(t, "@1", f"%{i}", "/tmp/tmux") for i, t in enumerate((first, second, first))]
+        agents = tuple(AgentEntry(pane, str(i), "pi", "working") for i, pane in enumerate(panes))
+        data = SessionSnapshot(SourceSnapshot(True, (first, second), frozenset(), agents=agents), {})
+        # Equal-priority agents follow tracked session order, not discovery order.
+        cases = (
+            ("0", [curses.KEY_F13] * 3, [2, 1, 0]),
+            ("0", [curses.KEY_F12] * 3, [1, 2, 0]),
+            (None, [curses.KEY_F13], [0]),
+            ("missing", [curses.KEY_F12], [1]),
+        )
+        for active, keys, expected in cases:
+            with self.subTest(active=active, keys=keys):
+                actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+                actions.poll.return_value = None
+                actions.submit.return_value = True
+                with patch.object(sidebar, "EffectRunner", return_value=actions):
+                    self._run(keys + [STOP], [first, second], first, data, current_agent=active)
+                self.assertEqual(
+                    [(call.args[0].target, call.args[0].message) for call in actions.submit.call_args_list],
+                    [(panes[i], str(i)) for i in expected],
+                )
+
+    def test_cycle_empty_and_single_agent_lists(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        for agents in ((), (AgentEntry(pane, "id", "pi", "working"),)):
+            with self.subTest(agents=agents):
+                actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+                actions.poll.return_value = None
+                actions.submit.return_value = True
+                data = SessionSnapshot(SourceSnapshot(True, (target,), frozenset(), agents=agents), {})
+                with patch.object(sidebar, "EffectRunner", return_value=actions):
+                    self._run([curses.KEY_F12, curses.KEY_F13, STOP], [target], target, data, current_agent="id")
+                self.assertEqual(actions.submit.call_count, 2 if agents else 0)
+                for call in actions.submit.call_args_list:
+                    self.assertEqual(call.args[0], Effect("switch_pane", pane, message="id"))
+
+    def test_focus_selects_active_entries_without_switching(self):
+        targets = [Target("local", f"session-{i}") for i in range(8)]
+        active = targets[-1]
+        panes = [PaneTarget(t, "@1", f"%{i}", "/tmp/tmux") for i, t in enumerate(targets)]
+        agents = tuple(AgentEntry(pane, str(i), "pi", "working") for i, pane in enumerate(panes))
+        data = SessionSnapshot(SourceSnapshot(True, tuple(targets), frozenset(), agents=agents), {})
+        captured = []
+        signature = inspect.signature(sidebar._draw)
+
+        def draw(*args, **kwargs):
+            captured.append(signature.bind(*args, **kwargs).arguments)
+            return 2, None
+
+        with (
+            patch.object(sidebar, "_draw", side_effect=draw),
+            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "getmouse", side_effect=(
+                (0, 0, 3, 0, curses.BUTTON4_PRESSED),
+                (0, 0, 8, 0, curses.BUTTON4_PRESSED),
+            )),
+        ):
+            self._run(
+                [curses.KEY_F6, curses.KEY_UP, curses.KEY_MOUSE, -1,
+                 curses.KEY_F7, curses.KEY_UP, curses.KEY_MOUSE, -1,
+                 curses.KEY_F6, curses.KEY_F7, STOP],
+                targets, active, data, current_agent="7",
+            )
+        last = captured[-1]
+        self.assertEqual(last["entries"][last["selected"]].target, active)
+        self.assertEqual(last["agent_entries"][last["agent_selected"]].agent_id, "7")
+        self.assertTrue(any(row["scroll_offset"] is not None for row in captured))
+        self.assertTrue(any(row["agent_scroll_offset"] is not None for row in captured))
+        self.assertIsNone(last["scroll_offset"])
+        self.assertIsNone(last["agent_scroll_offset"])
+        switch.assert_not_called()
 
     def test_remove_prefix_targets_active_session_not_stale_selection(self):
         stale = Target("local", "stale")

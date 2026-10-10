@@ -51,6 +51,8 @@ _PREFIX_ACTION_KEYS = {
     "remove": curses.KEY_F8,
     "kill": curses.KEY_F9,
     "alert": curses.KEY_F10,
+    "previous_agent": curses.KEY_F12,
+    "next_agent": curses.KEY_F13,
 }
 _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 
@@ -886,6 +888,16 @@ def _tracked_session_index(entries: list[Entry], target: Target | None) -> int |
             for index, entry in enumerate(entries)
             if entry.kind == "session" and entry.tracked and entry.target == target
         ),
+        None,
+    )
+
+
+def _active_agent_index(
+    entries: list[Entry], target: Target | None, agent_id: str | None,
+) -> int | None:
+    return next(
+        (index for index, entry in enumerate(entries)
+         if entry.kind == "agent" and entry.target == target and entry.agent_id == agent_id),
         None,
     )
 
@@ -2980,6 +2992,20 @@ def run(stdscr: curses.window) -> None:
             if read_prompt(f"kill {current_target.format()}? y/N", state.add_view == "search").key_code != ord("y"):
                 return None
             return _transition(state, "kill", current_target)
+        if action in ("previous_agent", "next_agent"):
+            candidates = [index for index, entry in enumerate(agent_entries) if entry.kind == "agent"]
+            if not candidates:
+                return None
+            target, agent_id = pending_navigation or (current_target, poller.current_agent)
+            active_index = _active_agent_index(agent_entries, target, agent_id)
+            step = 1 if action == "next_agent" else -1
+            anchor = candidates.index(active_index) if active_index in candidates else (-1 if step == 1 else 0)
+            index = candidates[(anchor + step) % len(candidates)]
+            entry = agent_entries[index]
+            state.agent_selected_index = index
+            state.selected_agent_key = (entry.pane_target, entry.agent_id)
+            state.agent_scroll_offset = None
+            return Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
         state.focused_region = "agents"
         effect = _select_alerted_agent(state, agent_entries)
         if effect is None:
@@ -3237,6 +3263,18 @@ def run(stdscr: curses.window) -> None:
             if key in (curses.KEY_F6, curses.KEY_F7) and state.add_view is None:
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
+                target, agent_id = pending_navigation or (current_target, poller.current_agent)
+                if state.focused_region == "sessions":
+                    if target is not None:
+                        _select_session_entry(state, entries, target)
+                    state.scroll_offset = None
+                else:
+                    index = _active_agent_index(agent_entries, target, agent_id)
+                    if index is not None:
+                        state.agent_selected_index = index
+                        entry = agent_entries[index]
+                        state.selected_agent_key = (entry.pane_target, entry.agent_id)
+                mark_layout_dirty()
                 mark_input(True, "focus_region")
                 continue
             if key in _PREFIX_ACTIONS:
