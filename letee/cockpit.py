@@ -69,7 +69,7 @@ Navigation
   {_display_key(prefix, kb["add_session"])}  add session
   {_display_key(prefix, kb["remove_active"])}  remove active session
   {_display_key(prefix, kb["kill_active"])}  kill and remove active session (confirm)
-  {_display_key(prefix, kb["jump_alert"])}  jump to first alerted agent
+  {_display_key(prefix, kb["jump_alert"])}  jump to first agent needing attention
   {_display_key(prefix, kb["previous_agent"])}  switch to previous agent
   {_display_key(prefix, kb["next_agent"])}  switch to next agent
   {_display_key(prefix, kb["focus_right"])}  focus right pane

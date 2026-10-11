@@ -51,7 +51,7 @@ Start an agent inside a session, then press `C-s a`. The selector starts on the 
 
 Use `C-s Left` and `C-s Right` to jump to the previous or next agent in displayed order across tracked sessions, wrapping at either end. With no active listed agent, Right opens the first and Left the last. `C-s s` focuses the active session without switching.
 
-When an agent needs attention, press `C-s j` to open Agents and jump to the first alert. See the [agent integration guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md) for alert states and termination behavior.
+Press `C-s j` to jump to the first agent in the current Agents ordering with a stored bell alert or an `input-required`, `auth-required`, `failed`, or `rejected` state. With no eligible agent, letee reports `no agents need attention`. See the [agent integration guide](https://github.com/julsemaan/letee/blob/main/docs/agents.md) for alert states and termination behavior.
 
 ## Essential controls
 
