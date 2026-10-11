@@ -1538,6 +1538,10 @@ class AsyncStatusPoller:
         self._pending_agent: tuple[PaneTarget, str] | None = None
         self._suppressed_target: Target | None = None
 
+    @property
+    def pending_agent(self) -> tuple[PaneTarget, str] | None:
+        return self._pending_agent
+
     def _poll_state(self) -> StatusPollState:
         return StatusPollState(
             self.snapshot,
@@ -2963,8 +2967,14 @@ def run(stdscr: curses.window) -> None:
     def navigation_context(current_target: Target | None) -> tuple[Target | None, str | None, PaneTarget | None]:
         if pending_navigation is not None:
             return pending_navigation
+        if poller.pending_agent is not None:
+            pane, agent_id = poller.pending_agent
+            return pane.target, agent_id, pane
         pane = next((pane for pane in poller.snapshot.focused_panes if pane.target == current_target), None)
-        return current_target, poller.current_agent, pane
+        agent_id = poller.current_agent
+        if agent_id is None:
+            agent_id = _focused_agent_id(poller.snapshot, current_target, None)
+        return current_target, agent_id, pane
 
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
         if action == "add":

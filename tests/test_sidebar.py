@@ -3042,8 +3042,10 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             complete(stale, "first")
 
             self.assertEqual(status.current_agent, "second")
+            self.assertEqual(status.pending_agent, (second_pane, "second"))
 
             complete(agent_snapshot(second_pane), "second")
+            self.assertIsNone(status.pending_agent)
             complete(stale, "first")
 
             self.assertEqual(status.current_agent, "first")
@@ -4508,6 +4510,7 @@ class SidebarDrawTest(unittest.TestCase):
             current_target=None,
             bell_target=None,
             current_agent=None,
+            pending_agent=None,
             pane_active=True,
         )
         poller.tick.return_value = False
@@ -4555,6 +4558,7 @@ class SidebarDrawTest(unittest.TestCase):
             current_target=target,
             bell_target=None,
             current_agent="first",
+            pending_agent=None,
             pane_active=True,
         )
         poller.tick.return_value = False
@@ -5679,6 +5683,7 @@ class SidebarBurstInputTest(unittest.TestCase):
             current_target=None,
             bell_target=None,
             current_agent=None,
+            pending_agent=None,
             pane_active=True,
         )
         poller.tick.return_value = False
@@ -6322,6 +6327,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
                     current_target=None,
                     bell_target=None,
                     current_agent=None,
+                    pending_agent=None,
                     pane_active=True,
                 )
                 poller.tick.return_value = False
@@ -6793,7 +6799,7 @@ class AgentOrderingTest(unittest.TestCase):
             ):
                 poller = unittest.mock.Mock(
                     snapshot=snapshot(), current_target=None, bell_target=None,
-                    current_agent=None, pane_active=True,
+                    current_agent=None, pending_agent=None, pane_active=True,
                 )
                 poller.tick.return_value = False
                 poller_type.return_value = poller
@@ -6810,7 +6816,7 @@ class AgentOrderingTest(unittest.TestCase):
         screen = FakeScreen([curses.KEY_F7, curses.KEY_MOUSE, STOP], size=(12, 40))
         poller = unittest.mock.Mock(
             snapshot=data, current_target=None, bell_target=None,
-            current_agent=None, pane_active=True,
+            current_agent=None, pending_agent=None, pane_active=True,
         )
         poller.tick.return_value = False
         with (
@@ -6857,7 +6863,7 @@ class AgentOrderingTest(unittest.TestCase):
         )
         poller = unittest.mock.Mock(
             snapshot=data, current_target=None, bell_target=None,
-            current_agent=None, pane_active=True,
+            current_agent=None, pending_agent=None, pane_active=True,
         )
         poller.tick.return_value = False
         with (
@@ -6886,6 +6892,7 @@ class PrefixActionTest(unittest.TestCase):
             current_target=current_target,
             bell_target=None,
             current_agent=current_agent,
+            pending_agent=None,
             pane_active=True,
         )
         poller.tick.return_value = False
@@ -6917,7 +6924,7 @@ class PrefixActionTest(unittest.TestCase):
         cases = (
             ("0", [curses.KEY_F5] * 3, [2, 1, 0]),
             ("0", [curses.KEY_F12] * 3, [1, 2, 0]),
-            (None, [curses.KEY_F5], [0]),
+            (None, [curses.KEY_F5], [2]),
             ("missing", [curses.KEY_F12], [1]),
         )
         for active, keys, expected in cases:
@@ -6964,6 +6971,62 @@ class PrefixActionTest(unittest.TestCase):
                 self.assertEqual(
                     rendered["agent_entries"][rendered["agent_selected"]].pane_target, expected_selection,
                 )
+
+    def test_cycle_after_effect_completion_before_discovery_confirmation(self):
+        target = Target("local", "work")
+        panes = [PaneTarget(target, "@1", f"%{i}", "/tmp/tmux") for i in range(4)]
+        for ids in (("a", "b", "c", "d"), ("shared",) * 4):
+            for key, expected in ((curses.KEY_F5, [2, 3]), (curses.KEY_F12, [0, 3])):
+                with self.subTest(ids=ids, key=key):
+                    data = SessionSnapshot(
+                        SourceSnapshot(
+                            True, (target,), frozenset(),
+                            agents=tuple(AgentEntry(pane, agent_id, "pi", "working") for pane, agent_id in zip(panes, ids)),
+                            focused_panes=frozenset({panes[1]}),
+                        ), {},
+                    )
+                    status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), target)
+                    status.current_agent = ids[1]
+                    status.tick = unittest.mock.Mock(return_value=False)
+                    actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+                    completed = []
+                    actions.submit.side_effect = lambda effect, *args, **kwargs: completed.append(sidebar.EffectResult(effect, ())) or True
+                    actions.poll.side_effect = lambda: completed.pop(0) if completed else None
+                    try:
+                        with (
+                            patch.object(sidebar, "AsyncStatusPoller", return_value=status),
+                            patch.object(sidebar, "EffectRunner", return_value=actions),
+                            patch.object(sidebar, "load_sessions", return_value=[target]),
+                            patch.object(sidebar, "_current_target", return_value=target),
+                            patch.object(sidebar, "_init_colors"),
+                            patch.object(sidebar.curses, "curs_set"),
+                        ):
+                            run(FakeScreen([key, key, STOP], size=(12, 40)))
+                        self.assertEqual(
+                            [call.args[0].target for call in actions.submit.call_args_list],
+                            [panes[i] for i in expected],
+                        )
+                    finally:
+                        status.close()
+
+    def test_cycle_before_first_status_sample_uses_focused_agent(self):
+        target = Target("local", "work")
+        panes = [PaneTarget(target, "@1", f"%{i}", "/tmp/tmux") for i in range(3)]
+        data = SessionSnapshot(
+            SourceSnapshot(
+                True, (target,), frozenset(),
+                agents=tuple(AgentEntry(pane, "shared", "pi", "working") for pane in panes),
+                focused_panes=frozenset({panes[1]}),
+            ), {},
+        )
+        for key, expected in ((curses.KEY_F5, panes[2]), (curses.KEY_F12, panes[0])):
+            with self.subTest(key=key):
+                actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+                actions.poll.return_value = None
+                actions.submit.return_value = True
+                with patch.object(sidebar, "EffectRunner", return_value=actions):
+                    self._run([key, STOP], [target], target, data)
+                self.assertEqual(actions.submit.call_args.args[0].target, expected)
 
     def test_cycle_empty_and_single_agent_lists(self):
         target = Target("local", "work")
