@@ -893,11 +893,11 @@ def _tracked_session_index(entries: list[Entry], target: Target | None) -> int |
 
 
 def _active_agent_index(
-    entries: list[Entry], target: Target | None, agent_id: str | None,
+    entries: list[Entry], pane_target: PaneTarget | None, agent_id: str | None,
 ) -> int | None:
     return next(
         (index for index, entry in enumerate(entries)
-         if entry.kind == "agent" and entry.target == target and entry.agent_id == agent_id),
+         if entry.kind == "agent" and entry.pane_target == pane_target and entry.agent_id == agent_id),
         None,
     )
 
@@ -2561,7 +2561,7 @@ def run(stdscr: curses.window) -> None:
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
     awaiting_navigation_sample = False
-    pending_navigation: tuple[Target, str | None] | None = None
+    pending_navigation: tuple[Target, str | None, PaneTarget | None] | None = None
     rendered: tuple[object, ...] | None = None
     footer_height = 0
     add_col: int | None = None
@@ -2912,9 +2912,9 @@ def run(stdscr: curses.window) -> None:
             show_status("another action is still running")
             return False
         if effect.kind in ("switch", "add_switch", "show_reconnecting") and isinstance(effect.target, Target):
-            pending_navigation = (effect.target, None)
+            pending_navigation = (effect.target, None, None)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            pending_navigation = (effect.target.target, effect.message or None)
+            pending_navigation = (effect.target.target, effect.message or None, effect.target)
         return True
 
     def cancel_move() -> None:
@@ -2956,6 +2956,12 @@ def run(stdscr: curses.window) -> None:
         _sync_agent_selection(state, agent_entries)
         state.scroll_offset = None
 
+    def navigation_context(current_target: Target | None) -> tuple[Target | None, str | None, PaneTarget | None]:
+        if pending_navigation is not None:
+            return pending_navigation
+        pane = next((pane for pane in poller.snapshot.focused_panes if pane.target == current_target), None)
+        return current_target, poller.current_agent, pane
+
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
         if action == "add":
             _open_add(state, poller.snapshot)
@@ -2996,8 +3002,8 @@ def run(stdscr: curses.window) -> None:
             candidates = [index for index, entry in enumerate(agent_entries) if entry.kind == "agent"]
             if not candidates:
                 return None
-            target, agent_id = pending_navigation or (current_target, poller.current_agent)
-            active_index = _active_agent_index(agent_entries, target, agent_id)
+            _, agent_id, pane = navigation_context(current_target)
+            active_index = _active_agent_index(agent_entries, pane, agent_id)
             step = 1 if action == "next_agent" else -1
             anchor = candidates.index(active_index) if active_index in candidates else (-1 if step == 1 else 0)
             index = candidates[(anchor + step) % len(candidates)]
@@ -3055,7 +3061,7 @@ def run(stdscr: curses.window) -> None:
             display_target = current_target
             active_agent_id = poller.current_agent
         else:
-            display_target, active_agent_id = pending_navigation
+            display_target, active_agent_id, _ = pending_navigation
         visible_bells = bell_targets - ({display_target} if display_target else set())
         if visible_bells - state.rang_bells or agent_alert:
             curses.beep()
@@ -3263,13 +3269,13 @@ def run(stdscr: curses.window) -> None:
             if key in (curses.KEY_F6, curses.KEY_F7) and state.add_view is None:
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
-                target, agent_id = pending_navigation or (current_target, poller.current_agent)
+                target, agent_id, pane = navigation_context(current_target)
                 if state.focused_region == "sessions":
                     if target is not None:
                         _select_session_entry(state, entries, target)
                     state.scroll_offset = None
                 else:
-                    index = _active_agent_index(agent_entries, target, agent_id)
+                    index = _active_agent_index(agent_entries, pane, agent_id)
                     if index is not None:
                         state.agent_selected_index = index
                         entry = agent_entries[index]

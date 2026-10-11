@@ -6909,7 +6909,10 @@ class PrefixActionTest(unittest.TestCase):
         first, second = Target("local", "first"), Target("local", "second")
         panes = [PaneTarget(t, "@1", f"%{i}", "/tmp/tmux") for i, t in enumerate((first, second, first))]
         agents = tuple(AgentEntry(pane, str(i), "pi", "working") for i, pane in enumerate(panes))
-        data = SessionSnapshot(SourceSnapshot(True, (first, second), frozenset(), agents=agents), {})
+        data = SessionSnapshot(
+            SourceSnapshot(True, (first, second), frozenset(), agents=agents, focused_panes=frozenset({panes[0]})),
+            {},
+        )
         # Equal-priority agents follow tracked session order, not discovery order.
         cases = (
             ("0", [curses.KEY_F5] * 3, [2, 1, 0]),
@@ -6927,6 +6930,39 @@ class PrefixActionTest(unittest.TestCase):
                 self.assertEqual(
                     [(call.args[0].target, call.args[0].message) for call in actions.submit.call_args_list],
                     [(panes[i], str(i)) for i in expected],
+                )
+
+    def test_same_id_agents_use_exact_focused_and_pending_panes(self):
+        target = Target("local", "work")
+        panes = [PaneTarget(target, "@1", f"%{i}", "/tmp/tmux") for i in range(3)]
+        agents = tuple(AgentEntry(pane, "shared", "pi", "working") for pane in panes)
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=agents, focused_panes=frozenset({panes[1]})),
+            {},
+        )
+        cases = (
+            ([curses.KEY_F7], [], panes[1]),
+            ([curses.KEY_F5], [panes[2]], panes[2]),
+            ([curses.KEY_F12], [panes[0]], panes[0]),
+            ([curses.KEY_F5, curses.KEY_F5, curses.KEY_F7], [panes[2], panes[0]], panes[0]),
+            ([curses.KEY_F12, curses.KEY_F12, curses.KEY_F7], [panes[0], panes[2]], panes[2]),
+        )
+        for keys, expected_switches, expected_selection in cases:
+            with self.subTest(keys=keys):
+                actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+                actions.poll.return_value = None
+                actions.submit.return_value = True
+                with (
+                    patch.object(sidebar, "EffectRunner", return_value=actions),
+                    patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+                ):
+                    self._run(keys + [STOP], [target], target, data, current_agent="shared")
+                self.assertEqual(
+                    [call.args[0].target for call in actions.submit.call_args_list], expected_switches,
+                )
+                rendered = inspect.signature(sidebar._draw).bind(*draw.call_args.args, **draw.call_args.kwargs).arguments
+                self.assertEqual(
+                    rendered["agent_entries"][rendered["agent_selected"]].pane_target, expected_selection,
                 )
 
     def test_cycle_empty_and_single_agent_lists(self):
@@ -6949,7 +6985,10 @@ class PrefixActionTest(unittest.TestCase):
         active = targets[-1]
         panes = [PaneTarget(t, "@1", f"%{i}", "/tmp/tmux") for i, t in enumerate(targets)]
         agents = tuple(AgentEntry(pane, str(i), "pi", "working") for i, pane in enumerate(panes))
-        data = SessionSnapshot(SourceSnapshot(True, tuple(targets), frozenset(), agents=agents), {})
+        data = SessionSnapshot(
+            SourceSnapshot(True, tuple(targets), frozenset(), agents=agents, focused_panes=frozenset({panes[-1]})),
+            {},
+        )
         captured = []
         signature = inspect.signature(sidebar._draw)
 
