@@ -70,6 +70,8 @@ Navigation
   {_display_key(prefix, kb["remove_active"])}  remove active session
   {_display_key(prefix, kb["kill_active"])}  kill and remove active session (confirm)
   {_display_key(prefix, kb["jump_alert"])}  jump to first agent needing attention
+  {_display_key(prefix, kb["previous_agent"])}  switch to previous agent
+  {_display_key(prefix, kb["next_agent"])}  switch to next agent
   {_display_key(prefix, kb["focus_right"])}  focus right pane
   {_display_key(prefix, kb["toggle_sidebar"])}  hide/show sidebar
   {_display_key(prefix, kb["quit"])}  quit cockpit
@@ -109,7 +111,7 @@ Examples
 
 SIDEBAR = f"{shlex.quote(sys.executable)} -m letee sidebar"
 FOCUS_SIDEBAR = f"{shlex.quote(sys.executable)} -m letee focus-sidebar"
-SIDEBAR_ACTION_KEYS = {"add": "F11", "remove": "F8", "kill": "F9", "alert": "F10"}
+SIDEBAR_ACTION_KEYS = {"add": "F11", "remove": "F8", "kill": "F9", "alert": "F10", "previous_agent": "F12", "next_agent": "F5"}
 TARGET = f"{tmux.SESSION}:{tmux.WINDOW}"
 COCKPIT_OPTION = "@letee_cockpit"
 SIDEBAR_PANE_OPTION = "@letee_sidebar_pane"
@@ -356,6 +358,8 @@ def _install_bindings(
     _bind_key(keybindings["remove_active"], "run-shell", _focus_sidebar_command("remove"))
     _bind_key(keybindings["kill_active"], "run-shell", _focus_sidebar_command("kill"))
     _bind_key(keybindings["jump_alert"], "run-shell", _focus_sidebar_command("alert"))
+    _bind_key(keybindings["previous_agent"], "run-shell", _focus_sidebar_command("previous_agent"))
+    _bind_key(keybindings["next_agent"], "run-shell", _focus_sidebar_command("next_agent"))
     _bind_key(keybindings["focus_right"], "select-pane", "-t", right_pane)
     _bind_key(keybindings["help"], "respawn-pane", "-k", "-t", right_pane, help_cmd)
     for slot in range(1, 10):
@@ -644,10 +648,11 @@ def cockpit() -> int:
 
 def focus_sidebar(region: str = "sessions") -> int:
     ensure_config()
-    if region != "alert" or not _valid():
+    background_action = region in ("alert", "previous_agent", "next_agent")
+    if not background_action or not _valid():
         ensure_cockpit()
     pane = _option(SIDEBAR_PANE_OPTION)
-    if region != "alert":
+    if not background_action:
         tmux.tmux("select-pane", "-t", pane)
     keys = {
         "sessions": ("F6",),
@@ -656,6 +661,8 @@ def focus_sidebar(region: str = "sessions") -> int:
         "remove": ("F6", SIDEBAR_ACTION_KEYS["remove"]),
         "kill": ("F6", SIDEBAR_ACTION_KEYS["kill"]),
         "alert": ("F7", SIDEBAR_ACTION_KEYS["alert"]),
+        "previous_agent": ("F7", SIDEBAR_ACTION_KEYS["previous_agent"]),
+        "next_agent": ("F7", SIDEBAR_ACTION_KEYS["next_agent"]),
     }[region]
     tmux.tmux("send-keys", "-t", pane, *keys)
     return 0

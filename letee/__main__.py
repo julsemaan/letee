@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     focus_sidebar.add_argument(
         "region",
         nargs="?",
-        choices=("sessions", "agents", "add", "remove", "kill", "alert"),
+        choices=("sessions", "agents", "add", "remove", "kill", "alert", "previous_agent", "next_agent"),
         default="sessions",
     )
     sub.add_parser("init", help="create missing config files")

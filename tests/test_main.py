@@ -77,6 +77,8 @@ class MainTest(unittest.TestCase):
             main(["focus-sidebar", "remove"])
             main(["focus-sidebar", "kill"])
             main(["focus-sidebar", "alert"])
+            main(["focus-sidebar", "previous_agent"])
+            main(["focus-sidebar", "next_agent"])
 
         self.assertEqual(
             focus_sidebar.call_args_list,
@@ -87,6 +89,8 @@ class MainTest(unittest.TestCase):
                 unittest.mock.call("remove"),
                 unittest.mock.call("kill"),
                 unittest.mock.call("alert"),
+                unittest.mock.call("previous_agent"),
+                unittest.mock.call("next_agent"),
             ],
         )
 

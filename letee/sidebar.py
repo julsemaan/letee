@@ -52,6 +52,8 @@ _PREFIX_ACTION_KEYS = {
     "remove": curses.KEY_F8,
     "kill": curses.KEY_F9,
     "alert": curses.KEY_F10,
+    "previous_agent": curses.KEY_F12,
+    "next_agent": curses.KEY_F5,
 }
 _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 
@@ -891,6 +893,16 @@ def _tracked_session_index(entries: list[Entry], target: Target | None) -> int |
     )
 
 
+def _active_agent_index(
+    entries: list[Entry], pane_target: PaneTarget | None, agent_id: str | None,
+) -> int | None:
+    return next(
+        (index for index, entry in enumerate(entries)
+         if entry.kind == "agent" and entry.pane_target == pane_target and entry.agent_id == agent_id),
+        None,
+    )
+
+
 def _alerted_agent_index(
     entries: list[Entry], alerts: set[tuple[PaneTarget, str]]
 ) -> int | None:
@@ -1525,6 +1537,10 @@ class AsyncStatusPoller:
         self._refresh_target: Target | None = None
         self._pending_agent: tuple[PaneTarget, str] | None = None
         self._suppressed_target: Target | None = None
+
+    @property
+    def pending_agent(self) -> tuple[PaneTarget, str] | None:
+        return self._pending_agent
 
     def _poll_state(self) -> StatusPollState:
         return StatusPollState(
@@ -2553,7 +2569,7 @@ def run(stdscr: curses.window) -> None:
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
     awaiting_navigation_sample = False
-    pending_navigation: tuple[Target, str | None] | None = None
+    pending_navigation: tuple[Target, str | None, PaneTarget | None] | None = None
     rendered: tuple[object, ...] | None = None
     footer_height = 0
     add_col: int | None = None
@@ -2904,9 +2920,9 @@ def run(stdscr: curses.window) -> None:
             show_status("another action is still running")
             return False
         if effect.kind in ("switch", "add_switch", "show_reconnecting") and isinstance(effect.target, Target):
-            pending_navigation = (effect.target, None)
+            pending_navigation = (effect.target, None, None)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            pending_navigation = (effect.target.target, effect.message or None)
+            pending_navigation = (effect.target.target, effect.message or None, effect.target)
         return True
 
     def cancel_move() -> None:
@@ -2948,6 +2964,18 @@ def run(stdscr: curses.window) -> None:
         _sync_agent_selection(state, agent_entries)
         state.scroll_offset = None
 
+    def navigation_context(current_target: Target | None) -> tuple[Target | None, str | None, PaneTarget | None]:
+        if pending_navigation is not None:
+            return pending_navigation
+        if poller.pending_agent is not None:
+            pane, agent_id = poller.pending_agent
+            return pane.target, agent_id, pane
+        pane = next((pane for pane in poller.snapshot.focused_panes if pane.target == current_target), None)
+        agent_id = poller.current_agent
+        if agent_id is None:
+            agent_id = _focused_agent_id(poller.snapshot, current_target, None)
+        return current_target, agent_id, pane
+
     def prefix_action(action: str, current_target: Target | None) -> Effect | None:
         if action == "add":
             _open_add(state, poller.snapshot)
@@ -2984,6 +3012,20 @@ def run(stdscr: curses.window) -> None:
             if read_prompt(f"kill {current_target.format()}? y/N", state.add_view == "search").key_code != ord("y"):
                 return None
             return _transition(state, "kill", current_target)
+        if action in ("previous_agent", "next_agent"):
+            candidates = [index for index, entry in enumerate(agent_entries) if entry.kind == "agent"]
+            if not candidates:
+                return None
+            _, agent_id, pane = navigation_context(current_target)
+            active_index = _active_agent_index(agent_entries, pane, agent_id)
+            step = 1 if action == "next_agent" else -1
+            anchor = candidates.index(active_index) if active_index in candidates else (-1 if step == 1 else 0)
+            index = candidates[(anchor + step) % len(candidates)]
+            entry = agent_entries[index]
+            state.agent_selected_index = index
+            state.selected_agent_key = (entry.pane_target, entry.agent_id)
+            state.agent_scroll_offset = None
+            return Effect("switch_pane", entry.pane_target, message=entry.agent_id or "")
         state.focused_region = "agents"
         effect = _select_alerted_agent(state, agent_entries)
         if effect is None:
@@ -3033,7 +3075,7 @@ def run(stdscr: curses.window) -> None:
             display_target = current_target
             active_agent_id = poller.current_agent
         else:
-            display_target, active_agent_id = pending_navigation
+            display_target, active_agent_id, _ = pending_navigation
         visible_bells = bell_targets - ({display_target} if display_target else set())
         if visible_bells - state.rang_bells or agent_alert:
             curses.beep()
@@ -3241,6 +3283,18 @@ def run(stdscr: curses.window) -> None:
             if key in (curses.KEY_F6, curses.KEY_F7) and state.add_view is None:
                 state.focused_region = "sessions" if key == curses.KEY_F6 else "agents"
                 _reset_selection(state, entries, state.focused_region)
+                target, agent_id, pane = navigation_context(current_target)
+                if state.focused_region == "sessions":
+                    if target is not None:
+                        _select_session_entry(state, entries, target)
+                    state.scroll_offset = None
+                else:
+                    index = _active_agent_index(agent_entries, pane, agent_id)
+                    if index is not None:
+                        state.agent_selected_index = index
+                        entry = agent_entries[index]
+                        state.selected_agent_key = (entry.pane_target, entry.agent_id)
+                mark_layout_dirty()
                 mark_input(True, "focus_region")
                 continue
             if key in _PREFIX_ACTIONS:
