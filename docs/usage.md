@@ -59,7 +59,7 @@ The default prefix for these examples is `C-s`. `-L <name>` selects a named oute
 | `letee rename <target> <new-session>` | Rename a tracked target and update that target in the selected server. |
 | `letee kill-server` | Kill the selected outer letee server. |
 
-The optional `region` for `focus-sidebar` is `sessions`, `agents`, `add`, `remove`, `kill`, `alert`, `previous_agent`, or `next_agent`.
+The optional `region` for `focus-sidebar` is `sessions`, `agents`, `add`, `remove`, `kill`, `alert`, `previous_agent`, `next_agent`, `previous_session`, or `next_session`.
 
 `letee sidebar` is the sidebar worker command started by the cockpit. It is not normally run by hand.
 
@@ -86,6 +86,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s +` | Show the sidebar and open the Add session menu. Recreate it if it was quit. |
 | `C-s a` | Show the sidebar and select the active agent in Agents without switching. Recreate it if it was quit. |
 | `C-s Left` / `C-s Right` | Jump to the previous or next agent in displayed order across tracked sessions, wrapping at both ends. |
+| `C-s Up` / `C-s Down` | Switch to the previous or next tracked session in persisted manual order, wrapping at both ends. |
 | `C-s r` | Remove the active right-pane session from letee without killing its tmux session. |
 | `C-s x` | Kill and remove the active right-pane session after `y/N` confirmation. The right pane returns to the startup help screen. |
 | `C-s j` | Jump to the first agent in the current Agents ordering with a stored bell alert or an `input-required`, `auth-required`, `failed`, or `rejected` state, including across sessions. A healthy compact or hidden sidebar stays in its current mode. If recovery recreates an invalid cockpit, the normal split layout may return. With no eligible agent, report `no agents need attention` and leave the right pane focused. |
@@ -97,7 +98,9 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s C-s` | Forward `C-s` to the inner session. |
 | `C-s 1` through `C-s 9` | Switch directly to a numbered tracked target. |
 
-Agent cycling preserves compact or hidden mode and does not focus the sidebar. Recovery of an invalid cockpit may restore the split layout. Without an active listed agent, Right opens the first agent and Left the last. With no agents, neither changes the current pane.
+Session and agent cycling preserve compact or hidden mode and do not focus the sidebar. Recovery of an invalid cockpit may restore the split layout. Without an active listed agent, Right opens the first agent and Left the last. With no agents, neither changes the current pane.
+
+Without an active tracked session, Down opens the first tracked session and Up the last. With no tracked sessions, neither changes the current pane. Session cycling includes missing-session launchers and sessions beyond the first nine slots.
 
 The focus commands reveal the selected row even after scrolling. Without a matching active entry, Sessions selects its first row or Add when empty, and Agents selects the ordering row. Add-menu focus behavior is unchanged.
 
@@ -118,7 +121,9 @@ The focus commands reveal the selected row even after scrolling. Without a match
 
 `›` marks keyboard selection and left-pane focus. The mint reverse highlight marks the active session independently. An unfocused sidebar hides the pointer while preserving selection, viewport, colors, and the active-session highlight.
 
-These controls stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F5` through `F12`, and session slots `1` through `9`. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
+These controls stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F3` through `F12`, and session slots `1` through `9`. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
+
+The cockpit sends internal `F6` then `F3` for previous session and `F6` then `F4` for next session. Agent cycling uses `F7` then `F12` or `F5`. These sequences are independent of custom outer bindings.
 
 ## Tracked sessions and ordering
 
@@ -126,7 +131,7 @@ The Sessions view lists tracked sessions in persisted manual order. The first ni
 
 Tracked sessions persist in `~/.config/letee/sessions` for the default server and `~/.config/letee/servers/<name>/sessions` for named servers. Configuration, hosts, prefix, dimensions, timeout, and SSH settings stay shared across named servers. Tracked sessions, ordering, the active target, alerts, and cockpit panes stay isolated. The same inner session can be tracked by multiple servers, so overlapping servers can show duplicate alerts.
 
-Missing sessions remain launchers. Press `Enter` on one to recreate and attach it with tmux `new-session -A`. Prefix session actions use the active right-pane target, never the sidebar selection. Missing or untracked active targets show a status message and do nothing.
+Missing sessions remain launchers. Press `Enter` on one to recreate and attach it with tmux `new-session -A`. Prefix remove/kill actions use the active right-pane target, never the sidebar selection. For these actions, missing or untracked active targets show a status message and do nothing.
 
 ## Add session menu
 

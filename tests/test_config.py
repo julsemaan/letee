@@ -307,6 +307,24 @@ class KeybindingConfigTest(unittest.TestCase):
         self.assertEqual(config.load_keybindings()["jump_alert"], "prefix+j")
         self.assertEqual(config.load_sidebar_keybindings(), config.DEFAULT_SIDEBAR_KEYBINDINGS)
 
+    def test_session_cycle_defaults(self):
+        self.assertEqual(config.load_keybindings()["previous_session"], "prefix+Up")
+        self.assertEqual(config.load_keybindings()["next_session"], "prefix+Down")
+
+    def test_session_arrow_tokens_accept_modifiers_and_both_tables(self):
+        for token in ("Up", "Down", "C-Up", "M-Down", "S-Down", "C-M-S-Up", "prefix+S-Up"):
+            with self.subTest(token=token):
+                self.write_config(f'[keybindings]\nprevious_session = "{token}"\n')
+                self.assertEqual(config.load_keybindings()["previous_session"], token)
+
+    def test_session_cycle_binding_conflicts_are_rejected(self):
+        self.write_config('[keybindings]\nnext_session = "prefix+Up"\n')
+        with self.assertRaisesRegex(SystemExit, "duplicate binding"):
+            config.load_keybindings()
+        self.write_config('prefix = "Up"\n')
+        with self.assertRaisesRegex(SystemExit, "conflicts with prefix"):
+            config.load_keybindings()
+
     def test_agent_cycle_defaults(self):
         self.assertEqual(config.load_keybindings()["previous_agent"], "prefix+Left")
         self.assertEqual(config.load_keybindings()["next_agent"], "prefix+Right")
@@ -416,7 +434,7 @@ class KeybindingConfigTest(unittest.TestCase):
             config.load_keybindings()
 
     def test_invalid_tmux_tokens_are_rejected(self):
-        for token in ('"C-"', '""', '"C x"', '"invalid"', '"prefix+Enter"', '"left"', '"C-Leftward"'):
+        for token in ('"C-"', '""', '"C x"', '"invalid"', '"prefix+Enter"', '"left"', '"C-Leftward"', '"up"', '"C-Downward"'):
             with self.subTest(token=token):
                 self.write_config(f"[keybindings]\nfocus_agents = {token}\n")
                 with self.assertRaisesRegex(SystemExit, "tmux key token"):
