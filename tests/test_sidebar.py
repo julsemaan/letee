@@ -53,7 +53,8 @@ def _assert_deferred_switch(testcase, switch, target, *extra):
 
 
 class ActiveSessionAvailabilityTest(unittest.TestCase):
-    def test_restoration_backoff_uses_completion_time_and_healthy_discovery_does_not_reset(self):
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_restoration_backoff_uses_completion_time_and_healthy_discovery_does_not_reset(self, _load_timing):
         target = Target("local", "work")
         healthy = snapshot(local=("work",))
         retry = sidebar.RestorationRetry()
@@ -102,7 +103,8 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             sidebar._reconcile_active_session_effect(target, failed, retry=retry)
             self.assertEqual(retry.deadline, 13)
 
-    def test_restoration_success_resets_and_stale_results_do_not_change_backoff(self):
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_restoration_success_resets_and_stale_results_do_not_change_backoff(self, _load_timing):
         target = Target("local", "work")
         retry = sidebar.RestorationRetry()
         effect = sidebar.Effect("switch", target, automatic=True)
