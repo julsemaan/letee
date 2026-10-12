@@ -55,6 +55,8 @@ _PREFIX_ACTION_KEYS = {
     "alert": curses.KEY_F10,
     "previous_agent": curses.KEY_F12,
     "next_agent": curses.KEY_F5,
+    "previous_session": curses.KEY_F3,
+    "next_session": curses.KEY_F4,
 }
 _PREFIX_ACTIONS = {key: action for action, key in _PREFIX_ACTION_KEYS.items()}
 
@@ -3074,6 +3076,21 @@ def run(stdscr: curses.window) -> None:
             if read_prompt(f"kill {current_target.format()}? y/N", state.add_view == "search").key_code != ord("y"):
                 return None
             return _transition(state, "kill", current_target)
+        if action in ("previous_session", "next_session"):
+            if not state.favorites:
+                return None
+            target, _, _ = navigation_context(current_target)
+            step = 1 if action == "next_session" else -1
+            anchor = state.favorites.index(target) if target in state.favorites else (-1 if step == 1 else 0)
+            destination = state.favorites[(anchor + step) % len(state.favorites)]
+            index = _select_session_entry(state, entries, destination)
+            state.scroll_offset = None
+            mark_layout_dirty()
+            if destination == target:
+                return None
+            if entries[index].status in ("connecting…", "reconnecting…"):
+                return Effect("show_reconnecting", destination)
+            return _transition(state, "switch", destination)
         if action in ("previous_agent", "next_agent"):
             candidates = [index for index, entry in enumerate(agent_entries) if entry.kind == "agent"]
             if not candidates:

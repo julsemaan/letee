@@ -61,7 +61,7 @@ For keyboard enthusiasts, these are the default keys.
 
 ### Sessions
 
-`C-s s` focuses Sessions. Use `j` and `k` to move, and `C-s 1` through `C-s 9` to open the first nine tracked sessions.
+`C-s s` focuses Sessions. Use `j` and `k` to move, and `C-s 1` through `C-s 9` to open the first nine tracked sessions. `C-s Up` and `C-s Down` switch to the previous or next tracked session in manual order, wrapping at either end without showing a hidden sidebar.
 
 ### Agents
 

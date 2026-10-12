@@ -593,6 +593,8 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "j", "run-shell", f"{cockpit.FOCUS_SIDEBAR} alert"),
                 ("bind-key", "Left", "run-shell", f"{cockpit.FOCUS_SIDEBAR} previous_agent"),
                 ("bind-key", "Right", "run-shell", f"{cockpit.FOCUS_SIDEBAR} next_agent"),
+                ("bind-key", "Up", "run-shell", f"{cockpit.FOCUS_SIDEBAR} previous_session"),
+                ("bind-key", "Down", "run-shell", f"{cockpit.FOCUS_SIDEBAR} next_session"),
                 ("bind-key", "w", "select-pane", "-t", "%2"),
                 ("bind-key", "?", "respawn-pane", "-k", "-t", "%2", cockpit.help_command("C-x")),
                 *[
@@ -625,8 +627,8 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._install_bindings("C-x", "%1", "%2")
 
         self.assertEqual(calls[6], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
-        self.assertEqual(calls[16], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
-        for key, action in (("Left", "previous_agent"), ("Right", "next_agent")):
+        self.assertEqual(calls[18], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
+        for key, action in (("Left", "previous_agent"), ("Right", "next_agent"), ("Up", "previous_session"), ("Down", "next_session")):
             self.assertIn(("bind-key", key, "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar {action}"), calls)
 
     def test_focus_sidebar_recreates_selects_and_injects_region_key(self):
@@ -704,6 +706,24 @@ class CockpitLayoutTest(unittest.TestCase):
                 else:
                     ensure_cockpit.assert_called_once_with()
                 tmux_call.assert_called_once_with("send-keys", "-t", "%7", "F7", key)
+
+    def test_session_cycle_keeps_healthy_hidden_sidebar_and_recovers_invalid_cockpit(self):
+        for region, key in (("previous_session", "F3"), ("next_session", "F4")):
+            for healthy in (True, False):
+                with (
+                    self.subTest(region=region, healthy=healthy),
+                    patch.object(cockpit, "ensure_config"),
+                    patch.object(cockpit, "_valid", return_value=healthy),
+                    patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
+                    patch.object(cockpit, "_option", return_value="%7"),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                ):
+                    self.assertEqual(cockpit.focus_sidebar(region), 0)
+                if healthy:
+                    ensure_cockpit.assert_not_called()
+                else:
+                    ensure_cockpit.assert_called_once_with()
+                tmux_call.assert_called_once_with("send-keys", "-t", "%7", "F6", key)
 
     def test_focus_sidebar_alert_keeps_valid_hidden_cockpit(self):
         with (
@@ -976,6 +996,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x j  jump to first agent needing attention", command)
         self.assertIn("C-x Left  switch to previous agent", command)
         self.assertIn("C-x Right  switch to next agent", command)
+        self.assertIn("C-x Up  switch to previous session", command)
+        self.assertIn("C-x Down  switch to next session", command)
         self.assertIn("C-x w  focus right pane", command)
         self.assertIn("C-x h  hide/show sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)
@@ -1574,6 +1596,8 @@ class CockpitDiagnosticsTest(unittest.TestCase):
 class CockpitKeybindingTest(unittest.TestCase):
     def test_install_bindings_uses_custom_keybindings(self):
         custom = {
+            "previous_session": "prefix+M-Up",
+            "next_session": "prefix+M-Down",
             "previous_agent": "prefix+M-Left",
             "next_agent": "prefix+M-Right",
             "focus_agents": "prefix+C-a",
@@ -1594,7 +1618,7 @@ class CockpitKeybindingTest(unittest.TestCase):
         # check each custom effective key appears in prefix table binds (without -n)
         for eff in ("C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h", "C-i", "C-j", "C-k"):
             self.assertIn(("bind-key", eff), [(c[0], c[1]) for c in calls])
-        for key, action in (("M-Left", "previous_agent"), ("M-Right", "next_agent")):
+        for key, action in (("M-Left", "previous_agent"), ("M-Right", "next_agent"), ("M-Up", "previous_session"), ("M-Down", "next_session")):
             self.assertIn(("bind-key", key, "run-shell", f"{cockpit.FOCUS_SIDEBAR} {action}"), calls)
         # defaults should not appear
         flat = [c[1] if len(c) > 1 else "" for c in calls]
@@ -1606,6 +1630,8 @@ class CockpitKeybindingTest(unittest.TestCase):
 
     def test_install_bindings_supports_global_without_prefix(self):
         custom = {
+            "previous_session": "M-Up",
+            "next_session": "M-Down",
             "previous_agent": "M-Left",
             "next_agent": "M-Right",
             "focus_agents": "C-a",
@@ -1627,7 +1653,7 @@ class CockpitKeybindingTest(unittest.TestCase):
         for eff in ("C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h", "C-i", "C-j", "C-k"):
             self.assertIn(("bind-key", "-n", eff), [(c[0], c[1], c[2]) if len(c) > 2 else c for c in calls])
 
-        for key, action in (("M-Left", "previous_agent"), ("M-Right", "next_agent")):
+        for key, action in (("M-Left", "previous_agent"), ("M-Right", "next_agent"), ("M-Up", "previous_session"), ("M-Down", "next_session")):
             self.assertIn(("bind-key", "-n", key, "run-shell", f"{cockpit.FOCUS_SIDEBAR} {action}"), calls)
 
     def test_install_bindings_unbinds_comma_global_key_on_rerun(self):
@@ -1656,6 +1682,8 @@ class CockpitKeybindingTest(unittest.TestCase):
 
     def test_help_generated_from_custom_bindings(self):
         custom = {
+            "previous_session": "prefix+M-Up",
+            "next_session": "prefix+M-Down",
             "previous_agent": "prefix+M-Left",
             "next_agent": "prefix+M-Right",
             "focus_agents": "prefix+C-a",
@@ -1691,6 +1719,8 @@ class CockpitKeybindingTest(unittest.TestCase):
         self.assertIn("C-x C-f  jump", cmd)
         self.assertIn("C-x M-Left  switch to previous agent", cmd)
         self.assertIn("C-x M-Right  switch to next agent", cmd)
+        self.assertIn("C-x M-Up  switch to previous session", cmd)
+        self.assertIn("C-x M-Down  switch to next session", cmd)
         self.assertIn("C-x C-g  focus right", cmd)
         self.assertIn("C-x C-h  hide/show", cmd)
         self.assertIn("C-x C-i  quit", cmd)
@@ -1702,6 +1732,8 @@ class CockpitKeybindingTest(unittest.TestCase):
         self.assertIn("C-a  focus/open Agents", cmd2)
         self.assertIn("M-Right  switch to next agent", cmd2)
         self.assertNotIn("C-x M-Right", cmd2)
+        self.assertIn("M-Down  switch to next session", cmd2)
+        self.assertNotIn("C-x M-Down", cmd2)
         self.assertNotIn("C-x C-a", cmd2)
         self.assertIn("R      rename", cmd)
         self.assertIn("D      remove", cmd)
