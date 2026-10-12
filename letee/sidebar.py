@@ -2722,7 +2722,7 @@ def run(stdscr: curses.window) -> None:
     awaiting_navigation_sample = False
     pending_navigation: tuple[Target, str | None, PaneTarget | None] | None = None
     rendered: tuple[object, ...] | None = None
-    compact = False
+    compact = cockpit.sidebar_compact()
     notified_status: tuple[str, float | None] | None = None
     footer_height = 0
     add_col: int | None = None
@@ -3202,6 +3202,7 @@ def run(stdscr: curses.window) -> None:
         render_sidebar(time.monotonic(), poller.current_target, force=True)
 
     def compact_mouse(event: InputEvent) -> None:
+        nonlocal compact
         if event.mouse_error or event.mouse is None:
             mark_input(False, "malformed_mouse")
             return
@@ -3212,6 +3213,7 @@ def run(stdscr: curses.window) -> None:
             return
         if row == 0 and _mouse_activates(buttons):
             cockpit.expand_sidebar(focus_right=True)
+            compact = False
             mark_input(True, "expand_sidebar")
             return
         top, separator, bottom = _compact_layout(height, state.agent_percentage)
@@ -3301,8 +3303,7 @@ def run(stdscr: curses.window) -> None:
         agent_alert: bool = False,
         force: bool = False,
     ) -> None:
-        nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered, compact, notified_status
-        compact = cockpit.sidebar_compact()
+        nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered, notified_status
         status = (state.status, state.status_deadline) if state.status else None
         if compact and status is not None and status != notified_status:
             cockpit.tmux.tmux("display-message", "-t", cockpit.TARGET, state.status, check=False)
@@ -3539,6 +3540,7 @@ def run(stdscr: curses.window) -> None:
             if key != curses.KEY_MOUSE:
                 clear_mouse_failure()
             if key == getattr(curses, "KEY_RESIZE", -999):
+                compact = cockpit.sidebar_compact()
                 rendered = None
                 mark_layout_dirty()
                 mark_input(True, "resize")
@@ -4001,6 +4003,7 @@ def run(stdscr: curses.window) -> None:
                     and _mouse_activates(mouse_state)
                 ):
                     cockpit.toggle_sidebar()
+                    compact = cockpit.sidebar_compact()
                     mark_layout_dirty()
                     trace_mouse_decision(mouse_input_id, "collapse_sidebar", row, mouse_col)
                     mark_input(True, "collapse_sidebar")

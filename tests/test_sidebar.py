@@ -874,7 +874,7 @@ class CompactSidebarTest(unittest.TestCase):
             patch.object(sidebar.curses, "getmouse", side_effect=mouse_events),
             patch.object(sidebar, "_draw", side_effect=draw_spy),
             patch.object(sidebar, "_bell_targets", return_value=set()),
-            patch.object(sidebar.cockpit, "sidebar_compact", side_effect=lambda: compact),
+            patch.object(sidebar.cockpit, "sidebar_compact", side_effect=lambda: compact) as mode_lookup,
             patch.object(sidebar.cockpit, "expand_sidebar", side_effect=expand) as expansion,
             patch.object(sidebar.cockpit, "show_session_menu") as session_menu,
             patch.object(sidebar.cockpit, "show_agent_menu") as agent_menu,
@@ -882,6 +882,7 @@ class CompactSidebarTest(unittest.TestCase):
         ):
             run(screen)
 
+        self.assertEqual(mode_lookup.call_count, 1 + keys.count(curses.KEY_RESIZE))
         effects = [item.args[0] for item in actions.submit.call_args_list]
         return targets, agents, draws, effects, expansion, session_menu, agent_menu
 
@@ -6268,6 +6269,22 @@ class SidebarRenderRecoveryTest(unittest.TestCase):
 
 
 class SidebarBurstInputTest(unittest.TestCase):
+    def test_idle_polls_do_not_repeat_compact_lookup(self):
+        with patch.object(sidebar.cockpit, "sidebar_compact", return_value=False) as lookup:
+            _, poller, draws, _ = self._run([-1] * 10 + [STOP], snapshot())
+        self.assertGreater(poller.tick.call_count, 1)
+        lookup.assert_called_once_with()
+        self.assertEqual(len(draws), 1)
+
+    def test_resize_refreshes_compact_mode_in_both_directions(self):
+        for initial in (False, True):
+            with self.subTest(initial=initial), patch.object(
+                sidebar.cockpit, "sidebar_compact", side_effect=[initial, not initial],
+            ) as lookup:
+                _, _, draws, _ = self._run([curses.KEY_RESIZE, STOP], snapshot())
+                self.assertEqual(lookup.call_count, 2)
+                self.assertEqual([draw["compact"] for draw in draws], [initial, not initial])
+
     def test_header_collapse_activates_only_visible_control(self):
         for buttons in (curses.BUTTON1_PRESSED, curses.BUTTON1_CLICKED):
             with self.subTest(buttons=buttons), patch.object(sidebar.cockpit, "toggle_sidebar") as toggle:
@@ -6302,7 +6319,7 @@ class SidebarBurstInputTest(unittest.TestCase):
             compact = True
 
         with (
-            patch.object(sidebar.cockpit, "sidebar_compact", side_effect=lambda: compact),
+            patch.object(sidebar.cockpit, "sidebar_compact", side_effect=lambda: compact) as lookup,
             patch.object(sidebar.cockpit, "toggle_sidebar", side_effect=collapse) as toggle,
         ):
             _, _, draws, switch = self._run(
@@ -6310,6 +6327,7 @@ class SidebarBurstInputTest(unittest.TestCase):
                 mouse_events=[(0, 1, 0, 0, curses.BUTTON1_PRESSED)],
             )
         toggle.assert_called_once_with()
+        self.assertEqual(lookup.call_count, 2)
         self.assertFalse(draws[0]["compact"])
         self.assertTrue(draws[-1]["compact"])
         switch.assert_not_called()
