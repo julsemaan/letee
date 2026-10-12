@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import signal
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -840,9 +841,11 @@ def switch(
         )
         try:
             attach_command = stage("prepare", "attach_command_preparation", attach_command)
-        except BaseException:
+        except BaseException as error:
             try:
-                tmux.tmux("respawn-pane", "-k", "-t", pane, _unavailable_command(target))
+                timed_out = isinstance(error, subprocess.TimeoutExpired) or isinstance(error.__cause__, subprocess.TimeoutExpired)
+                command = _reconnecting_command(target) if target.kind == "ssh" and timed_out else _unavailable_command(target)
+                tmux.tmux("respawn-pane", "-k", "-t", pane, command)
             except BaseException:
                 pass
             raise

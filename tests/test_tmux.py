@@ -15,6 +15,18 @@ class TmuxTests(unittest.TestCase):
     def tearDown(self):
         set_server(None)
 
+    def test_configured_default_and_explicit_timeout(self):
+        from letee.config import Timing
+
+        with (
+            patch("letee.tmux.load_timing", return_value=Timing(local_command_timeout=0.25)),
+            patch("letee.tmux.subprocess.run") as run,
+        ):
+            tmux("list-sessions")
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+            tmux("list-sessions", timeout=9)
+            self.assertEqual(run.call_args.kwargs["timeout"], 9)
+
     def test_named_server_selects_prefixed_socket(self):
         set_server("work")
         with patch("letee.tmux.subprocess.run") as run:
@@ -35,13 +47,18 @@ class TmuxTests(unittest.TestCase):
         )
 
     def test_timeout_exits_with_command_without_chained_exception(self):
-        with patch("letee.tmux.subprocess.run", side_effect=subprocess.TimeoutExpired(["tmux"], 5)):
+        from letee.config import Timing
+
+        with (
+            patch("letee.tmux.load_timing", return_value=Timing()),
+            patch("letee.tmux.subprocess.run", side_effect=subprocess.TimeoutExpired(["tmux"], 5)),
+        ):
             with self.assertRaises(SystemExit) as raised:
                 tmux("list-sessions")
 
         self.assertEqual(
             str(raised.exception),
-            f"{TMUX_MODULE.tmux_executable()} -L letee@v1 list-sessions timed out after 5 seconds",
+            f"{TMUX_MODULE.tmux_executable()} -L letee@v1 list-sessions timed out after 2 seconds",
         )
         self.assertIsNone(raised.exception.__cause__)
 

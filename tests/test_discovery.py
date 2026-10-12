@@ -9,7 +9,6 @@ from unittest.mock import Mock, call, patch
 
 from letee.discovery import (
     DiscoveryPoller,
-    MASTER_CHECK_TIMEOUT,
     REMOTE_COMMAND,
     SessionSnapshot,
     SourceSnapshot,
@@ -24,9 +23,11 @@ from letee.discovery import (
     local_snapshot,
     remote_snapshot,
 )
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
+from letee.config import Timing, load_timing
 
 
 REAL_POPEN = subprocess.Popen
@@ -126,6 +127,25 @@ class DiscoverySnapshotTest(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][:4], ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes"])
 
+    def test_configured_command_deadlines(self):
+        timing = replace(load_timing(), local_command_timeout=0.25, remote_command_timeout=0.75, ssh_master_check_timeout=0.1)
+        with (
+            patch("letee.discovery.load_timing", return_value=timing),
+            patch("letee.discovery.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run,
+        ):
+            local_snapshot()
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+            _persistent_master_alive("dev", True)
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.1)
+        process = FakeProcess(0)
+        with (
+            patch("letee.discovery.load_timing", return_value=timing),
+            patch("letee.discovery.load_persistent_ssh", return_value=False),
+            patch("letee.discovery.subprocess.Popen", return_value=process),
+        ):
+            remote_snapshot("dev")
+        self.assertEqual(process.wait_timeouts, [0.75])
+
     def test_local_snapshot_timeout_is_reported_without_hanging(self):
         with patch(
             "letee.discovery.subprocess.run",
@@ -219,11 +239,14 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual(agents["malformed"].activity_timestamp, agents["malformed"].runtime_updated_at)
 
     def test_ssh_command_uses_shared_keepalive_with_optional_persistence(self):
+        timing = load_timing()
         keepalive = (
-            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", f"ConnectTimeout={timing.ssh_connect_timeout}",
+            "-o", f"ServerAliveInterval={timing.ssh_keepalive_interval}",
+            "-o", f"ServerAliveCountMax={timing.ssh_keepalive_count_max}",
             "-o", "AddKeysToAgent=yes",
         )
-        discovery = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "dev", REMOTE_COMMAND)
+        discovery = ("-o", "BatchMode=yes", "dev", REMOTE_COMMAND)
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
             "-o", "ControlPersist=10m",
@@ -269,18 +292,22 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
         self.assertEqual(run.call_args.args[0][0], "ssh")
         self.assertEqual(run.call_args.args[0][-3:], ("-O", "check", "dev"))
-        self.assertEqual(run.call_args.kwargs["timeout"], MASTER_CHECK_TIMEOUT)
+        self.assertEqual(run.call_args.kwargs["timeout"], load_timing().ssh_master_check_timeout)
         self.assertTrue(run.call_args.kwargs["capture_output"])
 
     def test_master_check_failure_is_not_alive(self):
         with patch("letee.discovery.subprocess.run", return_value=Mock(returncode=255)):
             self.assertFalse(_persistent_master_alive("dev", True))
 
-        with patch(
-            "letee.discovery.subprocess.run",
-            side_effect=subprocess.TimeoutExpired("ssh", MASTER_CHECK_TIMEOUT),
+    def test_master_check_errors_are_inconclusive(self):
+        for error in (
+            subprocess.TimeoutExpired("ssh", load_timing().ssh_master_check_timeout),
+            OSError("check unavailable"),
         ):
-            self.assertFalse(_persistent_master_alive("dev", True))
+            with self.subTest(error=error), patch(
+                "letee.discovery.subprocess.run", side_effect=error,
+            ):
+                self.assertIsNone(_persistent_master_alive("dev", True))
 
     def test_remote_snapshot_rejects_oversized_output_and_distinguishes_no_server(self):
         def oversized(command, **kwargs):
@@ -365,6 +392,34 @@ class DiscoverySnapshotTest(unittest.TestCase):
         killpg.assert_not_called()
         self.assertTrue(process.communicated)
 
+    def test_completed_request_preserves_group_when_final_master_check_is_inconclusive(self):
+        for poll in (False, True):
+            for initial in (Mock(returncode=255), OSError("check unavailable")):
+                for error in (subprocess.TimeoutExpired("ssh", 0.5), OSError("check unavailable")):
+                    with self.subTest(poll=poll, initial=initial, error=error):
+                        process = FakeProcess(0, stdout="work:@1:%1:0:-:/tmp/tmux\n", pid=114)
+                        with (
+                            patch("letee.discovery.load_persistent_ssh", return_value=True),
+                            patch("letee.discovery.subprocess.run", side_effect=[initial, error]),
+                            patch("letee.discovery.subprocess.Popen", return_value=process),
+                            patch("letee.discovery.os.killpg") as killpg,
+                        ):
+                            if poll:
+                                poller = DiscoveryPoller(
+                                    ["dev"], local=Mock(return_value=EMPTY_LOCAL),
+                                    popen=Mock(return_value=process), clock=Mock(return_value=0),
+                                    persistent_ssh=True,
+                                )
+                                poller.tick()
+                                snapshot = poller.snapshot.remotes["dev"]
+                                poller.close()
+                            else:
+                                snapshot = remote_snapshot("dev")
+
+                        self.assertEqual(snapshot.sessions, (Target("ssh", "work", "dev"),))
+                        killpg.assert_not_called()
+                        self.assertTrue(process.communicated)
+
     def test_remote_snapshot_cleans_group_when_master_predates_request(self):
         process = FakeProcess(0, stdout="work:@1:%1:0:-:/tmp/tmux\n", pid=112)
         with (
@@ -391,7 +446,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
         self.assertEqual(snapshot.error, "timed out")
         self.assertEqual(killpg.call_args_list, [call(107, signal.SIGTERM), call(107, signal.SIGKILL)])
-        self.assertEqual(process.wait_timeouts, [10, 1, None])
+        self.assertEqual(process.wait_timeouts, [load_timing().remote_command_timeout, 1, None])
         self.assertTrue(process.communicated)
 
     def test_remote_snapshot_interruption_cleans_process_group_before_reraising(self):
@@ -473,6 +528,11 @@ class GroupTimeoutProcess(FakeProcess):
 
 
 class DiscoveryPollerTest(unittest.TestCase):
+    def setUp(self):
+        timing_patch = patch("letee.discovery.load_timing", return_value=Timing())
+        timing_patch.start()
+        self.addCleanup(timing_patch.stop)
+
     def test_removed_process_group_is_already_cleaned_up(self):
         process = FakeProcess(0, stdout="output", pid=109)
         with patch("letee.discovery.os.killpg", side_effect=ProcessLookupError):
@@ -557,19 +617,123 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(popen.call_count, 2)
         self.assertEqual(poller._next["dev"], 1.0)
 
-    def test_failed_remote_retries_continuously_when_inactive(self):
-        now = [0.0]
-        popen = Mock(side_effect=[FakeProcess(255), FakeProcess(255), FakeProcess(255)])
-        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+    def test_failed_remote_retries_with_capped_backoff(self):
+        for active_host in (None, "dev"):
+            with self.subTest(active_host=active_host):
+                now = [0.0]
+                popen = Mock(side_effect=lambda *args, **kwargs: FakeProcess(255))
+                poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
 
+                for count, delay in enumerate((1, 2, 4, 5, 5), start=1):
+                    poller.tick(active_host)
+                    self.assertEqual(popen.call_count, count)
+                    self.assertEqual(poller._next["dev"], now[0] + delay)
+                    now[0] += delay - 0.01
+                    poller.tick(active_host)
+                    self.assertEqual(popen.call_count, count)
+                    now[0] += 0.01
+
+    def test_backoff_is_independent_and_resets_after_success_and_refresh(self):
+        now = [0.0]
+        processes = {"dev": [255, 255, 0, 255, 255], "off": [255] * 5}
+        def popen(command, **kwargs):
+            return FakeProcess(processes[command[-2]].pop(0))
+        poller = self.make_poller(["dev", "off"], popen=popen, clock=lambda: now[0])
+        for timestamp in (0, 1, 3):
+            now[0] = timestamp
+            poller.tick()
+        self.assertEqual(poller._next, {"dev": 13, "off": 7})
+        now[0] = 13
         poller.tick()
-        now[0] = 2
+        self.assertEqual(poller._next, {"dev": 14, "off": 18})
+        poller.refresh()
         poller.tick()
+        self.assertEqual(poller._next, {"dev": 14, "off": 14})
+
+    def test_active_host_change_bypasses_failed_host_wait_only_once(self):
+        now = [0.0]
+        popen = Mock(side_effect=lambda *args, **kwargs: FakeProcess(255))
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        poller.tick()
+        now[0] = 0.1
+        poller.tick("dev")
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(poller._next["dev"], 2.1)
+        now[0] = 0.2
+        poller.tick("dev")
+        self.assertEqual(popen.call_count, 2)
+
+    def test_request_deadline_starts_after_master_check_and_spawn(self):
+        now = [0.0]
+        process = FakeProcess()
+        def check(*args):
+            now[0] += 0.5
+            return False
+        def popen(*args, **kwargs):
+            now[0] += 0.5
+            return process
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        with patch("letee.discovery._persistent_master_alive", side_effect=check):
+            poller.tick()
+        self.assertEqual(poller._active["dev"].started, 1)
+        now[0] = 3.99
+        poller.tick()
+        self.assertFalse(process.terminated)
         now[0] = 4
         poller.tick()
+        self.assertTrue(process.terminated)
+        self.assertEqual(poller._next["dev"], 5)
 
-        self.assertEqual(popen.call_count, 3)
-        self.assertEqual(poller._next["dev"], 6)
+    def test_poller_uses_configured_timeout_and_retry_delays(self):
+        now = [0.0]
+        process = FakeProcess()
+        timing = replace(Timing(), remote_command_timeout=0.2, retry_initial_delay=0.3, retry_max_delay=0.5)
+        with patch("letee.discovery.load_timing", return_value=timing) as load:
+            poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=lambda: now[0])
+            poller.tick()
+            now[0] = 0.19
+            poller.tick()
+            self.assertFalse(process.terminated)
+            now[0] = 0.2
+            poller.tick()
+            self.assertTrue(process.terminated)
+            self.assertEqual(poller._next["dev"], 0.5)
+            now[0] = 0.5
+            poller.tick()
+            self.assertEqual(poller._next["dev"], 1)
+        load.assert_called_once_with()
+
+    def test_refresh_resets_backoff_without_duplicating_pending_request(self):
+        now = [0.0]
+        pending = FakeProcess()
+        popen = Mock(side_effect=[FakeProcess(255), pending])
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        poller.tick()
+        now[0] = 1
+        poller.tick()
+        poller.refresh()
+        poller.tick()
+        self.assertEqual(popen.call_count, 2)
+        pending.returncode = 255
+        poller.tick()
+        self.assertEqual(poller._next["dev"], 2)
+
+    def test_retry_wait_starts_after_cleanup_and_spawn_failure(self):
+        now = [0.0]
+        poller = self.make_poller(["dev"], popen=Mock(return_value=FakeProcess(255)), clock=lambda: now[0])
+        def stop(*args, **kwargs):
+            now[0] += 1
+            return "", "offline"
+        with patch("letee.discovery._stop_process", side_effect=stop):
+            poller.tick()
+        self.assertEqual(poller._next["dev"], 2)
+        now[0] = 2
+        def failed_spawn(*args, **kwargs):
+            now[0] += 1
+            raise OSError("no ssh")
+        poller._popen = failed_spawn
+        poller.tick()
+        self.assertEqual(poller._next["dev"], 5)
 
     def test_inactive_remote_host_keeps_ten_second_interval(self):
         now = [0.0]
@@ -721,7 +885,10 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(poller.snapshot.remotes["dev"].error, "no ssh")
 
     def test_refresh_updates_local_and_retries_remote_immediately(self):
-        clock = Mock(side_effect=[0, 0, 1, 1])
+        now = [0.0]
+
+        def clock():
+            return now[0]
         popen = Mock(side_effect=[FakeProcess(255), FakeProcess(0)])
         local = SourceSnapshot(True, (Target("local", "new"),), frozenset())
         poller = self.make_poller(
@@ -730,6 +897,7 @@ class DiscoveryPollerTest(unittest.TestCase):
         )
 
         poller.tick()
+        now[0] = 0.1
         self.assertTrue(poller.refresh())
         poller.tick()
 
@@ -737,12 +905,16 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(popen.call_count, 2)
 
     def test_timeout_isolated_from_completed_host(self):
-        clock = Mock(side_effect=[0, 0, 11])
+        now = [0.0]
+
+        def clock():
+            return now[0]
         slow = FakeProcess()
         healthy = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n")
         poller = self.make_poller(["slow", "dev"], popen=Mock(side_effect=[slow, healthy, FakeProcess()]), clock=clock)
 
         poller.tick()
+        now[0] = 3
         self.assertTrue(poller.tick())
         self.assertTrue(slow.terminated)
         self.assertFalse(poller.snapshot.remotes["slow"].available)
@@ -777,19 +949,25 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(poller.snapshot.remotes["broken"].error, "tmux: permission denied")
 
     def test_success_after_failure_uses_normal_interval(self):
-        clock = Mock(side_effect=[0, 0, 2])
+        now = [0.0]
+
+        def clock():
+            return now[0]
         popen = Mock(side_effect=[FakeProcess(255), FakeProcess(0)])
         poller = self.make_poller(["dev"], popen=popen, clock=clock)
 
         poller.tick()
+        now[0] = 1
         poller.tick()
 
-        self.assertEqual(poller._next["dev"], 12)
+        self.assertEqual(poller._next["dev"], 11)
 
     def test_timeout_kills_and_reaps_process_that_ignores_terminate(self):
         process = TerminateIgnoringProcess()
-        poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=Mock(side_effect=[0, 0, 11]))
+        now = [0.0]
+        poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=lambda: now[0])
         poller.tick()
+        now[0] = 3
 
         self.assertTrue(poller.tick())
         self.assertTrue(process.terminated)
@@ -798,10 +976,12 @@ class DiscoveryPollerTest(unittest.TestCase):
 
     def test_timeout_kills_remaining_process_group_and_reaps_leader(self):
         process = GroupTimeoutProcess(pid=103)
-        poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=Mock(side_effect=[0, 0, 11]))
+        now = [0.0]
+        poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=lambda: now[0])
 
         with patch("letee.discovery.os.killpg") as killpg:
             poller.tick()
+            now[0] = 3
             self.assertTrue(poller.tick())
 
         self.assertEqual(killpg.call_args_list, [call(103, signal.SIGTERM), call(103, signal.SIGKILL)])
@@ -813,7 +993,7 @@ class DiscoveryPollerTest(unittest.TestCase):
         stale = FakeProcess(pid=104)
         poller = self.make_poller(
             ["dev"], popen=Mock(side_effect=[completed, stale]),
-            clock=Mock(side_effect=[0, 0, 1, 1]),
+            clock=Mock(return_value=0),
         )
         target = Target("ssh", "work", "dev")
         poller.tick()
