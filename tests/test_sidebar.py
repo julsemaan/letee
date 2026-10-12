@@ -5869,6 +5869,102 @@ class SidebarDrawTest(unittest.TestCase):
 
 
 
+class SidebarRenderRecoveryTest(unittest.TestCase):
+    def _run(self, state, keys, screen):
+        poller = unittest.mock.Mock(
+            snapshot=snapshot(local=("work-one", "work-two")),
+            current_target=None,
+            bell_target=None,
+            current_agent=None,
+            pane_active=True,
+        )
+        poller.tick.return_value = False
+        actions = unittest.mock.Mock(busy=False)
+        actions.poll.return_value = None
+        with (
+            patch.object(sidebar, "SidebarState", return_value=state),
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=state.favorites),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar, "_mouse_cleanup"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            screen.keys = list(keys)
+            sidebar.run(screen)
+        poller.close.assert_called_once_with()
+        actions.close.assert_called_once_with()
+        return poller, actions
+
+    def test_transient_render_failure_retries_and_preserves_state(self):
+        targets = [Target("local", name) for name in ("work-one", "work-two")]
+        for view in (None, "search", "name"):
+            for operation in ("erase", "refresh"):
+                with self.subTest(view=view, operation=operation):
+                    state = SidebarState(
+                        favorites=targets.copy(),
+                        add_view=view, filter_text="work" if view == "search" else "",
+                        creation_host="" if view else None,
+                        creation_text="renamed" if view == "name" else "",
+                        rename_target=targets[1] if view == "name" else None,
+                    )
+                    screen = FakeScreen(size=(12, 40))
+                    attempts = []
+                    failure_attempt = 3 if view is None else 2
+                    original = getattr(screen, operation)
+
+                    def draw_operation():
+                        attempts.append((
+                            state.selected_target, state.selected_index, state.add_view,
+                            state.filter_text, state.creation_text, state.rename_target,
+                        ))
+                        if len(attempts) == failure_attempt:
+                            raise curses.error("terminal resized during rendering")
+                        original()
+
+                    keys = [-1, curses.KEY_RESIZE, -1, -1, ord("z"), STOP]
+                    if view is None:
+                        keys = [curses.KEY_DOWN, -1] + keys
+                    with patch.object(screen, operation, side_effect=draw_operation):
+                        self._run(state, keys, screen)
+
+                    self.assertGreaterEqual(len(attempts), failure_attempt + 1)
+                    before, failed, retried = attempts[failure_attempt - 2:failure_attempt + 1]
+                    self.assertEqual(before, failed)
+                    self.assertEqual(failed, retried)
+                    self.assertEqual(before[0], targets[1] if view is None else targets[0])
+                    self.assertEqual(state.add_view, view)
+                    self.assertEqual(state.filter_text, "workz" if view == "search" else "")
+                    self.assertEqual(state.creation_text, "renamedz" if view == "name" else "")
+                    self.assertEqual(state.rename_target, targets[1] if view == "name" else None)
+
+    def test_resize_redraws_when_dimensions_return_to_previous_values(self):
+        # A rapid shrink/grow can restore the old size before KEY_RESIZE is read.
+        screen = FakeScreen(size=(12, 40))
+        with patch.object(screen, "refresh", wraps=screen.refresh) as refresh:
+            self._run(
+                SidebarState(),
+                [-1, curses.KEY_RESIZE, -1, curses.KEY_RESIZE, -1, STOP],
+                screen,
+            )
+        self.assertEqual(refresh.call_count, 3)
+
+    def test_unrelated_render_exceptions_propagate(self):
+        for view in (None, "name"):
+            with self.subTest(view=view):
+                screen = FakeScreen(size=(12, 40))
+                with (
+                    patch.object(screen, "refresh", side_effect=RuntimeError("unexpected failure")),
+                    self.assertRaisesRegex(RuntimeError, "unexpected failure"),
+                ):
+                    self._run(SidebarState(add_view=view), [-1, STOP], screen)
+
+
 class SidebarBurstInputTest(unittest.TestCase):
     def _run(self, keys, data, favorites=(), mouse_events=(), size=(12, 40), screen_class=FakeScreen):
         screen = screen_class(keys, size=size)

@@ -3165,24 +3165,30 @@ def run(stdscr: curses.window) -> None:
             state.add_button_selected, state.move_source, state.move_target,
         )
         if force or render_state != rendered:
-            if state.add_view == "name":
-                add_col = _draw_name(stdscr, state, False)
-                footer_height = 1
-            else:
-                move_src_entry = _tracked_session_index(entries, state.move_source)
-                move_tgt_entry = _tracked_session_index(entries, state.move_target)
-                footer_height, add_col = _draw(
-                    stdscr, entries, state.selected_index, state.status, state.filter_text,
-                    state.add_view == "search", bell_targets, display_target, False,
-                    state.creation_host, state.add_view is not None, state.scroll_offset,
-                    agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_percentage,
-                    active_agent_id, agent_alerts=state.agent_alerts,
-                    spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
-                    add_button_selected=state.add_button_selected,
-                    move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
-                    pane_active=poller.pane_active, status_region=state.status_region,
-                    agent_scroll_offset=state.agent_scroll_offset,
-                )
+            try:
+                if state.add_view == "name":
+                    add_col = _draw_name(stdscr, state, False)
+                    footer_height = 1
+                else:
+                    move_src_entry = _tracked_session_index(entries, state.move_source)
+                    move_tgt_entry = _tracked_session_index(entries, state.move_target)
+                    footer_height, add_col = _draw(
+                        stdscr, entries, state.selected_index, state.status, state.filter_text,
+                        state.add_view == "search", bell_targets, display_target, False,
+                        state.creation_host, state.add_view is not None, state.scroll_offset,
+                        agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_percentage,
+                        active_agent_id, agent_alerts=state.agent_alerts,
+                        spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
+                        add_button_selected=state.add_button_selected,
+                        move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
+                        pane_active=poller.pane_active, status_region=state.status_region,
+                        agent_scroll_offset=state.agent_scroll_offset,
+                    )
+            except curses.error:
+                # A resize can invalidate the window midway through drawing.
+                rendered = None
+                mark_layout_dirty()
+                return
             rendered = render_state
         layout_dirty = False
         layout_dirty_kind = "state"
@@ -3348,6 +3354,7 @@ def run(stdscr: curses.window) -> None:
             if key != curses.KEY_MOUSE:
                 clear_mouse_failure()
             if key == getattr(curses, "KEY_RESIZE", -999):
+                rendered = None
                 mark_layout_dirty()
                 mark_input(True, "resize")
                 continue
