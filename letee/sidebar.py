@@ -2048,7 +2048,7 @@ def _draw_title(
             section += f" · {'localhost' if creation_host == '' else creation_host}"
         left = f"{brand} / {section}"
     else:
-        left = brand
+        left = (" <" if _ascii() else " ‹") + brand
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     if not adding:
         label = f"{_icons()['selected']} add" if add_button_selected else "＋ add"
@@ -2460,7 +2460,8 @@ def _draw_compact(
             if row != height - 1:
                 raise
 
-    write_row(0, "  >  " if _ascii() else "  »  ", _color("section") or curses.A_BOLD)
+    header = "  >  " if _ascii() else "  »  "
+    write_row(0, header[:width].ljust(width), _color("title") or (curses.A_BOLD | curses.A_REVERSE))
     if 0 < separator < height:
         write_row(separator, ("-" if _ascii() else "─") * width, _color("section") or curses.A_BOLD)
     for section, kind, selection, offset, start, end in (
@@ -3897,6 +3898,19 @@ def run(stdscr: curses.window) -> None:
                     if state.move_source is not None:
                         state.move_target = None
                         mark_layout_dirty()
+                    continue
+                if (
+                    state.add_view is None
+                    and row == 0
+                    and mouse_col == 1
+                    and add_col is not None
+                    and add_col > 1
+                    and _mouse_activates(mouse_state)
+                ):
+                    cockpit.toggle_sidebar()
+                    mark_layout_dirty()
+                    trace_mouse_decision(mouse_input_id, "collapse_sidebar", row, mouse_col)
+                    mark_input(True, "collapse_sidebar")
                     continue
                 right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
                 if right_click:

@@ -91,6 +91,7 @@ Session actions
   Right-click  open session Rename/Remove/Kill menu
 
 Compact sidebar
+  Click ‹ in the expanded header to collapse, or < in ASCII mode
   Five columns: session number, agent status + two-column name, ! alert
   Click rows to switch; wheel scrolls each section
   Top button expands and focuses right; focus/actions restore full controls

@@ -3541,6 +3541,32 @@ class SidebarColorTest(unittest.TestCase):
 
 
 class SidebarDrawTest(unittest.TestCase):
+    def test_compact_header_matches_expanded_title_style_across_row(self):
+        for color in (123, 0):
+            for ascii_mode in (False, True):
+                with self.subTest(color=color, ascii=ascii_mode), patch.dict(sidebar._COLOR, {"title": color, "section": 456}, clear=True), patch.object(sidebar, "_ascii", return_value=ascii_mode):
+                    expanded = FakeScreen(size=(10, 40))
+                    compact = FakeScreen(size=(10, 7))
+                    _draw(expanded, [], 0, "", "")
+                    _draw(compact, [], 0, "", "", compact=True)
+                    title = next(item for item in expanded.calls if item[0] == "addnstr" and item[1] == 0)
+                    header = next(item for item in compact.calls if item[0] == "addnstr" and item[1] == 0)
+                    self.assertEqual(header[5], title[5])
+                    self.assertEqual(header[5], color or (curses.A_BOLD | curses.A_REVERSE))
+                    self.assertEqual(header[3], ("  >  " if ascii_mode else "  »  ").ljust(7))
+                    self.assertEqual(header[4], 7)
+
+    def test_expanded_header_has_collapse_control_but_add_header_does_not(self):
+        for ascii_mode in (False, True):
+            with self.subTest(ascii=ascii_mode), patch.object(sidebar, "_ascii", return_value=ascii_mode):
+                for adding in (False, True):
+                    screen = FakeScreen(size=(10, 40))
+                    sidebar._draw_title(screen, 40, [], "", adding=adding)
+                    header = next(item[3] for item in screen.calls if item[0] == "addnstr" and item[1] == 0)
+                    control = "<" if ascii_mode else "‹"
+                    self.assertEqual(header[1] == control, not adding)
+                    self.assertTrue(any(("back" if adding else "add") in item[3] for item in screen.calls if item[0] == "addnstr"))
+
     def test_inactive_sidebar_keeps_colors_and_hides_pointer(self):
         target = Target("local", "work")
         screen = FakeScreen(size=(7, 30))
@@ -4060,13 +4086,13 @@ class SidebarDrawTest(unittest.TestCase):
         with patch("letee.sidebar._ascii", return_value=False):
             _draw(screen, [], 0, "ok", "")
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].startswith("  letee"))
+        self.assertTrue(title[3].startswith(" ‹  letee"))
 
         screen = FakeScreen(size=(5, 40))
         with patch("letee.sidebar._ascii", return_value=True):
             _draw(screen, [], 0, "ok", "")
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].startswith(" letee"))
+        self.assertTrue(title[3].startswith(" < letee"))
 
     def test_draw_erases_without_forcing_full_repaint(self):
         screen = FakeScreen(size=(5, 40))
@@ -5904,6 +5930,52 @@ class SidebarDrawTest(unittest.TestCase):
 
 
 class SidebarBurstInputTest(unittest.TestCase):
+    def test_header_collapse_activates_only_visible_control(self):
+        for buttons in (curses.BUTTON1_PRESSED, curses.BUTTON1_CLICKED):
+            with self.subTest(buttons=buttons), patch.object(sidebar.cockpit, "toggle_sidebar") as toggle:
+                self._run(
+                    [curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], snapshot(),
+                    mouse_events=[(0, 1, 0, 0, buttons), (0, 1, 0, 0, curses.BUTTON1_RELEASED)],
+                )
+                toggle.assert_called_once_with()
+
+    def test_header_collapse_ignores_other_events_and_add_views(self):
+        cases = [
+            ((), (0, 1, 0, 0, curses.BUTTON1_RELEASED), 40),
+            ((), (0, 1, 0, 0, curses.BUTTON4_PRESSED), 40),
+            ((), (0, 1, 0, 0, curses.BUTTON5_PRESSED), 40),
+            ((), (0, 1, 0, 0, curses.BUTTON3_PRESSED), 40),
+            ((), (0, 0, 0, 0, curses.BUTTON1_PRESSED), 40),
+            ((), (0, 2, 0, 0, curses.BUTTON1_PRESSED), 40),
+            ((), (0, 1, 1, 0, curses.BUTTON1_PRESSED), 40),
+            ((), (0, 1, 0, 0, curses.BUTTON1_PRESSED), 6),
+            ((curses.KEY_F11,), (0, 1, 0, 0, curses.BUTTON1_PRESSED), 40),
+        ]
+        for keys, event, width in cases:
+            with self.subTest(keys=keys, event=event, width=width), patch.object(sidebar.cockpit, "toggle_sidebar") as toggle:
+                self._run([*keys, curses.KEY_MOUSE, STOP], snapshot(), mouse_events=[event], size=(12, width))
+                toggle.assert_not_called()
+
+    def test_header_collapse_redraws_in_compact_mode(self):
+        compact = False
+
+        def collapse():
+            nonlocal compact
+            compact = True
+
+        with (
+            patch.object(sidebar.cockpit, "sidebar_compact", side_effect=lambda: compact),
+            patch.object(sidebar.cockpit, "toggle_sidebar", side_effect=collapse) as toggle,
+        ):
+            _, _, draws, switch = self._run(
+                [curses.KEY_MOUSE, STOP], snapshot(),
+                mouse_events=[(0, 1, 0, 0, curses.BUTTON1_PRESSED)],
+            )
+        toggle.assert_called_once_with()
+        self.assertFalse(draws[0]["compact"])
+        self.assertTrue(draws[-1]["compact"])
+        switch.assert_not_called()
+
     def _run(self, keys, data, favorites=(), mouse_events=(), size=(12, 40), screen_class=FakeScreen):
         screen = screen_class(keys, size=size)
         poller = unittest.mock.Mock(
@@ -5932,8 +6004,13 @@ class SidebarBurstInputTest(unittest.TestCase):
                 "scroll_offset": bound.arguments["scroll_offset"],
                 "adding": bound.arguments["adding"],
                 "filtering": bound.arguments["name_input"],
+                "compact": bound.arguments["compact"],
             })
-            return 2, None
+            _, add_col = sidebar._draw_title(
+                args[0], args[0].getmaxyx()[1], bound.arguments["entries"], "",
+                adding=bound.arguments["adding"],
+            )
+            return 2, add_col
 
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
@@ -5947,6 +6024,7 @@ class SidebarBurstInputTest(unittest.TestCase):
             patch.object(sidebar, "_draw", side_effect=draw_spy),
             patch.object(sidebar, "_bell_targets", return_value=set()),
             patch.object(sidebar.curses, "getmouse", side_effect=mouse_events),
+            patch.object(sidebar.cockpit.tmux, "out", return_value=""),
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
             sidebar.run(screen)
