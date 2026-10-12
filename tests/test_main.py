@@ -399,8 +399,19 @@ class MainTest(unittest.TestCase):
             "letee-work", "show-options", "-v", "-t", "letee", "@letee_cockpit"
         )
 
+    def test_server_commands_use_configured_local_deadline(self):
+        with (
+            patch("letee.__main__.config.load_timing", return_value=MAIN_MODULE.config.Timing(local_command_timeout=0.25)),
+            patch("letee.__main__.subprocess.run") as run,
+        ):
+            MAIN_MODULE._run_server_tmux("work", "list-clients")
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+            MAIN_MODULE._run_legacy_tmux("letee-work", "list-clients")
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+
     def test_kill_server_requires_verified_letee_server_and_uses_selected_socket(self):
         with (
+            patch("letee.__main__.config.load_timing", return_value=MAIN_MODULE.config.Timing()),
             patch("letee.__main__._server_attached", return_value=False) as status,
             patch("letee.__main__.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
         ):
@@ -409,7 +420,7 @@ class MainTest(unittest.TestCase):
         status.assert_called_once_with("work")
         run.assert_called_once_with(
             [MAIN_MODULE.tmux.tmux_executable(), "-L", "letee@v1-work", "kill-server"],
-            text=True, capture_output=True, check=False, timeout=5,
+            text=True, capture_output=True, check=False, timeout=2,
         )
 
     def test_kill_server_refuses_missing_or_non_letee_server(self):

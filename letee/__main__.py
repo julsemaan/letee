@@ -75,7 +75,7 @@ def _run_server_tmux(server: str, *args: str) -> subprocess.CompletedProcess[str
         text=True,
         capture_output=True,
         check=False,
-        timeout=5,
+        timeout=config.load_timing().local_command_timeout,
     )
 
 
@@ -86,7 +86,7 @@ def _run_legacy_tmux(socket_name: str, *args: str) -> subprocess.CompletedProces
         text=True,
         capture_output=True,
         check=False,
-        timeout=5,
+        timeout=config.load_timing().local_command_timeout,
     )
 
 

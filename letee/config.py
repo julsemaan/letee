@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+from functools import lru_cache
+import math
 import os
 import re
 from pathlib import Path
@@ -14,6 +17,22 @@ DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
 DEFAULT_TMUX_CONFIG_OVERLAY = True
 CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\n'
+
+
+@dataclass(frozen=True)
+class Timing:
+    ssh_connect_timeout: int = 2
+    remote_command_timeout: float = 3
+    local_command_timeout: float = 2
+    ssh_auth_timeout: float = 60
+    ssh_master_check_timeout: float = 0.5
+    ssh_keepalive_interval: int = 5
+    ssh_keepalive_count_max: int = 3
+    retry_initial_delay: float = 1
+    retry_max_delay: float = 5
+
+
+CONFIG_TEXT += "\n[timing]\n" + "".join(f"{key} = {value}\n" for key, value in asdict(Timing()).items())
 
 DEFAULT_KEYBINDINGS: dict[str, str] = {
     "focus_agents": "prefix+a",
@@ -118,6 +137,36 @@ def _load_config() -> tuple[Path, dict]:
         return cfg, tomllib.loads(cfg.read_text())
     except tomllib.TOMLDecodeError as e:
         raise SystemExit(f"Invalid config TOML {cfg}: {e}") from e
+
+
+@lru_cache(maxsize=1)
+def load_timing() -> Timing:
+    cfg, data = _load_config()
+    raw = data.get("timing", {})
+    if not isinstance(raw, dict):
+        raise SystemExit(f"Invalid config {cfg}: [timing] must be a table")
+    defaults = asdict(Timing())
+    integer_keys = {"ssh_connect_timeout", "ssh_keepalive_interval", "ssh_keepalive_count_max"}
+    for key, value in raw.items():
+        if key not in defaults:
+            raise SystemExit(f"Invalid config {cfg}: unknown timing key {key!r}")
+        integer = key in integer_keys
+        try:
+            invalid = (
+                isinstance(value, bool)
+                or not isinstance(value, int if integer else (int, float))
+                or value <= 0
+                or not math.isfinite(value)
+            )
+        except OverflowError:
+            invalid = True
+        if invalid:
+            requirement = "a positive integer" if integer else "a positive finite duration"
+            raise SystemExit(f"Invalid config {cfg}: timing.{key} must be {requirement}")
+    timing = Timing(**{**defaults, **raw})
+    if timing.retry_initial_delay > timing.retry_max_delay:
+        raise SystemExit(f"Invalid config {cfg}: timing.retry_initial_delay must not exceed timing.retry_max_delay")
+    return timing
 
 
 def _validate_tmux_token(token: str) -> bool:

@@ -23,6 +23,17 @@ status_timeout = 5
 agent_panel_resize_step = 5
 persistent_ssh = true
 tmux_config_overlay = true
+
+[timing]
+ssh_connect_timeout = 2
+remote_command_timeout = 3
+local_command_timeout = 2
+ssh_auth_timeout = 60
+ssh_master_check_timeout = 0.5
+ssh_keepalive_interval = 5
+ssh_keepalive_count_max = 3
+retry_initial_delay = 1
+retry_max_delay = 5
 ```
 
 The `LETEE_CONFIG_DIR` environment variable can override `~/.config/letee` when you need a different configuration directory.
@@ -42,6 +53,18 @@ The `LETEE_CONFIG_DIR` environment variable can override `~/.config/letee` when 
 `agent_panel_resize_step` affects the current sidebar process only. With the default, `[` and `]` change the Agents share from `40%` to `45%` to `50%`. Rerun `letee` after changing configuration.
 
 Configuration, hosts, prefix, dimensions, timeout, and SSH settings are shared by named cockpits. Tracked sessions, their order, active target, alerts, and cockpit panes are isolated per outer server. See the [usage reference](https://github.com/julsemaan/letee/blob/main/docs/usage.md) for the server and persistence model.
+
+## Timing
+
+The optional `[timing]` table uses the defaults shown above. Omitted keys keep their defaults. Settings load once per process; restart letee, including its sidebar, after editing them.
+
+All values are seconds except `ssh_keepalive_count_max`, which counts unanswered keepalive messages. Durations must be positive and finite. `ssh_connect_timeout`, `ssh_keepalive_interval`, and `ssh_keepalive_count_max` must be positive integers. Booleans, unknown timing keys, and `retry_initial_delay` greater than `retry_max_delay` are rejected.
+
+`remote_command_timeout` limits automated remote commands and batch startup checks. Interactive startup authentication uses `ssh_auth_timeout` instead. `local_command_timeout` limits local tmux commands, SSH utilities, and agent probes/startup commands, including tmux and process queries in the remote kill-agent helper. `ssh_master_check_timeout` limits control-master checks. Deadlines apply to each subprocess, not the entire multi-command operation. Remote kill-agent gives the enclosing SSH process `remote_command_timeout + 2 * local_command_timeout` to cover both helper queries plus SSH overhead; each helper query still uses `local_command_timeout`. Attached sessions and interactive menus have no total runtime limit. Sidebar feedback still uses the separate `status_timeout` setting.
+
+Failed discovery requests retry independently per host. Failed automatic restoration of the active session has separate retry state, including when overlay upload fails but discovery is healthy. Delays start after each attempt finishes and double up to `retry_max_delay`: by default, 1, 2, 4, then 5 seconds. Success resets the corresponding backoff. Explicit discovery refresh resets discovery backoff, and changing the active host can bypass its delay once. Explicit navigation bypasses restoration backoff; changing the target discards it. Create, rename, kill, and authentication operations are not automatically retried.
+
+Healthy discovery still polls local and active hosts every 0.5 seconds and inactive hosts every 10 seconds.
 
 ## Prefix and terminal flow control
 
@@ -127,7 +150,7 @@ Interactive startup blocks before opening the cockpit while it groups hosts by e
 
 Letee reuses a reachable inherited `SSH_AUTH_SOCK`. When none is usable, it starts or reuses the persistent fallback agent socket `~/.ssh/letee-agent.sock`. Unlocked keys survive later letee launches while that agent stays alive. Shared SSH options include `AddKeysToAgent=yes`, so successfully used file-backed keys are cached in the agent. Hardware-backed keys and keys requiring confirmation can still prompt for each use. Grouping reduces concurrent prompts but cannot override token or agent confirmation policy.
 
-Every letee SSH connection also uses `ServerAliveInterval=60` and `ServerAliveCountMax=3` to detect dead connections and keep idle sessions active through network and NAT timeouts. Keepalive remains enabled when `persistent_ssh` is disabled.
+New letee SSH connections use `ConnectTimeout=2`, `ServerAliveInterval=5`, and `ServerAliveCountMax=3` by default. The `[timing]` settings above control these values. Keepalive detects dead connections and keeps idle sessions active through network and NAT timeouts; it remains enabled when `persistent_ssh` is disabled. Existing persistent masters retain their previous keepalive settings until replaced, so restarting letee alone does not change those connections.
 
 To omit letee's persistence options, set:
 
