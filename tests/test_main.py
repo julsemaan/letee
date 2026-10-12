@@ -411,6 +411,7 @@ class MainTest(unittest.TestCase):
 
     def test_kill_server_requires_verified_letee_server_and_uses_selected_socket(self):
         with (
+            patch("letee.__main__.config.load_timing", return_value=MAIN_MODULE.config.Timing()),
             patch("letee.__main__._server_attached", return_value=False) as status,
             patch("letee.__main__.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
         ):
