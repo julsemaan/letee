@@ -27,7 +27,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
-from letee.config import load_timing
+from letee.config import Timing, load_timing
 
 
 REAL_POPEN = subprocess.Popen
@@ -528,6 +528,11 @@ class GroupTimeoutProcess(FakeProcess):
 
 
 class DiscoveryPollerTest(unittest.TestCase):
+    def setUp(self):
+        timing_patch = patch("letee.discovery.load_timing", return_value=Timing())
+        timing_patch.start()
+        self.addCleanup(timing_patch.stop)
+
     def test_removed_process_group_is_already_cleaned_up(self):
         process = FakeProcess(0, stdout="output", pid=109)
         with patch("letee.discovery.os.killpg", side_effect=ProcessLookupError):
@@ -682,7 +687,7 @@ class DiscoveryPollerTest(unittest.TestCase):
     def test_poller_uses_configured_timeout_and_retry_delays(self):
         now = [0.0]
         process = FakeProcess()
-        timing = replace(load_timing(), remote_command_timeout=0.2, retry_initial_delay=0.3, retry_max_delay=0.5)
+        timing = replace(Timing(), remote_command_timeout=0.2, retry_initial_delay=0.3, retry_max_delay=0.5)
         with patch("letee.discovery.load_timing", return_value=timing) as load:
             poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=lambda: now[0])
             poller.tick()
