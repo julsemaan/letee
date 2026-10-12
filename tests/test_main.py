@@ -69,6 +69,12 @@ class MainTest(unittest.TestCase):
         set_tmux.assert_called_once_with("work")
         sidebar.assert_called_once_with()
 
+    def test_toggle_sidebar_dispatches_with_named_server(self):
+        with patch("letee.__main__.cockpit.toggle_sidebar", return_value=0) as toggle:
+            self.assertEqual(main(["-L", "work", "toggle-sidebar"]), 0)
+        toggle.assert_called_once_with()
+        self.assertEqual(MAIN_MODULE.tmux.SERVER, "work")
+
     def test_focus_sidebar_defaults_to_sessions_and_accepts_all_actions(self):
         with patch("letee.__main__.cockpit.focus_sidebar") as focus_sidebar:
             main(["focus-sidebar"])
@@ -79,6 +85,8 @@ class MainTest(unittest.TestCase):
             main(["focus-sidebar", "alert"])
             main(["focus-sidebar", "previous_agent"])
             main(["focus-sidebar", "next_agent"])
+            main(["focus-sidebar", "previous_session"])
+            main(["focus-sidebar", "next_session"])
 
         self.assertEqual(
             focus_sidebar.call_args_list,
@@ -91,8 +99,20 @@ class MainTest(unittest.TestCase):
                 unittest.mock.call("alert"),
                 unittest.mock.call("previous_agent"),
                 unittest.mock.call("next_agent"),
+                unittest.mock.call("previous_session"),
+                unittest.mock.call("next_session"),
             ],
         )
+
+    def test_session_cycle_actions_accept_named_server(self):
+        for action in ("previous_session", "next_session"):
+            with self.subTest(action=action), patch(
+                "letee.__main__.cockpit.focus_sidebar", return_value=0
+            ) as focus_sidebar:
+                self.assertEqual(main(["-L", "work", "focus-sidebar", action]), 0)
+                self.assertEqual(MAIN_MODULE.tmux.SERVER, "work")
+                self.assertEqual(MAIN_MODULE.config.current_server(), "work")
+                focus_sidebar.assert_called_once_with(action)
 
     def test_switch_session_uses_persisted_favorite_order(self):
         favorites = [

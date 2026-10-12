@@ -29,11 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("cockpit", help="launch or attach cockpit")
     sub.add_parser("version", help="show letee version")
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
+    sub.add_parser("toggle-sidebar", help="collapse/expand cockpit sidebar")
     focus_sidebar = sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
     focus_sidebar.add_argument(
         "region",
         nargs="?",
-        choices=("sessions", "agents", "add", "remove", "kill", "alert", "previous_agent", "next_agent"),
+        choices=("sessions", "agents", "add", "remove", "kill", "alert", "previous_agent", "next_agent", "previous_session", "next_session"),
         default="sessions",
     )
     sub.add_parser("init", help="create missing config files")
@@ -183,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Config: {cfg}")
         print(f"Wrapper: {wrapper}")
         return 0
+    if args.command == "toggle-sidebar":
+        return cockpit.toggle_sidebar()
     if args.command == "focus-sidebar":
         return cockpit.focus_sidebar(args.region)
     if args.command == "list-servers":

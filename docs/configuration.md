@@ -19,6 +19,7 @@ A complete configuration file with the defaults is:
 hosts = []
 prefix = "C-s"
 sidebar_width = 40
+sidebar_collapse_mode = "compact"
 status_timeout = 5
 agent_panel_resize_step = 5
 persistent_ssh = true
@@ -44,7 +45,8 @@ The `LETEE_CONFIG_DIR` environment variable can override `~/.config/letee` when 
 | --- | --- | --- |
 | `hosts` | `[]` | List of SSH aliases to discover. |
 | `prefix` | `"C-s"` | Outer tmux prefix. It must be one non-empty, printable, whitespace-free tmux key token, such as `C-s`, `C-g`, or `F1`. |
-| `sidebar_width` | `40` | Width of the left sidebar pane in columns. It must be a positive integer. |
+| `sidebar_width` | `40` | Expanded sidebar width in columns. It must be an integer of at least eight in compact mode, including when `sidebar_collapse_mode` is omitted. Hidden mode accepts any positive integer. |
+| `sidebar_collapse_mode` | `"compact"` | `"compact"` makes the toggle switch between expanded and a fixed five-column strip. `"hidden"` retains expanded/hidden toggling by zooming the right pane. |
 | `status_timeout` | `5` | Number of seconds that sidebar feedback remains visible. It must be a positive integer. |
 | `agent_panel_resize_step` | `5` | Percentage points changed by `[` and `]`. It must be an integer from 1 through 100. |
 | `persistent_ssh` | `true` | Enables letee's OpenSSH connection reuse options. |
@@ -88,6 +90,8 @@ focus_agents = "prefix+a"
 focus_sessions = "prefix+s"
 previous_agent = "prefix+Left"
 next_agent = "prefix+Right"
+previous_session = "prefix+Up"
+next_session = "prefix+Down"
 add_session = "prefix++"
 remove_active = "prefix+r"
 kill_active = "prefix+x"
@@ -110,9 +114,9 @@ resize_inc = "["
 resize_dec = "]"
 ```
 
-Outer values are tmux key tokens such as `a`, `+`, `C-a`, `M-x`, `Left`, `Right`, `M-Left`, or `F1`. Prefix a value with `prefix+` to require the outer prefix. For example, `prefix+a` means `C-s` then `a` when `prefix = "C-s"`, while `prefix+C-a` means the outer prefix followed by `C-a`. A value without `prefix+`, such as `C-a`, binds globally without `C-s` using tmux `bind-key -n`.
+Outer values are tmux key tokens such as `a`, `+`, `C-a`, `M-x`, `Left`, `Right`, `Up`, `Down`, `M-Left`, `C-Up`, or `F1`. Prefix a value with `prefix+` to require the outer prefix. For example, `prefix+a` means `C-s` then `a` when `prefix = "C-s"`, while `prefix+C-a` means the outer prefix followed by `C-a`. A value without `prefix+`, such as `C-a`, binds globally without `C-s` using tmux `bind-key -n`.
 
-`previous_agent` and `next_agent` cycle through displayed agents across tracked sessions. `focus_agents` and `focus_sessions` select the active entry without switching targets, falling back to the top row when no active entry matches.
+`previous_session` and `next_session` cycle through tracked sessions in persisted manual order, wrapping at either end. `previous_agent` and `next_agent` cycle through displayed agents across tracked sessions. `focus_agents` and `focus_sessions` select the active entry without switching targets, falling back to the top row when no active entry matches.
 
 Sidebar values are single printable ASCII characters such as `j` or `[`. The following action aliases are also accepted for compatibility:
 
@@ -121,16 +125,40 @@ Sidebar values are single printable ASCII characters such as `j` or `[`. The fol
 
 Prefer the canonical action names shown in the configuration example.
 
+### Migrating Up/Down prefixes
+
+The new session-navigation defaults are a breaking change for existing `prefix = "Up"` or `prefix = "Down"` configurations. Letee rejects the conflicting default at startup to preserve forwarding the prefix by pressing it twice.
+
+For an `Up` prefix, override `previous_session`:
+
+```toml
+prefix = "Up"
+
+[keybindings]
+previous_session = "prefix+M-Up"
+```
+
+For a `Down` prefix, override `next_session`:
+
+```toml
+prefix = "Down"
+
+[keybindings]
+next_session = "prefix+M-Down"
+```
+
+Add the override to your existing `[keybindings]` table if present. Replacement bindings must not duplicate other bindings or conflict with your prefix. Rerun `letee` after editing the configuration.
+
 ### Validation rules
 
 - Unknown keys in either table fail with an error naming the offending action.
 - Two actions in the same table may not use the same binding. In the outer table, `a` and `prefix+a` are different bindings because one is global and one uses the prefix table.
 - Outer and sidebar bindings may not use the reserved session slots `1` through `9`.
 - An outer binding may not use the effective key that equals the configured `prefix`, such as `prefix+C-s` when `prefix = "C-s"`.
-- Outer bindings must be a non-empty, printable, whitespace-free tmux key token such as `a`, `+`, `C-a`, `Left`, `Right`, or `F1`, optionally prefixed with `prefix+`.
+- Outer bindings must be a non-empty, printable, whitespace-free tmux key token such as `a`, `+`, `C-a`, `Left`, `Right`, `Up`, `Down`, or `F1`, optionally prefixed with `prefix+`. Arrow tokens accept `C-`, `M-`, and `S-` modifiers.
 - Sidebar bindings must be exactly one printable ASCII character.
 
-These inputs stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F5` through `F12`, and session slots `1` through `9`.
+These inputs stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F3` through `F12`, and session slots `1` through `9`.
 
 Bindings load once at startup. After editing `~/.config/letee/config.toml`, rerun `letee` to apply outer and sidebar changes. Sidebar changes also require a sidebar restart. `letee` does that automatically when it recreates the cockpit.
 
