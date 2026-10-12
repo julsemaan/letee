@@ -471,6 +471,47 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
             self.assertEqual(tmux_call.call_args.args, ("select-pane", "-t", "%2"))
 
+    def test_missing_overlay_transitions_once_on_remote_preparation_timeout(self):
+        target = Target("ssh", "work", "dev")
+        missing = snapshot(remotes={"dev": source("ssh", sessions=(), host="dev")})
+        healthy = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
+        retry = sidebar.RestorationRetry()
+        submitted = []
+        timeout = subprocess.TimeoutExpired(["ssh"], 3)
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "show_missing") as show_missing,
+            patch.object(sidebar.cockpit, "show_reconnecting") as show_reconnecting,
+            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar.sessions, "attach_command", side_effect=[timeout, timeout, "attach"]),
+        ):
+            marker = None
+            sidebar._sync_active_session(
+                target, missing, marker, lambda effect: submitted.append(effect) or True, retry=retry,
+            )
+            result = sidebar._perform_effect(submitted.pop(), ())
+            marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry)
+            show_missing.assert_called_once_with(target)
+            self.assertEqual(retry.overlay, "show_missing")
+
+            for attempt in range(3):
+                sidebar._sync_active_session(
+                    target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                    retry=retry, now=retry.deadline,
+                )
+                result = sidebar._perform_effect(submitted.pop(), ())
+                marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=10 + attempt)
+                show_reconnecting.assert_called_once_with(target)
+                if attempt < 2:
+                    self.assertTrue(result.error)
+                    self.assertEqual(marker, target)
+                    self.assertEqual(retry.overlay, "show_reconnecting")
+                    switch.assert_not_called()
+            self.assertIsNone(marker)
+            self.assertIsNone(retry.target)
+            self.assertIsNone(retry.overlay)
+            switch.assert_called_once_with(target, "attach")
+
     def test_failed_switch_retries_once_snapshot_is_healthy(self):
         target = Target("ssh", "work", "dev")
         failed = sidebar.EffectResult(

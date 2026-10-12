@@ -85,6 +85,7 @@ class Effect:
     message: str = ""
     automatic: bool = False
     agent_id: str = ""
+    restoration_overlay: str | None = None
 
 
 @dataclass
@@ -155,6 +156,7 @@ class EffectResult:
     partial_success: bool = False
     reset_matched: bool = False
     completed_at: float | None = field(default=None, compare=False)
+    restoration_overlay: str | None = None
 
 
 @dataclass(frozen=True)
@@ -447,11 +449,13 @@ class RestorationRetry:
     target: Target | None = None
     delay: float = 0
     deadline: float = 0
+    overlay: str | None = None
 
     def reset(self) -> None:
         self.target = None
         self.delay = 0
         self.deadline = 0
+        self.overlay = None
 
     def failed(self, target: Target, now: float) -> None:
         timing = load_timing()
@@ -499,7 +503,12 @@ def _sync_active_session(
             return interrupted
         return marker_after_submit(target)
     if status is None and interrupted == target:
-        return interrupted if not run(Effect("switch", target, automatic=True)) else marker_after_submit(None)
+        return interrupted if not run(Effect(
+            "switch", target, automatic=True,
+            restoration_overlay=(
+                "show_missing" if retry is not None and retry.overlay == "show_missing" else None
+            ),
+        )) else marker_after_submit(None)
     if status == "missing" and interrupted != target:
         return marker_after_submit(target) if run(Effect("show_missing", target, automatic=True)) else interrupted
     if status == "unavailable" and interrupted != target:
@@ -528,6 +537,14 @@ def _reconcile_active_session_effect(
             retry.failed(target, time.monotonic() if completed is None else completed)
         elif not result.error and navigation:
             retry.reset()
+        if result.restoration_overlay is not None:
+            retry.target = target
+            retry.overlay = result.restoration_overlay
+        elif not result.error and result.effect.kind in (
+            "show_missing", "show_reconnecting", "show_unavailable"
+        ):
+            retry.target = target
+            retry.overlay = result.effect.kind
     if not result.error and navigation:
         return None
     if (
@@ -1104,6 +1121,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
     planned = _planned_favorites(effect, favorites)
     partial_success = False
     reset_matched = False
+    restoration_overlay = None
     try:
         if (
             effect.automatic
@@ -1117,7 +1135,20 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 save_sessions(list(planned))
             if effect.automatic:
                 # Keep the current overlay until preparation finishes without navigation.
-                attach_command = sessions.attach_command(effect.target)
+                try:
+                    attach_command = sessions.attach_command(effect.target)
+                except (SystemExit, subprocess.TimeoutExpired) as error:
+                    timeout = error if isinstance(error, subprocess.TimeoutExpired) else error.__cause__
+                    if (
+                        effect.target.kind == "ssh"
+                        and effect.restoration_overlay == "show_missing"
+                        and isinstance(timeout, subprocess.TimeoutExpired)
+                    ):
+                        if _current_target() != effect.target:
+                            return EffectResult(effect, planned, stale_navigation=True)
+                        cockpit.show_reconnecting(effect.target)
+                        restoration_overlay = "show_reconnecting"
+                    raise
                 if _current_target() != effect.target:
                     return EffectResult(effect, planned, stale_navigation=True)
                 cockpit.switch(effect.target, attach_command)
@@ -1184,6 +1215,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             _effect_error(effect, error),
             partial_success=partial_success,
             reset_matched=reset_matched,
+            restoration_overlay=restoration_overlay,
         )
     return EffectResult(effect, planned, reset_matched=reset_matched)
 
