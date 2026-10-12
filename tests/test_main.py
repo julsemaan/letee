@@ -69,6 +69,12 @@ class MainTest(unittest.TestCase):
         set_tmux.assert_called_once_with("work")
         sidebar.assert_called_once_with()
 
+    def test_toggle_sidebar_dispatches_with_named_server(self):
+        with patch("letee.__main__.cockpit.toggle_sidebar", return_value=0) as toggle:
+            self.assertEqual(main(["-L", "work", "toggle-sidebar"]), 0)
+        toggle.assert_called_once_with()
+        self.assertEqual(MAIN_MODULE.tmux.SERVER, "work")
+
     def test_focus_sidebar_defaults_to_sessions_and_accepts_all_actions(self):
         with patch("letee.__main__.cockpit.focus_sidebar") as focus_sidebar:
             main(["focus-sidebar"])

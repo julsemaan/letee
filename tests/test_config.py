@@ -23,7 +23,7 @@ class ConfigTest(unittest.TestCase):
     def test_fresh_config_contains_default_prefix(self):
         cfg, wrapper = config.ensure_config()
 
-        self.assertEqual(cfg.read_text(), 'hosts = []\nprefix = "C-s"\nsidebar_width = 40\nstatus_timeout = 5\nagent_panel_resize_step = 5\npersistent_ssh = true\ntmux_config_overlay = true\n')
+        self.assertEqual(cfg.read_text(), 'hosts = []\nprefix = "C-s"\nsidebar_width = 40\nsidebar_collapse_mode = "compact"\nstatus_timeout = 5\nagent_panel_resize_step = 5\npersistent_ssh = true\ntmux_config_overlay = true\n')
         self.assertNotIn("prefix", wrapper.read_text())
         self.assertNotIn("send-prefix", wrapper.read_text())
         self.assertIn("set -g mouse on", wrapper.read_text())
@@ -60,6 +60,21 @@ class ConfigTest(unittest.TestCase):
 
         self.write_config("sidebar_width = 52\n")
         self.assertEqual(config.load_sidebar_width(), 52)
+
+    def test_sidebar_collapse_mode_defaults_and_allowed_values(self):
+        self.write_config("hosts = []\n")
+        self.assertEqual(config.load_sidebar_collapse_mode(), "compact")
+        self.assertEqual(config.COMPACT_SIDEBAR_WIDTH, 5)
+        for mode in ("compact", "hidden"):
+            self.write_config(f'sidebar_collapse_mode = "{mode}"\n')
+            self.assertEqual(config.load_sidebar_collapse_mode(), mode)
+
+    def test_invalid_sidebar_collapse_mode_fails_clearly(self):
+        for value in ('"other"', '""', "true", "5", "[]"):
+            with self.subTest(value=value):
+                self.write_config(f"sidebar_collapse_mode = {value}\n")
+                with self.assertRaisesRegex(SystemExit, "sidebar_collapse_mode must be"):
+                    config.load_sidebar_collapse_mode()
 
     def test_invalid_sidebar_width_fails_clearly(self):
         for value in ("0", "-1", '"40"', "true"):

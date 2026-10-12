@@ -620,6 +620,234 @@ def run(stdscr):
     sidebar_run(stdscr)
 
 
+class CompactSidebarTest(unittest.TestCase):
+    def _run_compact(self, keys, mouse_events=(), count=2, pane_active=True, alert=False):
+        targets = [Target("local", f"session-{index}") for index in range(count)]
+        agents = tuple(
+            AgentEntry(PaneTarget(target, "@1", f"%{index}", "/tmp/tmux-test"), f"agent-{index}", "pi", "working" if alert and index == 0 else "idle")
+            for index, target in enumerate(targets)
+        )
+        data = SessionSnapshot(SourceSnapshot(True, tuple(targets), frozenset(), agents=agents), {})
+        screen = FakeScreen([*keys, STOP], size=(10, 5))
+        poller = unittest.mock.Mock(
+            snapshot=data, current_target=None, bell_target=None,
+            current_agent=None, pending_agent=None, pane_active=pane_active,
+        )
+        poller.tick.return_value = False
+        if alert:
+            alerted = AgentEntry(agents[0].pane_target, "agent-0", "pi", "failed")
+
+            def tick(_now):
+                if poller.snapshot is not data:
+                    return False
+                poller.snapshot = SessionSnapshot(
+                    SourceSnapshot(True, tuple(targets), frozenset(), agents=(alerted, *agents[1:])), {},
+                )
+                return True
+
+            poller.tick.side_effect = tick
+        actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+        actions.submit.return_value = True
+        actions.poll.return_value = None
+        compact = True
+        draws = []
+        draw_signature = inspect.signature(sidebar._draw)
+
+        def draw_spy(*args, **kwargs):
+            bound = draw_signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            draws.append(dict(bound.arguments))
+            return 2, None
+
+        def expand(**_kwargs):
+            nonlocal compact
+            compact = False
+            screen.size = (10, 40)
+
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "DiscoveryPoller"),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=targets),
+            patch.object(sidebar, "load_sidebar_keybindings", return_value=config.DEFAULT_SIDEBAR_KEYBINDINGS),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar, "_mouse_cleanup"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar.curses, "beep"),
+            patch.object(sidebar.curses, "getmouse", side_effect=mouse_events),
+            patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.cockpit, "sidebar_compact", side_effect=lambda: compact),
+            patch.object(sidebar.cockpit, "expand_sidebar", side_effect=expand) as expansion,
+            patch.object(sidebar.cockpit, "show_session_menu") as session_menu,
+            patch.object(sidebar.cockpit, "show_agent_menu") as agent_menu,
+            patch.object(sidebar.cockpit.tmux, "out", return_value=""),
+        ):
+            run(screen)
+
+        effects = [item.args[0] for item in actions.submit.call_args_list]
+        return targets, agents, draws, effects, expansion, session_menu, agent_menu
+
+    def test_session_and_agent_clicks_stay_compact_including_handle_column(self):
+        for column in (0, 2):
+            with self.subTest(column=column):
+                targets, agents, draws, effects, expansion, _, _ = self._run_compact(
+                    [curses.KEY_MOUSE, curses.KEY_MOUSE],
+                    [(0, column, 2, 0, curses.BUTTON1_PRESSED),
+                     (0, column, 8, 0, curses.BUTTON1_PRESSED)],
+                )
+                self.assertEqual(effects, [
+                    Effect("switch", targets[1]),
+                    Effect("switch_pane", agents[1].pane_target, message="agent-1"),
+                ])
+                expansion.assert_not_called()
+                self.assertTrue(all(draw["compact"] for draw in draws))
+                self.assertTrue(all(draw["move_source_entry"] is None for draw in draws))
+                self.assertEqual([entry.target for entry in draws[-1]["entries"] if entry.kind == "session"], targets)
+
+    def test_wheel_scroll_in_each_section_maps_clicks_to_displayed_targets(self):
+        for kind, row in (("session", 1), ("agent", 7)):
+            with self.subTest(kind=kind):
+                targets, agents, draws, effects, expansion, _, _ = self._run_compact(
+                    [curses.KEY_MOUSE] * 4,
+                    [(0, 0, row, 0, curses.BUTTON5_PRESSED),
+                     (0, 0, row, 0, curses.BUTTON5_PRESSED),
+                     (0, 0, row, 0, curses.BUTTON4_PRESSED),
+                     (0, 0, row, 0, curses.BUTTON1_PRESSED)],
+                    count=8,
+                )
+                expected = Effect("switch", targets[1]) if kind == "session" else Effect("switch_pane", agents[1].pane_target, message="agent-1")
+                self.assertEqual(effects, [expected])
+                offset = "scroll_offset" if kind == "session" else "agent_scroll_offset"
+                self.assertIn(1, [draw[offset] for draw in draws])
+                expansion.assert_not_called()
+                self.assertTrue(all(draw["compact"] for draw in draws))
+
+    def test_top_button_expands_and_focuses_right_without_switching(self):
+        _, _, draws, effects, expansion, _, _ = self._run_compact(
+            [curses.KEY_MOUSE], [(0, 2, 0, 0, curses.BUTTON1_PRESSED)],
+        )
+        expansion.assert_called_once_with(focus_right=True)
+        self.assertEqual(effects, [])
+        self.assertFalse(draws[-1]["compact"])
+
+    def test_right_click_expands_menu_for_exact_scrolled_target(self):
+        for kind, row in (("session", 1), ("agent", 7)):
+            with self.subTest(kind=kind):
+                targets, agents, draws, effects, expansion, session_menu, agent_menu = self._run_compact(
+                    [curses.KEY_MOUSE, curses.KEY_MOUSE],
+                    [(0, 0, row, 0, curses.BUTTON5_PRESSED),
+                     (0, 2, row, 0, curses.BUTTON3_PRESSED)],
+                    count=8,
+                )
+                expansion.assert_called_once_with()
+                self.assertEqual(effects, [])
+                self.assertFalse(draws[-1]["compact"])
+                if kind == "session":
+                    session_menu.assert_called_once_with(targets[1], 2, row, config.DEFAULT_SIDEBAR_KEYBINDINGS)
+                    agent_menu.assert_not_called()
+                    self.assertEqual(draws[-1]["entries"][draws[-1]["selected"]].target, targets[1])
+                else:
+                    agent_menu.assert_called_once_with("pi", agents[1].pane_target, 2, row, config.DEFAULT_SIDEBAR_KEYBINDINGS)
+                    session_menu.assert_not_called()
+                    self.assertEqual(draws[-1]["agent_entries"][draws[-1]["agent_selected"]].pane_target, agents[1].pane_target)
+
+    def test_rename_and_kill_expand_without_losing_selected_session(self):
+        for key, following, kind in (
+            (ord("e"), [ord("z"), curses.KEY_ENTER], "rename"),
+            (ord("x"), [ord("y")], "kill"),
+        ):
+            with self.subTest(kind=kind):
+                targets, _, draws, effects, expansion, _, _ = self._run_compact(
+                    [curses.KEY_DOWN, key, *following],
+                )
+                expansion.assert_called_once_with()
+                expected = Effect("rename", targets[1], message="session-1z") if kind == "rename" else Effect("kill", targets[1])
+                self.assertEqual(effects, [expected])
+                self.assertFalse(draws[-1]["compact"])
+
+    def test_agent_kill_expands_without_losing_selected_pane(self):
+        _, agents, draws, effects, expansion, _, _ = self._run_compact(
+            [curses.KEY_F7, curses.KEY_DOWN, curses.KEY_DOWN, ord("x"), ord("y")],
+        )
+        expansion.assert_called_once_with()
+        self.assertEqual(effects, [Effect("kill_agent", agents[1].pane_target, message="pi", agent_id="agent-1")])
+        self.assertFalse(draws[-1]["compact"])
+
+    def test_background_prefix_agent_focus_then_alert_or_next_stays_compact(self):
+        for key in (curses.KEY_F10, curses.KEY_F5):
+            with self.subTest(key=key):
+                _, agents, draws, effects, expansion, _, _ = self._run_compact(
+                    [curses.KEY_F7, key], pane_active=False, alert=key == curses.KEY_F10,
+                )
+                expansion.assert_not_called()
+                self.assertTrue(all(draw["compact"] for draw in draws))
+                self.assertEqual(draws[-1]["focused_region"], "agents")
+                self.assertEqual(effects, [Effect("switch_pane", agents[0].pane_target, message="agent-0")])
+
+    def test_status_first_labels_and_alerts(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux-test")
+        for ascii_mode in (False, True):
+            with patch.object(sidebar, "_ascii", return_value=ascii_mode):
+                agent = sidebar.Entry("Pi agent", "agent", target, pane_target=pane, agent_id="a", status="working")
+                self.assertEqual(sidebar._compact_line(agent, 1, set(), target, {(pane, "a")}, "/"), "/ Pi!")
+                wide = sidebar.Entry("界面", "agent", target, pane_target=pane, status="completed")
+                self.assertEqual(sidebar._compact_line(wide, 1, set(), target, set(), None), ("+" if ascii_mode else "✓") + " 界 ")
+                self.assertEqual(sidebar._compact_line(sidebar.Entry("e\u0301cole", "agent", status="idle"), 1, set(), target, set(), None), "o e\u0301c " if ascii_mode else "○ e\u0301c ")
+
+    def test_session_numbers_continue_and_active_bells_are_acknowledged(self):
+        target = Target("local", "work")
+        entry = sidebar.Entry("work", "session", target, tracked=True)
+        self.assertEqual(sidebar._compact_line(entry, 12, {target}, None, set(), None), "12  !")
+        self.assertEqual(sidebar._compact_line(entry, 12, {target}, target, set(), None), "12   ")
+
+    def test_geometry_filters_controls_and_maps_one_row_entries(self):
+        entries = [sidebar.Entry("empty", "empty"), sidebar.Entry("one", "session"), sidebar.Entry("two", "session")]
+        rows = sidebar._compact_rows(entries, "session", 2, 0, 3, 5)
+        self.assertEqual(rows, [(1, 3), (2, 4)])
+        self.assertEqual(sidebar._compact_rows(entries, "session", 2, 1, 3, 4), [(2, 3)])
+        self.assertEqual(sidebar._compact_rows([], "agent", 0, None, 1, 3), [])
+        self.assertEqual(sidebar._compact_layout(10, 40), (1, 6, 10))
+
+    def test_tiny_panes_tolerate_ncurses_bottom_right_error(self):
+        for height in (1, 2, 10):
+            screen = FakeScreen(size=(height, 5))
+            addnstr = screen.addnstr
+
+            def write(row, column, text, width, attr):
+                addnstr(row, column, text, width, attr)
+                if row == height - 1:
+                    raise curses.error("bottom right")
+
+            screen.addnstr = write
+            with patch.object(sidebar, "_color", return_value=0):
+                sidebar._draw(screen, [], 0, "", "", agent_entries=[sidebar.Entry("Pi", "agent")], compact=True)
+
+    def test_section_allocation_keeps_both_sections_at_percentage_limits(self):
+        for percentage in (0, 100):
+            top, separator, bottom = sidebar._compact_layout(10, percentage)
+            self.assertGreater(separator, top)
+            self.assertGreater(bottom, separator + 1)
+
+    def test_draw_omits_controls_and_keeps_selected_spinner(self):
+        screen = FakeScreen(size=(10, 5))
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux-test")
+        sessions = [sidebar.Entry("work", "session", target, tracked=True)]
+        agents = [sidebar.Entry("", "order"), sidebar.Entry("Pi agent", "agent", target, pane_target=pane, agent_id="a", status="working")]
+        with patch.object(sidebar, "_color", return_value=0), patch.object(sidebar, "_ascii", return_value=False):
+            sidebar._draw(screen, sessions, 0, "", "", agent_entries=agents, agent_selected=1, active_agent_id="a", spinner_frame="⠋", compact=True)
+        lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
+        self.assertIn("  »  ", lines)
+        self.assertIn("⠋ Pi ", lines)
+        self.assertIn("─────", lines)
+        self.assertFalse(any("Order" in line or "AGENTS" in line or "work" in line for line in lines))
+
+
 class SidebarViewModeTest(unittest.TestCase):
     def test_normal_view_contains_only_ordered_sessions_and_add_action(self):
         sessions = [Target("ssh", "notes", "dev"), Target("local", "work")]

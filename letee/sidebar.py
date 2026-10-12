@@ -2403,6 +2403,83 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     return back_col
 
 
+def _compact_layout(height: int, agent_percentage: int) -> tuple[int, int, int]:
+    available = max(0, height - 2)
+    agent_rows = min(max(0, available - 1), max(1, round(available * agent_percentage / 100)))
+    return 1, height - agent_rows - 1, height
+
+
+def _compact_rows(
+    entries: list[Entry], kind: str, selected: int, scroll_offset: int | None,
+    top: int, bottom: int,
+) -> list[tuple[int, int]]:
+    indices = [index for index, entry in enumerate(entries) if entry.kind == kind]
+    capacity = max(0, bottom - top)
+    maximum = max(0, len(indices) - capacity)
+    if scroll_offset is None:
+        position = indices.index(selected) if selected in indices else 0
+        start = min(maximum, max(0, position - capacity + 1))
+    else:
+        start = min(maximum, max(0, scroll_offset))
+    return [(index, top + row) for row, index in enumerate(indices[start:start + capacity])]
+
+
+def _compact_line(
+    entry: Entry, number: int, bell_targets: set[Target], current_target: Target | None,
+    agent_alerts: set[tuple[PaneTarget, str]], spinner_frame: str | None,
+) -> str:
+    if entry.kind == "session":
+        alert = entry.target in bell_targets and entry.target != current_target
+        return str(number)[:4].ljust(4) + ("!" if alert else " ")
+    name = ""
+    for char in entry.label:
+        if _cell_width(name + char) > 2:
+            break
+        name += char
+    name += " " * (2 - _cell_width(name))
+    status = entry.status or "unknown"
+    indicator = spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic())
+    alert = (entry.pane_target, entry.agent_id) in agent_alerts
+    return indicator + " " + name + ("!" if alert else " ")
+
+
+def _draw_compact(
+    stdscr: curses.window, entries: list[Entry], agents: list[Entry], selected: int,
+    agent_selected: int, scroll_offset: int | None, agent_scroll_offset: int | None,
+    agent_percentage: int, bell_targets: set[Target], current_target: Target | None,
+    active_agent_id: str | None, agent_alerts: set[tuple[PaneTarget, str]],
+    spinner_frame: str | None,
+) -> tuple[int, int | None]:
+    height, width = stdscr.getmaxyx()
+    top, separator, bottom = _compact_layout(height, agent_percentage)
+    def write_row(row: int, line: str, attr: int) -> None:
+        try:
+            stdscr.addnstr(row, 0, line, width, attr)
+        except curses.error:
+            # ncurses reports an error after writing the bottom-right cell.
+            if row != height - 1:
+                raise
+
+    write_row(0, "  >  " if _ascii() else "  »  ", _color("section") or curses.A_BOLD)
+    if 0 < separator < height:
+        write_row(separator, ("-" if _ascii() else "─") * width, _color("section") or curses.A_BOLD)
+    for section, kind, selection, offset, start, end in (
+        (entries, "session", selected, scroll_offset, top, separator),
+        (agents, "agent", agent_selected, agent_scroll_offset, separator + 1, bottom),
+    ):
+        numbers = {index: number for number, index in enumerate((i for i, entry in enumerate(section) if entry.kind == kind), 1)}
+        for index, row in _compact_rows(section, kind, selection, offset, start, end):
+            entry = section[index]
+            active = entry.target == current_target if kind == "session" else entry.agent_id == active_agent_id
+            attr = _entry_attr(entry, active)
+            line = _compact_line(entry, numbers[index], bell_targets, current_target, agent_alerts, spinner_frame)
+            write_row(row, line, attr)
+            if kind == "agent":
+                stdscr.chgat(row, 0, 1, _status_attr(entry.status or "unknown"))
+    stdscr.refresh()
+    return 0, None
+
+
 def _draw(
     stdscr: curses.window,
     entries: list[Entry],
@@ -2431,8 +2508,15 @@ def _draw(
     pane_active: bool = True,
     status_region: str = "sessions",
     agent_scroll_offset: int | None = None,
+    compact: bool = False,
 ) -> tuple[int, int | None]:
     stdscr.erase()
+    if compact:
+        return _draw_compact(
+            stdscr, entries, agent_entries or [], selected, agent_selected,
+            scroll_offset, agent_scroll_offset, agent_percentage, bell_targets or set(),
+            current_target, active_agent_id, agent_alerts or set(), spinner_frame,
+        )
     h, w = stdscr.getmaxyx()
     cursor, add_col = _draw_title(
         stdscr, w, entries, filter_text, dimmed, adding,
@@ -2571,6 +2655,7 @@ def run(stdscr: curses.window) -> None:
     awaiting_navigation_sample = False
     pending_navigation: tuple[Target, str | None, PaneTarget | None] | None = None
     rendered: tuple[object, ...] | None = None
+    compact = False
     footer_height = 0
     add_col: int | None = None
     move_scroll_direction = 0
@@ -3032,6 +3117,89 @@ def run(stdscr: curses.window) -> None:
             show_status("no agents need attention", "agents")
         return effect
 
+    def expand_controls() -> None:
+        nonlocal compact, rendered
+        cockpit.expand_sidebar()
+        compact = False
+        # Resize curses before drawing a prompt, without consuming queued input.
+        pane = os.environ.get("TMUX_PANE")
+        if pane:
+            size = cockpit.tmux.out("display-message", "-p", "-t", pane, "#{pane_height} #{pane_width}", check=False)
+            if size:
+                height, width = map(int, size.split())
+                curses.resizeterm(height, width)
+        state.scroll_offset = None
+        state.agent_scroll_offset = None
+        rendered = None
+        render_sidebar(time.monotonic(), poller.current_target, force=True)
+
+    def compact_mouse(event: InputEvent) -> None:
+        if event.mouse_error or event.mouse is None:
+            mark_input(False, "malformed_mouse")
+            return
+        _, column, row, _, buttons = event.mouse
+        height, width = stdscr.getmaxyx()
+        if not isinstance(column, int) or not isinstance(row, int) or not isinstance(buttons, int) or not 0 <= column < width:
+            mark_input(False, "malformed_mouse")
+            return
+        if row == 0 and _mouse_activates(buttons):
+            cockpit.expand_sidebar(focus_right=True)
+            mark_input(True, "expand_sidebar")
+            return
+        top, separator, bottom = _compact_layout(height, state.agent_percentage)
+        if top <= row < separator:
+            section, kind, selected, offset, start, end = entries, "session", state.selected_index, state.scroll_offset, top, separator
+        elif separator < row < bottom:
+            section, kind, selected, offset, start, end = agent_entries, "agent", state.agent_selected_index, state.agent_scroll_offset, separator + 1, bottom
+        else:
+            mark_input(False, "empty_row")
+            return
+        rows = _compact_rows(section, kind, selected, offset, start, end)
+        wheel_up = getattr(curses, "BUTTON4_PRESSED", 0) or 0
+        wheel_down = getattr(curses, "BUTTON5_PRESSED", 0) or 0
+        if buttons & (wheel_up | wheel_down):
+            indices = [i for i, entry in enumerate(section) if entry.kind == kind]
+            position = indices.index(rows[0][0]) if rows else 0
+            maximum = max(0, len(indices) - max(0, end - start))
+            position = max(0, min(maximum, position + (-1 if buttons & wheel_up else 1)))
+            if kind == "agent":
+                state.agent_scroll_offset = position
+            else:
+                state.scroll_offset = position
+            mark_layout_dirty(scroll_only=True)
+            mark_input(True, "scroll")
+            return
+        index = next((index for index, entry_row in rows if row == entry_row), None)
+        right_click = buttons & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
+        if index is None or not (_mouse_activates(buttons) or right_click):
+            mark_input(False, "empty_row")
+            return
+        entry = section[index]
+        state.focused_region = "agents" if kind == "agent" else "sessions"
+        state.add_button_selected = False
+        if kind == "agent":
+            state.agent_selected_index = index
+            state.selected_agent_key = (entry.pane_target, entry.agent_id)
+        else:
+            state.selected_index = index
+            state.selected_target = entry.target
+            state.selected_tracked = entry.tracked
+        if right_click:
+            expand_controls()
+            _mouse_cleanup()
+            try:
+                if kind == "agent":
+                    cockpit.show_agent_menu(entry.label, entry.pane_target, column, row, sidebar_keys)
+                else:
+                    cockpit.show_session_menu(entry.target, column, row, sidebar_keys)
+            finally:
+                _mouse_mask(False)
+            mark_input(True, "open_menu")
+        else:
+            effect = Effect("switch_pane", entry.pane_target, message=entry.agent_id or "") if kind == "agent" else _transition(state, "switch", entry.target)
+            mark_input(dispatch(effect, event.input_id), "activate")
+            rebuild()
+
     def start_move(target: Target) -> None:
         state.move_source = target
         state.move_target = None
@@ -3065,7 +3233,8 @@ def run(stdscr: curses.window) -> None:
         agent_alert: bool = False,
         force: bool = False,
     ) -> None:
-        nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered
+        nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered, compact
+        compact = cockpit.sidebar_compact()
         selectable = _selectable(entries)
         if selectable and state.selected_index not in selectable:
             state.selected_index = selectable[0]
@@ -3082,7 +3251,7 @@ def run(stdscr: curses.window) -> None:
         state.rang_bells = bell_targets
         working_agents = any(entry.status == "working" for entry in agent_entries)
         spinner_frame = _spinner_frame(now) if working_agents else None
-        if state.agent_scroll_offset is not None:
+        if state.agent_scroll_offset is not None and not compact:
             footer_top, _, _, separator = _agent_layout(
                 stdscr.getmaxyx()[0], footer_height, agent_entries,
                 state.agent_percentage, state.add_view == "search",
@@ -3100,7 +3269,7 @@ def run(stdscr: curses.window) -> None:
             frozenset(state.agent_alerts), spinner_frame,
             int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
             state.agent_ordering,
-            state.add_button_selected, state.move_source, state.move_target,
+            state.add_button_selected, state.move_source, state.move_target, compact,
         )
         if force or render_state != rendered:
             if state.add_view == "name":
@@ -3119,7 +3288,7 @@ def run(stdscr: curses.window) -> None:
                     add_button_selected=state.add_button_selected,
                     move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
                     pane_active=poller.pane_active, status_region=state.status_region,
-                    agent_scroll_offset=state.agent_scroll_offset,
+                    agent_scroll_offset=state.agent_scroll_offset, compact=compact,
                 )
             rendered = render_state
         layout_dirty = False
@@ -3297,6 +3466,16 @@ def run(stdscr: curses.window) -> None:
                 mark_layout_dirty()
                 mark_input(True, "focus_region")
                 continue
+            if compact and key in (
+                curses.KEY_F11, curses.KEY_F8, curses.KEY_F9,
+                *(ord(sidebar_keys[action]) for action in ("rename", "remove", "kill", "move_up", "move_down", "resize_inc", "resize_dec")),
+            ):
+                expand_controls()
+            if compact and key == curses.KEY_MOUSE:
+                compact_mouse(event)
+                continue
+            if compact and state.add_button_selected and key in (10, 13, curses.KEY_ENTER):
+                expand_controls()
             if key in _PREFIX_ACTIONS:
                 effect = prefix_action(_PREFIX_ACTIONS[key], current_target)
                 if effect:
@@ -3971,7 +4150,7 @@ def run(stdscr: curses.window) -> None:
                 )
                 mark_layout_dirty()
                 mark_input(True, "resize_panel")
-            elif state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
+            elif not compact and state.focused_region == "agents" and key in (curses.KEY_LEFT, curses.KEY_RIGHT) and state.agent_selected_index == 0:
                 state.agent_scroll_offset = None
                 state.agent_ordering = "session" if state.agent_ordering == "priority" else "priority"
                 rebuild()
@@ -3980,6 +4159,8 @@ def run(stdscr: curses.window) -> None:
                 state.agent_scroll_offset = None
                 mark_layout_dirty()
                 state.agent_selected_index = (state.agent_selected_index + 1) % len(agent_entries)
+                if compact and agent_entries[state.agent_selected_index].kind == "order" and len(agent_entries) > 1:
+                    state.agent_selected_index = 1
                 entry = agent_entries[state.agent_selected_index]
                 state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
                 mark_input(True, "navigate")
@@ -3987,6 +4168,8 @@ def run(stdscr: curses.window) -> None:
                 state.agent_scroll_offset = None
                 mark_layout_dirty()
                 state.agent_selected_index = (state.agent_selected_index - 1) % len(agent_entries)
+                if compact and agent_entries[state.agent_selected_index].kind == "order" and len(agent_entries) > 1:
+                    state.agent_selected_index = len(agent_entries) - 1
                 entry = agent_entries[state.agent_selected_index]
                 state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
                 mark_input(True, "navigate")

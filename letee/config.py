@@ -9,11 +9,13 @@ from .names import DEFAULT_SERVER, Target, normalize_server, parse_target, valid
 
 DEFAULT_PREFIX = "C-s"
 DEFAULT_SIDEBAR_WIDTH = 40
+COMPACT_SIDEBAR_WIDTH = 5
+DEFAULT_SIDEBAR_COLLAPSE_MODE = "compact"
 DEFAULT_STATUS_TIMEOUT = 5
 DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
 DEFAULT_TMUX_CONFIG_OVERLAY = True
-CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\n'
+CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nsidebar_collapse_mode = "{DEFAULT_SIDEBAR_COLLAPSE_MODE}"\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\n'
 
 DEFAULT_KEYBINDINGS: dict[str, str] = {
     "focus_agents": "prefix+a",
@@ -224,6 +226,14 @@ def load_sidebar_width() -> int:
     if isinstance(width, bool) or not isinstance(width, int) or width < 1:
         raise SystemExit(f"Invalid config {cfg}: sidebar_width must be a positive integer")
     return width
+
+
+def load_sidebar_collapse_mode() -> str:
+    cfg, data = _load_config()
+    mode = data.get("sidebar_collapse_mode", DEFAULT_SIDEBAR_COLLAPSE_MODE)
+    if mode not in ("compact", "hidden"):
+        raise SystemExit(f"Invalid config {cfg}: sidebar_collapse_mode must be 'compact' or 'hidden'")
+    return mode
 
 
 def load_status_timeout() -> int:

@@ -16,7 +16,11 @@ The outer server owns the layout only:
 
 Inner local and remote sessions keep their normal tmux prefix and bindings. They remain alive when you switch away from them. `C-s C-s` forwards the outer prefix to the inner session.
 
-`C-s h` zooms the right pane instead of killing the sidebar. The sidebar process stays alive while hidden, so selection, polling, and alerts continue. `C-s s`, `C-s a`, and `C-s +` restore the layout while focusing Sessions, focusing Agents, or opening the Add session menu.
+`C-s h` toggles between the expanded sidebar and a five-column compact strip, plus tmux's divider. The sidebar process stays alive, so selection, polling, and alerts continue. Set `sidebar_collapse_mode = "hidden"` to retain the old right-pane zoom behavior. Fresh cockpits start expanded.
+
+The compact strip shows session numbers, including numbers beyond 9, and agents as a status icon, a space, and two display columns of their name. Working agents keep their spinner even when selected. `!` marks alerts. Click entries to switch without expanding; wheel-scroll each section to reach overflow entries. Titles, metadata, management controls, and agent ordering are omitted.
+
+`C-s h` and the top `»` button, or `>` in ASCII mode, expand and focus the right pane. `C-s s` and `C-s a` expand and focus Sessions or Agents. Management actions expand before showing controls, menus, or prompts. Focus alone does not expand the strip, and returning to the right pane does not collapse it. Session shortcuts, alert jumps, and agent cycling preserve compact mode.
 
 ## Inner tmux servers
 
@@ -84,16 +88,16 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s Left` / `C-s Right` | Jump to the previous or next agent in displayed order across tracked sessions, wrapping at both ends. |
 | `C-s r` | Remove the active right-pane session from letee without killing its tmux session. |
 | `C-s x` | Kill and remove the active right-pane session after `y/N` confirmation. The right pane returns to the startup help screen. |
-| `C-s j` | Jump to the first agent in the current Agents ordering with a stored bell alert or an `input-required`, `auth-required`, `failed`, or `rejected` state, including across sessions. A healthy hidden sidebar stays hidden. If recovery recreates an invalid cockpit, the normal split layout may return. With no eligible agent, report `no agents need attention` and leave the right pane focused. |
+| `C-s j` | Jump to the first agent in the current Agents ordering with a stored bell alert or an `input-required`, `auth-required`, `failed`, or `rejected` state, including across sessions. A healthy compact or hidden sidebar stays in its current mode. If recovery recreates an invalid cockpit, the normal split layout may return. With no eligible agent, report `no agents need attention` and leave the right pane focused. |
 | `C-s w` | Focus the right pane. |
-| `C-s h` | Hide or show the sidebar. The sidebar remains alive while hidden. |
+| `C-s h` | Collapse or expand the sidebar and focus the right pane. Set `sidebar_collapse_mode = "hidden"` for hide/show behavior. |
 | `C-s q` | Quit the outer letee session. |
 | `C-s ?` | Show help in the right pane. |
 | `C-s d` | Detach the outer letee session. |
 | `C-s C-s` | Forward `C-s` to the inner session. |
 | `C-s 1` through `C-s 9` | Switch directly to a numbered tracked target. |
 
-Agent cycling keeps a healthy hidden sidebar hidden and does not focus it. Recovery of an invalid cockpit may restore the split layout. Without an active listed agent, Right opens the first agent and Left the last. With no agents, neither changes the current pane.
+Agent cycling preserves compact or hidden mode and does not focus the sidebar. Recovery of an invalid cockpit may restore the split layout. Without an active listed agent, Right opens the first agent and Left the last. With no agents, neither changes the current pane.
 
 The focus commands reveal the selected row even after scrolling. Without a matching active entry, Sessions selects its first row or Add when empty, and Agents selects the ordering row. Add-menu focus behavior is unchanged.
 

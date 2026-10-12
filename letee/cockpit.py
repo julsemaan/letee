@@ -12,12 +12,14 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from .config import (
+    COMPACT_SIDEBAR_WIDTH,
     DEFAULT_KEYBINDINGS,
     DEFAULT_SIDEBAR_KEYBINDINGS,
     ensure_config,
     load_hosts,
     load_keybindings,
     load_prefix,
+    load_sidebar_collapse_mode,
     load_sidebar_keybindings,
     load_sidebar_width,
 )
@@ -73,7 +75,7 @@ Navigation
   {_display_key(prefix, kb["previous_agent"])}  switch to previous agent
   {_display_key(prefix, kb["next_agent"])}  switch to next agent
   {_display_key(prefix, kb["focus_right"])}  focus right pane
-  {_display_key(prefix, kb["toggle_sidebar"])}  hide/show sidebar
+  {_display_key(prefix, kb["toggle_sidebar"])}  collapse/expand sidebar
   {_display_key(prefix, kb["quit"])}  quit cockpit
   {prefix} 1-9  switch session
   {_display_key(prefix, kb["help"])}  open help
@@ -87,6 +89,12 @@ Session actions
   {move_handle}      start mouse move; hover destination, then click
   Esc    cancel mouse move
   Right-click  open session Rename/Remove/Kill menu
+
+Compact sidebar
+  Five columns: session number, agent status + two-column name, ! alert
+  Click rows to switch; wheel scrolls each section
+  Top button expands and focuses right; focus/actions restore full controls
+  sidebar_collapse_mode = "hidden" keeps hide/show behavior
 
 Agent actions
   {skb["navigate_down"]}/{skb["navigate_up"]}    navigate agents
@@ -116,6 +124,7 @@ TARGET = f"{tmux.SESSION}:{tmux.WINDOW}"
 COCKPIT_OPTION = "@letee_cockpit"
 SIDEBAR_PANE_OPTION = "@letee_sidebar_pane"
 SIDEBAR_WIDTH_OPTION = "@letee_sidebar_width"
+SIDEBAR_COMPACT_OPTION = "@letee_sidebar_compact"
 RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
 EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
@@ -322,7 +331,7 @@ def repair_layout(left: str) -> None:
 def _install_layout_hooks(left: str, sidebar_width: int) -> None:
     tmux.tmux("set-hook", "-u", "-t", tmux.SESSION, "client-attached")
     tmux.tmux("set-hook", "-u", "-t", tmux.SESSION, "client-resized")
-    tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x {sidebar_width}")
+    tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x '#{{{SIDEBAR_WIDTH_OPTION}}}'")
 
 
 def _install_bindings(
@@ -350,7 +359,7 @@ def _install_bindings(
     )
     tmux.tmux("bind-key", prefix, "send-prefix")
     _bind_key(keybindings["detach"], "detach-client")
-    _bind_key(keybindings["toggle_sidebar"], "resize-pane", "-Z", "-t", right_pane)
+    _bind_key(keybindings["toggle_sidebar"], "run-shell", _letee_command("toggle-sidebar"))
     _bind_key(keybindings["quit"], "kill-session", "-t", tmux.SESSION)
     _bind_key(keybindings["focus_agents"], "run-shell", _focus_sidebar_command("agents"))
     _bind_key(keybindings["focus_sessions"], "run-shell", _focus_sidebar_command("sessions"))
@@ -533,6 +542,7 @@ def _build(prefix: str, sidebar_width: int) -> None:
         tmux.tmux("new-window", "-d", "-t", tmux.SESSION, "-n", tmux.WINDOW, help_cmd)
     right = tmux.out("display-message", "-p", "-t", TARGET, "#{pane_id}")
     left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, _sidebar_command())
+    tmux.tmux("set-option", "-u", "-t", tmux.SESSION, SIDEBAR_COMPACT_OPTION)
     _configure_cockpit(left, right, prefix, sidebar_width)
 
 
@@ -542,7 +552,8 @@ def ensure_cockpit(*, restart_sidebar: bool = False) -> None:
     if _valid():
         left = _option(SIDEBAR_PANE_OPTION)
         right = _option(RIGHT_PANE_OPTION)
-        _configure_cockpit(left, right, prefix, sidebar_width)
+        effective_width = COMPACT_SIDEBAR_WIDTH if sidebar_compact() else sidebar_width
+        _configure_cockpit(left, right, prefix, effective_width)
         if restart_sidebar:
             tmux.tmux("respawn-pane", "-k", "-t", left, _sidebar_command())
         return
@@ -550,6 +561,7 @@ def ensure_cockpit(*, restart_sidebar: bool = False) -> None:
         right = _option(RIGHT_PANE_OPTION)
         if right and tmux.has_pane(right):
             left = tmux.out("split-window", "-h", "-b", "-l", str(sidebar_width), "-P", "-F", "#{pane_id}", "-t", right, _sidebar_command())
+            tmux.tmux("set-option", "-u", "-t", tmux.SESSION, SIDEBAR_COMPACT_OPTION)
             _configure_cockpit(left, right, prefix, sidebar_width)
             return
     _build(prefix, sidebar_width)
@@ -646,6 +658,49 @@ def cockpit() -> int:
     return _attach()
 
 
+def sidebar_compact() -> bool:
+    return _option(SIDEBAR_COMPACT_OPTION) == "1"
+
+
+def _sidebar_hidden() -> bool:
+    return tmux.out("display-message", "-p", "-t", TARGET, "#{window_zoomed_flag}", check=False) == "1"
+
+
+def expand_sidebar(*, focus_right: bool = False) -> None:
+    left = _option(SIDEBAR_PANE_OPTION)
+    right = _option(RIGHT_PANE_OPTION)
+    if not left or not right:
+        return
+    if _sidebar_hidden():
+        tmux.tmux("resize-pane", "-Z", "-t", right)
+    if sidebar_compact():
+        width = load_sidebar_width()
+        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, SIDEBAR_COMPACT_OPTION)
+        _fix_layout(left, width)
+        _install_layout_hooks(left, width)
+    if focus_right:
+        tmux.tmux("select-pane", "-t", right)
+
+
+def toggle_sidebar() -> int:
+    if not _valid():
+        raise SystemExit(NO_COCKPIT)
+    if sidebar_compact() or _sidebar_hidden():
+        expand_sidebar(focus_right=True)
+        return 0
+    mode = load_sidebar_collapse_mode()
+    left = _option(SIDEBAR_PANE_OPTION)
+    right = _option(RIGHT_PANE_OPTION)
+    if mode == "hidden":
+        tmux.tmux("resize-pane", "-Z", "-t", right)
+    else:
+        tmux.tmux("set-option", "-t", tmux.SESSION, SIDEBAR_COMPACT_OPTION, "1")
+        _fix_layout(left, COMPACT_SIDEBAR_WIDTH)
+        _install_layout_hooks(left, COMPACT_SIDEBAR_WIDTH)
+    tmux.tmux("select-pane", "-t", right)
+    return 0
+
+
 def focus_sidebar(region: str = "sessions") -> int:
     ensure_config()
     background_action = region in ("alert", "previous_agent", "next_agent")
@@ -653,6 +708,7 @@ def focus_sidebar(region: str = "sessions") -> int:
         ensure_cockpit()
     pane = _option(SIDEBAR_PANE_OPTION)
     if not background_action:
+        expand_sidebar()
         tmux.tmux("select-pane", "-t", pane)
     keys = {
         "sessions": ("F6",),
