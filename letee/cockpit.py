@@ -331,7 +331,7 @@ def repair_layout(left: str) -> None:
 def _install_layout_hooks(left: str, sidebar_width: int) -> None:
     tmux.tmux("set-hook", "-u", "-t", tmux.SESSION, "client-attached")
     tmux.tmux("set-hook", "-u", "-t", tmux.SESSION, "client-resized")
-    tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x '#{{{SIDEBAR_WIDTH_OPTION}}}'")
+    tmux.tmux("set-hook", "-w", "-t", TARGET, "window-resized", f"resize-pane -t {left} -x {sidebar_width}")
 
 
 def _install_bindings(

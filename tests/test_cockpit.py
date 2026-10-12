@@ -572,9 +572,18 @@ class CockpitLayoutTest(unittest.TestCase):
             [
                 ("set-hook", "-u", "-t", "letee", "client-attached"),
                 ("set-hook", "-u", "-t", "letee", "client-resized"),
-                ("set-hook", "-w", "-t", cockpit.TARGET, "window-resized", "resize-pane -t %1 -x '#{@letee_sidebar_width}'"),
+                ("set-hook", "-w", "-t", cockpit.TARGET, "window-resized", "resize-pane -t %1 -x 52"),
             ],
         )
+
+    def test_resize_hook_passes_numeric_width_in_both_sidebar_modes(self):
+        for width in (52, cockpit.COMPACT_SIDEBAR_WIDTH):
+            with self.subTest(width=width), patch.object(cockpit.tmux, "tmux") as command:
+                cockpit._install_layout_hooks("%1", width)
+                hook = shlex.split(command.call_args.args[-1])
+                self.assertEqual(hook[:3], ["resize-pane", "-t", "%1"])
+                # resize-pane parses -x as a number, not a tmux format.
+                self.assertEqual(int(hook[hook.index("-x") + 1]), width)
 
     def test_repair_layout_skips_healthy_layout(self):
         with (
