@@ -18,6 +18,12 @@ from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
 from letee.sessions import attach_command, create, kill, kill_agent, pane_attach_command, rename, ssh_command
 
 
+def setUpModule():
+    timing_patch = patch("letee.sessions.load_timing", return_value=Timing())
+    timing_patch.start()
+    unittest.addModuleCleanup(timing_patch.stop)
+
+
 class SessionOperationsTest(unittest.TestCase):
     def test_configured_operation_and_authentication_deadlines(self):
         timing = Timing(
