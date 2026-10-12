@@ -1057,6 +1057,24 @@ class CompactSidebarTest(unittest.TestCase):
             self.assertGreater(separator, top)
             self.assertGreater(bottom, separator + 1)
 
+    def test_draw_only_highlights_exact_active_pane_with_shared_agent_id(self):
+        target = Target("local", "work")
+        panes = [PaneTarget(target, "@1", f"%{i}", "/tmp/tmux") for i in range(2)]
+        agents = [
+            sidebar.Entry("Pi", "agent", target, pane_target=pane, agent_id="shared", status="idle")
+            for pane in panes
+        ]
+        for active_pane in panes:
+            with self.subTest(active_pane=active_pane):
+                screen = FakeScreen(size=(10, 5))
+                with patch.object(sidebar, "_entry_attr", side_effect=lambda entry, active: int(active)):
+                    sidebar._draw(
+                        screen, [], 0, "", "", agent_entries=agents,
+                        active_agent_id="shared", active_agent_pane=active_pane, compact=True,
+                    )
+                rows = [call for call in screen.calls if call[0] == "addnstr" and "Pi" in call[3]]
+                self.assertEqual([call[5] for call in rows], [int(pane == active_pane) for pane in panes])
+
     def test_draw_omits_controls_and_keeps_selected_spinner(self):
         screen = FakeScreen(size=(10, 5))
         target = Target("local", "work")
@@ -7589,7 +7607,8 @@ class PrefixActionTest(unittest.TestCase):
                     patch.object(sidebar, "EffectRunner", return_value=actions),
                     patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
                 ):
-                    self._run(keys + [STOP], [target], target, data, current_agent="shared")
+                    with patch.object(sidebar.cockpit, "sidebar_compact", return_value=True):
+                        self._run(keys + [STOP], [target], target, data, current_agent="shared")
                 self.assertEqual(
                     [call.args[0].target for call in actions.submit.call_args_list], expected_switches,
                 )
@@ -7597,6 +7616,7 @@ class PrefixActionTest(unittest.TestCase):
                 self.assertEqual(
                     rendered["agent_entries"][rendered["agent_selected"]].pane_target, expected_selection,
                 )
+                self.assertEqual(rendered["active_agent_pane"], expected_selection)
 
     def test_cycle_after_effect_completion_before_discovery_confirmation(self):
         target = Target("local", "work")

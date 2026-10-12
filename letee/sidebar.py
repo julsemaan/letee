@@ -2508,7 +2508,8 @@ def _draw_compact(
     stdscr: curses.window, entries: list[Entry], agents: list[Entry], selected: int,
     agent_selected: int, scroll_offset: int | None, agent_scroll_offset: int | None,
     agent_percentage: int, bell_targets: set[Target], current_target: Target | None,
-    active_agent_id: str | None, agent_alerts: set[tuple[PaneTarget, str]],
+    active_agent_id: str | None, active_agent_pane: PaneTarget | None,
+    agent_alerts: set[tuple[PaneTarget, str]],
     spinner_frame: str | None,
 ) -> tuple[int, int | None]:
     height, width = stdscr.getmaxyx()
@@ -2532,7 +2533,9 @@ def _draw_compact(
         numbers = {index: number for number, index in enumerate((i for i, entry in enumerate(section) if entry.kind == kind), 1)}
         for index, row in _compact_rows(section, kind, selection, offset, start, end):
             entry = section[index]
-            active = entry.target == current_target if kind == "session" else entry.agent_id == active_agent_id
+            active = entry.target == current_target if kind == "session" else (
+                entry.pane_target == active_agent_pane and entry.agent_id == active_agent_id
+            )
             attr = _entry_attr(entry, active)
             line = _compact_line(entry, numbers[index], bell_targets, current_target, agent_alerts, spinner_frame)
             write_row(row, line, attr)
@@ -2571,13 +2574,14 @@ def _draw(
     status_region: str = "sessions",
     agent_scroll_offset: int | None = None,
     compact: bool = False,
+    active_agent_pane: PaneTarget | None = None,
 ) -> tuple[int, int | None]:
     stdscr.erase()
     if compact:
         return _draw_compact(
             stdscr, entries, agent_entries or [], selected, agent_selected,
             scroll_offset, agent_scroll_offset, agent_percentage, bell_targets or set(),
-            current_target, active_agent_id, agent_alerts or set(), spinner_frame,
+            current_target, active_agent_id, active_agent_pane, agent_alerts or set(), spinner_frame,
         )
     h, w = stdscr.getmaxyx()
     cursor, add_col = _draw_title(
@@ -3310,7 +3314,10 @@ def run(stdscr: curses.window) -> None:
             state.selected_index = selectable[0]
         cockpit_bell_target = poller.bell_target
         bell_targets = _bell_targets(poller.snapshot, cockpit_bell_target, state.favorites)
-        if pending_navigation is None:
+        active_agent_pane = None
+        if compact:
+            display_target, active_agent_id, active_agent_pane = navigation_context(current_target)
+        elif pending_navigation is None:
             display_target = current_target
             active_agent_id = poller.current_agent
         else:
@@ -3335,7 +3342,7 @@ def run(stdscr: curses.window) -> None:
             state.add_view == "search", state.add_view, state.creation_host, state.creation_text,
             frozenset(bell_targets), display_target, poller.pane_active, stdscr.getmaxyx(),
             state.scroll_offset, state.agent_scroll_offset, tuple(agent_entries),
-            state.agent_selected_index, state.focused_region, state.agent_percentage, active_agent_id,
+            state.agent_selected_index, state.focused_region, state.agent_percentage, active_agent_id, active_agent_pane,
             frozenset(state.agent_alerts), spinner_frame,
             int(time.time()) if any(entry.kind == "agent" for entry in agent_entries) else None,
             state.agent_ordering,
@@ -3360,6 +3367,7 @@ def run(stdscr: curses.window) -> None:
                         move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
                         pane_active=poller.pane_active, status_region=state.status_region,
                         agent_scroll_offset=state.agent_scroll_offset, compact=compact,
+                        active_agent_pane=active_agent_pane,
                     )
             except curses.error:
                 # A resize can invalidate the window midway through drawing.
