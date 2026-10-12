@@ -7,8 +7,10 @@ import shlex
 import stat
 import subprocess
 
+from .config import load_timing
 from .names import DEFAULT_SERVER, normalize_server, server_socket
 
+_DEFAULT_TIMEOUT = object()
 SERVER = DEFAULT_SERVER
 SOCKET = server_socket(SERVER)
 SESSION = "letee"
@@ -66,8 +68,10 @@ def tmux(
     check: bool = True,
     capture: bool = False,
     config: Path | None = None,
-    timeout: float | None = 5,
+    timeout: float | None | object = _DEFAULT_TIMEOUT,
 ) -> subprocess.CompletedProcess[str]:
+    if timeout is _DEFAULT_TIMEOUT:
+        timeout = load_timing().local_command_timeout
     cmd = [tmux_executable(), "-L", SOCKET]
     if config is not None:
         cmd += ["-f", str(config)]

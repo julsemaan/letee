@@ -23,6 +23,7 @@ from .config import (
     load_sessions,
     load_sidebar_keybindings,
     load_status_timeout,
+    load_timing,
     save_sessions,
 )
 from .names import PaneTarget, Target, validate_name
@@ -151,6 +152,7 @@ class EffectResult:
     input_id: str | None = None
     partial_success: bool = False
     reset_matched: bool = False
+    completed_at: float | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -438,12 +440,43 @@ def _should_show_unavailable(target: Target, snapshot: SessionSnapshot) -> bool:
     return _target_status(target, snapshot) not in (None, "connecting…")
 
 
+@dataclass
+class RestorationRetry:
+    target: Target | None = None
+    delay: float = 0
+    deadline: float = 0
+
+    def reset(self) -> None:
+        self.target = None
+        self.delay = 0
+        self.deadline = 0
+
+    def failed(self, target: Target, now: float) -> None:
+        timing = load_timing()
+        if self.target != target:
+            self.reset()
+        self.target = target
+        self.delay = min(
+            self.delay * 2 if self.delay else timing.retry_initial_delay,
+            timing.retry_max_delay,
+        )
+        self.deadline = now + self.delay
+
+
 def _sync_active_session(
     target: Target | None,
     snapshot: SessionSnapshot,
     interrupted: Target | None,
     submit: Callable[[Effect], bool] | None = None,
+    *,
+    retry: RestorationRetry | None = None,
+    now: float | None = None,
 ) -> Target | None:
+    if retry is not None:
+        if retry.target != target:
+            retry.reset()
+        elif (time.monotonic() if now is None else now) < retry.deadline:
+            return interrupted if interrupted == target else None
     if target is None:
         return None
 
@@ -475,10 +508,28 @@ def _sync_active_session(
 def _reconcile_active_session_effect(
     unavailable_target_shown: Target | None,
     result: EffectResult,
+    *,
+    retry: RestorationRetry | None = None,
+    now: float | None = None,
 ) -> Target | None:
+    if result.stale_navigation:
+        return unavailable_target_shown
+    target = result.effect.target
+    if isinstance(target, PaneTarget):
+        target = target.target
+    navigation = result.effect.kind in ("switch", "add_switch", "switch_pane")
+    if retry is not None and isinstance(target, Target):
+        if result.error and result.effect.automatic and result.effect.kind in (
+            "switch", "show_reconnecting", "show_missing", "show_unavailable"
+        ):
+            completed = result.completed_at if now is None else now
+            retry.failed(target, time.monotonic() if completed is None else completed)
+        elif not result.error and navigation:
+            retry.reset()
+    if not result.error and navigation:
+        return None
     if (
         result.error
-        or result.stale_navigation
         or (not result.effect.automatic and result.effect.kind != "show_reconnecting")
     ):
         if (
@@ -1062,7 +1113,14 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
         if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
             if effect.kind == "add_switch" and planned != favorites:
                 save_sessions(list(planned))
-            cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
+            if effect.automatic:
+                # Keep the current overlay until preparation finishes without navigation.
+                attach_command = sessions.attach_command(effect.target)
+                if _current_target() != effect.target:
+                    return EffectResult(effect, planned, stale_navigation=True)
+                cockpit.switch(effect.target, attach_command)
+            else:
+                cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
             cockpit.switch(effect.target.target, lambda: sessions.pane_attach_command(effect.target), effect.message)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
@@ -1161,6 +1219,9 @@ def _apply_effect(
     status_timeout: float,
 ) -> bool:
     effect = result.effect
+    if effect.automatic and result.stale_navigation:
+        _log_effect_applied(result, state)
+        return False
     if result.error and not result.partial_success:
         if effect.kind == "create" and isinstance(effect.target, Target):
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
@@ -1362,9 +1423,9 @@ class EffectRunner:
                 error=bool(result.error),
                 stale_navigation=result.stale_navigation,
             )
-        if action_id is None:
-            return result
-        return replace(result, action_id=action_id, input_id=input_id)
+        return replace(
+            result, action_id=action_id, input_id=input_id, completed_at=time.monotonic()
+        )
 
     @property
     def busy(self) -> bool:
@@ -2568,6 +2629,7 @@ def run(stdscr: curses.window) -> None:
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
+    restoration_retry = RestorationRetry()
     awaiting_navigation_sample = False
     pending_navigation: tuple[Target, str | None, PaneTarget | None] | None = None
     rendered: tuple[object, ...] | None = None
@@ -3173,6 +3235,11 @@ def run(stdscr: curses.window) -> None:
                 stdscr.timeout(UI_POLL_INTERVAL_MS)
             result = actions.poll() if not burst_count else None
             if result is not None:
+                if (
+                    result.effect.automatic
+                    and result.effect.target != poller.current_target
+                ):
+                    result = replace(result, stale_navigation=True)
                 if not result.stale_navigation and result.effect.kind in (
                     "switch", "add_switch", "switch_pane", "show_reconnecting"
                 ):
@@ -3187,7 +3254,7 @@ def run(stdscr: curses.window) -> None:
                 ):
                     awaiting_navigation_sample = True
                 unavailable_target_shown = _reconcile_active_session_effect(
-                    unavailable_target_shown, result
+                    unavailable_target_shown, result, retry=restoration_retry
                 )
                 poller.observe_effect(result)
                 rebuild()
@@ -3236,6 +3303,8 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
+            if restoration_retry.target != current_target:
+                restoration_retry.reset()
             if getattr(poller, "status_sampled", False) is True:
                 awaiting_navigation_sample = False
             if not burst_count:
@@ -3253,6 +3322,8 @@ def run(stdscr: curses.window) -> None:
                         poller.snapshot,
                         unavailable_target_shown,
                         submit=queue_effect,
+                        retry=restoration_retry,
+                        now=now,
                     )
                 except SystemExit as error:
                     show_status(str(error))

@@ -13,14 +13,61 @@ import unittest
 from unittest.mock import Mock, patch
 
 import letee.sessions as sessions
+from letee.config import Timing
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
 from letee.sessions import attach_command, create, kill, kill_agent, pane_attach_command, rename, ssh_command
 
 
 class SessionOperationsTest(unittest.TestCase):
+    def test_configured_operation_and_authentication_deadlines(self):
+        timing = Timing(
+            local_command_timeout=0.25, remote_command_timeout=0.75, ssh_auth_timeout=40,
+            ssh_connect_timeout=4, ssh_keepalive_interval=7, ssh_keepalive_count_max=2,
+        )
+        with (
+            patch("letee.sessions.load_timing", return_value=timing),
+            patch("letee.sessions.load_tmux_config_overlay", return_value=False),
+            patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0)) as run,
+        ):
+            kill(Target("local", "work"))
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+            kill(Target("ssh", "work", "dev"))
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.75)
+            self.assertIn("ConnectTimeout=4", run.call_args.args[0])
+            self.assertIn("ServerAliveInterval=7", run.call_args.args[0])
+            self.assertIn("ServerAliveCountMax=2", run.call_args.args[0])
+            sessions.prepare_host("dev")
+            self.assertEqual(run.call_args.kwargs["timeout"], 40)
+            sessions.probe_hosts(["dev"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.75)
+
+
+    def test_local_utilities_and_overlay_use_configured_deadline(self):
+        with (
+            patch("letee.sessions.load_timing", return_value=Timing(local_command_timeout=0.25)),
+            patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0, stdout="")) as run,
+        ):
+            sessions._agent_reachable("/tmp/agent")
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+            sessions._ssh_config("dev")
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+            create(Target("local", "work"), overlay=True)
+            self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list[-2:]], [0.25, 0.25])
+
+    def test_remote_helper_uses_supplied_local_deadline_for_both_subprocesses(self):
+        with (
+            patch.object(sys, "argv", ["-c", "--", "/tmp/tmux", "%7", "0.25"]),
+            patch("subprocess.run", side_effect=[Mock(stdout="123\t/dev/null"), Mock(stdout="456")]) as run,
+            patch("os.getpgid", return_value=123),
+            patch("os.killpg") as killpg,
+        ):
+            exec(sessions._KILL_AGENT_HELPER, {})
+        self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [0.25, 0.25])
+        killpg.assert_called_once_with(456, signal.SIGTERM)
+
     def test_ssh_command_always_adds_keepalive_and_agent_option_and_optionally_adds_persistence(self):
         shared = (
-            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
             "-o", "AddKeysToAgent=yes",
         )
         self.assertEqual(
@@ -38,7 +85,7 @@ class SessionOperationsTest(unittest.TestCase):
 
     def test_ssh_command_interactive_reuses_persistent_control_socket(self):
         shared = (
-            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
             "-o", "AddKeysToAgent=yes",
         )
         command = ssh_command("-t", "dev", "remote command", persistent_ssh=True, interactive=True)
@@ -55,7 +102,7 @@ class SessionOperationsTest(unittest.TestCase):
 
     def test_ssh_command_interactive_without_persistence_leaves_multiplexing_to_ssh_config(self):
         shared = (
-            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
             "-o", "AddKeysToAgent=yes",
         )
         self.assertEqual(
@@ -65,7 +112,7 @@ class SessionOperationsTest(unittest.TestCase):
 
     def test_ssh_command_non_interactive_keeps_persist_options(self):
         shared = (
-            "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+            "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
             "-o", "AddKeysToAgent=yes",
         )
         self.assertEqual(
@@ -86,7 +133,7 @@ class SessionOperationsTest(unittest.TestCase):
             with patch("letee.sessions.load_persistent_ssh", return_value=True):
                 self.assertEqual(
                     attach_command(Target("ssh", "work", "dev")),
-                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
+                    "ssh -o ConnectTimeout=2 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
                 )
 
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
@@ -100,7 +147,7 @@ class SessionOperationsTest(unittest.TestCase):
             with patch("letee.sessions.load_persistent_ssh", return_value=True):
                 self.assertEqual(
                     pane_attach_command(remote),
-                    "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+                    "ssh -o ConnectTimeout=2 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
                 )
 
     def test_kill_agent_local_signals_foreground_group_not_pane_shell(self):
@@ -166,6 +213,7 @@ class SessionOperationsTest(unittest.TestCase):
                     "--",
                     "/tmp/tmux-test",
                     "%7",
+                    "2",
                 ),
                 check=False,
                 capture_output=True,
@@ -192,9 +240,10 @@ class SessionOperationsTest(unittest.TestCase):
         self.assertEqual(command[-2], "dev")
         self.assertIn("python3 -c", command[-1])
         self.assertEqual(command[-1].count(" -- "), 1)
-        self.assertTrue(command[-1].endswith(" -- '/tmp/tmux socket; echo unsafe' %7"))
+        self.assertTrue(command[-1].endswith(" -- '/tmp/tmux socket; echo unsafe' %7 2"))
         self.assertIn("/tmp/tmux socket; echo unsafe", command[-1])
         self.assertNotIn("kill-pane", command[-1])
+        self.assertEqual(run.call_args.kwargs["timeout"], 3)
 
     def test_kill_agent_tmux_lookup_failure_includes_operation_and_target(self):
         pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")
@@ -236,7 +285,7 @@ class SessionOperationsTest(unittest.TestCase):
             check=True,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=2,
             env={"PATH": "x"},
         )
 
@@ -254,7 +303,7 @@ class SessionOperationsTest(unittest.TestCase):
             check=True,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=2,
             env={"PATH": "x"},
         )
 
@@ -272,13 +321,13 @@ class SessionOperationsTest(unittest.TestCase):
             [call.args[0] for call in run.call_args_list],
             [
                 (
-                    "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                    "ssh", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
                     "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                     "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
                     "dev", "tmux -L letee.inner new-session -d -s work.one",
                 ),
                 (
-                    "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                    "ssh", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
                     "-o", "AddKeysToAgent=yes", "dev", "tmux -L letee.inner kill-session -t work.one",
                 ),
             ],
@@ -297,7 +346,7 @@ class SessionOperationsTest(unittest.TestCase):
             check=True,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=2,
             env={"PATH": "x"},
         )
 
@@ -312,7 +361,7 @@ class SessionOperationsTest(unittest.TestCase):
         self.assertEqual(
             run.call_args.args[0],
             (
-                "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                "ssh", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
                 "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                 "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
                 "dev", "tmux -L letee.inner rename-session -t work -- renamed",
@@ -571,12 +620,13 @@ class SSHPreparationTest(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[-2:], ("dev", "true"))
         self.assertIn(("-o", "BatchMode=no"), list(zip(command, command[1:])))
-        self.assertIn(("-o", "ConnectTimeout=5"), list(zip(command, command[1:])))
+        self.assertIn(("-o", "ConnectTimeout=2"), list(zip(command, command[1:])))
+        self.assertEqual(command.count("ConnectTimeout=2"), 1)
         self.assertIn(("-o", "ControlMaster=no"), list(zip(command, command[1:])))
         self.assertIn(("-o", "ControlPath=none"), list(zip(command, command[1:])))
         self.assertNotIn("ControlMaster=auto", command)
         self.assertNotIn("ControlPath=~/.ssh/letee-%C", command)
-        self.assertEqual(run.call_args.kwargs, {"check": False, "timeout": 10})
+        self.assertEqual(run.call_args.kwargs, {"check": False, "timeout": 60})
 
     def test_preparation_returns_failure_for_ssh_failure(self):
         with patch("letee.sessions.subprocess.run", return_value=Mock(returncode=255)):
@@ -589,7 +639,7 @@ class SSHPreparationTest(unittest.TestCase):
         ) as run:
             self.assertFalse(sessions.prepare_host("prod"))
 
-        self.assertEqual(run.call_args.kwargs["timeout"], 10)
+        self.assertEqual(run.call_args.kwargs["timeout"], 60)
 
     def test_probe_hosts_runs_checks_in_parallel_and_preserves_host_order(self):
         barrier = threading.Barrier(2)
@@ -613,7 +663,7 @@ class SSHPreparationTest(unittest.TestCase):
             self.assertEqual(call.kwargs["stdin"], subprocess.DEVNULL)
             self.assertEqual(call.kwargs["stdout"], subprocess.DEVNULL)
             self.assertEqual(call.kwargs["stderr"], subprocess.DEVNULL)
-            self.assertEqual(call.kwargs["timeout"], 10)
+            self.assertEqual(call.kwargs["timeout"], 3)
             self.assertEqual(call.kwargs["env"]["SSH_AUTH_SOCK"], "/tmp/agent")
             self.assertEqual(call.kwargs["env"]["SSH_ASKPASS_REQUIRE"], "never")
 
@@ -653,7 +703,7 @@ class TmuxOverlayTest(unittest.TestCase):
             self.assertEqual(attach_command(Target("local", "work")), "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s work")
             self.assertEqual(
                 attach_command(Target("ssh", "work", "dev")),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
+                "ssh -o ConnectTimeout=2 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
             )
             self.assertEqual(
                 pane_attach_command(local),
@@ -661,7 +711,7 @@ class TmuxOverlayTest(unittest.TestCase):
             )
             self.assertEqual(
                 pane_attach_command(remote),
-                "ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
+                "ssh -o ConnectTimeout=2 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -S '\"'\"'/tmp/tmux socket'\"'\"' select-window -t work:@3 \\; select-pane -t %7 \\; attach-session -t work'",
             )
             create(Target("local", "work"))
             create(Target("ssh", "work", "dev"))
@@ -671,7 +721,7 @@ class TmuxOverlayTest(unittest.TestCase):
             [
                 ("tmux", "-L", INNER_SERVER_SOCKET, "new-session", "-d", "-s", "work"),
                 (
-                    "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                    "ssh", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
                     "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                     "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
                     "dev", "tmux -L letee.inner new-session -d -s work",
@@ -695,7 +745,7 @@ class TmuxOverlayTest(unittest.TestCase):
         self.assertEqual(
             install.args[0],
             (
-                "ssh", "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
+                "ssh", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
                 "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                 "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
                 "dev", sessions._SSH_INSTALL_OVERLAY,

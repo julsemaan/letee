@@ -13,7 +13,7 @@ import stat
 import subprocess
 import time
 
-from .config import load_persistent_ssh, load_tmux_config_overlay
+from .config import load_persistent_ssh, load_timing, load_tmux_config_overlay
 from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
 
 
@@ -34,8 +34,6 @@ FALLBACK_AGENT_SOCKET = Path.home() / ".ssh" / "letee-agent.sock"
 _AGENT_START_ATTEMPTS = 20
 _AGENT_START_DELAY = 0.05
 SSH_OPTIONS = (
-    "-o", "ServerAliveInterval=60",
-    "-o", "ServerAliveCountMax=3",
     "-o", "AddKeysToAgent=yes",
 )
 MULTIPLEX_OPTIONS = (
@@ -55,7 +53,8 @@ import subprocess
 import sys
 
 try:
-    socket_path, pane_id = sys.argv[2:]
+    socket_path, pane_id, timeout = sys.argv[2:]
+    timeout = float(timeout)
     result = subprocess.run(
         (
             "tmux",
@@ -70,7 +69,7 @@ try:
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=timeout,
         env={key: value for key, value in os.environ.items() if key != "TMUX"},
     )
     pane_pid, pane_tty = result.stdout.strip().split("\t", 1)
@@ -82,7 +81,7 @@ try:
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=timeout,
         env={key: value for key, value in os.environ.items() if key != "TMUX"},
     )
     foreground_pgid = int(process.stdout.strip())
@@ -107,7 +106,7 @@ def _agent_reachable(socket_path: str) -> bool | None:
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=5,
+            timeout=load_timing().local_command_timeout,
             env=env,
         )
     except (OSError, subprocess.SubprocessError):
@@ -208,7 +207,7 @@ def ensure_ssh_agent() -> str | None:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=load_timing().local_command_timeout,
             )
         except (OSError, subprocess.SubprocessError):
             pass
@@ -221,14 +220,17 @@ def ensure_ssh_agent() -> str | None:
 def _check_host(host: str, *, batch_mode: bool) -> bool:
     command = ssh_command(
         "-o", f"BatchMode={'yes' if batch_mode else 'no'}",
-        "-o", "ConnectTimeout=5",
         "-o", "ControlMaster=no",
         "-o", "ControlPath=none",
         validate_host(host),
         "true",
         persistent_ssh=False,
     )
-    kwargs: dict[str, object] = {"check": False, "timeout": 10}
+    timing = load_timing()
+    kwargs: dict[str, object] = {
+        "check": False,
+        "timeout": timing.remote_command_timeout if batch_mode else timing.ssh_auth_timeout,
+    }
     if batch_mode:
         env = os.environ.copy()
         env["SSH_ASKPASS_REQUIRE"] = "never"
@@ -252,7 +254,7 @@ def _ssh_config(host: str) -> tuple[str | None, tuple[str, ...]] | None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=load_timing().local_command_timeout,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -324,7 +326,14 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: boo
     else:
         multiplex = MULTIPLEX_OPTIONS if persistent_ssh else ()
         persist = PERSIST_OPTIONS if persistent_ssh else ()
-    return ("ssh", *SSH_OPTIONS, *multiplex, *persist, *args)
+    timing = load_timing()
+    return (
+        "ssh",
+        "-o", f"ConnectTimeout={timing.ssh_connect_timeout}",
+        "-o", f"ServerAliveInterval={timing.ssh_keepalive_interval}",
+        "-o", f"ServerAliveCountMax={timing.ssh_keepalive_count_max}",
+        *SSH_OPTIONS, *multiplex, *persist, *args,
+    )
 
 
 INNER_TMUX = f"tmux -L {shlex.quote(INNER_SERVER_SOCKET)}"
@@ -377,7 +386,9 @@ def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None)
 
 def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> str:
     try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=10, **kwargs)
+        timing = load_timing()
+        timeout = timing.remote_command_timeout if target.kind == "ssh" else timing.local_command_timeout
+        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout, **kwargs)
     except subprocess.TimeoutExpired:
         raise SystemExit(f"{operation} {target.format()} timed out") from None
     except subprocess.CalledProcessError as error:
@@ -402,7 +413,7 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
                     ("tmux", "-L", INNER_SERVER_SOCKET, "source-file", str(OVERLAY_FILE)),
                     check=False,
                     capture_output=True,
-                    timeout=10,
+                    timeout=load_timing().local_command_timeout,
                     env=_inner_server_env(),
                 )
     else:
@@ -483,7 +494,8 @@ def kill_agent(pane_target: PaneTarget) -> None:
     command = (
         "python3 -c "
         f"{shlex.quote(_KILL_AGENT_HELPER)} -- "
-        f"{shlex.quote(pane_target.socket_path)} {shlex.quote(pane_target.pane_id)}"
+        f"{shlex.quote(pane_target.socket_path)} {shlex.quote(pane_target.pane_id)} "
+        f"{load_timing().local_command_timeout}"
     )
     _run("kill agent", target, ssh_command(target.host or "", command))
 

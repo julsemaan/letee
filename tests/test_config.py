@@ -8,6 +8,8 @@ from letee import config
 
 class ConfigTest(unittest.TestCase):
     def setUp(self):
+        config.load_timing.cache_clear()
+        self.addCleanup(config.load_timing.cache_clear)
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         self.env = patch.dict("letee.config.os.environ", {"LETEE_CONFIG_DIR": self.tempdir.name}, clear=True)
@@ -23,10 +25,49 @@ class ConfigTest(unittest.TestCase):
     def test_fresh_config_contains_default_prefix(self):
         cfg, wrapper = config.ensure_config()
 
-        self.assertEqual(cfg.read_text(), 'hosts = []\nprefix = "C-s"\nsidebar_width = 40\nstatus_timeout = 5\nagent_panel_resize_step = 5\npersistent_ssh = true\ntmux_config_overlay = true\n')
+        self.assertEqual(cfg.read_text(), config.CONFIG_TEXT)
+        self.assertEqual(config.tomllib.loads(cfg.read_text())["prefix"], "C-s")
         self.assertNotIn("prefix", wrapper.read_text())
         self.assertNotIn("send-prefix", wrapper.read_text())
         self.assertIn("set -g mouse on", wrapper.read_text())
+
+    def test_timing_defaults_and_generated_config(self):
+        self.write_config("hosts = []\n")
+        self.assertEqual(config.load_timing(), config.Timing())
+        self.assertEqual(config.tomllib.loads(config.CONFIG_TEXT)["timing"], config.asdict(config.Timing()))
+
+    def test_timing_partial_override_is_cached_and_immutable(self):
+        self.write_config("[timing]\nlocal_command_timeout = 0.25\n")
+        timing = config.load_timing()
+        self.assertEqual(timing.local_command_timeout, 0.25)
+        self.assertEqual(timing.ssh_auth_timeout, 60)
+        self.write_config("[timing]\nlocal_command_timeout = 8\n")
+        self.assertIs(config.load_timing(), timing)
+        with self.assertRaises(AttributeError):
+            timing.local_command_timeout = 8
+        config.load_timing.cache_clear()
+        self.assertEqual(config.load_timing().local_command_timeout, 8)
+
+    def test_invalid_timing_values(self):
+        for text in (
+            'timing = "bad"',
+            "[timing]\nunknown = 1",
+            "[timing]\nlocal_command_timeout = true",
+            '[timing]\nlocal_command_timeout = "2"',
+            "[timing]\nlocal_command_timeout = 0",
+            "[timing]\nlocal_command_timeout = -1",
+            "[timing]\nlocal_command_timeout = inf",
+            "[timing]\nlocal_command_timeout = nan",
+            "[timing]\nssh_connect_timeout = 1.5",
+            "[timing]\nssh_keepalive_interval = 1.0",
+            "[timing]\nssh_keepalive_count_max = true",
+            "[timing]\nretry_initial_delay = 6\nretry_max_delay = 5",
+        ):
+            with self.subTest(text=text):
+                config.load_timing.cache_clear()
+                self.write_config(text)
+                with self.assertRaisesRegex(SystemExit, "Invalid config.*timing"):
+                    config.load_timing()
 
     def test_existing_wrapper_is_preserved(self):
         wrapper = Path(self.tempdir.name) / "wrapper.tmux.conf"

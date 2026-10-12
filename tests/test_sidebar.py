@@ -53,6 +53,111 @@ def _assert_deferred_switch(testcase, switch, target, *extra):
 
 
 class ActiveSessionAvailabilityTest(unittest.TestCase):
+    def test_restoration_backoff_uses_completion_time_and_healthy_discovery_does_not_reset(self):
+        target = Target("local", "work")
+        healthy = snapshot(local=("work",))
+        retry = sidebar.RestorationRetry()
+        submitted = []
+        marker = target
+        for completed, delay in ((10, 1), (20, 2), (30, 4), (40, 5), (50, 5)):
+            failed = sidebar.EffectResult(
+                sidebar.Effect("switch", target, automatic=True), (), error="timeout"
+            )
+            marker = sidebar._reconcile_active_session_effect(
+                marker, failed, retry=retry, now=completed
+            )
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=completed + delay - 0.01,
+            )
+            self.assertEqual(len(submitted), 0)
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=completed + delay,
+            )
+            self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
+            submitted.clear()
+
+    def test_stale_automatic_failure_does_not_show_error(self):
+        target = Target("local", "old")
+        state = SidebarState(status="unchanged")
+        result = sidebar.EffectResult(
+            sidebar.Effect("switch", target, automatic=True), (),
+            error="timeout", stale_navigation=True,
+        )
+        sidebar._apply_effect(result, state, unittest.mock.Mock(), 5)
+        self.assertEqual(state.status, "unchanged")
+
+    def test_restoration_deadline_uses_worker_completion_and_configured_delays(self):
+        target = Target("local", "work")
+        retry = sidebar.RestorationRetry()
+        failed = sidebar.EffectResult(
+            sidebar.Effect("switch", target, automatic=True), (), error="timeout", completed_at=10
+        )
+        with patch.object(sidebar, "load_timing", return_value=config.Timing(
+            retry_initial_delay=2, retry_max_delay=3
+        )):
+            sidebar._reconcile_active_session_effect(target, failed, retry=retry)
+            self.assertEqual(retry.deadline, 12)
+            sidebar._reconcile_active_session_effect(target, failed, retry=retry)
+            self.assertEqual(retry.deadline, 13)
+
+    def test_restoration_success_resets_and_stale_results_do_not_change_backoff(self):
+        target = Target("local", "work")
+        retry = sidebar.RestorationRetry()
+        effect = sidebar.Effect("switch", target, automatic=True)
+        failed = sidebar.EffectResult(effect, (), error="timeout")
+        sidebar._reconcile_active_session_effect(target, failed, retry=retry, now=10)
+        before = vars(retry).copy()
+        sidebar._reconcile_active_session_effect(
+            target, sidebar.EffectResult(effect, (), stale_navigation=True), retry=retry, now=20
+        )
+        self.assertEqual(vars(retry), before)
+        self.assertIsNone(sidebar._reconcile_active_session_effect(
+            target, sidebar.EffectResult(effect, ()), retry=retry, now=20
+        ))
+        sidebar._reconcile_active_session_effect(target, failed, retry=retry, now=30)
+        submitted = []
+        sidebar._sync_active_session(
+            target, snapshot(local=("work",)), target,
+            lambda effect: submitted.append(effect) or True, retry=retry, now=31,
+        )
+        self.assertEqual(len(submitted), 1)
+
+    def test_target_change_discards_restoration_backoff_and_mutations_do_not_retry(self):
+        target = Target("local", "work")
+        other = Target("local", "other")
+        retry = sidebar.RestorationRetry()
+        sidebar._reconcile_active_session_effect(
+            target, sidebar.EffectResult(sidebar.Effect("switch", target, automatic=True), (), error="timeout"),
+            retry=retry, now=10,
+        )
+        self.assertIsNone(sidebar._sync_active_session(
+            other, snapshot(local=("other",)), target, lambda _: True, retry=retry, now=10
+        ))
+        clean = vars(retry).copy()
+        for kind in ("create", "kill", "rename", "kill_agent"):
+            sidebar._reconcile_active_session_effect(
+                None, sidebar.EffectResult(sidebar.Effect(kind, other), (), error="timeout"),
+                retry=retry, now=20,
+            )
+            self.assertEqual(vars(retry), clean)
+
+    def test_explicit_navigation_bypasses_restoration_backoff_and_success_clears_marker(self):
+        target = Target("local", "work")
+        retry = sidebar.RestorationRetry()
+        sidebar._reconcile_active_session_effect(
+            target, sidebar.EffectResult(sidebar.Effect("switch", target, automatic=True), (), error="timeout"),
+            retry=retry, now=10,
+        )
+        with (
+            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar.sessions, "attach_command", return_value=["tmux"]),
+        ):
+            result = sidebar._perform_effect(sidebar.Effect("switch", target), ())
+        switch.assert_called_once()
+        self.assertIsNone(sidebar._reconcile_active_session_effect(target, result, retry=retry, now=10))
+
     def test_missing_active_session_replaces_frozen_pane_after_discovery(self):
         target = Target("ssh", "work", "dev")
 
@@ -157,6 +262,39 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertEqual(state.selected_target, live_target)
         self.assertEqual(poller.current_target, live_target)
 
+    def test_navigation_during_restore_preparation_does_not_respawn_stale_target(self):
+        target = Target("local", "cached")
+        live_target = Target("local", "live")
+
+        for automatic in (True, False):
+            with self.subTest(automatic=automatic):
+                active = target
+
+                def prepare(_target):
+                    nonlocal active
+                    active = live_target
+                    return "prepared attach"
+
+                with (
+                    patch.object(sidebar.cockpit, "current_target", side_effect=lambda: active),
+                    patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
+                    patch.object(sidebar.cockpit.tmux, "tmux") as tmux_command,
+                    patch.object(sidebar.sessions, "attach_command", side_effect=prepare),
+                ):
+                    result = sidebar._perform_effect(
+                        Effect("switch", target, automatic=automatic), ()
+                    )
+
+                self.assertEqual(result.stale_navigation, automatic)
+                self.assertFalse(result.error)
+                if automatic:
+                    tmux_command.assert_not_called()
+                else:
+                    self.assertIn(
+                        call("respawn-pane", "-k", "-t", "%2", "prepared attach"),
+                        tmux_command.call_args_list,
+                    )
+
     def test_queued_stale_notification_does_not_mark_target(self):
         target = Target("local", "cached")
         live_target = Target("local", "live")
@@ -253,7 +391,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             restored = sidebar._sync_active_session(target, snapshot(local=("work",)), pending)
 
         show_missing.assert_called_once_with(target)
-        _assert_deferred_switch(self, switch, target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -273,7 +411,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
 
         show_reconnecting.assert_called_once_with(target)
-        _assert_deferred_switch(self, switch, target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -294,7 +432,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                 pending,
             )
 
-        _assert_deferred_switch(self, switch, target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -342,7 +480,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         ):
             sidebar.run(screen)
 
-        _assert_deferred_switch(self, switch, target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
         self.assertEqual(draw.call_args_list[-1].args[3], "tmux unavailable")
 
     def test_production_loop_restores_reconnected_active_ssh_session_without_input(self):
@@ -391,7 +529,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             sidebar.run(screen)
 
         self.assertEqual(events, ["reconnecting", "switch"])
-        _assert_deferred_switch(self, switch, target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
         observed = [call.args[0].effect for call in poller.observe_effect.call_args_list]
         self.assertEqual(
             observed,

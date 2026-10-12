@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 
-from .config import load_hosts, load_persistent_ssh
+from .config import load_hosts, load_persistent_ssh, load_timing
 from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
 from .sessions import ssh_command
 
@@ -37,8 +37,6 @@ SUPPORTED_TASK_STATES = {
 MAX_REMOTE_OUTPUT = 1024 * 1024
 LOCAL_POLL_INTERVAL = 0.5
 SUCCESS_POLL_INTERVAL = 10
-FAILURE_POLL_INTERVAL = 2
-MASTER_CHECK_TIMEOUT = 2
 
 
 @dataclass(frozen=True)
@@ -249,7 +247,7 @@ def local_snapshot() -> SourceSnapshot:
             ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes", "-a", "-F", PANES_FORMAT],
             text=True,
             capture_output=True,
-            timeout=5,
+            timeout=load_timing().local_command_timeout,
             env=_clean_env(),
         )
     except subprocess.TimeoutExpired:
@@ -264,7 +262,7 @@ def local_snapshot() -> SourceSnapshot:
 
 def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
     return ssh_command(
-        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+        "-o", "BatchMode=yes",
         validate_host(host), REMOTE_COMMAND,
         persistent_ssh=persistent_ssh,
     )
@@ -283,6 +281,7 @@ def _read_output(output: object, fallback: str | bytes | None = None) -> str | N
 def remote_snapshot(host: str) -> SourceSnapshot:
     host = validate_host(host)
     persistent_ssh = load_persistent_ssh()
+    timing = load_timing()
     master_preexisting = _persistent_master_alive(host, persistent_ssh)
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         try:
@@ -299,7 +298,7 @@ def remote_snapshot(host: str) -> SourceSnapshot:
         returncode = None
         try:
             try:
-                returncode = proc.wait(timeout=10)
+                returncode = proc.wait(timeout=timing.remote_command_timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
             except OSError as error:
@@ -309,7 +308,7 @@ def remote_snapshot(host: str) -> SourceSnapshot:
                 proc,
                 keep_group=returncode is not None
                 and not master_preexisting
-                and _persistent_master_alive(host, persistent_ssh),
+                and _persistent_master_alive(host, persistent_ssh) is not False,
             )
         if timed_out:
             return SourceSnapshot(False, (), frozenset(), "timed out")
@@ -330,14 +329,15 @@ class _Request:
     started: float
     output: object
     errors: object
-    master_preexisting: bool
+    master_preexisting: bool | None
 
 
-def _persistent_master_alive(host: str, persistent_ssh: bool) -> bool:
+def _persistent_master_alive(host: str, persistent_ssh: bool) -> bool | None:
     """Whether a ControlPersist master owns the host's control socket.
 
     A master keeps its ProxyCommand inside the process group of the request
-    that created it, so that group must survive the request.
+    that created it, so that group must survive the request. An inconclusive
+    check returns None, which must not trigger destructive group cleanup.
     """
     if not persistent_ssh:
         return False
@@ -347,10 +347,10 @@ def _persistent_master_alive(host: str, persistent_ssh: bool) -> bool:
             check=False,
             capture_output=True,
             text=True,
-            timeout=MASTER_CHECK_TIMEOUT,
+            timeout=load_timing().ssh_master_check_timeout,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
     return result.returncode == 0
 
 
@@ -395,6 +395,7 @@ class DiscoveryPoller:
         persistent_ssh: bool | None = None,
     ) -> None:
         self.hosts = tuple(validate_host(host) for host in hosts)
+        self._timing = load_timing()
         self._local_snapshot = local or local_snapshot
         self._persistent_ssh = load_persistent_ssh() if persistent_ssh is None else persistent_ssh
         self.local = self._local_snapshot()
@@ -405,23 +406,26 @@ class DiscoveryPoller:
         self._active: dict[str, _Request] = {}
         self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
+        self._retry_delay = dict.fromkeys(self.hosts, self._timing.retry_initial_delay)
 
     @property
     def snapshot(self) -> SessionSnapshot:
         return SessionSnapshot(self.local, self.remotes.copy())
 
-    def _schedule(self, host: str, now: float, available: bool) -> None:
+    def _schedule(self, host: str, available: bool) -> None:
         if available:
+            self._retry_delay[host] = self._timing.retry_initial_delay
             interval = LOCAL_POLL_INTERVAL if host == self._active_remote_host else SUCCESS_POLL_INTERVAL
-            self._next[host] = now + interval
-            return
-        self._next[host] = now + FAILURE_POLL_INTERVAL
+        else:
+            interval = self._retry_delay[host]
+            self._retry_delay[host] = min(interval * 2, self._timing.retry_max_delay)
+        self._next[host] = self._clock() + interval
 
-    def _finish_request(self, host: str, request: _Request, now: float, returncode: int) -> bool:
+    def _finish_request(self, host: str, request: _Request, returncode: int) -> bool:
         stdout, stderr = _stop_process(
             request.process,
             keep_group=not request.master_preexisting
-            and _persistent_master_alive(host, self._persistent_ssh),
+            and _persistent_master_alive(host, self._persistent_ssh) is not False,
         )
         text = _read_output(request.output, stdout)
         error = _read_output(request.errors, stderr)
@@ -431,10 +435,10 @@ class DiscoveryPoller:
         changed = snapshot != self.remotes[host]
         self.remotes[host] = snapshot
         del self._active[host]
-        self._schedule(host, now, snapshot.available)
+        self._schedule(host, snapshot.available)
         return changed
 
-    def _start_request(self, host: str, now: float) -> bool:
+    def _start_request(self, host: str) -> bool:
         master_preexisting = _persistent_master_alive(host, self._persistent_ssh)
         output = tempfile.TemporaryFile()
         errors = tempfile.TemporaryFile()
@@ -451,9 +455,9 @@ class DiscoveryPoller:
             snapshot = SourceSnapshot(False, (), frozenset(), error.strerror or str(error))
             changed = snapshot != self.remotes[host]
             self.remotes[host] = snapshot
-            self._schedule(host, now, False)
+            self._schedule(host, False)
             return changed
-        self._active[host] = _Request(process, now, output, errors, master_preexisting)
+        self._active[host] = _Request(process, self._clock(), output, errors, master_preexisting)
         return False
 
     def tick(self, active_remote_host: str | None = None) -> bool:
@@ -473,13 +477,13 @@ class DiscoveryPoller:
             self.local = snapshot
             self._next_local_poll = now + LOCAL_POLL_INTERVAL
         for host in self.hosts:
-            if host not in self._active and now >= self._next[host]:
-                changed |= self._start_request(host, now)
+            if host not in self._active and self._clock() >= self._next[host]:
+                changed |= self._start_request(host)
 
         for host, request in list(self._active.items()):
             returncode = request.process.poll()
             if returncode is None:
-                if now - request.started >= 10:
+                if self._clock() - request.started >= self._timing.remote_command_timeout:
                     _stop_process(request.process)
                     request.output.close()
                     request.errors.close()
@@ -487,9 +491,9 @@ class DiscoveryPoller:
                     changed |= snapshot != self.remotes[host]
                     self.remotes[host] = snapshot
                     del self._active[host]
-                    self._schedule(host, now, False)
+                    self._schedule(host, False)
                 continue
-            changed |= self._finish_request(host, request, now, returncode)
+            changed |= self._finish_request(host, request, returncode)
         return changed
 
     def refresh(self) -> bool:
@@ -499,6 +503,7 @@ class DiscoveryPoller:
         now = self._clock()
         self._next_local_poll = now + LOCAL_POLL_INTERVAL
         for host in self.hosts:
+            self._retry_delay[host] = self._timing.retry_initial_delay
             if host not in self._active:
                 self._next[host] = now
         return changed
