@@ -127,7 +127,7 @@ The Sessions view lists tracked sessions in persisted manual order. The first ni
 
 Tracked sessions persist in `~/.config/letee/sessions` for the default server and `~/.config/letee/servers/<name>/sessions` for named servers. Configuration, hosts, prefix, dimensions, timeout, and SSH settings stay shared across named servers. Tracked sessions, ordering, the active target, alerts, and cockpit panes stay isolated. The same inner session can be tracked by multiple servers, so overlapping servers can show duplicate alerts.
 
-Missing sessions remain launchers. Press `Enter` on one to recreate and attach it with tmux `new-session -A`. Prefix session actions use the active right-pane target, never the sidebar selection. Missing or untracked active targets show a status message and do nothing.
+Missing sessions remain launchers. Press `Enter` on one to recreate and attach it with tmux `new-session -A`. Prefix remove/kill actions use the active right-pane target, never the sidebar selection. For these actions, missing or untracked active targets show a status message and do nothing.
 
 ## Add session menu
 
