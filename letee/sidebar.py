@@ -2515,7 +2515,7 @@ def _draw_compact(
     top, separator, bottom = _compact_layout(height, agent_percentage)
     def write_row(row: int, line: str, attr: int) -> None:
         try:
-            stdscr.addnstr(row, 0, line, width, attr)
+            stdscr.addnstr(row, 0, line, len(line), attr)
         except curses.error:
             # ncurses reports an error after writing the bottom-right cell.
             if row != height - 1:

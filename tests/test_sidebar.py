@@ -1007,6 +1007,18 @@ class CompactSidebarTest(unittest.TestCase):
         self.assertEqual(sidebar._compact_rows([], "agent", 0, None, 1, 3), [])
         self.assertEqual(sidebar._compact_layout(10, 40), (1, 6, 10))
 
+    def test_draw_preserves_alert_after_combining_mark(self):
+        screen = FakeScreen(size=(10, 5))
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux-test")
+        agent = sidebar.Entry("e\u0301cole", "agent", target, pane_target=pane, agent_id="a", status="idle")
+        with patch.object(sidebar, "_color", return_value=0), patch.object(sidebar, "_ascii", return_value=False):
+            sidebar._draw(screen, [], 0, "", "", agent_entries=[agent], agent_alerts={(pane, "a")}, compact=True)
+        row = next(call for call in screen.calls if call[0] == "addnstr" and call[3].startswith("○"))
+        rendered = row[3][:row[4]]
+        self.assertEqual(rendered, "○ e\u0301c!")
+        self.assertEqual(sidebar._cell_width(rendered), 5)
+
     def test_tiny_panes_tolerate_ncurses_bottom_right_error(self):
         for height in (1, 2, 10):
             screen = FakeScreen(size=(height, 5))
