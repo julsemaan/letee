@@ -54,6 +54,23 @@ class SessionOperationsTest(unittest.TestCase):
             create(Target("local", "work"), overlay=True)
             self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list[-2:]], [0.25, 0.25])
 
+    def test_remote_kill_agent_budget_covers_helper_queries_and_ssh_overhead(self):
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux")
+        for timing in (Timing(), Timing(local_command_timeout=8, remote_command_timeout=1)):
+            with (
+                self.subTest(timing=timing),
+                patch("letee.sessions.load_timing", return_value=timing),
+                patch("letee.sessions.subprocess.run") as run,
+            ):
+                kill_agent(pane)
+                self.assertEqual(
+                    run.call_args.kwargs["timeout"],
+                    timing.remote_command_timeout + 2 * timing.local_command_timeout,
+                )
+                self.assertEqual(shlex.split(run.call_args.args[0][-1])[-1], str(timing.local_command_timeout))
+                kill(pane.target)
+                self.assertEqual(run.call_args.kwargs["timeout"], timing.remote_command_timeout)
+
     def test_remote_helper_uses_supplied_local_deadline_for_both_subprocesses(self):
         with (
             patch.object(sys, "argv", ["-c", "--", "/tmp/tmux", "%7", "0.25"]),
@@ -243,7 +260,7 @@ class SessionOperationsTest(unittest.TestCase):
         self.assertTrue(command[-1].endswith(" -- '/tmp/tmux socket; echo unsafe' %7 2"))
         self.assertIn("/tmp/tmux socket; echo unsafe", command[-1])
         self.assertNotIn("kill-pane", command[-1])
-        self.assertEqual(run.call_args.kwargs["timeout"], 3)
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
 
     def test_kill_agent_tmux_lookup_failure_includes_operation_and_target(self):
         pane = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux")

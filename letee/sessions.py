@@ -384,10 +384,13 @@ def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None)
     return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
 
 
-def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: object) -> str:
+def _run(
+    operation: str, target: Target, command: tuple[str, ...], *, timeout: float | None = None, **kwargs: object,
+) -> str:
     try:
-        timing = load_timing()
-        timeout = timing.remote_command_timeout if target.kind == "ssh" else timing.local_command_timeout
+        if timeout is None:
+            timing = load_timing()
+            timeout = timing.remote_command_timeout if target.kind == "ssh" else timing.local_command_timeout
         result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout, **kwargs)
     except subprocess.TimeoutExpired as error:
         raise SystemExit(f"{operation} {target.format()} timed out") from error
@@ -491,13 +494,17 @@ def kill_agent(pane_target: PaneTarget) -> None:
     if target.kind == "local":
         _kill_agent_local(pane_target)
         return
+    timing = load_timing()
     command = (
         "python3 -c "
         f"{shlex.quote(_KILL_AGENT_HELPER)} -- "
         f"{shlex.quote(pane_target.socket_path)} {shlex.quote(pane_target.pane_id)} "
-        f"{load_timing().local_command_timeout}"
+        f"{timing.local_command_timeout}"
     )
-    _run("kill agent", target, ssh_command(target.host or "", command))
+    _run(
+        "kill agent", target, ssh_command(target.host or "", command),
+        timeout=timing.remote_command_timeout + 2 * timing.local_command_timeout,
+    )
 
 
 def rename(target: Target, new_name: str) -> Target:
