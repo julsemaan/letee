@@ -7202,6 +7202,84 @@ class PrefixActionTest(unittest.TestCase):
             run(screen)
         return screen
 
+    def test_cycle_sessions_in_manual_order_with_pending_navigation(self):
+        first, second, third = [Target("local", name) for name in ("z", "a", "m")]
+        favorites = [first, second, third]
+        data = snapshot(local=("a", "m", "z"))
+        cases = (
+            (first, [curses.KEY_F4] * 3, [second, third, first]),
+            (first, [curses.KEY_F3] * 3, [third, second, first]),
+            (None, [curses.KEY_F4], [first]),
+            (None, [curses.KEY_F3], [third]),
+            (Target("local", "untracked"), [curses.KEY_F4], [first]),
+            (Target("local", "untracked"), [curses.KEY_F3], [third]),
+            (second, [curses.KEY_UP, curses.KEY_F4], [third]),
+            (second, [curses.KEY_DOWN, curses.KEY_F3], [first]),
+        )
+        for active, keys, expected in cases:
+            with self.subTest(active=active, keys=keys):
+                actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+                actions.poll.return_value = None
+                actions.submit.return_value = True
+                with patch.object(sidebar, "EffectRunner", return_value=actions):
+                    self._run(keys + [STOP], favorites, active, data)
+                self.assertEqual(
+                    [call.args[0] for call in actions.submit.call_args_list],
+                    [Effect("switch", target) for target in expected],
+                )
+
+    def test_cycle_sessions_includes_missing_and_unavailable_targets(self):
+        active = Target("local", "active")
+        missing = Target("local", "missing")
+        remote = Target("ssh", "remote", "host")
+        cases = (
+            ({}, "switch"),
+            ({"host": None}, "show_reconnecting"),
+            ({"host": source("ssh", host="host", available=False)}, "show_reconnecting"),
+        )
+        for remotes, kind in cases:
+            with self.subTest(remotes=remotes):
+                data = snapshot(local=("active",), remotes=remotes)
+                actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+                actions.poll.return_value = None
+                actions.submit.return_value = True
+                with patch.object(sidebar, "EffectRunner", return_value=actions):
+                    self._run([curses.KEY_F4, curses.KEY_F4, STOP], [active, missing, remote], active, data)
+                self.assertEqual(
+                    [call.args[0] for call in actions.submit.call_args_list],
+                    [Effect("switch", missing), Effect(kind, remote)],
+                )
+
+    def test_cycle_sessions_empty_and_single_lists(self):
+        target = Target("local", "work")
+        for favorites, active, expected in (([], None, []), ([target], target, []), ([target], None, [Effect("switch", target)])):
+            with self.subTest(favorites=favorites, active=active):
+                actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+                actions.poll.return_value = None
+                actions.submit.return_value = True
+                with patch.object(sidebar, "EffectRunner", return_value=actions):
+                    self._run([curses.KEY_F3, curses.KEY_F4, STOP], favorites, active, snapshot(local=("work",)))
+                self.assertEqual([call.args[0] for call in actions.submit.call_args_list], expected)
+
+    def test_cycle_sessions_selects_and_reveals_destination(self):
+        targets = [Target("local", f"session-{i}") for i in range(12)]
+        captured = []
+        signature = inspect.signature(sidebar._draw)
+
+        def draw(*args, **kwargs):
+            captured.append(signature.bind(*args, **kwargs).arguments)
+            return 2, None
+
+        actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+        actions.poll.return_value = None
+        actions.submit.return_value = True
+        with patch.object(sidebar, "EffectRunner", return_value=actions), patch.object(sidebar, "_draw", side_effect=draw):
+            self._run([curses.KEY_F3, STOP], targets, targets[0], snapshot(local=tuple(t.session for t in targets)))
+        last = captured[-1]
+        self.assertEqual(last["entries"][last["selected"]].target, targets[-1])
+        self.assertIsNone(last["scroll_offset"])
+        self.assertEqual(last["focused_region"], "sessions")
+
     def test_cycle_agents_in_display_order_with_pending_navigation(self):
         first, second = Target("local", "first"), Target("local", "second")
         panes = [PaneTarget(t, "@1", f"%{i}", "/tmp/tmux") for i, t in enumerate((first, second, first))]
