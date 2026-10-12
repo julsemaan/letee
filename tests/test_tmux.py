@@ -47,7 +47,12 @@ class TmuxTests(unittest.TestCase):
         )
 
     def test_timeout_exits_with_command_without_chained_exception(self):
-        with patch("letee.tmux.subprocess.run", side_effect=subprocess.TimeoutExpired(["tmux"], 5)):
+        from letee.config import Timing
+
+        with (
+            patch("letee.tmux.load_timing", return_value=Timing()),
+            patch("letee.tmux.subprocess.run", side_effect=subprocess.TimeoutExpired(["tmux"], 5)),
+        ):
             with self.assertRaises(SystemExit) as raised:
                 tmux("list-sessions")
 
