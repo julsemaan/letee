@@ -104,13 +104,13 @@ class ConfigTest(unittest.TestCase):
         self.write_config("sidebar_width = 52\n")
         self.assertEqual(config.load_sidebar_width(), 52)
 
-    def test_compact_sidebar_width_must_exceed_five(self):
+    def test_compact_sidebar_width_must_be_at_least_eight(self):
         for mode_setting in ('', 'sidebar_collapse_mode = "compact"\n'):
-            for width in range(1, 7):
+            for width in range(1, 9):
                 with self.subTest(mode_setting=mode_setting, width=width):
                     self.write_config(f"sidebar_width = {width}\n{mode_setting}")
-                    if width <= 5:
-                        with self.assertRaisesRegex(SystemExit, "sidebar_width must be greater than 5.*compact"):
+                    if width < 8:
+                        with self.assertRaisesRegex(SystemExit, "sidebar_width must be at least 8.*compact"):
                             config.load_sidebar_width()
                     else:
                         self.assertEqual(config.load_sidebar_width(), width)

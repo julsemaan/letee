@@ -277,10 +277,8 @@ def load_sidebar_width() -> int:
     if isinstance(width, bool) or not isinstance(width, int) or width < 1:
         raise SystemExit(f"Invalid config {cfg}: sidebar_width must be a positive integer")
     mode = data.get("sidebar_collapse_mode", DEFAULT_SIDEBAR_COLLAPSE_MODE)
-    if mode == "compact" and width <= COMPACT_SIDEBAR_WIDTH:
-        raise SystemExit(
-            f"Invalid config {cfg}: sidebar_width must be greater than {COMPACT_SIDEBAR_WIDTH} in compact mode"
-        )
+    if mode == "compact" and width < 8:
+        raise SystemExit(f"Invalid config {cfg}: sidebar_width must be at least 8 in compact mode")
     return width
 
 

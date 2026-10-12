@@ -3802,9 +3802,9 @@ class SidebarDrawTest(unittest.TestCase):
     def test_expanded_header_has_collapse_control_but_add_header_does_not(self):
         for ascii_mode in (False, True):
             with self.subTest(ascii=ascii_mode), patch.object(sidebar, "_ascii", return_value=ascii_mode):
-                for adding in (False, True):
-                    screen = FakeScreen(size=(10, 40))
-                    sidebar._draw_title(screen, 40, [], "", adding=adding)
+                for width, adding in ((8, False), (40, False), (40, True)):
+                    screen = FakeScreen(size=(10, width))
+                    sidebar._draw_title(screen, width, [], "", adding=adding)
                     header = next(item[3] for item in screen.calls if item[0] == "addnstr" and item[1] == 0)
                     control = "<" if ascii_mode else "‹"
                     self.assertEqual(header[1] == control, not adding)
@@ -6286,13 +6286,15 @@ class SidebarBurstInputTest(unittest.TestCase):
                 self.assertEqual([draw["compact"] for draw in draws], [initial, not initial])
 
     def test_header_collapse_activates_only_visible_control(self):
-        for buttons in (curses.BUTTON1_PRESSED, curses.BUTTON1_CLICKED):
-            with self.subTest(buttons=buttons), patch.object(sidebar.cockpit, "toggle_sidebar") as toggle:
-                self._run(
-                    [curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], snapshot(),
-                    mouse_events=[(0, 1, 0, 0, buttons), (0, 1, 0, 0, curses.BUTTON1_RELEASED)],
-                )
-                toggle.assert_called_once_with()
+        for width in (8, 40):
+            for buttons in (curses.BUTTON1_PRESSED, curses.BUTTON1_CLICKED):
+                with self.subTest(width=width, buttons=buttons), patch.object(sidebar.cockpit, "toggle_sidebar") as toggle:
+                    self._run(
+                        [curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], snapshot(),
+                        mouse_events=[(0, 1, 0, 0, buttons), (0, 1, 0, 0, curses.BUTTON1_RELEASED)],
+                        size=(12, width),
+                    )
+                    toggle.assert_called_once_with()
 
     def test_header_collapse_ignores_other_events_and_add_views(self):
         cases = [
