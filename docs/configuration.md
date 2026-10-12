@@ -123,6 +123,30 @@ Sidebar values are single printable ASCII characters such as `j` or `[`. The fol
 
 Prefer the canonical action names shown in the configuration example.
 
+### Migrating Up/Down prefixes
+
+The new session-navigation defaults are a breaking change for existing `prefix = "Up"` or `prefix = "Down"` configurations. Letee rejects the conflicting default at startup to preserve forwarding the prefix by pressing it twice.
+
+For an `Up` prefix, override `previous_session`:
+
+```toml
+prefix = "Up"
+
+[keybindings]
+previous_session = "prefix+M-Up"
+```
+
+For a `Down` prefix, override `next_session`:
+
+```toml
+prefix = "Down"
+
+[keybindings]
+next_session = "prefix+M-Down"
+```
+
+Add the override to your existing `[keybindings]` table if present. Replacement bindings must not duplicate other bindings or conflict with your prefix. Rerun `letee` after editing the configuration.
+
 ### Validation rules
 
 - Unknown keys in either table fail with an error naming the offending action.
