@@ -982,6 +982,24 @@ class CompactSidebarTest(unittest.TestCase):
                 self.assertEqual(draws[-1]["focused_region"], "agents")
                 self.assertEqual(effects, [Effect("switch_pane", agents[0].pane_target, message="agent-0")])
 
+    def test_no_attention_status_notifies_once_without_expanding_or_focusing(self):
+        with patch.object(sidebar.cockpit.tmux, "tmux") as tmux_command:
+            _, _, draws, effects, expansion, _, _ = self._run_compact(
+                [curses.KEY_F10, curses.KEY_RESIZE, curses.KEY_RESIZE],
+                pane_active=False,
+            )
+        tmux_command.assert_called_once_with(
+            "display-message", "-t", sidebar.cockpit.TARGET,
+            "no agents need attention", check=False,
+        )
+        expansion.assert_not_called()
+        self.assertEqual(effects, [])
+        self.assertTrue(all(draw["compact"] for draw in draws))
+        self.assertTrue(all(not draw["pane_active"] for draw in draws))
+        self.assertGreaterEqual(
+            sum(draw["status"] == "no agents need attention" for draw in draws), 2,
+        )
+
     def test_status_first_labels_and_alerts(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%1", "/tmp/tmux-test")

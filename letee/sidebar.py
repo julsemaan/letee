@@ -2719,6 +2719,7 @@ def run(stdscr: curses.window) -> None:
     pending_navigation: tuple[Target, str | None, PaneTarget | None] | None = None
     rendered: tuple[object, ...] | None = None
     compact = False
+    notified_status: tuple[str, float | None] | None = None
     footer_height = 0
     add_col: int | None = None
     move_scroll_direction = 0
@@ -3296,8 +3297,14 @@ def run(stdscr: curses.window) -> None:
         agent_alert: bool = False,
         force: bool = False,
     ) -> None:
-        nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered, compact
+        nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered, compact, notified_status
         compact = cockpit.sidebar_compact()
+        status = (state.status, state.status_deadline) if state.status else None
+        if compact and status is not None and status != notified_status:
+            cockpit.tmux.tmux("display-message", "-t", cockpit.TARGET, state.status, check=False)
+            notified_status = status
+        elif status is None:
+            notified_status = None
         selectable = _selectable(entries)
         if selectable and state.selected_index not in selectable:
             state.selected_index = selectable[0]
