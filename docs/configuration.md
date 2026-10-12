@@ -45,7 +45,7 @@ The `LETEE_CONFIG_DIR` environment variable can override `~/.config/letee` when 
 | --- | --- | --- |
 | `hosts` | `[]` | List of SSH aliases to discover. |
 | `prefix` | `"C-s"` | Outer tmux prefix. It must be one non-empty, printable, whitespace-free tmux key token, such as `C-s`, `C-g`, or `F1`. |
-| `sidebar_width` | `40` | Expanded sidebar width in columns. It must be a positive integer. |
+| `sidebar_width` | `40` | Expanded sidebar width in columns. It must be an integer greater than five in compact mode, including when `sidebar_collapse_mode` is omitted. Hidden mode accepts any positive integer. |
 | `sidebar_collapse_mode` | `"compact"` | `"compact"` makes the toggle switch between expanded and a fixed five-column strip. `"hidden"` retains expanded/hidden toggling by zooming the right pane. |
 | `status_timeout` | `5` | Number of seconds that sidebar feedback remains visible. It must be a positive integer. |
 | `agent_panel_resize_step` | `5` | Percentage points changed by `[` and `]`. It must be an integer from 1 through 100. |
