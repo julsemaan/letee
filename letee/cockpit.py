@@ -654,6 +654,8 @@ def cockpit() -> int:
     if width < 90:
         print("Terminal too narrow for letee: need at least 90 columns.", file=sys.stderr)
         return 2
+    if _valid():
+        return _attach()
     hosts = load_hosts()
     try:
         _prepare_remote_hosts(hosts)

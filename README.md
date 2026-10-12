@@ -83,7 +83,7 @@ For keyboard enthusiasts, these are the default keys.
 
 `C-s q` quits the outer letee cockpit. Inner tmux sessions keep running.
 
-`C-s d` detaches the outer letee cockpit. Inner tmux sessions keep running and getting back into letee will be faster.
+`C-s d` detaches the outer letee cockpit. Inner tmux sessions keep running. Returning to a running cockpit skips SSH preparation and keeps its sidebar running.
 
 ## Looking for more?
 
