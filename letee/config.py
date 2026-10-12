@@ -151,12 +151,16 @@ def load_timing() -> Timing:
         if key not in defaults:
             raise SystemExit(f"Invalid config {cfg}: unknown timing key {key!r}")
         integer = key in integer_keys
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int if integer else (int, float))
-            or value <= 0
-            or not math.isfinite(value)
-        ):
+        try:
+            invalid = (
+                isinstance(value, bool)
+                or not isinstance(value, int if integer else (int, float))
+                or value <= 0
+                or not math.isfinite(value)
+            )
+        except OverflowError:
+            invalid = True
+        if invalid:
             requirement = "a positive integer" if integer else "a positive finite duration"
             raise SystemExit(f"Invalid config {cfg}: timing.{key} must be {requirement}")
     timing = Timing(**{**defaults, **raw})

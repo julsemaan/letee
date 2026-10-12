@@ -58,6 +58,8 @@ class ConfigTest(unittest.TestCase):
             "[timing]\nlocal_command_timeout = -1",
             "[timing]\nlocal_command_timeout = inf",
             "[timing]\nlocal_command_timeout = nan",
+            f"[timing]\nlocal_command_timeout = {10**400}",
+            f"[timing]\nssh_connect_timeout = {10**400}",
             "[timing]\nssh_connect_timeout = 1.5",
             "[timing]\nssh_keepalive_interval = 1.0",
             "[timing]\nssh_keepalive_count_max = true",
