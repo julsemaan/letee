@@ -415,6 +415,60 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
+    def test_preparation_timeout_retries_without_replacing_reconnecting_screen(self):
+        target = Target("ssh", "work", "dev")
+        healthy = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
+        retry = sidebar.RestorationRetry()
+        timeout = subprocess.TimeoutExpired(["ssh"], 3)
+        submitted = []
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
+            patch.object(sidebar.cockpit.tmux, "tmux") as tmux_call,
+            patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=True),
+            patch.object(sidebar.sessions, "load_persistent_ssh", return_value=True),
+            patch.object(sidebar.sessions.subprocess, "run", side_effect=[
+                timeout, timeout, subprocess.CompletedProcess(["ssh"], 0, stdout=""),
+            ]) as run,
+        ):
+            result = sidebar._perform_effect(sidebar.Effect("switch", target), ())
+            self.assertEqual(result.error, "overlay ssh:dev:work timed out")
+            marker = sidebar._reconcile_active_session_effect(None, result, retry=retry, now=10)
+            self.assertEqual(marker, target)
+            respawns = [item.args for item in tmux_call.call_args_list if item.args[0] == "respawn-pane"]
+            self.assertEqual(len(respawns), 2)
+            self.assertIn("Preparing%s", respawns[0][4])
+            self.assertIn("Reconnecting%s", respawns[1][4])
+            calls_before_retry = list(tmux_call.call_args_list)
+
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=10,
+            )
+            self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
+            result = sidebar._perform_effect(submitted.pop(), ())
+            self.assertEqual(result.error, "overlay ssh:dev:work timed out")
+            marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=11)
+            self.assertEqual(marker, target)
+            self.assertEqual(tmux_call.call_args_list, calls_before_retry)
+
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=retry.deadline - 0.01,
+            )
+            self.assertEqual(submitted, [])
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=retry.deadline,
+            )
+            self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
+            result = sidebar._perform_effect(submitted.pop(), ())
+            self.assertFalse(result.error)
+            self.assertIsNone(sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=12))
+            self.assertIsNone(retry.target)
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(tmux_call.call_args.args, ("select-pane", "-t", "%2"))
+
     def test_failed_switch_retries_once_snapshot_is_healthy(self):
         target = Target("ssh", "work", "dev")
         failed = sidebar.EffectResult(

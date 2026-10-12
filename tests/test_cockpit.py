@@ -2,6 +2,7 @@ import json
 import os
 import shlex
 import signal
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -1133,6 +1134,46 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Switching session", events[0][1])
         self.assertIn("Preparing%s", events[0][1])
         self.assertEqual(events[2], ("respawn", "attach work"))
+
+    def test_remote_overlay_timeout_replaces_preparing_with_reconnecting(self):
+        target = Target("ssh", "work", "dev")
+        timeout = subprocess.TimeoutExpired(["ssh"], 3)
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            patch.object(cockpit.sessions, "load_persistent_ssh", return_value=True),
+            patch.object(cockpit.sessions.subprocess, "run", side_effect=timeout) as run,
+            self.assertRaisesRegex(SystemExit, r"^overlay ssh:dev:work timed out$") as raised,
+        ):
+            cockpit.switch(target, lambda: cockpit.sessions.attach_command(target, overlay=True))
+
+        self.assertIs(raised.exception.__cause__, timeout)
+        run.assert_called_once()
+        respawns = [item.args for item in tmux_call.call_args_list if item.args[0] == "respawn-pane"]
+        self.assertEqual(len(respawns), 2)
+        self.assertIn("Preparing%s", respawns[0][4])
+        self.assertIn("Reconnecting%s", respawns[1][4])
+        self.assertNotIn("unavailable", respawns[1][4])
+        self.assertFalse(any(item.args[0] == "select-pane" for item in tmux_call.call_args_list))
+
+    def test_direct_preparation_timeout_reconnects_only_remote_targets(self):
+        for target in (Target("ssh", "work", "dev"), Target("local", "work")):
+            with self.subTest(target=target):
+                timeout = subprocess.TimeoutExpired(["prepare"], 3)
+                with (
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "tmux") as tmux_call,
+                    self.assertRaises(subprocess.TimeoutExpired) as raised,
+                ):
+                    cockpit.switch(target, unittest.mock.Mock(side_effect=timeout))
+
+                self.assertIs(raised.exception, timeout)
+                command = tmux_call.call_args.args[4]
+                if target.kind == "ssh":
+                    self.assertIn("Reconnecting%s", command)
+                else:
+                    self.assertIn("Session local:work is unavailable.", command)
+                self.assertFalse(any(item.args[0] == "select-pane" for item in tmux_call.call_args_list))
 
     def test_failed_deferred_switch_replaces_spinner_with_unavailable_message(self):
         target = Target("ssh", "work", "dev")

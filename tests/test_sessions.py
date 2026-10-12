@@ -773,6 +773,17 @@ class TmuxOverlayTest(unittest.TestCase):
             command.index('mv "$tmp" ~/.config/letee/tmux-overlay.conf'),
         )
 
+    def test_overlay_install_timeout_retains_cause_and_message(self):
+        timeout = subprocess.TimeoutExpired(["ssh"], 3)
+        with (
+            patch("letee.sessions.load_persistent_ssh", return_value=True),
+            patch("letee.sessions.subprocess.run", side_effect=timeout),
+            self.assertRaisesRegex(SystemExit, r"^overlay ssh:dev:work timed out$") as raised,
+        ):
+            attach_command(Target("ssh", "work", "dev"), overlay=True)
+
+        self.assertIs(raised.exception.__cause__, timeout)
+
     def test_overlay_install_failure_exits_clearly(self):
         error = subprocess.CalledProcessError(1, ["ssh"], stderr="connection refused\n")
         with (

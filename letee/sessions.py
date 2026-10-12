@@ -389,8 +389,8 @@ def _run(operation: str, target: Target, command: tuple[str, ...], **kwargs: obj
         timing = load_timing()
         timeout = timing.remote_command_timeout if target.kind == "ssh" else timing.local_command_timeout
         result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout, **kwargs)
-    except subprocess.TimeoutExpired:
-        raise SystemExit(f"{operation} {target.format()} timed out") from None
+    except subprocess.TimeoutExpired as error:
+        raise SystemExit(f"{operation} {target.format()} timed out") from error
     except subprocess.CalledProcessError as error:
         reason = (error.stderr or "").strip() or f"exit status {error.returncode}"
         raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
