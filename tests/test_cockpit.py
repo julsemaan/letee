@@ -12,6 +12,102 @@ from letee import cockpit, diagnostics
 from letee.names import PaneTarget, Target
 
 
+class SidebarCollapseTest(unittest.TestCase):
+    def setUp(self):
+        self.options = {cockpit.SIDEBAR_PANE_OPTION: "%1", cockpit.RIGHT_PANE_OPTION: "%2"}
+        self.state = patch.object(cockpit, "_option", side_effect=lambda name: self.options.get(name, ""))
+        self.state.start()
+        self.addCleanup(self.state.stop)
+
+    def test_compact_collapse_and_expand_restore_configured_width(self):
+        with (
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(cockpit, "load_sidebar_collapse_mode", return_value="compact"),
+            patch.object(cockpit, "load_sidebar_width", return_value=52),
+            patch.object(cockpit.tmux, "out", return_value="0"),
+            patch.object(cockpit.tmux, "tmux") as command,
+        ):
+            self.assertEqual(cockpit.toggle_sidebar(), 0)
+            command.assert_any_call("resize-pane", "-t", "%1", "-x", "5", check=False)
+            command.assert_any_call("select-pane", "-t", "%2")
+            self.options[cockpit.SIDEBAR_COMPACT_OPTION] = "1"
+            self.assertTrue(cockpit.sidebar_compact())
+            command.reset_mock()
+            cockpit.expand_sidebar()
+            command.assert_any_call("resize-pane", "-t", "%1", "-x", "52", check=False)
+            self.assertFalse(any(c.args[0] == "select-pane" for c in command.call_args_list))
+
+    def test_toggle_compact_expands_and_focuses_right(self):
+        self.options[cockpit.SIDEBAR_COMPACT_OPTION] = "1"
+        with (
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(cockpit.tmux, "out", return_value="0"),
+            patch.object(cockpit, "expand_sidebar") as expand,
+        ):
+            cockpit.toggle_sidebar()
+        expand.assert_called_once_with(focus_right=True)
+
+    def test_hidden_collapse_uses_right_pane_zoom(self):
+        with (
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(cockpit, "load_sidebar_collapse_mode", return_value="hidden"),
+            patch.object(cockpit.tmux, "out", return_value="0"),
+            patch.object(cockpit.tmux, "tmux") as command,
+        ):
+            cockpit.toggle_sidebar()
+        command.assert_any_call("resize-pane", "-Z", "-t", "%2")
+        self.assertFalse(any("-x" in c.args for c in command.call_args_list))
+
+    def test_expand_hidden_unzooms_and_can_focus_right(self):
+        with (
+            patch.object(cockpit.tmux, "out", return_value="1"),
+            patch.object(cockpit.tmux, "tmux") as command,
+        ):
+            cockpit.expand_sidebar(focus_right=True)
+        self.assertEqual(command.call_args_list, [
+            call("resize-pane", "-Z", "-t", "%2"),
+            call("select-pane", "-t", "%2"),
+        ])
+
+    def test_ensure_preserves_compact_width_and_hooks(self):
+        self.options[cockpit.SIDEBAR_COMPACT_OPTION] = "1"
+        with (
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(cockpit, "load_prefix", return_value="C-s"),
+            patch.object(cockpit, "load_sidebar_width", return_value=52),
+            patch.object(cockpit, "_configure_cockpit") as configure,
+        ):
+            cockpit.ensure_cockpit()
+        configure.assert_called_once_with("%1", "%2", "C-s", 5)
+
+    def test_toggle_hidden_expands_and_focuses_right(self):
+        with (
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(cockpit.tmux, "out", return_value="1"),
+            patch.object(cockpit.tmux, "tmux") as command,
+        ):
+            cockpit.toggle_sidebar()
+        self.assertEqual(command.call_args_list, [
+            call("resize-pane", "-Z", "-t", "%2"),
+            call("select-pane", "-t", "%2"),
+        ])
+
+    def test_toggle_requires_existing_cockpit(self):
+        with patch.object(cockpit, "_valid", return_value=False):
+            with self.assertRaisesRegex(SystemExit, "No valid letee"):
+                cockpit.toggle_sidebar()
+
+    def test_background_actions_do_not_expand_compact_sidebar(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit, "_valid", return_value=True),
+            patch.object(cockpit, "expand_sidebar") as expand,
+            patch.object(cockpit.tmux, "tmux"),
+        ):
+            cockpit.focus_sidebar("next_agent")
+        expand.assert_not_called()
+
+
 class CockpitStartupTest(unittest.TestCase):
     def test_shared_agent_warms_first_host_then_probes_remaining_hosts(self):
         events = []
@@ -481,6 +577,15 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_resize_hook_passes_numeric_width_in_both_sidebar_modes(self):
+        for width in (52, cockpit.COMPACT_SIDEBAR_WIDTH):
+            with self.subTest(width=width), patch.object(cockpit.tmux, "tmux") as command:
+                cockpit._install_layout_hooks("%1", width)
+                hook = shlex.split(command.call_args.args[-1])
+                self.assertEqual(hook[:3], ["resize-pane", "-t", "%1"])
+                # resize-pane parses -x as a number, not a tmux format.
+                self.assertEqual(int(hook[hook.index("-x") + 1]), width)
+
     def test_repair_layout_skips_healthy_layout(self):
         with (
             patch.object(cockpit, "_ensure_client_size", return_value=True),
@@ -583,7 +688,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 ),
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "d", "detach-client"),
-                ("bind-key", "h", "resize-pane", "-Z", "-t", "%2"),
+                ("bind-key", "h", "run-shell", cockpit._letee_command("toggle-sidebar")),
                 ("bind-key", "q", "kill-session", "-t", "letee"),
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
@@ -627,6 +732,7 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._install_bindings("C-x", "%1", "%2")
 
         self.assertEqual(calls[6], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
+        self.assertIn(("bind-key", "h", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work toggle-sidebar"), calls)
         self.assertEqual(calls[18], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
         for key, action in (("Left", "previous_agent"), ("Right", "next_agent"), ("Up", "previous_session"), ("Down", "next_session")):
             self.assertIn(("bind-key", key, "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar {action}"), calls)
@@ -638,7 +744,9 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_option", return_value="%7"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
-            cockpit.focus_sidebar("agents")
+            with patch.object(cockpit, "expand_sidebar") as expand:
+                cockpit.focus_sidebar("agents")
+            expand.assert_called_once_with()
 
         self.assertEqual(
             tmux_call.call_args_list,
@@ -655,7 +763,9 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_option", return_value="%7"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
-            cockpit.focus_sidebar("add")
+            with patch.object(cockpit, "expand_sidebar") as expand:
+                cockpit.focus_sidebar("add")
+            expand.assert_called_once_with()
 
         self.assertEqual(
             tmux_call.call_args_list,
@@ -672,7 +782,9 @@ class CockpitLayoutTest(unittest.TestCase):
             ), patch.object(cockpit, "ensure_cockpit") as ensure_cockpit, patch.object(
                 cockpit, "_option", return_value="%7"
             ), patch.object(cockpit.tmux, "tmux") as tmux_call:
-                cockpit.focus_sidebar(region)
+                with patch.object(cockpit, "expand_sidebar") as expand:
+                    cockpit.focus_sidebar(region)
+                expand.assert_called_once_with()
 
             ensure_cockpit.assert_called_once_with()
             self.assertEqual(
@@ -999,7 +1111,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("C-x Up  switch to previous session", command)
         self.assertIn("C-x Down  switch to next session", command)
         self.assertIn("C-x w  focus right pane", command)
-        self.assertIn("C-x h  hide/show sidebar", command)
+        self.assertIn("C-x h  collapse/expand sidebar", command)
         self.assertIn("C-x q  quit cockpit", command)
         self.assertIn("C-x 1-9  switch session", command)
         self.assertIn("C-x ?  open help", command)
@@ -1722,7 +1834,7 @@ class CockpitKeybindingTest(unittest.TestCase):
         self.assertIn("C-x M-Up  switch to previous session", cmd)
         self.assertIn("C-x M-Down  switch to next session", cmd)
         self.assertIn("C-x C-g  focus right", cmd)
-        self.assertIn("C-x C-h  hide/show", cmd)
+        self.assertIn("C-x C-h  collapse/expand", cmd)
         self.assertIn("C-x C-i  quit", cmd)
         self.assertIn("C-x C-j  open help", cmd)
         self.assertIn("C-x C-k  detach", cmd)

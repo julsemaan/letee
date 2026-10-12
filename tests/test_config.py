@@ -104,6 +104,38 @@ class ConfigTest(unittest.TestCase):
         self.write_config("sidebar_width = 52\n")
         self.assertEqual(config.load_sidebar_width(), 52)
 
+    def test_compact_sidebar_width_must_be_at_least_eight(self):
+        for mode_setting in ('', 'sidebar_collapse_mode = "compact"\n'):
+            for width in range(1, 9):
+                with self.subTest(mode_setting=mode_setting, width=width):
+                    self.write_config(f"sidebar_width = {width}\n{mode_setting}")
+                    if width < 8:
+                        with self.assertRaisesRegex(SystemExit, "sidebar_width must be at least 8.*compact"):
+                            config.load_sidebar_width()
+                    else:
+                        self.assertEqual(config.load_sidebar_width(), width)
+
+    def test_hidden_sidebar_accepts_small_positive_widths(self):
+        for width in range(1, 6):
+            with self.subTest(width=width):
+                self.write_config(f'sidebar_width = {width}\nsidebar_collapse_mode = "hidden"\n')
+                self.assertEqual(config.load_sidebar_width(), width)
+
+    def test_sidebar_collapse_mode_defaults_and_allowed_values(self):
+        self.write_config("hosts = []\n")
+        self.assertEqual(config.load_sidebar_collapse_mode(), "compact")
+        self.assertEqual(config.COMPACT_SIDEBAR_WIDTH, 5)
+        for mode in ("compact", "hidden"):
+            self.write_config(f'sidebar_collapse_mode = "{mode}"\n')
+            self.assertEqual(config.load_sidebar_collapse_mode(), mode)
+
+    def test_invalid_sidebar_collapse_mode_fails_clearly(self):
+        for value in ('"other"', '""', "true", "5", "[]"):
+            with self.subTest(value=value):
+                self.write_config(f"sidebar_collapse_mode = {value}\n")
+                with self.assertRaisesRegex(SystemExit, "sidebar_collapse_mode must be"):
+                    config.load_sidebar_collapse_mode()
+
     def test_invalid_sidebar_width_fails_clearly(self):
         for value in ("0", "-1", '"40"', "true"):
             with self.subTest(value=value):
