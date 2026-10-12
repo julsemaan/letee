@@ -115,14 +115,15 @@ class CockpitStartupTest(unittest.TestCase):
         self.addCleanup(valid.stop)
 
     def test_valid_cockpit_reattaches_without_ssh_preparation_or_sidebar_restart(self):
+        events = []
         with (
             patch.object(cockpit, "ensure_config") as ensure_config,
             patch.object(cockpit.shutil, "get_terminal_size", return_value=os.terminal_size((100, 24))),
             patch.object(cockpit, "_valid", return_value=True) as valid,
             patch.object(cockpit, "load_hosts") as load_hosts,
             patch.object(cockpit, "_prepare_remote_hosts") as prepare_hosts,
-            patch.object(cockpit, "ensure_cockpit") as ensure_cockpit,
-            patch.object(cockpit, "_attach", return_value=7) as attach,
+            patch.object(cockpit, "ensure_cockpit", side_effect=lambda: events.append("configure")) as ensure_cockpit,
+            patch.object(cockpit, "_attach", side_effect=lambda: events.append("attach") or 7) as attach,
         ):
             self.assertEqual(cockpit.cockpit(), 7)
 
@@ -131,7 +132,8 @@ class CockpitStartupTest(unittest.TestCase):
         attach.assert_called_once_with()
         load_hosts.assert_not_called()
         prepare_hosts.assert_not_called()
-        ensure_cockpit.assert_not_called()
+        ensure_cockpit.assert_called_once_with()
+        self.assertEqual(events, ["configure", "attach"])
 
     def test_shared_agent_warms_first_host_then_probes_remaining_hosts(self):
         events = []

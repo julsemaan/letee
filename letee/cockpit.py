@@ -655,6 +655,7 @@ def cockpit() -> int:
         print("Terminal too narrow for letee: need at least 90 columns.", file=sys.stderr)
         return 2
     if _valid():
+        ensure_cockpit()
         return _attach()
     hosts = load_hosts()
     try:
