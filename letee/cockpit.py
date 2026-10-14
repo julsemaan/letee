@@ -114,9 +114,6 @@ Recovery
   {_display_key(prefix, kb["focus_agents"])}  restart/focus Agents
   {_display_key(prefix, kb["add_session"])}  open Add session menu
   Esc/Ctrl-C  cancel prompts/filter
-
-Examples
-  Enter  recreate missing session or activate selected Add row
 """
     return f"printf %s {shlex.quote(text)}; exec tail -f /dev/null"
 
@@ -481,10 +478,6 @@ def _right_pane_death_action(
         f"{cleanup} ; {restore_target}{marker_cleanup} ; "
         f"respawn-pane -k -t {right} {shlex.quote(_unavailable_command(target))} ; select-pane -t {left}"
     )
-
-
-def _missing_command(target: Target) -> str:
-    return _animated_command(target, "Session missing", "Waiting for session")
 
 
 def _reconnecting_command(target: Target) -> str:
@@ -986,10 +979,6 @@ def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int, si
 
 def show_unavailable(target: Target) -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _unavailable_command(target))
-
-
-def show_missing(target: Target) -> None:
-    tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _missing_command(target))
 
 
 def show_reconnecting(target: Target) -> None:

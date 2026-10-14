@@ -438,6 +438,103 @@ class SessionOperationsTest(unittest.TestCase):
                 create(Target("ssh", "work", "dev"))
 
 
+class EnsureCreatedTest(unittest.TestCase):
+    def test_reuses_create_with_overlay_setting(self):
+        target = Target("local", "work")
+        for overlay in (None, False, True):
+            with self.subTest(overlay=overlay), patch.object(sessions, "create") as create_session:
+                self.assertIsNone(sessions.ensure_created(target, overlay=overlay))
+            create_session.assert_called_once_with(target, overlay=overlay)
+
+    def test_creation_is_detached_on_local_and_remote(self):
+        for target in (Target("local", "work"), Target("ssh", "work", "dev")):
+            with (
+                self.subTest(target=target),
+                patch.dict(sessions.os.environ, {"TMUX": "outer", "PATH": "x"}, clear=True),
+                patch.object(sessions.subprocess, "run", return_value=Mock(stdout="")) as run,
+            ):
+                sessions.ensure_created(target, overlay=False)
+            command = run.call_args.args[0]
+            tokens = command if target.kind == "local" else shlex.split(command[-1])
+            self.assertIn("-d", tokens)
+            self.assertNotIn("-A", tokens)
+            self.assertNotIn("-Ad", tokens)
+            self.assertNotIn("attach-session", tokens)
+            self.assertEqual(run.call_count, 1)
+            if target.kind == "local":
+                self.assertEqual(run.call_args.kwargs["env"], {"PATH": "x"})
+
+    def test_existing_or_concurrently_created_session_is_verified_exactly(self):
+        for target in (Target("local", "work.one"), Target("ssh", "work.one", "dev")):
+            duplicate = subprocess.CalledProcessError(1, ["tmux"], stderr="duplicate session: work.one\n")
+            with (
+                self.subTest(target=target),
+                patch.object(sessions.subprocess, "run", side_effect=[duplicate, Mock(stdout="")]) as run,
+            ):
+                self.assertIsNone(sessions.ensure_created(target, overlay=False))
+            command = run.call_args.args[0]
+            expected = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=work.one")
+            if target.kind == "local":
+                self.assertEqual(command, expected)
+                self.assertNotIn("TMUX", run.call_args.kwargs["env"])
+                self.assertEqual(run.call_args.kwargs["timeout"], 2)
+            else:
+                self.assertEqual(command[-2], "dev")
+                self.assertEqual(shlex.split(command[-1]), list(expected))
+                self.assertNotIn("-t", command[:-1])
+                self.assertEqual(run.call_args.kwargs["timeout"], 3)
+
+    def test_genuine_errors_are_not_treated_as_concurrent_creation(self):
+        errors = (
+            subprocess.CalledProcessError(1, ["tmux"], stderr="permission denied"),
+            subprocess.CalledProcessError(1, ["tmux"], stderr="duplicate session: other"),
+            subprocess.CalledProcessError(255, ["ssh"], stderr="duplicate session: work"),
+            subprocess.CalledProcessError(1, ["tmux"], stderr="duplicate session: work\nother error"),
+            subprocess.TimeoutExpired(["tmux"], 2),
+            OSError("tmux unavailable"),
+        )
+        for target in (Target("local", "work"), Target("ssh", "work", "dev")):
+            for error in errors:
+                with (
+                    self.subTest(target=target, error=error),
+                    patch.object(sessions.subprocess, "run", side_effect=error) as run,
+                    self.assertRaises(SystemExit),
+                ):
+                    sessions.ensure_created(target, overlay=False)
+                self.assertEqual(run.call_count, 1)
+
+    def test_failed_duplicate_verification_preserves_creation_error(self):
+        duplicate = subprocess.CalledProcessError(1, ["tmux"], stderr="duplicate session: work")
+        for failure in (
+            subprocess.CalledProcessError(1, ["tmux"], stderr="can't find session: work"),
+            subprocess.TimeoutExpired(["tmux"], 2),
+            OSError("tmux unavailable"),
+        ):
+            with (
+                self.subTest(failure=failure),
+                patch.object(sessions.subprocess, "run", side_effect=[duplicate, failure]),
+                self.assertRaisesRegex(SystemExit, "^create local:work failed: duplicate session: work$"),
+            ):
+                sessions.ensure_created(Target("local", "work"), overlay=False)
+
+    def test_overlay_install_failure_is_not_swallowed(self):
+        error = subprocess.CalledProcessError(1, ["ssh"], stderr="duplicate session: work")
+        with (
+            patch.object(sessions.subprocess, "run", side_effect=error) as run,
+            self.assertRaisesRegex(SystemExit, "^overlay ssh:dev:work failed:"),
+        ):
+            sessions.ensure_created(Target("ssh", "work", "dev"), overlay=True)
+        self.assertEqual(run.call_count, 1)
+
+    def test_create_still_rejects_duplicates(self):
+        error = subprocess.CalledProcessError(1, ["tmux"], stderr="duplicate session: work")
+        with (
+            patch.object(sessions.subprocess, "run", side_effect=error),
+            self.assertRaisesRegex(SystemExit, "duplicate session: work"),
+        ):
+            create(Target("local", "work"), overlay=False)
+
+
 class SSHAgentTest(unittest.TestCase):
     def test_reuses_inherited_agent_with_loaded_keys(self):
         with (
