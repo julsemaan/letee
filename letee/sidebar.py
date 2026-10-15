@@ -515,7 +515,15 @@ class SessionReconciler:
 
     def observe(self, result: EffectResult) -> None:
         target = result.effect.target
-        if not isinstance(target, Target) or target not in self._pending:
+        if not isinstance(target, Target):
+            return
+        if result.effect.kind in ("switch", "add_switch") and not result.error and not result.stale_navigation:
+            # respawn-pane confirms launch, not asynchronous session creation.
+            timing = load_timing()
+            timeout = timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
+            completed_at = result.completed_at if result.completed_at is not None else time.monotonic()
+            self._awaiting_discovery[target] = completed_at + timeout
+        if target not in self._pending:
             return
         if not result.effect.automatic or result.effect.kind not in ("switch", "ensure_created"):
             return
@@ -527,13 +535,7 @@ class SessionReconciler:
             retry.failed(target, result.completed_at if result.completed_at is not None else time.monotonic())
         else:
             self._retries.pop(target, None)
-            if result.effect.kind == "switch":
-                # respawn-pane confirms launch, not asynchronous session creation.
-                timing = load_timing()
-                timeout = timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
-                completed_at = result.completed_at if result.completed_at is not None else time.monotonic()
-                self._awaiting_discovery[target] = completed_at + timeout
-            else:
+            if result.effect.kind == "ensure_created":
                 self._completed[target] = source
 
 
