@@ -530,7 +530,7 @@ class SessionReconciler:
         target = result.effect.target
         if not isinstance(target, Target):
             return
-        if result.effect.kind in ("switch", "add_switch") and not result.error and not result.stale_navigation:
+        if result.effect.kind in ("switch", "add_switch", "create") and not result.error and not result.stale_navigation:
             # respawn-pane confirms launch, not asynchronous session creation.
             timing = load_timing()
             timeout = timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout

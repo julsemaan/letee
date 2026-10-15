@@ -168,16 +168,21 @@ class SessionReconcilerTest(unittest.TestCase):
         self.assertNotIn(first, self.reconciler._awaiting_discovery)
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
-    def test_explicit_navigation_waits_for_startup_timeout_with_empty_discovery(self, _load_timing):
+    @patch.object(sidebar.cockpit, "startup_deadline", return_value=10)
+    @patch.object(sidebar.cockpit, "clear_startup")
+    def test_explicit_navigation_waits_for_startup_timeout_with_empty_discovery(
+        self, _clear_startup, _startup_deadline, _load_timing,
+    ):
         target = Target("ssh", "work", "dev")
-        for kind in ("switch", "add_switch"):
+        for kind in ("switch", "add_switch", "create"):
             with self.subTest(kind=kind):
                 reconciler = sidebar.SessionReconciler()
                 self.submit.reset_mock()
                 reconciler.observe(sidebar.EffectResult(
                     sidebar.Effect(kind, target), (target,), completed_at=5,
                 ))
-                for now in (5, 8, 14.99):
+                # Attachment preparation consumes part of the shared startup wait.
+                for now in (5, 8, 10, 14.99):
                     data = snapshot(remotes={"dev": source("ssh", host="dev")})
                     reconciler.reconcile((target,), target, data, self.submit, now)
                 self.submit.assert_not_called()
@@ -187,7 +192,7 @@ class SessionReconcilerTest(unittest.TestCase):
     @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
     def test_explicit_navigation_does_not_confirm_cached_presence(self, _timing):
         target = Target("ssh", "work", "dev")
-        for kind in ("switch", "add_switch"):
+        for kind in ("switch", "add_switch", "create"):
             with self.subTest(kind=kind):
                 reconciler = sidebar.SessionReconciler()
                 self.submit.reset_mock()
@@ -268,7 +273,7 @@ class SessionReconcilerTest(unittest.TestCase):
 
     def test_failed_or_stale_explicit_navigation_does_not_delay_reconciliation(self):
         target = Target("ssh", "work", "dev")
-        for kind in ("switch", "add_switch"):
+        for kind in ("switch", "add_switch", "create"):
             for error, stale in (("timeout", False), ("", True)):
                 with self.subTest(kind=kind, error=error, stale=stale):
                     reconciler = sidebar.SessionReconciler()
