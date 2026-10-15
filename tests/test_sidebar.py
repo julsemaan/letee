@@ -5293,7 +5293,7 @@ class SidebarDrawTest(unittest.TestCase):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         poller = unittest.mock.Mock()
         poller.snapshot = SessionSnapshot(
-            SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            SourceSnapshot(True, (pane.target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
             {},
         )
         poller.tick.return_value = False
@@ -5317,7 +5317,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_working_agent_redraws_at_spinner_rate(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         poller = unittest.mock.Mock()
-        poller.snapshot = SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)), {})
+        poller.snapshot = SessionSnapshot(SourceSnapshot(True, (pane.target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)), {})
         poller.tick.return_value = False
         screen = FakeScreen([-1, -1, -1, -1, STOP], size=(10, 40))
         with (
