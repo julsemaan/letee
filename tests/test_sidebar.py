@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import shlex
 import subprocess
@@ -183,6 +184,26 @@ class SessionReconcilerTest(unittest.TestCase):
                 reconciler.reconcile((target,), target, data, self.submit, 15)
                 self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
+    def test_explicit_navigation_does_not_confirm_cached_presence(self, _timing):
+        target = Target("ssh", "work", "dev")
+        for kind in ("switch", "add_switch"):
+            with self.subTest(kind=kind):
+                reconciler = sidebar.SessionReconciler()
+                self.submit.reset_mock()
+                cached = snapshot(remotes={
+                    "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=4),
+                })
+                reconciler.observe(sidebar.EffectResult(
+                    sidebar.Effect(kind, target), (target,), completed_at=5,
+                ))
+                reconciler.reconcile((target,), target, cached, self.submit, 6)
+                absent = snapshot(remotes={"dev": source("ssh", host="dev")})
+                reconciler.reconcile((target,), target, absent, self.submit, 8)
+                self.submit.assert_not_called()
+                reconciler.reconcile((target,), target, absent, self.submit, 15)
+                self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
     @patch.object(sidebar.cockpit, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
     @patch.object(sidebar.cockpit, "right_pane", return_value="%2")
     @patch.object(time, "monotonic", return_value=5)
@@ -216,20 +237,29 @@ class SessionReconcilerTest(unittest.TestCase):
             patch("letee.__main__.load_sessions", return_value=[target]),
             patch.object(sidebar.sessions, "attach_command", return_value="slow ssh attachment"),
         ):
+            cached = snapshot(remotes={
+                "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=4),
+            })
             # Numbered shortcuts invoke switch in another process, without observe().
             main(["switch-session", "1"])
             self.assertEqual(options[sidebar.cockpit.CURRENT_TARGET_OPTION], target.format())
+            self.reconciler.reconcile((target,), target, cached, self.submit, 5)
+            self.assertIn(sidebar.cockpit.STARTUP_OPTION, options)
             for now in (5, 8, 14.99):
                 self.reconciler.reconcile((target,), target, empty_sample(), self.submit, now)
             self.submit.assert_not_called()
 
-            confirmed = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+            confirmed = snapshot(remotes={
+                "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=8),
+            })
             self.reconciler.reconcile((target,), target, confirmed, self.submit, 8)
+            self.assertNotIn(sidebar.cockpit.STARTUP_OPTION, options)
             self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 8)
             self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
             self.reconciler = sidebar.SessionReconciler()
             self.submit.reset_mock()
+            _clock.return_value = 5
             main(["switch-session", "1"])
             self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 14.99)
             self.submit.assert_not_called()
@@ -5919,7 +5949,8 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._agent_entries", return_value=[]),
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.1, 1.0, 1.1]),
+            # Include the initial local discovery sample's timestamp.
+            patch("letee.sidebar.time.monotonic", side_effect=[0, 0, 0.1, 1.0, 1.1]),
         ):
             run(screen)
 

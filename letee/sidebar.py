@@ -465,7 +465,7 @@ class SessionReconciler:
     def __init__(self) -> None:
         self._pending: dict[Target, SourceSnapshot] = {}
         self._completed: dict[Target, SourceSnapshot] = {}
-        self._awaiting_discovery: dict[Target, float] = {}
+        self._awaiting_discovery: dict[Target, tuple[float, float]] = {}
         self._retries: dict[Target, RestorationRetry] = {}
         self._last: Target | None = None
 
@@ -491,7 +491,14 @@ class SessionReconciler:
             source = snapshot.local if target.kind == "local" else snapshot.remotes.get(target.host)
             if source is None or not source.available:
                 continue
+            startup_wait = self._awaiting_discovery.get(target)
             if target in source.sessions:
+                # Cached or already-running discovery cannot confirm a new attachment.
+                if startup_wait is not None and source.sampled_at <= startup_wait[0]:
+                    continue
+                if target == active and shared_deadline is not None:
+                    if source.sampled_at <= shared_deadline - cockpit.startup_timeout(target):
+                        continue
                 self._completed.pop(target, None)
                 self._awaiting_discovery.pop(target, None)
                 if target == active and shared_deadline is not None:
@@ -501,9 +508,8 @@ class SessionReconciler:
                 if now < shared_deadline:
                     continue
                 cockpit.clear_startup(target, shared_deadline)
-            startup_deadline = self._awaiting_discovery.get(target)
-            if startup_deadline is not None:
-                if target == active and now < startup_deadline:
+            if startup_wait is not None:
+                if target == active and now < startup_wait[1]:
                     continue
                 del self._awaiting_discovery[target]
             retry = self._retries.get(target)
@@ -529,7 +535,7 @@ class SessionReconciler:
             timing = load_timing()
             timeout = timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
             completed_at = result.completed_at if result.completed_at is not None else time.monotonic()
-            self._awaiting_discovery[target] = completed_at + timeout
+            self._awaiting_discovery[target] = (completed_at, completed_at + timeout)
         if result.effect.kind in ("show_reconnecting", "show_unavailable") and not result.error and not result.stale_navigation:
             # Overlays replace the starting attachment, so discovery need not wait for it.
             self._awaiting_discovery.pop(target, None)
