@@ -4457,7 +4457,7 @@ def run(stdscr: curses.window) -> None:
                 if entry.kind == "session" and entry.target and entry.tracked:
                     if actions.blocks_favorite_changes:
                         show_status("another action is still changing sessions")
-                    elif entry.unavailable_favorite:
+                    elif entry.target not in poller.snapshot.sessions:
                         show_status("Session unavailable; rename a running session")
                     else:
                         _start_rename(state, entry.target)

@@ -5066,6 +5066,41 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(any(call[0] == "addnstr" and "Rename session" in call[3] for call in screen.calls))
         self.assertTrue(any(call[0] == "addnstr" and "new" in call[3] for call in screen.calls))
 
+    def test_e_rejects_absent_local_and_remote_sessions_with_matching_prefix(self):
+        for target, data in (
+            (Target("local", "work"), snapshot(local=("work-other",))),
+            (Target("ssh", "work", "dev"), snapshot(remotes={
+                "dev": source("ssh", ("work-other",), host="dev"),
+            })),
+        ):
+            with self.subTest(target=target):
+                screen = FakeScreen([ord("e"), *map(ord, "new"), 10, STOP], size=(10, 80))
+                poller = unittest.mock.Mock(
+                    snapshot=data, current_target=None, bell_target=None,
+                    current_agent=None, pane_active=True,
+                )
+                poller.tick.return_value = False
+                with (
+                    patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+                    patch("letee.sidebar.load_hosts", return_value=["dev"]),
+                    patch("letee.sidebar.load_sessions", return_value=[target]),
+                    patch("letee.sidebar._current_target", return_value=None),
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar._mouse_mask"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar.sessions.rename") as rename,
+                    patch("letee.sidebar._start_rename", wraps=sidebar._start_rename) as start_rename,
+                    patch("letee.sidebar.cockpit.switch"),
+                ):
+                    run(screen)
+
+                start_rename.assert_not_called()
+                rename.assert_not_called()
+                self.assertTrue(any(
+                    call[0] == "addnstr" and "Session unavailable; rename a running session" in call[3]
+                    for call in screen.calls
+                ))
+
     def test_queued_input_is_handled_before_automatic_session_actions(self):
         screen = FakeScreen([STOP])
         with (
