@@ -1751,6 +1751,10 @@ class AsyncStatusPoller:
         if self._future is not None and self._future.done():
             result = self._future.result()
             self._future = None
+            if result.refreshed is True:
+                self._refresh_pending = any(
+                    command == "refresh" for command, _ in self._commands
+                )
             if result.generation == self._generation:
                 changed = (
                     result.snapshot != self.snapshot
@@ -1758,10 +1762,6 @@ class AsyncStatusPoller:
                 )
                 self.status_sampled = result.sampled
                 self.snapshot = result.snapshot
-                if result.refreshed is True:
-                    self._refresh_pending = any(
-                        command == "refresh" for command, _ in self._commands
-                    )
                 if self._refresh_target is not None:
                     target = self._refresh_target
                     source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None

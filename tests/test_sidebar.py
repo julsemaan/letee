@@ -3728,6 +3728,40 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertFalse(status.status_sampled)
         self.assertEqual(status._generation, generation + 1)
 
+    def test_navigation_preserves_refresh_acknowledgment_and_queued_refresh(self):
+        old = Target("local", "old")
+        target = Target("local", "work")
+        for queued_refresh in (False, True):
+            with self.subTest(queued_refresh=queued_refresh):
+                poller = unittest.mock.Mock(snapshot=snapshot(local=("old", "work")))
+                status = sidebar.AsyncStatusPoller(poller, old)
+                try:
+                    status.refresh()
+                    status._commands.clear()  # The in-flight sample consumed the refresh.
+                    status._future = unittest.mock.Mock()
+                    status._future.done.return_value = True
+                    status._future.result.return_value = sidebar.StatusResult(
+                        snapshot(local=("old",)), old, old, "stale-agent", False,
+                        status._generation, refreshed=True, sampled=True,
+                    )
+                    status.observe_effect(
+                        sidebar.EffectResult(Effect("switch", target), (target,))
+                    )
+                    if queued_refresh:
+                        status.refresh()
+                    status._next_poll = float("inf")
+
+                    self.assertFalse(status.tick(0))
+                    self.assertEqual(status.refresh_pending, queued_refresh)
+                    self.assertEqual(status.current_target, target)
+                    self.assertEqual(status.snapshot, poller.snapshot)
+                    self.assertIsNone(status.bell_target)
+                    self.assertIsNone(status.current_agent)
+                    self.assertTrue(status.pane_active)
+                    self.assertFalse(status.status_sampled)
+                finally:
+                    status.close()
+
     def test_status_poller_ignores_stale_target_after_kill_until_navigation(self):
         killed = Target("ssh", "work", "dev")
         poller = unittest.mock.Mock(
