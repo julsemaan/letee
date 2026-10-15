@@ -496,7 +496,7 @@ class SessionReconciler:
                 continue
             startup_deadline = self._awaiting_discovery.get(target)
             if startup_deadline is not None:
-                if now < startup_deadline:
+                if target == active and now < startup_deadline:
                     continue
                 del self._awaiting_discovery[target]
             retry = self._retries.get(target)

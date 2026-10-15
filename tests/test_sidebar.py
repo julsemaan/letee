@@ -145,6 +145,27 @@ class SessionReconcilerTest(unittest.TestCase):
         self.reconciler.reconcile((target,), target, data, self.submit, 30)
         self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=60))
+    def test_switching_away_clears_startup_wait_for_tracked_remote(self, _load_timing):
+        first = Target("ssh", "first", "dev")
+        second = Target("ssh", "second", "dev")
+        favorites = (first, second)
+        data = snapshot(remotes={"dev": source("ssh", ("second",), host="dev")})
+        self.reconciler.reconcile(favorites, first, data, self.submit, 0)
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], favorites, completed_at=5,
+        ))
+        self.submit.reset_mock()
+        self.reconciler.reconcile(favorites, first, data, self.submit, 6)
+        self.submit.assert_not_called()
+
+        self.reconciler.observe(sidebar.EffectResult(
+            sidebar.Effect("switch", second), favorites, completed_at=7,
+        ))
+        self.reconciler.reconcile(favorites, second, data, self.submit, 8)
+        self.submit.assert_called_once_with(sidebar.Effect("ensure_created", first, automatic=True))
+        self.assertNotIn(first, self.reconciler._awaiting_discovery)
+
     @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
     def test_explicit_navigation_waits_for_startup_timeout_with_empty_discovery(self, _load_timing):
         target = Target("ssh", "work", "dev")
