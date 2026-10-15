@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeVar
@@ -23,6 +24,7 @@ from .config import (
     load_sidebar_collapse_mode,
     load_sidebar_keybindings,
     load_sidebar_width,
+    load_timing,
 )
 from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, parse_target
 from . import diagnostics, sessions, tmux
@@ -128,6 +130,7 @@ SIDEBAR_WIDTH_OPTION = "@letee_sidebar_width"
 SIDEBAR_COMPACT_OPTION = "@letee_sidebar_compact"
 RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
+STARTUP_OPTION = "@letee_startup"
 EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
 EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION = "@letee_expected_right_pane_death_target"
 EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION = "@letee_expected_right_pane_death_generation"
@@ -826,6 +829,9 @@ def switch(
         return result
 
     def update_markers() -> None:
+        # Publish before the active target so shortcut navigation is protected too.
+        deadline = float(time.monotonic() + startup_timeout(target))
+        tmux.tmux("set-option", "-t", tmux.SESSION, STARTUP_OPTION, f"{target.format()}\t{deadline}")
         marker_update = f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())}"
         tmux.tmux("if-shell", "-F", "1", marker_update)
         if agent_id:
@@ -921,6 +927,30 @@ def reset_to_help(target: Target) -> bool:
     action = _right_pane_death_action(left, right, load_prefix(), succeeded=True)
     tmux.tmux("if-shell", "-F", _option_equals(CURRENT_TARGET_OPTION, target.format()), action)
     return matched
+
+
+def startup_timeout(target: Target) -> float:
+    timing = load_timing()
+    return timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
+
+
+def startup_deadline(target: Target) -> float | None:
+    marker = _option(STARTUP_OPTION)
+    name, _, deadline = marker.rpartition("\t")
+    if name != target.format():
+        return None
+    try:
+        return float(deadline)
+    except ValueError:
+        return None
+
+
+def clear_startup(target: Target, deadline: float) -> None:
+    marker = f"{target.format()}\t{deadline}"
+    tmux.tmux(
+        "if-shell", "-F", _option_equals(STARTUP_OPTION, marker),
+        f"set-option -u -t {tmux.SESSION} {STARTUP_OPTION}",
+    )
 
 
 def set_current_target(target: Target) -> None:

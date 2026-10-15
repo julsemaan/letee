@@ -1232,7 +1232,9 @@ class CockpitLayoutTest(unittest.TestCase):
         enable_clipboard.assert_called_once_with()
         install_bindings.assert_called_once_with("C-x", "%1", "%2")
 
-    def test_switch_uses_valid_right_pane_and_supplied_attach_command(self):
+    @patch.object(cockpit.time, "monotonic", return_value=5)
+    @patch.object(cockpit, "startup_timeout", return_value=10)
+    def test_switch_uses_valid_right_pane_and_supplied_attach_command(self, _timeout, _clock):
         calls = []
         target = cockpit.Target("local", "work")
         with (
@@ -1244,6 +1246,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                ("set-option", "-t", "letee", cockpit.STARTUP_OPTION, "local:work\t15.0"),
                 (
                     "if-shell",
                     "-F",

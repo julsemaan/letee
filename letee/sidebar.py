@@ -478,6 +478,7 @@ class SessionReconciler:
         now: float,
     ) -> None:
         targets = list(dict.fromkeys(favorites + ((active,) if active else ())))
+        shared_deadline = cockpit.startup_deadline(active) if active else None
         for records in (self._pending, self._completed, self._awaiting_discovery, self._retries):
             for target in list(records):
                 if target not in targets:
@@ -493,7 +494,13 @@ class SessionReconciler:
             if target in source.sessions:
                 self._completed.pop(target, None)
                 self._awaiting_discovery.pop(target, None)
+                if target == active and shared_deadline is not None:
+                    cockpit.clear_startup(target, shared_deadline)
                 continue
+            if target == active and shared_deadline is not None:
+                if now < shared_deadline:
+                    continue
+                cockpit.clear_startup(target, shared_deadline)
             startup_deadline = self._awaiting_discovery.get(target)
             if startup_deadline is not None:
                 if target == active and now < startup_deadline:
@@ -526,6 +533,9 @@ class SessionReconciler:
         if result.effect.kind in ("show_reconnecting", "show_unavailable") and not result.error and not result.stale_navigation:
             # Overlays replace the starting attachment, so discovery need not wait for it.
             self._awaiting_discovery.pop(target, None)
+            shared_deadline = cockpit.startup_deadline(target)
+            if shared_deadline is not None:
+                cockpit.clear_startup(target, shared_deadline)
         if target not in self._pending:
             return
         if not result.effect.automatic or result.effect.kind not in ("switch", "ensure_created"):

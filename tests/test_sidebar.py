@@ -183,6 +183,59 @@ class SessionReconcilerTest(unittest.TestCase):
                 reconciler.reconcile((target,), target, data, self.submit, 15)
                 self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
+    @patch.object(sidebar.cockpit, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
+    @patch.object(sidebar.cockpit, "right_pane", return_value="%2")
+    @patch.object(time, "monotonic", return_value=5)
+    def test_numbered_shortcut_shares_startup_wait_without_observe(self, _clock, _pane, _timing):
+        from letee.__main__ import main
+
+        target = Target("ssh", "work", "dev")
+        options = {}
+
+        def tmux_command(*args, **kwargs):
+            if args[0] == "set-option" and "-u" not in args:
+                options[args[3]] = args[4]
+            elif args[0] == "if-shell":
+                # Apply marker updates and guarded clears to the fake tmux options.
+                command = shlex.split(args[-1])
+                marker_guard = sidebar.cockpit._option_equals(
+                    sidebar.cockpit.STARTUP_OPTION, options.get(sidebar.cockpit.STARTUP_OPTION, ""),
+                )
+                if args[2] in ("1", marker_guard):
+                    if "-u" in command:
+                        options.pop(command[-1], None)
+                    else:
+                        options[command[3]] = command[4]
+
+        def empty_sample():
+            return snapshot(remotes={"dev": source("ssh", host="dev")})
+
+        with (
+            patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_command),
+            patch.object(sidebar.cockpit, "_option", side_effect=lambda name: options.get(name, "")),
+            patch("letee.__main__.load_sessions", return_value=[target]),
+            patch.object(sidebar.sessions, "attach_command", return_value="slow ssh attachment"),
+        ):
+            # Numbered shortcuts invoke switch in another process, without observe().
+            main(["switch-session", "1"])
+            self.assertEqual(options[sidebar.cockpit.CURRENT_TARGET_OPTION], target.format())
+            for now in (5, 8, 14.99):
+                self.reconciler.reconcile((target,), target, empty_sample(), self.submit, now)
+            self.submit.assert_not_called()
+
+            confirmed = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+            self.reconciler.reconcile((target,), target, confirmed, self.submit, 8)
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 8)
+            self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+            self.reconciler = sidebar.SessionReconciler()
+            self.submit.reset_mock()
+            main(["switch-session", "1"])
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 14.99)
+            self.submit.assert_not_called()
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 15)
+            self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
     def test_failed_or_stale_explicit_navigation_does_not_delay_reconciliation(self):
         target = Target("ssh", "work", "dev")
         for kind in ("switch", "add_switch"):
