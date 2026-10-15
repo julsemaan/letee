@@ -177,6 +177,34 @@ class SessionReconcilerTest(unittest.TestCase):
                     reconciler.reconcile((target,), target, data, self.submit, 5)
                     self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=60))
+    def test_overlay_releases_startup_wait_only_after_success(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        for kind in ("show_reconnecting", "show_unavailable"):
+            for error, stale in (("", False), ("timeout", False), ("", True)):
+                with self.subTest(kind=kind, error=error, stale=stale):
+                    reconciler = sidebar.SessionReconciler()
+                    self.submit.reset_mock()
+                    data = snapshot(remotes={"dev": source("ssh", host="dev")})
+                    reconciler.reconcile((target,), target, data, self.submit, 0)
+                    reconciler.observe(sidebar.EffectResult(
+                        self.submit.call_args.args[0], (target,), completed_at=5,
+                    ))
+                    self.submit.reset_mock()
+                    outage = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+                    reconciler.reconcile((target,), target, outage, self.submit, 6)
+                    self.submit.assert_not_called()
+                    reconciler.observe(sidebar.EffectResult(
+                        sidebar.Effect(kind, target, automatic=True), (target,),
+                        error=error, stale_navigation=stale, completed_at=6,
+                    ))
+                    recovered = snapshot(remotes={"dev": source("ssh", host="dev")})
+                    reconciler.reconcile((target,), target, recovered, self.submit, 7)
+                    if error or stale:
+                        self.submit.assert_not_called()
+                        reconciler.reconcile((target,), target, recovered, self.submit, 65)
+                    self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
     def test_success_suppresses_same_source_until_new_source_identity(self):
         target = Target("local", "work")
         data = snapshot()

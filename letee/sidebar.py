@@ -523,6 +523,9 @@ class SessionReconciler:
             timeout = timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
             completed_at = result.completed_at if result.completed_at is not None else time.monotonic()
             self._awaiting_discovery[target] = completed_at + timeout
+        if result.effect.kind in ("show_reconnecting", "show_unavailable") and not result.error and not result.stale_navigation:
+            # Overlays replace the starting attachment, so discovery need not wait for it.
+            self._awaiting_discovery.pop(target, None)
         if target not in self._pending:
             return
         if not result.effect.automatic or result.effect.kind not in ("switch", "ensure_created"):
