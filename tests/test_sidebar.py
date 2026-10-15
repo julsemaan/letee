@@ -8037,7 +8037,7 @@ class AgentOrderingTest(unittest.TestCase):
         panes = [PaneTarget(target, "@1", f"%{index}", "/tmp/tmux") for index in range(1, 4)]
         data = SessionSnapshot(
             SourceSnapshot(
-                True, (), frozenset(),
+                True, (target,), frozenset(),
                 agents=tuple(
                     AgentEntry(pane, f"id-{index}", "pi", "working")
                     for index, pane in enumerate(panes, 1)
@@ -8073,6 +8073,7 @@ class AgentOrderingTest(unittest.TestCase):
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar.sessions, "ensure_created") as ensure_created,
             patch.object(sidebar.curses, "getmouse", side_effect=(
                 (0, 0, 8, 0, curses.BUTTON5_PRESSED),
                 (0, 0, 8, 0, curses.BUTTON4_PRESSED),
@@ -8080,6 +8081,7 @@ class AgentOrderingTest(unittest.TestCase):
             )),
         ):
             run(screen)
+        ensure_created.assert_not_called()
         self.assertEqual(captured[-2:], [(0, "priority"), (None, "session")])
 
 
