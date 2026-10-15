@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
 
-from . import __version__, cockpit, diagnostics, sessions
+from . import __version__, cockpit, config, diagnostics, sessions
 from .discovery import DiscoveryPoller, SessionSnapshot, SourceSnapshot
 from .config import (
     load_agent_panel_resize_step,
@@ -1186,6 +1186,19 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
+    if effect.automatic:
+        with config.sessions_lock():
+            if (
+                effect.kind == "ensure_created"
+                and effect.target not in load_sessions()
+                and effect.target != _current_target()
+            ):
+                return EffectResult(effect, favorites, stale_navigation=True)
+            return _perform_locked_effect(effect, favorites)
+    return _perform_locked_effect(effect, favorites)
+
+
+def _perform_locked_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     planned = _planned_favorites(effect, favorites)
     partial_success = False
     reset_matched = False
@@ -2762,6 +2775,7 @@ def run(stdscr: curses.window) -> None:
     agent_panel_resize_step = load_agent_panel_resize_step()
     sidebar_keys = load_sidebar_keybindings()
     initial_target = _current_target()
+    tracking_revision = config.sessions_revision()
     state = SidebarState(favorites=load_sessions(), selected_target=initial_target)
     poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
     actions = EffectRunner()
@@ -3603,6 +3617,26 @@ def run(stdscr: curses.window) -> None:
                 scroll_offset = state.scroll_offset
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
+            if not burst_count and not actions.busy:
+                with config.sessions_lock(blocking=False) as acquired:
+                    if acquired:
+                        revision = config.sessions_revision()
+                        if revision != tracking_revision:
+                            state.favorites[:] = load_sessions()
+                            if current_target is not None and current_target not in state.favorites:
+                                active = _current_target()
+                                if active != current_target:
+                                    effect = Effect(
+                                        "rename" if active else "kill", current_target,
+                                        message=active.session if active else "",
+                                    )
+                                    external = EffectResult(effect, tuple(state.favorites))
+                                    _apply_effect(external, state, poller, status_timeout)
+                                    poller.observe_effect(external)
+                                    current_target = poller.current_target
+                            tracking_revision = revision
+                            poller.refresh()
+                            rebuild()
             if restoration_retry.target != current_target:
                 restoration_retry.reset()
             if getattr(poller, "status_sampled", False) is True:

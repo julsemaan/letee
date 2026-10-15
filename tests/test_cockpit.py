@@ -1101,11 +1101,30 @@ class CockpitLayoutTest(unittest.TestCase):
             timeout=None,
         )
 
+    def test_renamed_active_target_survives_original_pane_start_command(self):
+        options = {cockpit.CURRENT_TARGET_OPTION: "local:old"}
+
+        def update(*args, **kwargs):
+            if args[0] == "set-option" and "-u" not in args:
+                options[args[-2]] = args[-1]
+
+        with (
+            patch.object(cockpit, "_option", side_effect=lambda key: options.get(key, "")),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value="tmux -L letee.inner new-session -A -s old"),
+            patch.object(cockpit.tmux, "tmux", side_effect=update),
+        ):
+            cockpit.rename_target(Target("local", "old"), Target("local", "new"))
+            self.assertEqual(cockpit.current_target(), Target("local", "new"))
+            cockpit.rename_target(Target("local", "new"), Target("local", "newer"))
+            self.assertEqual(cockpit.current_target(), Target("local", "newer"))
+
     def test_rename_target_updates_active_and_bell_markers_without_switching(self):
         old = Target("local", "old")
         new = Target("local", "new")
         with (
             patch.object(cockpit, "current_target", return_value=old),
+            patch.object(cockpit, "_option", return_value=""),
             patch.object(cockpit, "bell_target", return_value=old),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
@@ -1114,6 +1133,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             tmux_call.call_args_list,
             [
+                unittest.mock.call("set-option", "-t", "letee", cockpit.RENAMED_TARGET_OPTION, "local:new local:old"),
                 unittest.mock.call("set-option", "-t", "letee", cockpit.CURRENT_TARGET_OPTION, "local:new"),
                 unittest.mock.call("set-option", "-t", "letee", cockpit.BELL_TARGET_OPTION, "local:new"),
             ],

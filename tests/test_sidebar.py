@@ -475,6 +475,79 @@ class ReconciliationLoopTest(unittest.TestCase):
         self.assertEqual(draw.call_args.args[2], 1)
         self.assertIsNone(draw.call_args.kwargs.get("current_target"))
 
+    def test_cli_mutations_while_sidebar_is_running(self):
+        from letee.__main__ import main
+
+        old, renamed = Target("local", "old"), Target("local", "renamed")
+        other = Target("local", "other")
+        for command in ("kill", "rename"):
+            for active in (old, other):
+                with self.subTest(command=command, active=active), tempfile.TemporaryDirectory() as directory:
+                    with patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
+                        config.save_sessions([old, other])
+                        marker = [active]
+                        data = snapshot(local=("old", "other"))
+                        poller = unittest.mock.Mock(
+                            snapshot=data, current_target=active, bell_target=None,
+                            current_agent=None, pane_active=True, refresh_pending=False,
+                        )
+                        ticks = [0]
+
+                        def tick(_now):
+                            ticks[0] += 1
+                            if ticks[0] == 2:
+                                main([command, old.format(), *([renamed.session] if command == "rename" else [])])
+                                poller.snapshot = snapshot(
+                                    local=("other", "renamed") if command == "rename" else ("other",),
+                                )
+                            # Deliberately leave the sampled active target stale.
+                            return True
+
+                        def observe(result):
+                            if result.effect.kind == "kill" and poller.current_target == old:
+                                poller.current_target = None
+                            elif result.effect.kind == "rename" and poller.current_target == old:
+                                poller.current_target = renamed
+
+                        def mutate(*_args):
+                            with config.sessions_lock(blocking=False) as acquired:
+                                self.assertFalse(acquired)
+                            return renamed
+
+                        poller.tick.side_effect = tick
+                        poller.observe_effect.side_effect = observe
+                        results = []
+                        actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+                        actions.submit.side_effect = lambda effect, favorites: results.append(
+                            sidebar._perform_effect(effect, favorites)
+                        ) or True
+                        actions.poll.side_effect = lambda: results.pop(0) if results else None
+                        with (
+                            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                            patch.object(sidebar, "EffectRunner", return_value=actions),
+                            patch.object(sidebar, "load_hosts", return_value=[]),
+                            patch.object(sidebar, "_current_target", side_effect=lambda: marker[0]),
+                            patch.object(sidebar.cockpit, "current_target", side_effect=lambda: marker[0]),
+                            patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda target: marker.__setitem__(0, None) if marker[0] == target else False),
+                            patch.object(sidebar.cockpit, "rename_target", side_effect=lambda target, new: marker.__setitem__(0, new) if marker[0] == target else None),
+                            patch.object(sidebar.sessions, "kill", side_effect=mutate),
+                            patch.object(sidebar.sessions, "rename", side_effect=mutate),
+                            patch.multiple(sidebar, _init_colors=unittest.mock.DEFAULT, _mouse_mask=unittest.mock.DEFAULT),
+                            patch.object(sidebar.curses, "curs_set"),
+                            patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+                            patch.object(sidebar, "_bell_targets", return_value=set()),
+                            patch.object(sidebar.sessions, "ensure_created") as ensure,
+                            patch.object(sidebar.cockpit, "switch") as switch,
+                        ):
+                            sidebar.run(FakeScreen([-1] * 12 + [STOP], size=(16, 60)))
+                        ensure.assert_not_called()
+                        switch.assert_not_called()
+                        self.assertNotIn(old, config.load_sessions())
+                        expected = (renamed if command == "rename" else None) if active == old else other
+                        self.assertEqual(marker[0], expected)
+                        self.assertEqual(poller.current_target, expected)
+                        self.assertNotIn(old, [entry.target for entry in draw.call_args.args[1]])
+
     def test_removal_before_reconciliation_does_not_recreate_target(self):
         target = Target("local", "work")
         ensure, switch, _, _ = self._run_reconciliation(
@@ -501,6 +574,18 @@ class AutomaticSessionEffectTest(unittest.TestCase):
         self.assertEqual((state.selected_target, state.filter_text, state.selected_index),
                          (selected, "selected", 2))
 
+    def test_queued_creation_rechecks_tracking_before_recreating(self):
+        target = Target("local", "removed")
+        effect = sidebar.Effect("ensure_created", target, automatic=True)
+        with (
+            patch.object(sidebar, "load_sessions", return_value=[]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar.sessions, "ensure_created") as ensure,
+        ):
+            result = sidebar._perform_effect(effect, (target,))
+        self.assertTrue(result.stale_navigation)
+        ensure.assert_not_called()
+
     def test_ensure_created_has_no_navigation_or_ui_side_effects(self):
         target, selected = Target("local", "work"), Target("local", "selected")
         favorites = (selected, target)
@@ -509,8 +594,14 @@ class AutomaticSessionEffectTest(unittest.TestCase):
                              filter_text="selected", status="unchanged", add_view="search")
         before = vars(state).copy()
         poller = unittest.mock.Mock()
+
+        def ensure_locked(_target):
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+
         with (
-            patch.object(sidebar.sessions, "ensure_created", create=True) as ensure,
+            patch.object(sidebar, "load_sessions", return_value=list(favorites)),
+            patch.object(sidebar.sessions, "ensure_created", side_effect=ensure_locked) as ensure,
             patch.object(sidebar.cockpit, "switch") as switch,
             patch.object(sidebar, "save_sessions") as save,
         ):

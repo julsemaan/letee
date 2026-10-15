@@ -234,19 +234,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "kill":
         target = parse_target(args.target)
-        sessions.kill(target)
-        favorites = load_sessions()
-        if target in favorites:
-            favorites.remove(target)
-            save_sessions(favorites)
+        with config.sessions_lock():
+            sessions.kill(target)
+            favorites = load_sessions()
+            if target in favorites:
+                favorites.remove(target)
+                save_sessions(favorites)
+            cockpit.reset_to_help(target)
         return 0
     if args.command == "rename":
         target = parse_target(args.target)
         renamed = Target(target.kind, args.new_name, target.host)
-        if target not in load_sessions():
-            raise SystemExit(f"Session not tracked: {target.format()}")
-        renamed = sessions.rename(target, renamed.session)
-        config.replace_session(target, renamed)
+        with config.sessions_lock():
+            if target not in load_sessions():
+                raise SystemExit(f"Session not tracked: {target.format()}")
+            renamed = sessions.rename(target, renamed.session)
+            config.replace_session(target, renamed)
+            cockpit.rename_target(target, renamed)
         return 0
     if args.command == "create":
         target = Target("local", args.session) if args.create_kind == "local" else Target("ssh", args.session, args.host)

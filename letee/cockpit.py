@@ -130,6 +130,7 @@ SIDEBAR_WIDTH_OPTION = "@letee_sidebar_width"
 SIDEBAR_COMPACT_OPTION = "@letee_sidebar_compact"
 RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
+RENAMED_TARGET_OPTION = "@letee_renamed_target"
 STARTUP_OPTION = "@letee_startup"
 EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
 EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION = "@letee_expected_right_pane_death_target"
@@ -959,6 +960,10 @@ def set_current_target(target: Target) -> None:
 
 def rename_target(old: Target, new: Target) -> None:
     if current_target() == old:
+        # The attached pane keeps its original start command after a rename.
+        previous = _option(RENAMED_TARGET_OPTION).split()
+        origin = previous[1] if len(previous) == 2 and previous[0] == old.format() else old.format()
+        tmux.tmux("set-option", "-t", tmux.SESSION, RENAMED_TARGET_OPTION, f"{new.format()} {origin}")
         tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, new.format())
     if bell_target() == old:
         tmux.tmux("set-option", "-t", tmux.SESSION, BELL_TARGET_OPTION, new.format())
@@ -1083,6 +1088,8 @@ def current_target() -> Target | None:
             parsed_target = Target("local", match.group(1))
         if target:
             if parsed_target is not None and target != parsed_target:
+                if _option(RENAMED_TARGET_OPTION) == f"{target.format()} {parsed_target.format()}":
+                    return target
                 tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
                 return None
             if re.search(attach, parsed_command) and parsed_target is None:
