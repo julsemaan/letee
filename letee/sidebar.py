@@ -465,6 +465,7 @@ class SessionReconciler:
     def __init__(self) -> None:
         self._pending: dict[Target, SourceSnapshot] = {}
         self._completed: dict[Target, SourceSnapshot] = {}
+        self._awaiting_discovery: dict[Target, float] = {}
         self._retries: dict[Target, RestorationRetry] = {}
         self._last: Target | None = None
 
@@ -477,7 +478,7 @@ class SessionReconciler:
         now: float,
     ) -> None:
         targets = list(dict.fromkeys(favorites + ((active,) if active else ())))
-        for records in (self._pending, self._completed, self._retries):
+        for records in (self._pending, self._completed, self._awaiting_discovery, self._retries):
             for target in list(records):
                 if target not in targets:
                     del records[target]
@@ -491,7 +492,13 @@ class SessionReconciler:
                 continue
             if target in source.sessions:
                 self._completed.pop(target, None)
+                self._awaiting_discovery.pop(target, None)
                 continue
+            startup_deadline = self._awaiting_discovery.get(target)
+            if startup_deadline is not None:
+                if now < startup_deadline:
+                    continue
+                del self._awaiting_discovery[target]
             retry = self._retries.get(target)
             # A new per-host sample, not a rewrapped snapshot, permits another attempt.
             if (
@@ -520,7 +527,14 @@ class SessionReconciler:
             retry.failed(target, result.completed_at if result.completed_at is not None else time.monotonic())
         else:
             self._retries.pop(target, None)
-            self._completed[target] = source
+            if result.effect.kind == "switch":
+                # respawn-pane confirms launch, not asynchronous session creation.
+                timing = load_timing()
+                timeout = timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
+                completed_at = result.completed_at if result.completed_at is not None else time.monotonic()
+                self._awaiting_discovery[target] = completed_at + timeout
+            else:
+                self._completed[target] = source
 
 
 def _sync_active_session(

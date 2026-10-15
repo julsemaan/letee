@@ -114,6 +114,37 @@ class SessionReconcilerTest(unittest.TestCase):
             self.reconciler.reconcile((target,), None, snapshot(), self.submit, completed + delay)
             self.submit.assert_called_once()
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(
+        ssh_auth_timeout=10,
+    ))
+    def test_switch_waits_for_discovery_confirmation_or_startup_timeout(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        def empty_sample():
+            return snapshot(remotes={"dev": source("ssh", host="dev")})
+
+        self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 0)
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (target,), completed_at=5,
+        ))
+        self.submit.reset_mock()
+        for now in (6, 8, 14.99):
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, now)
+        self.submit.assert_not_called()
+
+        confirmed = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        self.reconciler.reconcile((target,), target, confirmed, self.submit, 14.99)
+        self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 14.99)
+        self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (target,), completed_at=20,
+        ))
+        self.submit.reset_mock()
+        data = empty_sample()
+        self.reconciler.reconcile((target,), target, data, self.submit, 29.99)
+        self.submit.assert_not_called()
+        self.reconciler.reconcile((target,), target, data, self.submit, 30)
+        self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
     def test_success_suppresses_same_source_until_new_source_identity(self):
         target = Target("local", "work")
         data = snapshot()
