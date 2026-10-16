@@ -518,7 +518,7 @@ class ReconciliationLoopTest(unittest.TestCase):
         for command in ("kill", "rename"):
             for active in (old, other):
                 with self.subTest(command=command, active=active), tempfile.TemporaryDirectory() as directory:
-                    with patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
+                    with patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
                         config.save_sessions([old, other])
                         marker = [active]
                         data = snapshot(local=("old", "other"))
