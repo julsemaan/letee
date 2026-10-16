@@ -195,6 +195,21 @@ class MainTest(unittest.TestCase):
         kill.assert_called_once_with(target)
         save.assert_called_once_with([other])
 
+    def test_kill_untracked_target_saves_unchanged_sessions(self):
+        target = Target("local", "untracked")
+        other = Target("local", "other")
+        with (
+            patch("letee.__main__.sessions.kill") as kill,
+            patch("letee.__main__.load_sessions", return_value=[other]),
+            patch("letee.__main__.save_sessions") as save,
+            patch("letee.__main__.cockpit.reset_to_help") as reset,
+        ):
+            self.assertEqual(main(["kill", target.format()]), 0)
+
+        kill.assert_called_once_with(target)
+        save.assert_called_once_with([other])
+        reset.assert_called_once_with(target)
+
     def test_rename_tmux_then_replaces_tracked_target(self):
         target = Target("ssh", "old", "dev")
         renamed = Target("ssh", "new", "dev")

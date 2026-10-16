@@ -530,11 +530,11 @@ class ReconciliationLoopTest(unittest.TestCase):
 
         old, renamed = Target("local", "old"), Target("local", "renamed")
         other = Target("local", "other")
-        for command in ("kill", "rename"):
+        for command, tracked in (("kill", True), ("rename", True), ("kill", False)):
             for active in (old, other):
-                with self.subTest(command=command, active=active), tempfile.TemporaryDirectory() as directory:
+                with self.subTest(command=command, active=active, tracked=tracked), tempfile.TemporaryDirectory() as directory:
                     with patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
-                        config.save_sessions([old, other])
+                        config.save_sessions([old, other] if tracked else [other])
                         marker = [active]
                         data = snapshot(local=("old", "other"))
                         poller = unittest.mock.Mock(

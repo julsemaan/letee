@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
             favorites = load_sessions()
             if target in favorites:
                 favorites.remove(target)
-                save_sessions(favorites)
+            save_sessions(favorites)
             cockpit.reset_to_help(target)
         return 0
     if args.command == "rename":
