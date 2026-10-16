@@ -9357,8 +9357,18 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         )
         poller.tick.return_value = False
         screen = FakeScreen([curses.KEY_MOUSE, -1, STOP], size=(12, 30))
+        runner = sidebar.EffectRunner()
+        getch = screen.getch
+
+        def wait_for_switch():
+            key = getch()
+            if key == -1 and runner._future is not None:
+                runner._future.result(timeout=1)
+            return key
 
         with (
+            patch.object(screen, "getch", side_effect=wait_for_switch),
+            patch.object(sidebar, "EffectRunner", return_value=runner),
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "DiscoveryPoller"),
             patch.object(sidebar, "load_hosts", return_value=[]),
