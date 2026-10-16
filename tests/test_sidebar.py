@@ -65,6 +65,67 @@ class SessionReconcilerTest(unittest.TestCase):
         self.reconciler.reconcile((target,), target, snapshot(local=("work",)), self.submit, 0)
         read_marker.assert_not_called()
 
+    @patch.object(sidebar.cockpit, "startup_timeout", return_value=10)
+    def test_startup_cleanup_is_nonblocking_and_deduplicated(self, _timeout):
+        target = Target("local", "work")
+        for present in (True, False):
+            with self.subTest(present=present):
+                reconciler = sidebar.SessionReconciler()
+                data = snapshot(local=("work",) if present else ())
+                entered, release, returned = (threading.Event() for _ in range(3))
+
+                def clear(*args):
+                    entered.set()
+                    release.wait(2)
+
+                def reconcile():
+                    reconciler.reconcile((target,), target, data, self.submit, 15, 10)
+                    returned.set()
+
+                with patch.object(sidebar.cockpit, "clear_startup", side_effect=clear) as cleanup:
+                    ui = threading.Thread(target=reconcile)
+                    ui.start()
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        self.assertTrue(returned.wait(1), "cleanup blocked reconciliation")
+                        reconcile()
+                        cleanup.assert_called_once_with(target, 10)
+                    finally:
+                        release.set()
+                        ui.join(2)
+                        for worker in reconciler._startup_clears.values():
+                            worker.join(2)
+                    # A completed clear must not be repeated for a cached deadline either.
+                    reconcile()
+                    cleanup.assert_called_once_with(target, 10)
+
+    @patch.object(sidebar.cockpit, "startup_timeout", return_value=10)
+    def test_delayed_startup_cleanup_keeps_exact_marker_guard(self, _timeout):
+        target = Target("local", "work")
+        entered, release = threading.Event(), threading.Event()
+        guards = []
+
+        def tmux_call(*args):
+            entered.set()
+            release.wait(2)
+            guards.append(args)
+
+        with patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_call):
+            try:
+                self.reconciler.reconcile((target,), target, snapshot(), self.submit, 15, 10)
+                self.assertTrue(entered.wait(1))
+                # A newer startup may be sampled before the old cleanup finishes.
+                self.reconciler.reconcile((target,), target, snapshot(), self.submit, 15, 25)
+            finally:
+                release.set()
+                for worker in self.reconciler._startup_clears.values():
+                    worker.join(2)
+        self.assertEqual(guards, [(
+            "if-shell", "-F",
+            sidebar.cockpit._option_equals(sidebar.cockpit.STARTUP_OPTION, "local:work\t10"),
+            f"set-option -u -t {sidebar.cockpit.tmux.SESSION} {sidebar.cockpit.STARTUP_OPTION}",
+        )])
+
     def test_absent_active_target_switches_even_when_untracked(self):
         target = Target("local", "work")
         self.reconciler.reconcile((), target, snapshot(), self.submit, 0)

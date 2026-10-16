@@ -472,6 +472,18 @@ class SessionReconciler:
         self._awaiting_discovery: dict[Target, tuple[float, float]] = {}
         self._retries: dict[Target, RestorationRetry] = {}
         self._last: Target | None = None
+        self._startup_clears: dict[tuple[Target, float], threading.Thread] = {}
+
+    def _clear_startup(self, target: Target, deadline: float) -> None:
+        key = (target, deadline)
+        if key in self._startup_clears:
+            return
+        worker = threading.Thread(
+            target=cockpit.clear_startup, args=key,
+            name="letee-startup-cleanup", daemon=True,
+        )
+        self._startup_clears[key] = worker
+        worker.start()
 
     def reconcile(
         self,
@@ -482,6 +494,10 @@ class SessionReconciler:
         now: float,
         shared_deadline: float | None = None,
     ) -> None:
+        # Retain completed clears while their marker is cached, and all pending clears.
+        for key, worker in list(self._startup_clears.items()):
+            if key != (active, shared_deadline) and not worker.is_alive():
+                del self._startup_clears[key]
         targets = list(dict.fromkeys(favorites + ((active,) if active else ())))
         for records in (self._pending, self._completed, self._awaiting_discovery, self._retries):
             for target in list(records):
@@ -506,12 +522,12 @@ class SessionReconciler:
                 self._completed.pop(target, None)
                 self._awaiting_discovery.pop(target, None)
                 if target == active and shared_deadline is not None:
-                    cockpit.clear_startup(target, shared_deadline)
+                    self._clear_startup(target, shared_deadline)
                 continue
             if target == active and shared_deadline is not None:
                 if now < shared_deadline:
                     continue
-                cockpit.clear_startup(target, shared_deadline)
+                self._clear_startup(target, shared_deadline)
             if startup_wait is not None:
                 if target == active and now < startup_wait[1]:
                     continue
