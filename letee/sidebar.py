@@ -1742,6 +1742,7 @@ class AsyncStatusPoller:
         self._generation = 0
         self._refresh_pending = False
         self._refresh_target: Target | None = None
+        self._refresh_started_at = 0.0
         self._pending_agent: tuple[PaneTarget, str] | None = None
         self._suppressed_target: Target | None = None
 
@@ -1841,7 +1842,9 @@ class AsyncStatusPoller:
                     if (
                         target in self.snapshot.sessions
                         or (result.refreshed is True and target.kind == "local")
-                        or (source is not None and not source.available)
+                        or (source is not None and (
+                            not source.available or source.sampled_at > self._refresh_started_at
+                        ))
                     ):
                         self._refresh_target = None
                 if result.suppression_expired:
@@ -1912,6 +1915,7 @@ class AsyncStatusPoller:
             if self.current_target == target:
                 self.current_target = renamed
                 self._refresh_target = renamed
+                self._refresh_started_at = time.monotonic()
             if self.bell_target == target:
                 self.bell_target = renamed
             self._generation += 1

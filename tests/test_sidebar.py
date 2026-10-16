@@ -4445,6 +4445,38 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         finally:
             status.close()
 
+    def test_remote_rename_fresh_absence_releases_wait_and_resumes_reconciliation(self):
+        old = Target("ssh", "old", "dev")
+        renamed = Target("ssh", "renamed", "dev")
+        absent = source("ssh", host="dev")
+        poller = unittest.mock.Mock(snapshot=snapshot())
+        status = sidebar.AsyncStatusPoller(poller, old)
+        reconciler = sidebar.SessionReconciler()
+        submit = unittest.mock.Mock(return_value=True)
+        status._next_poll = float("inf")
+        try:
+            with patch.object(sidebar.time, "monotonic", return_value=10):
+                status.observe_effect(sidebar.EffectResult(
+                    Effect("rename", target=old, message="renamed"), (renamed,)
+                ))
+            for sampled_at, pending in ((9, True), (10, True), (11, False)):
+                with self.subTest(sampled_at=sampled_at):
+                    data = snapshot(remotes={"dev": replace(absent, sampled_at=sampled_at)})
+                    status._future = unittest.mock.Mock()
+                    status._future.done.return_value = True
+                    status._future.result.return_value = sidebar.StatusResult(
+                        data, renamed, None, None, True, status._generation
+                    )
+                    status.tick(0)
+                    self.assertEqual(status.refresh_pending, pending)
+                    if not status.refresh_pending:
+                        reconciler.reconcile((renamed,), renamed, status.snapshot, submit, 12)
+                    if pending:
+                        submit.assert_not_called()
+            submit.assert_called_once_with(sidebar.Effect("switch", renamed, automatic=True))
+        finally:
+            status.close()
+
     def test_status_poller_keeps_switched_agent_until_focused_pane_is_confirmed(self):
         target = Target("local", "work")
         first_pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
