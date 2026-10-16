@@ -655,6 +655,68 @@ class ReconciliationLoopTest(unittest.TestCase):
         switch.assert_not_called()
 
 
+class SidebarTrackingMutationTest(unittest.TestCase):
+    def test_cli_kill_before_sidebar_rename_acquires_lock(self):
+        from contextlib import contextmanager
+        from letee.__main__ import main
+
+        killed, old, renamed = (Target("local", name) for name in ("A", "B", "new"))
+        lock = config.sessions_lock
+
+        @contextmanager
+        def kill_before_lock():
+            with patch.object(config, "sessions_lock", lock):
+                main(["kill", killed.format()])
+            with lock() as acquired:
+                yield acquired
+
+        def rename(*_args):
+            with lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+            return renamed
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([killed, old])
+            with (
+                patch.object(sidebar, "_current_target", return_value=None),
+                patch.object(sidebar.cockpit, "current_target", return_value=None),
+                patch.object(sidebar.cockpit, "reset_to_help"),
+                patch.object(sidebar.cockpit, "rename_target"),
+                patch.object(sidebar.sessions, "kill"),
+                patch.object(sidebar.sessions, "rename", side_effect=rename),
+                patch.object(config, "sessions_lock", side_effect=kill_before_lock),
+            ):
+                result = sidebar._perform_effect(sidebar.Effect("rename", old, message="new"), (killed, old))
+            self.assertFalse(result.error)
+            self.assertEqual(config.load_sessions(), [renamed])
+            submit = unittest.mock.Mock(return_value=True)
+            sidebar.SessionReconciler().reconcile(result.favorites, None, snapshot(), submit, 0)
+            self.assertNotIn(killed, [call.args[0].target for call in submit.call_args_list])
+            with (
+                patch.object(sidebar, "_current_target", return_value=None),
+                patch.object(sidebar.sessions, "ensure_created") as ensure,
+            ):
+                sidebar._perform_effect(sidebar.Effect("ensure_created", killed, automatic=True), (killed, old))
+            ensure.assert_not_called()
+
+    def test_stale_removal_and_reorder_preserve_concurrent_tracking_changes(self):
+        killed, first, second, added = (Target("local", name) for name in ("A", "B", "C", "D"))
+        for action, expected in (("remove_session", [second, added]), ("move_session_down", [second, first, added])):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                with patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+                    state = SidebarState(favorites=[killed, first, second], selected_target=first, selected_tracked=True)
+                    effect = sidebar._transition(state, action)
+                    config.save_sessions([first, second, added])
+                    with patch.object(sidebar, "_current_target", return_value=None):
+                        result = sidebar._perform_effect(effect, (killed, first, second))
+                    self.assertFalse(result.error)
+                    self.assertEqual(config.load_sessions(), expected)
+                    self.assertEqual(result.favorites, tuple(expected))
+                    submit = unittest.mock.Mock(return_value=True)
+                    sidebar.SessionReconciler().reconcile(result.favorites, None, snapshot(), submit, 0)
+                    self.assertNotIn(killed, [call.args[0].target for call in submit.call_args_list])
+
+
 class AutomaticSessionEffectTest(unittest.TestCase):
     def test_reachable_absent_active_session_submits_switch_without_missing_screen(self):
         target = Target("local", "work")
@@ -3194,6 +3256,7 @@ class SidebarStateTest(unittest.TestCase):
         poller = unittest.mock.Mock()
         with (
             patch.object(sidebar.sessions, "rename", return_value=renamed) as rename,
+            patch.object(sidebar, "load_sessions", return_value=[old, other]),
             patch.object(sidebar, "save_sessions") as save,
             patch.object(sidebar.cockpit, "rename_target") as rename_marker,
         ):
@@ -3314,6 +3377,7 @@ class SidebarStateTest(unittest.TestCase):
         self.assertIsNotNone(effect)
         with (
             patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
             patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda _target: events.append(("reset",))) as reset,
             patch.object(sidebar.sessions, "kill") as kill,
@@ -3336,6 +3400,7 @@ class SidebarStateTest(unittest.TestCase):
 
         with (
             patch.object(sidebar, "_current_target", return_value=active),
+            patch.object(sidebar, "load_sessions", return_value=[removed, active]),
             patch.object(sidebar, "save_sessions") as save,
             patch.object(sidebar.cockpit, "reset_to_help") as reset,
             patch.object(sidebar.sessions, "kill") as kill,
@@ -3356,6 +3421,7 @@ class SidebarStateTest(unittest.TestCase):
 
         with (
             patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
             patch.object(sidebar.cockpit, "reset_to_help") as reset,
             patch.object(sidebar.sessions, "kill") as kill,
@@ -3381,7 +3447,7 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(state.favorites, [second, first])
         self.assertEqual(state.selected_target, second)
-        self.assertEqual(effect, Effect("save_favorites", favorites=(second, first), message="moved local:second up"))
+        self.assertEqual(effect, Effect("save_favorites", favorites=(second, first), message="moved local:second up", favorite_move=(second, first)))
 
     def test_reorder_favorite_boundaries_skip_save(self):
         target = Target("local", "only")
@@ -3433,6 +3499,7 @@ class SidebarStateTest(unittest.TestCase):
 
         with (
             patch("letee.sidebar.sessions.kill"),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch("letee.sidebar.save_sessions") as save,
         ):
             _execute(Effect("kill", target=target), state, poller, 5)
@@ -3524,6 +3591,7 @@ class SidebarStateTest(unittest.TestCase):
             patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
             patch.object(sidebar.cockpit, "resolve_expected_right_pane_death") as resolve,
             patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
         ):
             result = sidebar._perform_effect(Effect("kill", target=target), tuple(state.favorites))
@@ -3560,6 +3628,7 @@ class SidebarStateTest(unittest.TestCase):
             patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
             patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=resolve) as handshake,
             patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
         ):
             result = sidebar._perform_effect(Effect("kill", target=target), (target, other))
@@ -3601,6 +3670,7 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState(add_view="search", creation_host="")
         poller = unittest.mock.Mock()
         with (
+            patch.object(sidebar, "load_sessions", return_value=[]),
             patch("letee.sidebar.save_sessions") as save,
             patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.sidebar.cockpit.switch") as switch,
@@ -3621,6 +3691,7 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState(add_view="search", creation_host="", filter_text="new")
         poller = unittest.mock.Mock()
         with (
+            patch.object(sidebar, "load_sessions", return_value=[]),
             patch("letee.sidebar.sessions.create") as create,
             patch("letee.sidebar.save_sessions") as save,
             patch("letee.sidebar.sessions.attach_command", return_value="attach"),
@@ -6883,10 +6954,20 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertFalse(any(call[0] == "addnstr" and "cancelled" in call[3] for call in screen.calls))
 
     def test_failed_kill_keeps_sidebar_open_and_shows_error_above_footer(self):
-        screen = FakeScreen([ord("x"), ord("y"), STOP], size=(8, 60))
+        screen = FakeScreen([ord("x"), ord("y"), -1, STOP], size=(8, 60))
         target = Target("local", "work")
+        runner = sidebar.EffectRunner()
+        getch = screen.getch
+
+        def wait_for_kill():
+            key = getch()
+            if key == -1 and runner._future is not None:
+                runner._future.result(timeout=1)
+            return key
 
         with (
+            patch.object(screen, "getch", side_effect=wait_for_kill),
+            patch.object(sidebar, "EffectRunner", return_value=runner),
             patch("letee.discovery.local_snapshot", return_value=source("local", ("work",))),
             patch("letee.sidebar.load_sessions", return_value=[target]),
             patch("letee.sidebar.load_hosts", return_value=[]),

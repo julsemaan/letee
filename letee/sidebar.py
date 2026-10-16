@@ -85,6 +85,7 @@ class Effect:
     message: str = ""
     automatic: bool = False
     agent_id: str = ""
+    favorite_move: tuple[Target, Target] | None = None
 
 
 @dataclass
@@ -1124,7 +1125,11 @@ def _transition(
             return Effect("status", message=f"already {edge} session")
         state.favorites[index], state.favorites[new_index] = state.favorites[new_index], state.favorites[index]
         direction = "up" if offset < 0 else "down"
-        return Effect("save_favorites", favorites=tuple(state.favorites), message=f"moved {target.format()} {direction}")
+        return Effect(
+            "save_favorites", favorites=tuple(state.favorites),
+            message=f"moved {target.format()} {direction}",
+            favorite_move=(target, state.favorites[index]),
+        )
     return None
 
 
@@ -1168,7 +1173,17 @@ def _planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[T
                     seen.add(candidate)
             return tuple(planned)
     if effect.kind == "save_favorites":
-        return effect.favorites or ()
+        if isinstance(effect.target, Target):
+            return tuple(target for target in favorites if target != effect.target)
+        if effect.favorite_move is not None:
+            source, destination = effect.favorite_move
+            if source in favorites and destination in favorites:
+                planned = list(favorites)
+                destination_index = planned.index(destination)
+                planned.remove(source)
+                planned.insert(destination_index, source)
+                return tuple(planned)
+        return favorites
     return favorites
 
 
@@ -1194,8 +1209,11 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
-    if effect.automatic:
+    writes_tracking = effect.kind in ("add_switch", "create", "rename", "kill", "save_favorites")
+    if effect.automatic or writes_tracking:
         with config.sessions_lock():
+            if writes_tracking:
+                favorites = tuple(load_sessions())
             if (
                 effect.kind == "ensure_created"
                 and effect.target not in load_sessions()
@@ -1406,6 +1424,7 @@ def _apply_effect(
         state.selected_target = effect.target
         _set_status(state, f"killed {effect.target.format()}", status_timeout)
     elif effect.kind == "save_favorites":
+        state.favorites[:] = result.favorites
         _set_status(state, effect.message, status_timeout)
     elif effect.kind == "status":
         _set_status(state, effect.message, status_timeout)
@@ -2808,7 +2827,7 @@ def run(stdscr: curses.window) -> None:
     sidebar_keys = load_sidebar_keybindings()
     initial_target = _current_target()
     tracking_revision = config.sessions_revision()
-    state = SidebarState(favorites=load_sessions(), selected_target=initial_target)
+    state = SidebarState(favorites=list(load_sessions()), selected_target=initial_target)
     poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
     actions = EffectRunner()
     if debug.enabled:
@@ -3444,6 +3463,7 @@ def run(stdscr: curses.window) -> None:
                 "save_favorites",
                 favorites=tuple(state.favorites),
                 message=f"moved {source.format()}",
+                favorite_move=(source, destination),
             ), input_id)
             state.selected_target = source
         cancel_move()
