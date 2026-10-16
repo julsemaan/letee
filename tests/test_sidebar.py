@@ -3790,6 +3790,57 @@ class SidebarStateTest(unittest.TestCase):
                 self.assertEqual(state.selected_target, first)
                 self.assertEqual(state.status, "write failed")
 
+    def test_effect_setup_failures_return_action_errors(self):
+        target = Target("local", "work")
+        for source, error in (
+            ("lock", OSError("lock failed")),
+            ("load", OSError("read failed")),
+            ("load", SystemExit("invalid session")),
+        ):
+            with self.subTest(source=source, error=error):
+                with (
+                    patch.object(sidebar.config, "sessions_lock") as lock,
+                    patch.object(sidebar, "load_sessions") as load,
+                    patch.object(sidebar.sessions, "create") as create,
+                ):
+                    if source == "lock":
+                        lock.return_value.__enter__.side_effect = error
+                    else:
+                        load.side_effect = error
+                    result = sidebar._perform_effect(Effect("create", target=target), (target,))
+                self.assertEqual(result.error, str(error))
+                self.assertEqual(result.favorites, (target,))
+                self.assertFalse(result.partial_success)
+                create.assert_not_called()
+
+    def test_effect_setup_failures_restore_optimistic_tracking_changes(self):
+        first, second = (Target("local", name) for name in ("one", "two"))
+        for action in ("remove_session", "move_session_down"):
+            for source, error in (
+                ("lock", OSError("lock failed")),
+                ("load", OSError("read failed")),
+                ("load", SystemExit("invalid session")),
+            ):
+                with self.subTest(action=action, source=source, error=error):
+                    state = SidebarState(favorites=[first, second], selected_target=first, selected_tracked=True)
+                    effect = _transition(state, action)
+                    self.assertNotEqual(state.favorites, [first, second])
+                    with (
+                        patch.object(sidebar.config, "sessions_lock") as lock,
+                        patch.object(sidebar, "load_sessions") as load,
+                        patch.object(sidebar, "save_sessions") as save,
+                    ):
+                        if source == "lock":
+                            lock.return_value.__enter__.side_effect = error
+                        else:
+                            load.side_effect = error
+                        result = sidebar._perform_effect(effect, tuple(state.favorites))
+                    sidebar._apply_effect(result, state, unittest.mock.Mock(), 5)
+                    self.assertEqual(state.favorites, [first, second])
+                    self.assertEqual(state.selected_target, first)
+                    self.assertEqual(state.status, str(error))
+                    save.assert_not_called()
+
     def test_remove_reset_failure_keeps_successfully_persisted_removal(self):
         target = Target("local", "one")
         state = SidebarState(favorites=[target], selected_target=target)

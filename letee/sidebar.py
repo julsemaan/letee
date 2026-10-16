@@ -1230,16 +1230,21 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     writes_tracking = effect.kind in ("add_switch", "create", "rename", "kill", "save_favorites")
     if effect.automatic or writes_tracking or effect.kind in ("switch", "switch_pane", "show_reconnecting", "show_unavailable"):
-        with config.sessions_lock():
-            if writes_tracking:
-                favorites = tuple(load_sessions())
-            if (
-                effect.kind == "ensure_created"
-                and effect.target not in load_sessions()
-                and effect.target != _current_target()
-            ):
-                return EffectResult(effect, favorites, stale_navigation=True)
-            return _perform_locked_effect(effect, favorites)
+        fallback = effect.previous_favorites if effect.previous_favorites is not None else favorites
+        try:
+            with config.sessions_lock():
+                if writes_tracking:
+                    favorites = tuple(load_sessions())
+                    fallback = favorites
+                if (
+                    effect.kind == "ensure_created"
+                    and effect.target not in load_sessions()
+                    and effect.target != _current_target()
+                ):
+                    return EffectResult(effect, favorites, stale_navigation=True)
+                return _perform_locked_effect(effect, favorites)
+        except (OSError, SystemExit) as error:
+            return EffectResult(effect, fallback, _effect_error(effect, error))
     return _perform_locked_effect(effect, favorites)
 
 
