@@ -86,6 +86,7 @@ class Effect:
     automatic: bool = False
     agent_id: str = ""
     favorite_move: tuple[Target, Target] | None = None
+    previous_favorites: tuple[Target, ...] | None = None
 
 
 @dataclass
@@ -1106,6 +1107,7 @@ def _transition(
     if action == "create":
         return Effect("create", target=target) if target else None
     if action == "remove_session" and target in state.favorites:
+        previous_favorites = tuple(state.favorites)
         state.favorites.remove(target)
         state.selected_target = None if unavailable else target
         return Effect(
@@ -1113,6 +1115,7 @@ def _transition(
             target=target,
             favorites=tuple(state.favorites),
             message=f"removed {target.format()}",
+            previous_favorites=previous_favorites,
         )
     if action in ("move_session_up", "move_session_down"):
         if not target or not state.selected_tracked or target not in state.favorites:
@@ -1123,12 +1126,14 @@ def _transition(
         if not 0 <= new_index < len(state.favorites):
             edge = "first" if offset < 0 else "last"
             return Effect("status", message=f"already {edge} session")
+        previous_favorites = tuple(state.favorites)
         state.favorites[index], state.favorites[new_index] = state.favorites[new_index], state.favorites[index]
         direction = "up" if offset < 0 else "down"
         return Effect(
             "save_favorites", favorites=tuple(state.favorites),
             message=f"moved {target.format()} {direction}",
             favorite_move=(target, state.favorites[index]),
+            previous_favorites=previous_favorites,
         )
     return None
 
@@ -1297,6 +1302,7 @@ def _perform_locked_effect(effect: Effect, favorites: tuple[Target, ...]) -> Eff
             cockpit.show_unavailable(effect.target)
         elif effect.kind == "save_favorites":
             save_sessions(planned)
+            partial_success = True
             if isinstance(effect.target, Target) and _current_target() == effect.target:
                 cockpit.reset_to_help(effect.target)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
@@ -1307,7 +1313,7 @@ def _perform_locked_effect(effect: Effect, favorites: tuple[Target, ...]) -> Eff
         )
         return EffectResult(
             effect,
-            planned,
+            favorites if effect.kind == "save_favorites" and not partial_success else planned,
             _effect_error(effect, error),
             partial_success=partial_success,
             reset_matched=reset_matched,
@@ -1352,6 +1358,10 @@ def _apply_effect(
         _log_effect_applied(result, state)
         return False
     if result.error and not result.partial_success:
+        if effect.kind == "save_favorites":
+            state.favorites[:] = result.favorites
+            if state.selected_target is None and effect.target in state.favorites:
+                state.selected_target = effect.target
         if effect.kind == "create" and isinstance(effect.target, Target):
             state.creation_host = "" if effect.target.kind == "local" else effect.target.host
             state.creation_text = effect.target.session
@@ -1566,7 +1576,7 @@ class EffectRunner:
     @property
     def blocks_favorite_changes(self) -> bool:
         return self._effect is not None and (
-            self._effect.kind in ("add_switch", "create", "kill", "rename", "ensure_created")
+            self._effect.kind in ("add_switch", "create", "kill", "rename", "ensure_created", "save_favorites")
             or (self._effect.automatic and self._effect.kind == "switch")
         )
 
@@ -3225,10 +3235,14 @@ def run(stdscr: curses.window) -> None:
 
     def dispatch(effect: Effect, input_id: str | None = None) -> bool:
         nonlocal pending_navigation
-        if effect.kind in ("save_favorites", "status"):
+        if effect.kind == "status":
             _execute(effect, state, poller, status_timeout, input_id)
             return True
         if not queue_effect(effect, input_id):
+            if effect.kind == "save_favorites" and effect.previous_favorites is not None:
+                _apply_effect(EffectResult(
+                    effect, effect.previous_favorites, error="another action is still running",
+                ), state, poller, status_timeout)
             show_status("another action is still running")
             return False
         if effect.kind in ("switch", "add_switch", "show_reconnecting") and isinstance(effect.target, Target):
@@ -3459,6 +3473,7 @@ def run(stdscr: curses.window) -> None:
         elif source not in state.favorites:
             show_status("session disappeared during move")
         elif destination in state.favorites and source != destination:
+            previous_favorites = tuple(state.favorites)
             destination_index = state.favorites.index(destination)
             state.favorites.remove(source)
             state.favorites.insert(destination_index, source)
@@ -3467,6 +3482,7 @@ def run(stdscr: curses.window) -> None:
                 favorites=tuple(state.favorites),
                 message=f"moved {source.format()}",
                 favorite_move=(source, destination),
+                previous_favorites=previous_favorites,
             ), input_id)
             state.selected_target = source
         cancel_move()

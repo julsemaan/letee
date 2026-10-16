@@ -3394,7 +3394,7 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.favorites, [])
         self.assertEqual(
             effect,
-            Effect("save_favorites", target=target, favorites=(), message="removed local:work"),
+            Effect("save_favorites", target=target, favorites=(), message="removed local:work", previous_favorites=(target,)),
         )
 
         self.assertIsNone(_transition(SidebarState(selected_target=target), "remove_session"))
@@ -3464,8 +3464,39 @@ class SidebarStateTest(unittest.TestCase):
         save.assert_called_once_with((other,))
         reset.assert_not_called()
         kill.assert_not_called()
-        self.assertEqual(state.favorites, [other])
+        self.assertEqual(state.favorites, [target, other])
         self.assertEqual(state.status, "save failed")
+
+    def test_failed_tracking_writes_restore_latest_persisted_favorites(self):
+        first, second, added = (Target("local", name) for name in ("one", "two", "added"))
+        for action in ("remove_session", "move_session_down"):
+            with self.subTest(action=action):
+                state = SidebarState(favorites=[first, second], selected_target=first, selected_tracked=True)
+                effect = _transition(state, action)
+                with (
+                    patch.object(sidebar, "load_sessions", return_value=[first, second, added]),
+                    patch.object(sidebar, "save_sessions", side_effect=OSError("write failed")),
+                ):
+                    result = sidebar._perform_effect(effect, tuple(state.favorites))
+                sidebar._apply_effect(result, state, unittest.mock.Mock(), 5)
+                self.assertEqual(state.favorites, [first, second, added])
+                self.assertEqual(state.selected_target, first)
+                self.assertEqual(state.status, "write failed")
+
+    def test_remove_reset_failure_keeps_successfully_persisted_removal(self):
+        target = Target("local", "one")
+        state = SidebarState(favorites=[target], selected_target=target)
+        effect = _transition(state, "remove_session")
+        with (
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "save_sessions"),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.cockpit, "reset_to_help", side_effect=OSError("reset failed")),
+        ):
+            result = sidebar._perform_effect(effect, ())
+        sidebar._apply_effect(result, state, unittest.mock.Mock(), 5)
+        self.assertEqual(state.favorites, [])
+        self.assertEqual(state.status, "reset failed")
 
     def test_reorder_favorite_swaps_and_keeps_selection(self):
         first = Target("local", "first")
@@ -3480,7 +3511,7 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(state.favorites, [second, first])
         self.assertEqual(state.selected_target, second)
-        self.assertEqual(effect, Effect("save_favorites", favorites=(second, first), message="moved local:second up", favorite_move=(second, first)))
+        self.assertEqual(effect, Effect("save_favorites", favorites=(second, first), message="moved local:second up", favorite_move=(second, first), previous_favorites=(first, second)))
 
     def test_reorder_favorite_boundaries_skip_save(self):
         target = Target("local", "only")
@@ -6038,34 +6069,100 @@ class SidebarDrawTest(unittest.TestCase):
         second_selected = active_agents.index("second")
         self.assertNotIn("first", active_agents[second_selected:])
 
-    def test_keyboard_reorder_is_not_blocked_by_slow_switch(self):
-        first = Target("local", "one")
-        second = Target("local", "two")
-        poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
-        poller.tick.return_value = False
-        release = threading.Event()
-        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, ord("K"), STOP], size=(12, 30))
-        timer = threading.Timer(0.05, release.set)
+    def test_tracking_dispatch_returns_while_another_process_holds_lock(self):
+        first, second = Target("local", "one"), Target("local", "two")
+        for key, expected in ((ord("r"), [second]), (ord("J"), [second, first])):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                with patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+                    config.save_sessions([first, second])
+                    holder = subprocess.Popen(
+                        [os.sys.executable, "-c",
+                         "from letee import config; import sys\n"
+                         "with config.sessions_lock():\n"
+                         " print('locked', flush=True)\n"
+                         " sys.stdin.readline()\n"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                    )
+                    self.assertEqual(holder.stdout.readline().strip(), "locked")
+                    timed_out = threading.Event()
 
-        with (
-            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
-            patch("letee.sidebar.curses.curs_set"),
-            patch("letee.sidebar._init_colors"),
-            patch("letee.sidebar.load_sessions", return_value=[first, second]),
-            patch("letee.sidebar._current_target", return_value=second),
-            patch("letee.sidebar._agent_entries", return_value=[]),
-            patch("letee.sidebar._bell_targets", return_value=set()),
-            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
-            patch("letee.sidebar.save_sessions") as save_sessions,
-        ):
-            timer.start()
-            try:
-                run(screen)
-            finally:
-                release.set()
-                timer.cancel()
+                    def release_lock():
+                        holder.stdin.write("release\n")
+                        holder.stdin.flush()
 
-        save_sessions.assert_called_once_with((second, first))
+                    def timeout():
+                        timed_out.set()
+                        release_lock()
+
+                    timer = threading.Timer(2, timeout)
+                    returned = []
+                    state = SidebarState(favorites=[first, second], selected_target=first)
+
+                    class Screen(FakeScreen):
+                        def getch(inner):
+                            if not inner.keys:
+                                returned.append(not timed_out.is_set())
+                                self.assertEqual(state.status, "another action is still changing sessions")
+                                timer.cancel()
+                                release_lock()
+                                return STOP
+                            return super().getch()
+
+                    poller = unittest.mock.Mock(
+                        snapshot=snapshot(local=("one", "two")), current_target=None,
+                        bell_target=None, current_agent=None, pane_active=True,
+                    )
+                    poller.tick.return_value = False
+                    timer.start()
+                    try:
+                        with (
+                            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                            patch.object(sidebar, "SidebarState", return_value=state),
+                            patch.object(sidebar.curses, "curs_set"),
+                            patch.object(sidebar, "_init_colors"),
+                            patch.object(sidebar, "_current_target", return_value=None),
+                            patch.object(sidebar, "_draw", return_value=(2, None)),
+                        ):
+                            run(Screen([key, ord("r"), ord("J")], size=(12, 30)))
+                    finally:
+                        timer.cancel()
+                        if holder.poll() is None:
+                            holder.terminate()
+                        holder.wait(timeout=5)
+                        holder.stdin.close()
+                        holder.stdout.close()
+                    self.assertEqual(returned, [True])
+                    self.assertEqual(config.load_sessions(), expected)
+
+    def test_rejected_tracking_dispatch_rolls_back_optimistic_changes(self):
+        first, second = Target("local", "one"), Target("local", "two")
+        for key in (ord("r"), ord("J")):
+            with self.subTest(key=key):
+                state = SidebarState(favorites=[first, second], selected_target=first)
+                poller = unittest.mock.Mock(
+                    snapshot=snapshot(local=("one", "two")), current_target=None,
+                    bell_target=None, current_agent=None, pane_active=True,
+                )
+                poller.tick.return_value = False
+                runner = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+                runner.submit.return_value = False
+                runner.poll.return_value = None
+                with (
+                    patch.object(sidebar, "SidebarState", return_value=state),
+                    patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                    patch.object(sidebar, "EffectRunner", return_value=runner),
+                    patch.object(sidebar.curses, "curs_set"),
+                    patch.object(sidebar, "_init_colors"),
+                    patch.object(sidebar, "load_sessions", return_value=[first, second]),
+                    patch.object(sidebar, "_draw", return_value=(2, None)),
+                    patch.object(sidebar, "save_sessions") as save,
+                ):
+                    run(FakeScreen([key, STOP], size=(12, 30)))
+                runner.submit.assert_called_once()
+                save.assert_not_called()
+                self.assertEqual(state.favorites, [first, second])
+                self.assertEqual(state.selected_target, first)
+                self.assertEqual(state.status, "another action is still running")
 
     def test_adjacent_move_handle_columns_start_move(self):
         target = Target("local", "one")
