@@ -259,11 +259,13 @@ class MainTest(unittest.TestCase):
             patch("letee.__main__.sessions.kill") as kill,
             patch("letee.__main__.load_sessions", return_value=[target, other]),
             patch("letee.__main__.save_sessions") as save,
+            patch("letee.__main__.cockpit.reset_to_help") as reset,
         ):
             main(["kill", target.format()])
 
         kill.assert_called_once_with(target)
         save.assert_called_once_with([other])
+        reset.assert_called_once_with(target)
 
     def test_kill_untracked_target_saves_unchanged_sessions(self):
         target = Target("local", "untracked")
@@ -288,11 +290,13 @@ class MainTest(unittest.TestCase):
             patch("letee.__main__.load_sessions", return_value=[target, other]),
             patch("letee.__main__.sessions.rename", return_value=renamed) as rename,
             patch("letee.__main__.config.replace_session") as replace,
+            patch("letee.__main__.cockpit.rename_target") as rename_target,
         ):
             self.assertEqual(main(["rename", target.format(), "new"]), 0)
 
         rename.assert_called_once_with(target, "new")
         replace.assert_called_once_with(target, renamed)
+        rename_target.assert_called_once_with(target, renamed)
 
     def test_rename_rejects_untracked_target_without_touching_tmux(self):
         target = Target("local", "work")
