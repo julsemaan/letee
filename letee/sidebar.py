@@ -584,6 +584,7 @@ def _sync_active_session(
     *,
     retry: RestorationRetry | None = None,
     now: float | None = None,
+    shared_deadline: float | None = None,
 ) -> Target | None:
     if retry is not None:
         if retry.target != target:
@@ -610,6 +611,16 @@ def _sync_active_session(
             return interrupted
         return marker_after_submit(target)
     if status is None and (interrupted == target or target not in snapshot.sessions):
+        if shared_deadline is not None:
+            source = snapshot.local if target.kind == "local" else snapshot.remotes.get(target.host)
+            if (
+                source is not None
+                and target in source.sessions
+                and source.sampled_at > shared_deadline - cockpit.startup_timeout(target)
+            ):
+                return None
+            if (time.monotonic() if now is None else now) < shared_deadline:
+                return interrupted
         return interrupted if not run(Effect("switch", target, automatic=True)) else marker_after_submit(None)
     if status == "unavailable" and interrupted != target:
         return marker_after_submit(target) if run(Effect("show_unavailable", target, automatic=True)) else interrupted
@@ -3778,6 +3789,7 @@ def run(stdscr: curses.window) -> None:
                             submit=queue_effect,
                             retry=restoration_retry,
                             now=now,
+                            shared_deadline=poller.startup_deadline,
                         )
                     if not actions.busy:
                         reconciler.reconcile(

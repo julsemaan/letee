@@ -782,6 +782,76 @@ class ReconciliationLoopTest(unittest.TestCase):
         ensure.assert_not_called()
         switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
 
+    def test_same_target_shortcut_after_overlay_allows_fresh_discovery_and_other_favorite(self):
+        active = Target("ssh", "work", "dev")
+        missing = Target("local", "other")
+        down = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+        present = snapshot(remotes={"dev": replace(
+            source("ssh", ("work",), host="dev"), sampled_at=12,
+        )})
+        poller = unittest.mock.Mock(
+            snapshot=down, current_target=active, bell_target=None, startup_deadline=None,
+            current_agent=None, pane_active=True, refresh_pending=False,
+        )
+        actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+        results = []
+        ticks = 0
+
+        def tick(_now):
+            nonlocal ticks
+            ticks += 1
+            if ticks == 2:
+                # The numbered shortcut runs outside the sidebar and keeps the same target.
+                poller.startup_deadline = 71
+                poller.snapshot = replace(present, remotes={"dev": replace(
+                    present.remotes["dev"], sampled_at=10,
+                )})
+            elif ticks == 3:
+                poller.snapshot = present
+            elif ticks == 4:
+                # The shared startup cleanup has completed; the overlay must stay cleared.
+                poller.startup_deadline = None
+            return True
+
+        def submit(effect, favorites):
+            actions.busy = True
+            # A switch queued during startup would be rejected by the worker.
+            results.append(sidebar.EffectResult(
+                effect, favorites, stale_navigation=effect.kind == "switch",
+            ))
+            return True
+
+        def poll():
+            actions.busy = False
+            return results.pop(0) if results else None
+
+        poller.tick.side_effect = tick
+        actions.submit.side_effect = submit
+        actions.poll.side_effect = poll
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[active, missing]),
+            patch.object(sidebar, "_current_target", return_value=active),
+            patch.object(sidebar.cockpit, "current_target", return_value=active),
+            patch.object(sidebar.cockpit, "startup_timeout", return_value=60),
+            patch.object(sidebar.SessionReconciler, "_clear_startup") as clear_startup,
+            patch.object(sidebar.time, "monotonic", return_value=12),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(FakeScreen([-1] * 8 + [STOP], size=(16, 60)))
+        effects = [item.args[0] for item in actions.submit.call_args_list]
+        self.assertEqual(effects, [
+            sidebar.Effect("show_reconnecting", active, automatic=True),
+            sidebar.Effect("ensure_created", missing, automatic=True),
+        ])
+        clear_startup.assert_called_once_with(active, 71)
+
     def test_background_creation_preserves_keyboard_navigation_and_active_marker(self):
         first, second = Target("local", "first"), Target("local", "second")
         ensure, switch, draw, _ = self._run_reconciliation(
