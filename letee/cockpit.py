@@ -864,6 +864,8 @@ def switch(
             except BaseException:
                 pass
             raise
+        deadline = float(time.monotonic() + startup_timeout(target))
+        tmux.tmux("set-option", "-t", tmux.SESSION, STARTUP_OPTION, f"{target.format()}\t{deadline}")
     stage(
         "respawn",
         "right_pane_respawn",

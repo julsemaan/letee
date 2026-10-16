@@ -1348,6 +1348,31 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Preparing%s", events[0][1])
         self.assertEqual(events[2], ("respawn", "attach work"))
 
+    def test_deferred_switch_renews_startup_deadline_after_slow_preparation(self):
+        target = Target("ssh", "work", "dev")
+        marker = None
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.time, "monotonic", return_value=5) as clock,
+            patch.object(cockpit, "startup_timeout", return_value=10),
+        ):
+            def prepare():
+                self.assertEqual(marker, "ssh:dev:work\t15.0")
+                clock.return_value = 16
+                return "attach work"
+
+            def tmux_call(*args, **kwargs):
+                nonlocal marker
+                if args[:4] == ("set-option", "-t", "letee", cockpit.STARTUP_OPTION):
+                    marker = args[4]
+                elif args[0] == "respawn-pane" and args[4] == "attach work":
+                    self.assertEqual(marker, "ssh:dev:work\t26.0")
+
+            with patch.object(cockpit.tmux, "tmux", side_effect=tmux_call) as tmux:
+                cockpit.switch(target, prepare)
+
+        tmux.assert_any_call("respawn-pane", "-k", "-t", "%2", "attach work")
+
     def test_remote_overlay_timeout_replaces_preparing_with_reconnecting(self):
         target = Target("ssh", "work", "dev")
         timeout = subprocess.TimeoutExpired(["ssh"], 3)
