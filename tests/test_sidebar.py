@@ -53,6 +53,144 @@ def _assert_deferred_switch(testcase, switch, target, *extra):
     testcase.assertEqual(switch.call_args.args[2:], extra)
 
 
+class RevisionTargetSynchronizationTest(unittest.TestCase):
+    def test_blocked_query_leaves_tick_and_sessions_lock_available(self):
+        old = Target("local", "old")
+        entered, release = threading.Event(), threading.Event()
+        data = snapshot(local=("old",))
+
+        def query():
+            entered.set()
+            release.wait(2)
+            return None
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([old])
+            status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), old)
+            try:
+                with (
+                    patch.object(sidebar, "_current_target", side_effect=query),
+                    patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(old, None, None, True)),
+                ):
+                    with config.sessions_lock():
+                        status.request_target_sync()
+                    status.tick(0)
+                    self.assertTrue(entered.wait(1))
+                    self.assertFalse(status.tick(0))
+                    with config.sessions_lock(blocking=False) as acquired:
+                        self.assertTrue(acquired)
+                    self.assertEqual(status.current_target, old)
+                    release.set()
+                    status._future.result(timeout=1)
+                    status.tick(0)
+                    self.assertIsNone(status.current_target)
+                    self.assertFalse(status.refresh_pending)
+            finally:
+                release.set()
+                status.close()
+
+    def test_sidebar_accepts_keyboard_input_during_revision_query(self):
+        first, second = Target("local", "first"), Target("local", "second")
+        entered, release = threading.Event(), threading.Event()
+        screen = FakeScreen(size=(16, 60))
+        reads = 0
+        navigated = False
+
+        def query():
+            if reads:
+                entered.set()
+                release.wait(2)
+            return first
+
+        def read_key():
+            nonlocal reads, navigated
+            reads += 1
+            self.assertLess(reads, 20)
+            if reads == 1:
+                config.save_sessions([second, first])
+            elif navigated:
+                self.assertFalse(release.is_set())
+                release.set()
+                return STOP
+            elif status._synchronize_pending and status._future is not None:
+                self.assertTrue(entered.wait(1))
+                with config.sessions_lock(blocking=False) as acquired:
+                    self.assertTrue(acquired)
+                self.assertEqual(draw.call_args.args[2], 1)
+                navigated = True
+                return curses.KEY_DOWN
+            return -1
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([first, second])
+            discovery = unittest.mock.Mock(snapshot=snapshot(local=("first", "second")))
+            status = sidebar.AsyncStatusPoller(discovery, first)
+            status._next_poll = float("inf")
+            actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+            actions.poll.return_value = None
+            try:
+                with (
+                    patch.object(sidebar, "AsyncStatusPoller", return_value=status),
+                    patch.object(sidebar, "EffectRunner", return_value=actions),
+                    patch.object(sidebar, "load_hosts", return_value=[]),
+                    patch.object(sidebar, "_current_target", side_effect=query),
+                    patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(first, None, None, True)),
+                    patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+                    patch.object(sidebar, "_init_colors"),
+                    patch.object(sidebar, "_mouse_mask"),
+                    patch.object(sidebar.curses, "curs_set"),
+                    patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+                    patch.object(screen, "getch", side_effect=read_key),
+                ):
+                    sidebar.run(screen)
+                self.assertTrue(navigated)
+                self.assertEqual(draw.call_args.args[2], 0)
+            finally:
+                release.set()
+                status.close()
+
+    def test_query_failures_preserve_state_and_retry(self):
+        old = Target("local", "old")
+        for error in (SystemExit("timeout"), OSError("unavailable"), subprocess.TimeoutExpired("tmux", 1)):
+            with self.subTest(error=error):
+                status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), old)
+                try:
+                    with patch.object(sidebar, "_current_target", side_effect=error):
+                        status.request_target_sync()
+                        status.tick(0)
+                        status._future.result(timeout=1)
+                        status.tick(0)
+                    self.assertEqual(status.current_target, old)
+                    self.assertTrue(status.refresh_pending)
+                finally:
+                    status.close()
+
+    def test_results_superseded_by_revision_or_navigation_are_discarded(self):
+        old, stale, newer = (Target("local", name) for name in ("old", "stale", "newer"))
+        for change in ("revision", "navigation"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+                config.save_sessions([old])
+                status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), old)
+                try:
+                    with (
+                        patch.object(sidebar, "_current_target", return_value=stale),
+                        patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(stale, None, None, True)),
+                        patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+                    ):
+                        status.request_target_sync()
+                        status.tick(0)
+                        status._future.result(timeout=1)
+                    if change == "revision":
+                        config.save_sessions([newer])
+                    else:
+                        status.observe_effect(sidebar.EffectResult(sidebar.Effect("switch", newer), (newer,)))
+                    status.tick(0)
+                    self.assertEqual(status.current_target, old if change == "revision" else newer)
+                    self.assertTrue(status.refresh_pending)
+                finally:
+                    status.close()
+
+
 class SessionReconcilerTest(unittest.TestCase):
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
     def setUp(self, _load_timing):
@@ -688,7 +826,7 @@ class ReconciliationLoopTest(unittest.TestCase):
                             return renamed
 
                         poller.tick.side_effect = tick
-                        poller.synchronize_target.side_effect = lambda target: setattr(poller, "current_target", target)
+                        poller.request_target_sync.side_effect = lambda: setattr(poller, "current_target", marker[0])
                         results = []
                         actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
                         actions.submit.side_effect = lambda effect, favorites: results.append(
@@ -739,12 +877,13 @@ class ReconciliationLoopTest(unittest.TestCase):
                     marker[0] = active
                 if ticks[0] > 2:
                     commands, poller._commands = poller._commands, []
+                    poller._sample_revision = config.sessions_revision()
                     poller._future = unittest.mock.Mock()
                     poller._future.done.return_value = True
                     poller._future.result.return_value = sidebar.StatusResult(
                         data, active, None, None, True, poller._generation,
                         any(command == "refresh" for command, _ in commands),
-                        sampled=True,
+                        sampled=True, synchronized=poller._synchronize_pending,
                     )
                 poller._next_poll = float("inf")
                 return original_tick(now)

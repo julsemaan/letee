@@ -171,6 +171,7 @@ class StatusResult:
     suppression_expired: bool = False
     sampled: bool = False
     startup_deadline: float | None = None
+    synchronized: bool = False
 
 
 @dataclass(frozen=True)
@@ -1763,6 +1764,8 @@ class AsyncStatusPoller:
         self._refresh_started_at = 0.0
         self._pending_agent: tuple[PaneTarget, str] | None = None
         self._suppressed_target: Target | None = None
+        self._synchronize_pending = False
+        self._sample_revision = config.sessions_revision()
 
     @property
     def pending_agent(self) -> tuple[PaneTarget, str] | None:
@@ -1784,6 +1787,7 @@ class AsyncStatusPoller:
         commands: tuple[tuple[str, Target | None], ...],
         generation: int,
         state: StatusPollState | None = None,
+        synchronize: bool = False,
     ) -> StatusResult:
         state = state or self._poll_state()
         snapshot = state.snapshot
@@ -1794,12 +1798,15 @@ class AsyncStatusPoller:
         startup_deadline = state.startup_deadline
         suppression_expired = False
         sampled = False
+        synchronized = False
         try:
             for command, target in commands:
                 if command == "discard" and target is not None:
                     self._poller.discard(target)
                 elif command == "refresh":
                     self._poller.refresh()
+            if synchronize:
+                current_target = _current_target()
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
@@ -1811,7 +1818,11 @@ class AsyncStatusPoller:
             )
             if suppression_expired:
                 suppressed_target = None
-            current_target = status.current_target if status.current_target is not None else state.current_target
+            if not synchronize:
+                current_target = status.current_target if status.current_target is not None else state.current_target
+            else:
+                suppressed_target = state.current_target if current_target is None else None
+                suppression_expired = False
             if current_target == suppressed_target:
                 current_target = None
             startup_deadline = cockpit.startup_deadline(current_target) if current_target else None
@@ -1821,8 +1832,10 @@ class AsyncStatusPoller:
             bell_target = status.bell_target
             stored_agent = status.current_agent
             pane_active = status.pane_active
+            synchronized = synchronize
         except (OSError, SystemExit, subprocess.SubprocessError):
-            pass
+            if synchronize:
+                current_target = state.current_target
         current_agent = _focused_agent_id(snapshot, current_target, stored_agent)
         return StatusResult(
             snapshot,
@@ -1835,6 +1848,7 @@ class AsyncStatusPoller:
             suppression_expired,
             sampled,
             startup_deadline,
+            synchronized,
         )
 
     def tick(self, now: float) -> bool:
@@ -1847,11 +1861,17 @@ class AsyncStatusPoller:
                 self._refresh_pending = any(
                     command == "refresh" for command, _ in self._commands
                 )
-            if result.generation == self._generation:
+            if (
+                result.generation == self._generation
+                and self._sample_revision == config.sessions_revision()
+            ):
                 changed = (
                     result.snapshot != self.snapshot
                     or result.current_target != self.current_target
                 )
+                if result.synchronized:
+                    self.synchronize_target(result.current_target)
+                    self._synchronize_pending = False
                 self.status_sampled = result.sampled
                 self.snapshot = result.snapshot
                 if self._refresh_target is not None:
@@ -1880,8 +1900,10 @@ class AsyncStatusPoller:
                 self.pane_active = result.pane_active
         if self._future is None and now >= self._next_poll:
             commands, self._commands = tuple(self._commands), []
+            self._sample_revision = config.sessions_revision()
             self._future = self._executor.submit(
-                self._sample, commands, self._generation, self._poll_state()
+                self._sample, commands, self._generation, self._poll_state(),
+                self._synchronize_pending,
             )
             self._next_poll = now + STATUS_POLL_INTERVAL
         return changed
@@ -1950,6 +1972,11 @@ class AsyncStatusPoller:
                 self._generation += 1
                 self.startup_deadline = None
 
+    def request_target_sync(self) -> None:
+        self._synchronize_pending = True
+        self._generation += 1
+        self._next_poll = 0.0
+
     def synchronize_target(self, target: Target | None) -> None:
         if target == self.current_target:
             return
@@ -1963,7 +1990,7 @@ class AsyncStatusPoller:
 
     @property
     def refresh_pending(self) -> bool:
-        return self._refresh_pending or self._refresh_target is not None
+        return self._synchronize_pending or self._refresh_pending or self._refresh_target is not None
 
     def refresh(self) -> bool:
         self._commands.append(("refresh", None))
@@ -3716,8 +3743,7 @@ def run(stdscr: curses.window) -> None:
                         revision = config.sessions_revision()
                         if revision != tracking_revision:
                             state.favorites[:] = load_sessions()
-                            poller.synchronize_target(_current_target())
-                            current_target = poller.current_target
+                            poller.request_target_sync()
                             tracking_revision = revision
                             poller.refresh()
                             rebuild()
