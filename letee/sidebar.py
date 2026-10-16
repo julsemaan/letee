@@ -1229,7 +1229,7 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     writes_tracking = effect.kind in ("add_switch", "create", "rename", "kill", "save_favorites")
-    if effect.automatic or writes_tracking or effect.kind in ("switch", "show_reconnecting", "show_unavailable"):
+    if effect.automatic or writes_tracking or effect.kind in ("switch", "switch_pane", "show_reconnecting", "show_unavailable"):
         with config.sessions_lock():
             if writes_tracking:
                 favorites = tuple(load_sessions())

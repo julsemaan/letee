@@ -940,22 +940,28 @@ class SidebarTrackingMutationTest(unittest.TestCase):
             if args == ("respawn-pane", "-k", "-t", "%2", command):
                 assert_locked()
 
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.object(config, "config_dir", return_value=Path(directory)),
-            patch.object(sidebar.sessions, "attach_command", side_effect=prepare) as attach,
-            patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
-            patch.object(sidebar.cockpit, "startup_timeout", return_value=10),
-            patch.object(sidebar.cockpit.tmux, "tmux", side_effect=launch) as tmux_command,
+        pane = PaneTarget(target, "@1", "%3", "/tmp/tmux")
+        for kind, destination, prepare_method in (
+            ("switch", target, "attach_command"),
+            ("switch_pane", pane, "pane_attach_command"),
         ):
-            result = sidebar._perform_effect(sidebar.Effect("switch", target), (target,))
-            with config.sessions_lock(blocking=False) as acquired:
-                self.assertTrue(acquired)
+            with (
+                self.subTest(kind=kind),
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(config, "config_dir", return_value=Path(directory)),
+                patch.object(sidebar.sessions, prepare_method, side_effect=prepare) as attach,
+                patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
+                patch.object(sidebar.cockpit, "startup_timeout", return_value=10),
+                patch.object(sidebar.cockpit.tmux, "tmux", side_effect=launch) as tmux_command,
+            ):
+                result = sidebar._perform_effect(sidebar.Effect(kind, destination), (target,))
+                with config.sessions_lock(blocking=False) as acquired:
+                    self.assertTrue(acquired)
 
-        self.assertFalse(result.error)
-        attach.assert_called_once_with(target)
-        self.assertIn(call("respawn-pane", "-k", "-t", "%2", command),
-                      tmux_command.call_args_list)
+                self.assertFalse(result.error)
+                attach.assert_called_once_with(destination)
+                self.assertIn(call("respawn-pane", "-k", "-t", "%2", command),
+                              tmux_command.call_args_list)
 
     def test_cli_kill_before_sidebar_rename_acquires_lock(self):
         from contextlib import contextmanager
