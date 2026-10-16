@@ -54,7 +54,7 @@ def _assert_deferred_switch(testcase, switch, target, *extra):
 
 
 class RevisionTargetSynchronizationTest(unittest.TestCase):
-    def test_blocked_query_leaves_tick_and_sessions_lock_available(self):
+    def test_blocked_query_leaves_tick_available_while_holding_sessions_lock(self):
         old = Target("local", "old")
         entered, release = threading.Event(), threading.Event()
         data = snapshot(local=("old",))
@@ -77,14 +77,95 @@ class RevisionTargetSynchronizationTest(unittest.TestCase):
                     status.tick(0)
                     self.assertTrue(entered.wait(1))
                     self.assertFalse(status.tick(0))
+                    # The synchronized sample holds sessions_lock while it validates.
                     with config.sessions_lock(blocking=False) as acquired:
-                        self.assertTrue(acquired)
+                        self.assertFalse(acquired)
                     self.assertEqual(status.current_target, old)
                     release.set()
                     status._future.result(timeout=1)
                     status.tick(0)
                     self.assertIsNone(status.current_target)
                     self.assertFalse(status.refresh_pending)
+            finally:
+                release.set()
+                status.close()
+
+    def test_synchronized_sample_waits_out_switch_marker_window(self):
+        work, stale = Target("local", "work"), Target("local", "stale")
+        new_command = "tmux -L letee.inner attach-session -t work"
+        old_command = "tmux -L letee.inner attach-session -t stale"
+        in_window, release, respawned = threading.Event(), threading.Event(), threading.Event()
+        pane_queried = threading.Event()
+        options, events, errors, results = {}, [], [], []
+
+        def tmux_call(*args, **kwargs):
+            if args[0] == "respawn-pane":
+                events.append("respawn")
+                in_window.set()
+                release.wait(2)
+                respawned.set()
+            elif args[0] == "if-shell":
+                options[sidebar.cockpit.CURRENT_TARGET_OPTION] = work.format()
+                events.append("publish_marker")
+            elif args[0] == "set-option" and args[1] == "-u":
+                if args[4] == sidebar.cockpit.CURRENT_TARGET_OPTION:
+                    events.append("clear_marker")
+                options.pop(args[4], None)
+            elif args[0] == "set-option":
+                options[args[3]] = args[4]
+            return None
+
+        def out(*args, **kwargs):
+            if args[0] == "show-options":
+                return options.get(args[-1], "")
+            if args[3] == "%2":
+                pane_queried.set()
+                kind = "pane_query_new" if respawned.is_set() else "pane_query_old"
+                events.append(kind)
+                return new_command if respawned.is_set() else old_command
+            return f"%3\t\t{options.get(sidebar.cockpit.CURRENT_TARGET_OPTION, '')}\t\t\t."
+
+        def run_switch():
+            try:
+                with config.sessions_lock():
+                    sidebar.cockpit.switch(work, new_command)
+            except BaseException as error:
+                errors.append(error)
+
+        def run_sample():
+            try:
+                results.append(status._sample((), 0, synchronize=True))
+            except BaseException as error:
+                errors.append(error)
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot(local=("work",))), stale)
+            switcher = threading.Thread(target=run_switch)
+            sampler = threading.Thread(target=run_sample)
+            try:
+                with (
+                    patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
+                    patch.object(sidebar.cockpit, "startup_timeout", return_value=10),
+                    patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_call),
+                    patch.object(sidebar.cockpit.tmux, "out", side_effect=out),
+                ):
+                    switcher.start()
+                    self.assertTrue(in_window.wait(1))
+                    sampler.start()
+                    # Broken code validates (and clears) during the window; fixed code blocks on the lock.
+                    pane_queried.wait(1)
+                    release.set()
+                    switcher.join(5)
+                    sampler.join(5)
+                    self.assertEqual(errors, [])
+                    self.assertNotIn("clear_marker", events)
+                    self.assertNotIn("pane_query_old", events)
+                    self.assertLess(events.index("respawn"), events.index("pane_query_new"))
+                    self.assertEqual(options.get(sidebar.cockpit.CURRENT_TARGET_OPTION), work.format())
+                    self.assertEqual(sidebar.cockpit.current_target(), work)
+                    self.assertEqual(len(results), 1)
+                    self.assertEqual(results[0].current_target, work)
+                    self.assertTrue(results[0].synchronized)
             finally:
                 release.set()
                 status.close()
@@ -114,8 +195,9 @@ class RevisionTargetSynchronizationTest(unittest.TestCase):
                 return STOP
             elif status._synchronize_pending and status._future is not None:
                 self.assertTrue(entered.wait(1))
+                # The synchronized sample holds sessions_lock while it validates.
                 with config.sessions_lock(blocking=False) as acquired:
-                    self.assertTrue(acquired)
+                    self.assertFalse(acquired)
                 self.assertEqual(draw.call_args.args[2], 1)
                 navigated = True
                 return curses.KEY_DOWN

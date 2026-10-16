@@ -1822,7 +1822,10 @@ class AsyncStatusPoller:
                 elif command == "refresh":
                     self._poller.refresh()
             if synchronize:
-                current_target = _current_target()
+                # Serializing with navigation keeps validate-and-clear from erasing a
+                # marker published by a switch that has not respawned its pane yet.
+                with config.sessions_lock():
+                    current_target = _current_target()
             status = cockpit.status_snapshot()
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
