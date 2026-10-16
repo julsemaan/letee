@@ -1896,6 +1896,17 @@ class AsyncStatusPoller:
                 self._generation += 1
                 self.startup_deadline = None
 
+    def synchronize_target(self, target: Target | None) -> None:
+        if target == self.current_target:
+            return
+        self._suppressed_target = self.current_target if target is None else None
+        self.current_target = target
+        self.current_agent = None
+        self._pending_agent = None
+        self._refresh_target = None
+        self._generation += 1
+        self.startup_deadline = None
+
     @property
     def refresh_pending(self) -> bool:
         return self._refresh_pending or self._refresh_target is not None
@@ -3644,17 +3655,8 @@ def run(stdscr: curses.window) -> None:
                         revision = config.sessions_revision()
                         if revision != tracking_revision:
                             state.favorites[:] = load_sessions()
-                            if current_target is not None and current_target not in state.favorites:
-                                active = _current_target()
-                                if active != current_target:
-                                    effect = Effect(
-                                        "rename" if active else "kill", current_target,
-                                        message=active.session if active else "",
-                                    )
-                                    external = EffectResult(effect, tuple(state.favorites))
-                                    _apply_effect(external, state, poller, status_timeout)
-                                    poller.observe_effect(external)
-                                    current_target = poller.current_target
+                            poller.synchronize_target(_current_target())
+                            current_target = poller.current_target
                             tracking_revision = revision
                             poller.refresh()
                             rebuild()

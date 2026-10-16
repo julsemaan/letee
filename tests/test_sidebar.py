@@ -553,19 +553,13 @@ class ReconciliationLoopTest(unittest.TestCase):
                             # Deliberately leave the sampled active target stale.
                             return True
 
-                        def observe(result):
-                            if result.effect.kind == "kill" and poller.current_target == old:
-                                poller.current_target = None
-                            elif result.effect.kind == "rename" and poller.current_target == old:
-                                poller.current_target = renamed
-
                         def mutate(*_args):
                             with config.sessions_lock(blocking=False) as acquired:
                                 self.assertFalse(acquired)
                             return renamed
 
                         poller.tick.side_effect = tick
-                        poller.observe_effect.side_effect = observe
+                        poller.synchronize_target.side_effect = lambda target: setattr(poller, "current_target", target)
                         results = []
                         actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
                         actions.submit.side_effect = lambda effect, favorites: results.append(
@@ -597,6 +591,60 @@ class ReconciliationLoopTest(unittest.TestCase):
                         self.assertEqual(marker[0], expected)
                         self.assertEqual(poller.current_target, expected)
                         self.assertNotIn(old, [entry.target for entry in draw.call_args.args[1]])
+
+    def test_remote_removal_then_local_navigation_does_not_block_reconciliation(self):
+        old = Target("ssh", "old", "dev")
+        active, missing = Target("local", "work"), Target("local", "missing")
+        data = snapshot(local=("work",), remotes={"dev": source("ssh", host="dev")})
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([old, active, missing])
+            poller = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), old)
+            marker = [old]
+            ticks = [0]
+            original_tick = poller.tick
+
+            def tick(now):
+                ticks[0] += 1
+                if ticks[0] == 2:
+                    config.save_sessions([active, missing])
+                    marker[0] = active
+                if ticks[0] > 2:
+                    commands, poller._commands = poller._commands, []
+                    poller._future = unittest.mock.Mock()
+                    poller._future.done.return_value = True
+                    poller._future.result.return_value = sidebar.StatusResult(
+                        data, active, None, None, True, poller._generation,
+                        any(command == "refresh" for command, _ in commands),
+                        sampled=True,
+                    )
+                poller._next_poll = float("inf")
+                return original_tick(now)
+
+            actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+            actions.poll.return_value = None
+            try:
+                with (
+                    patch.object(poller, "tick", side_effect=tick),
+                    patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                    patch.object(sidebar, "EffectRunner", return_value=actions),
+                    patch.object(sidebar, "load_hosts", return_value=[]),
+                    patch.object(sidebar, "_current_target", side_effect=lambda: marker[0]),
+                    patch.object(sidebar, "_init_colors"),
+                    patch.object(sidebar, "_mouse_mask"),
+                    patch.object(sidebar.curses, "curs_set"),
+                    patch.object(sidebar, "_draw", return_value=(2, None)),
+                    patch.object(sidebar, "_bell_targets", return_value=set()),
+                ):
+                    sidebar.run(FakeScreen([-1] * 6 + [STOP], size=(16, 60)))
+                self.assertEqual(poller.current_target, active)
+                self.assertIsNone(poller._refresh_target)
+                self.assertFalse(poller.refresh_pending)
+                self.assertIn(
+                    Effect("ensure_created", missing, automatic=True),
+                    [call.args[0] for call in actions.submit.call_args_list],
+                )
+            finally:
+                poller.close()
 
     def test_removal_before_reconciliation_does_not_recreate_target(self):
         target = Target("local", "work")
