@@ -3,7 +3,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -162,6 +162,49 @@ class MainTest(unittest.TestCase):
             for args in (["switch", target.format()], ["switch-session", "1"]):
                 with self.subTest(args=args):
                     self.assertEqual(main(args), 0)
+
+    def test_switch_session_looks_up_updated_or_removed_slot_under_lock(self):
+        old_target = Target("local", "old")
+        new_target = Target("local", "new")
+        sessions_lock = MAIN_MODULE.config.sessions_lock
+
+        for updated in ([new_target], []):
+            with (
+                self.subTest(updated=updated),
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(MAIN_MODULE.config, "config_dir", return_value=Path(directory)),
+            ):
+                MAIN_MODULE.config.save_sessions([old_target])
+
+                @contextmanager
+                def lock_after_kill():
+                    with sessions_lock():
+                        MAIN_MODULE.config.save_sessions(updated)
+                        yield True
+
+                def load_locked_sessions():
+                    with sessions_lock(blocking=False) as acquired:
+                        self.assertFalse(acquired)
+                    return MAIN_MODULE.config.load_sessions()
+
+                with (
+                    patch.object(MAIN_MODULE.config, "sessions_lock", lock_after_kill),
+                    patch.object(MAIN_MODULE, "load_sessions", side_effect=load_locked_sessions),
+                    patch.object(MAIN_MODULE.cockpit, "require_cockpit"),
+                    patch.object(MAIN_MODULE.cockpit, "switch") as switch,
+                    patch.object(MAIN_MODULE.sessions, "attach_command") as attach,
+                ):
+                    if updated:
+                        self.assertEqual(main(["switch-session", "1"]), 0)
+                        switch.assert_called_once()
+                        self.assertEqual(switch.call_args.args[0], new_target)
+                        switch.call_args.args[1]()
+                        attach.assert_called_once_with(new_target)
+                    else:
+                        with self.assertRaisesRegex(SystemExit, "^No session in slot 1$"):
+                            main(["switch-session", "1"])
+                        switch.assert_not_called()
+                        attach.assert_not_called()
 
     def test_switch_session_rejects_empty_slot_without_switching(self):
         with (
