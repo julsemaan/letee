@@ -1240,6 +1240,9 @@ def _perform_locked_effect(effect: Effect, favorites: tuple[Target, ...]) -> Eff
             if effect.kind == "add_switch" and planned != favorites:
                 save_sessions(list(planned))
             if effect.automatic:
+                deadline = cockpit.startup_deadline(effect.target)
+                if deadline is not None and time.monotonic() < deadline:
+                    return EffectResult(effect, planned, stale_navigation=True)
                 # Keep the current overlay until preparation finishes without navigation.
                 attach_command = sessions.attach_command(effect.target)
                 if _current_target() != effect.target:

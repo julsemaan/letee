@@ -222,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "switch":
         target = parse_target(args.target)
         cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        with config.sessions_lock():
+            cockpit.switch(target, lambda: sessions.attach_command(target))
         return 0
     if args.command == "switch-session":
         favorites = load_sessions()
@@ -230,7 +231,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"No session in slot {args.slot}")
         target = favorites[args.slot - 1]
         cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        with config.sessions_lock():
+            cockpit.switch(target, lambda: sessions.attach_command(target))
         return 0
     if args.command == "kill":
         target = parse_target(args.target)

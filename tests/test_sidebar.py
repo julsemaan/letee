@@ -943,6 +943,37 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertIsNone(interrupted)
         switch.assert_not_called()
 
+    def test_queued_restore_rechecks_same_target_startup_under_lock(self):
+        target = Target("local", "work")
+        submitted = []
+        reconciler = sidebar.SessionReconciler()
+        reconciler.reconcile(
+            (target,), target, snapshot(),
+            lambda effect: submitted.append(effect) or True, 10,
+            shared_deadline=None,
+        )
+        self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
+
+        def fresh_deadline(_target):
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+            return 20
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "config_dir", return_value=Path(directory)),
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "startup_deadline", side_effect=fresh_deadline),
+            patch.object(sidebar.time, "monotonic", return_value=11),
+            patch.object(sidebar.sessions, "attach_command") as prepare,
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            result = sidebar._perform_effect(submitted[0], (target,))
+
+        self.assertTrue(result.stale_navigation)
+        prepare.assert_not_called()
+        switch.assert_not_called()
+
     def test_matching_live_absent_target_is_restored_immediately(self):
         target = Target("local", "a")
 
@@ -1039,6 +1070,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
 
                 with (
                     patch.object(sidebar.cockpit, "current_target", side_effect=lambda: active),
+                    patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
                     patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
                     patch.object(sidebar.cockpit.tmux, "tmux") as tmux_command,
                     patch.object(sidebar.sessions, "attach_command", side_effect=prepare),
@@ -1185,6 +1217,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             patch.object(sidebar.cockpit, "current_target", return_value=target),
             patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
             patch.object(sidebar.cockpit.tmux, "tmux") as tmux_call,
+            patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
             patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=True),
             patch.object(sidebar.sessions, "load_persistent_ssh", return_value=True),
             patch.object(sidebar.sessions.subprocess, "run", side_effect=[

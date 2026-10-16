@@ -136,6 +136,33 @@ class MainTest(unittest.TestCase):
 
         attach_command.assert_called_once_with(target)
 
+    def test_cli_navigation_holds_restoration_lock_through_launch(self):
+        target = Target("local", "work")
+
+        def assert_locked():
+            with MAIN_MODULE.config.sessions_lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+
+        def attach(_target):
+            assert_locked()
+            return "attach"
+
+        def launch(_target, prepare):
+            assert_locked()
+            self.assertEqual(prepare(), "attach")
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(MAIN_MODULE.config, "config_dir", return_value=Path(directory)),
+            patch.object(MAIN_MODULE, "load_sessions", return_value=[target]),
+            patch.object(MAIN_MODULE.cockpit, "require_cockpit"),
+            patch.object(MAIN_MODULE.sessions, "attach_command", side_effect=attach),
+            patch.object(MAIN_MODULE.cockpit, "switch", side_effect=launch),
+        ):
+            for args in (["switch", target.format()], ["switch-session", "1"]):
+                with self.subTest(args=args):
+                    self.assertEqual(main(args), 0)
+
     def test_switch_session_rejects_empty_slot_without_switching(self):
         with (
             patch("letee.__main__.load_sessions", return_value=[Target("local", "work")]),
