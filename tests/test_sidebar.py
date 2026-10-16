@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import shlex
 import subprocess
@@ -50,6 +51,1225 @@ def _assert_deferred_switch(testcase, switch, target, *extra):
     testcase.assertEqual(switch.call_args.args[0], target)
     testcase.assertTrue(callable(switch.call_args.args[1]))
     testcase.assertEqual(switch.call_args.args[2:], extra)
+
+
+class RevisionTargetSynchronizationTest(unittest.TestCase):
+    def test_blocked_query_leaves_tick_available_while_holding_sessions_lock(self):
+        old = Target("local", "old")
+        entered, release = threading.Event(), threading.Event()
+        data = snapshot(local=("old",))
+
+        def query():
+            entered.set()
+            release.wait(2)
+            return None
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([old])
+            status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), old)
+            try:
+                with (
+                    patch.object(sidebar, "_current_target", side_effect=query),
+                    patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(old, None, None, True)),
+                ):
+                    with config.sessions_lock():
+                        status.request_target_sync()
+                    status.tick(0)
+                    self.assertTrue(entered.wait(1))
+                    self.assertFalse(status.tick(0))
+                    # The synchronized sample holds sessions_lock while it validates.
+                    with config.sessions_lock(blocking=False) as acquired:
+                        self.assertFalse(acquired)
+                    self.assertEqual(status.current_target, old)
+                    release.set()
+                    status._future.result(timeout=1)
+                    status.tick(0)
+                    self.assertIsNone(status.current_target)
+                    self.assertFalse(status.refresh_pending)
+            finally:
+                release.set()
+                status.close()
+
+    def test_synchronized_sample_waits_out_switch_marker_window(self):
+        work, stale = Target("local", "work"), Target("local", "stale")
+        new_command = "tmux -L letee.inner attach-session -t work"
+        old_command = "tmux -L letee.inner attach-session -t stale"
+        in_window, release, respawned = threading.Event(), threading.Event(), threading.Event()
+        pane_queried = threading.Event()
+        options, events, errors, results = {}, [], [], []
+
+        def tmux_call(*args, **kwargs):
+            if args[0] == "respawn-pane":
+                events.append("respawn")
+                in_window.set()
+                release.wait(2)
+                respawned.set()
+            elif args[0] == "if-shell":
+                options[sidebar.cockpit.CURRENT_TARGET_OPTION] = work.format()
+                events.append("publish_marker")
+            elif args[0] == "set-option" and args[1] == "-u":
+                if args[4] == sidebar.cockpit.CURRENT_TARGET_OPTION:
+                    events.append("clear_marker")
+                options.pop(args[4], None)
+            elif args[0] == "set-option":
+                options[args[3]] = args[4]
+            return None
+
+        def out(*args, **kwargs):
+            if args[0] == "show-options":
+                return options.get(args[-1], "")
+            if args[3] == "%2":
+                pane_queried.set()
+                kind = "pane_query_new" if respawned.is_set() else "pane_query_old"
+                events.append(kind)
+                return new_command if respawned.is_set() else old_command
+            return f"%3\t\t{options.get(sidebar.cockpit.CURRENT_TARGET_OPTION, '')}\t\t\t."
+
+        def run_switch():
+            try:
+                with config.sessions_lock():
+                    sidebar.cockpit.switch(work, new_command)
+            except BaseException as error:
+                errors.append(error)
+
+        def run_sample():
+            try:
+                results.append(status._sample((), 0, synchronize=True))
+            except BaseException as error:
+                errors.append(error)
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot(local=("work",))), stale)
+            switcher = threading.Thread(target=run_switch)
+            sampler = threading.Thread(target=run_sample)
+            try:
+                with (
+                    patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
+                    patch.object(sidebar.cockpit, "startup_timeout", return_value=10),
+                    patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_call),
+                    patch.object(sidebar.cockpit.tmux, "out", side_effect=out),
+                ):
+                    switcher.start()
+                    self.assertTrue(in_window.wait(1))
+                    sampler.start()
+                    # Broken code validates (and clears) during the window; fixed code blocks on the lock.
+                    pane_queried.wait(1)
+                    release.set()
+                    switcher.join(5)
+                    sampler.join(5)
+                    self.assertEqual(errors, [])
+                    self.assertNotIn("clear_marker", events)
+                    self.assertNotIn("pane_query_old", events)
+                    self.assertLess(events.index("respawn"), events.index("pane_query_new"))
+                    self.assertEqual(options.get(sidebar.cockpit.CURRENT_TARGET_OPTION), work.format())
+                    self.assertEqual(sidebar.cockpit.current_target(), work)
+                    self.assertEqual(len(results), 1)
+                    self.assertEqual(results[0].current_target, work)
+                    self.assertTrue(results[0].synchronized)
+            finally:
+                release.set()
+                status.close()
+
+    def test_sidebar_accepts_keyboard_input_during_revision_query(self):
+        first, second = Target("local", "first"), Target("local", "second")
+        entered, release = threading.Event(), threading.Event()
+        screen = FakeScreen(size=(16, 60))
+        reads = 0
+        navigated = False
+
+        def query():
+            if reads:
+                entered.set()
+                release.wait(2)
+            return first
+
+        def read_key():
+            nonlocal reads, navigated
+            reads += 1
+            self.assertLess(reads, 20)
+            if reads == 1:
+                config.save_sessions([second, first])
+            elif navigated:
+                self.assertFalse(release.is_set())
+                release.set()
+                return STOP
+            elif status._synchronize_pending and status._future is not None:
+                self.assertTrue(entered.wait(1))
+                # The synchronized sample holds sessions_lock while it validates.
+                with config.sessions_lock(blocking=False) as acquired:
+                    self.assertFalse(acquired)
+                self.assertEqual(draw.call_args.args[2], 1)
+                navigated = True
+                return curses.KEY_DOWN
+            return -1
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([first, second])
+            discovery = unittest.mock.Mock(snapshot=snapshot(local=("first", "second")))
+            status = sidebar.AsyncStatusPoller(discovery, first)
+            status._next_poll = float("inf")
+            actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+            actions.poll.return_value = None
+            try:
+                with (
+                    patch.object(sidebar, "AsyncStatusPoller", return_value=status),
+                    patch.object(sidebar, "EffectRunner", return_value=actions),
+                    patch.object(sidebar, "load_hosts", return_value=[]),
+                    patch.object(sidebar, "_current_target", side_effect=query),
+                    patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(first, None, None, True)),
+                    patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+                    patch.object(sidebar, "_init_colors"),
+                    patch.object(sidebar, "_mouse_mask"),
+                    patch.object(sidebar.curses, "curs_set"),
+                    patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+                    patch.object(screen, "getch", side_effect=read_key),
+                ):
+                    sidebar.run(screen)
+                self.assertTrue(navigated)
+                self.assertEqual(draw.call_args.args[2], 0)
+            finally:
+                release.set()
+                status.close()
+
+    def test_query_failures_preserve_state_and_retry(self):
+        old = Target("local", "old")
+        for error in (SystemExit("timeout"), OSError("unavailable"), subprocess.TimeoutExpired("tmux", 1)):
+            with self.subTest(error=error):
+                status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), old)
+                try:
+                    with patch.object(sidebar, "_current_target", side_effect=error):
+                        status.request_target_sync()
+                        status.tick(0)
+                        status._future.result(timeout=1)
+                        status.tick(0)
+                    self.assertEqual(status.current_target, old)
+                    self.assertTrue(status.refresh_pending)
+                finally:
+                    status.close()
+
+    def test_results_superseded_by_revision_or_navigation_are_discarded(self):
+        old, stale, newer = (Target("local", name) for name in ("old", "stale", "newer"))
+        for change in ("revision", "navigation"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+                config.save_sessions([old])
+                status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), old)
+                try:
+                    with (
+                        patch.object(sidebar, "_current_target", return_value=stale),
+                        patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(stale, None, None, True)),
+                        patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+                    ):
+                        status.request_target_sync()
+                        status.tick(0)
+                        status._future.result(timeout=1)
+                    if change == "revision":
+                        config.save_sessions([newer])
+                    else:
+                        status.observe_effect(sidebar.EffectResult(sidebar.Effect("switch", newer), (newer,)))
+                    status.tick(0)
+                    self.assertEqual(status.current_target, old if change == "revision" else newer)
+                    self.assertTrue(status.refresh_pending)
+                finally:
+                    status.close()
+
+
+class SessionReconcilerTest(unittest.TestCase):
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def setUp(self, _load_timing):
+        self.reconciler = sidebar.SessionReconciler()
+        self.submit = unittest.mock.Mock(return_value=True)
+
+    @patch.object(sidebar.cockpit, "startup_deadline", return_value=None)
+    def test_reconciliation_does_not_read_startup_marker(self, read_marker):
+        target = Target("local", "work")
+        self.reconciler.reconcile((target,), target, snapshot(local=("work",)), self.submit, 0)
+        read_marker.assert_not_called()
+
+    @patch.object(sidebar.cockpit, "startup_timeout", return_value=10)
+    def test_startup_cleanup_is_nonblocking_and_deduplicated(self, _timeout):
+        target = Target("local", "work")
+        for present in (True, False):
+            with self.subTest(present=present):
+                reconciler = sidebar.SessionReconciler()
+                data = snapshot(local=("work",) if present else ())
+                entered, release, returned = (threading.Event() for _ in range(3))
+
+                def clear(*args):
+                    entered.set()
+                    release.wait(2)
+
+                def reconcile():
+                    reconciler.reconcile((target,), target, data, self.submit, 15, 10)
+                    returned.set()
+
+                with patch.object(sidebar.cockpit, "clear_startup", side_effect=clear) as cleanup:
+                    ui = threading.Thread(target=reconcile)
+                    ui.start()
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        self.assertTrue(returned.wait(1), "cleanup blocked reconciliation")
+                        reconcile()
+                        cleanup.assert_called_once_with(target, 10)
+                    finally:
+                        release.set()
+                        ui.join(2)
+                        for worker in reconciler._startup_clears.values():
+                            worker.join(2)
+                    # A completed clear must not be repeated for a cached deadline either.
+                    reconcile()
+                    cleanup.assert_called_once_with(target, 10)
+
+    @patch.object(sidebar.cockpit, "startup_timeout", return_value=10)
+    def test_delayed_startup_cleanup_keeps_exact_marker_guard(self, _timeout):
+        target = Target("local", "work")
+        entered, release = threading.Event(), threading.Event()
+        guards = []
+
+        def tmux_call(*args):
+            entered.set()
+            release.wait(2)
+            guards.append(args)
+
+        with patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_call):
+            try:
+                self.reconciler.reconcile((target,), target, snapshot(), self.submit, 15, 10)
+                self.assertTrue(entered.wait(1))
+                # A newer startup may be sampled before the old cleanup finishes.
+                self.reconciler.reconcile((target,), target, snapshot(), self.submit, 15, 25)
+            finally:
+                release.set()
+                for worker in self.reconciler._startup_clears.values():
+                    worker.join(2)
+        self.assertEqual(guards, [(
+            "if-shell", "-F",
+            sidebar.cockpit._option_equals(sidebar.cockpit.STARTUP_OPTION, "local:work\t10"),
+            f"set-option -u -t {sidebar.cockpit.tmux.SESSION} {sidebar.cockpit.STARTUP_OPTION}",
+        )])
+
+    def test_absent_active_target_switches_even_when_untracked(self):
+        target = Target("local", "work")
+        self.reconciler.reconcile((), target, snapshot(), self.submit, 0)
+        self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    def test_absent_inactive_favorite_is_created_without_navigation(self):
+        target = Target("ssh", "work", "dev")
+        data = snapshot(remotes={"dev": source("ssh", host="dev")})
+        self.reconciler.reconcile((target,), None, data, self.submit, 0)
+        self.submit.assert_called_once_with(sidebar.Effect("ensure_created", target, automatic=True))
+
+    def test_existing_unknown_and_unreachable_sources_are_not_created(self):
+        targets = (
+            Target("local", "present"), Target("ssh", "unknown", "unknown"),
+            Target("ssh", "connecting", "connecting"), Target("ssh", "down", "down"),
+        )
+        data = snapshot(local=("present",), remotes={
+            "connecting": None, "down": source("ssh", host="down", available=False),
+        })
+        self.reconciler.reconcile(targets, None, data, self.submit, 0)
+        self.reconciler.reconcile((Target("local", "absent"),), None,
+                                  snapshot(local_available=False), self.submit, 0)
+        self.submit.assert_not_called()
+
+    def test_in_flight_target_is_not_submitted_twice(self):
+        target = Target("local", "work")
+        self.reconciler.reconcile((target,), None, snapshot(), self.submit, 0)
+        self.reconciler.reconcile((target,), None, snapshot(), self.submit, 100)
+        self.submit.assert_called_once()
+
+    def test_rejected_submission_is_not_marked_in_flight(self):
+        target = Target("local", "work")
+        self.submit.return_value = False
+        self.reconciler.reconcile((target,), None, snapshot(), self.submit, 0)
+        self.submit.return_value = True
+        self.reconciler.reconcile((target,), None, snapshot(), self.submit, 0)
+        self.assertEqual(self.submit.call_count, 2)
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(
+        retry_initial_delay=2, retry_max_delay=5,
+    ))
+    def test_failure_backoff_uses_completion_time_and_caps_delay(self, _load_timing):
+        target = Target("local", "work")
+        self.reconciler.reconcile((target,), None, snapshot(), self.submit, 0)
+        for completed, delay in ((10, 2), (20, 4), (30, 5), (40, 5)):
+            effect = self.submit.call_args.args[0]
+            self.assertEqual(effect, sidebar.Effect("ensure_created", target, automatic=True))
+            self.reconciler.observe(sidebar.EffectResult(
+                effect, (target,), error="timeout", completed_at=completed,
+            ))
+            self.submit.reset_mock()
+            self.reconciler.reconcile((target,), None, snapshot(), self.submit, completed + delay - 0.01)
+            self.submit.assert_not_called()
+            self.reconciler.reconcile((target,), None, snapshot(), self.submit, completed + delay)
+            self.submit.assert_called_once()
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(
+        ssh_auth_timeout=10,
+    ))
+    def test_switch_waits_for_discovery_confirmation_or_startup_timeout(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        def empty_sample():
+            return snapshot(remotes={"dev": source("ssh", host="dev")})
+
+        self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 0)
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (target,), completed_at=5,
+        ))
+        self.submit.reset_mock()
+        for now in (6, 8, 14.99):
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, now)
+        self.submit.assert_not_called()
+
+        confirmed = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        self.reconciler.reconcile((target,), target, confirmed, self.submit, 14.99)
+        self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 14.99)
+        self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (target,), completed_at=20,
+        ))
+        self.submit.reset_mock()
+        data = empty_sample()
+        self.reconciler.reconcile((target,), target, data, self.submit, 29.99)
+        self.submit.assert_not_called()
+        self.reconciler.reconcile((target,), target, data, self.submit, 30)
+        self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=60))
+    def test_switching_away_clears_startup_wait_for_tracked_remote(self, _load_timing):
+        first = Target("ssh", "first", "dev")
+        second = Target("ssh", "second", "dev")
+        favorites = (first, second)
+        data = snapshot(remotes={"dev": source("ssh", ("second",), host="dev")})
+        self.reconciler.reconcile(favorites, first, data, self.submit, 0)
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], favorites, completed_at=5,
+        ))
+        self.submit.reset_mock()
+        self.reconciler.reconcile(favorites, first, data, self.submit, 6)
+        self.submit.assert_not_called()
+
+        self.reconciler.observe(sidebar.EffectResult(
+            sidebar.Effect("switch", second), favorites, completed_at=7,
+        ))
+        self.reconciler.reconcile(favorites, second, data, self.submit, 8)
+        self.submit.assert_called_once_with(sidebar.Effect("ensure_created", first, automatic=True))
+        self.assertNotIn(first, self.reconciler._awaiting_discovery)
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
+    @patch.object(sidebar.cockpit, "clear_startup")
+    def test_explicit_navigation_waits_for_startup_timeout_with_empty_discovery(
+        self, _clear_startup, _load_timing,
+    ):
+        target = Target("ssh", "work", "dev")
+        for kind in ("switch", "add_switch", "create"):
+            with self.subTest(kind=kind):
+                reconciler = sidebar.SessionReconciler()
+                self.submit.reset_mock()
+                reconciler.observe(sidebar.EffectResult(
+                    sidebar.Effect(kind, target), (target,), completed_at=5,
+                ))
+                # Attachment preparation consumes part of the shared startup wait.
+                for now in (5, 8, 10, 14.99):
+                    data = snapshot(remotes={"dev": source("ssh", host="dev")})
+                    reconciler.reconcile((target,), target, data, self.submit, now, 10)
+                self.submit.assert_not_called()
+                reconciler.reconcile((target,), target, data, self.submit, 15, 10)
+                self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
+    def test_explicit_navigation_does_not_confirm_cached_presence(self, _timing):
+        target = Target("ssh", "work", "dev")
+        for kind in ("switch", "add_switch", "create"):
+            with self.subTest(kind=kind):
+                reconciler = sidebar.SessionReconciler()
+                self.submit.reset_mock()
+                cached = snapshot(remotes={
+                    "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=4),
+                })
+                reconciler.observe(sidebar.EffectResult(
+                    sidebar.Effect(kind, target), (target,), completed_at=5,
+                ))
+                reconciler.reconcile((target,), target, cached, self.submit, 6)
+                absent = snapshot(remotes={"dev": source("ssh", host="dev")})
+                reconciler.reconcile((target,), target, absent, self.submit, 8)
+                self.submit.assert_not_called()
+                reconciler.reconcile((target,), target, absent, self.submit, 15)
+                self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    @patch.object(sidebar.cockpit, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
+    @patch.object(sidebar.cockpit, "right_pane", return_value="%2")
+    @patch.object(time, "monotonic", return_value=5)
+    def test_numbered_shortcut_shares_startup_wait_without_observe(self, _clock, _pane, _timing):
+        from letee.__main__ import main
+
+        target = Target("ssh", "work", "dev")
+        options = {}
+
+        def tmux_command(*args, **kwargs):
+            if args[0] == "set-option" and "-u" not in args:
+                options[args[3]] = args[4]
+            elif args[0] == "if-shell":
+                # Apply marker updates and guarded clears to the fake tmux options.
+                command = shlex.split(args[-1])
+                marker_guard = sidebar.cockpit._option_equals(
+                    sidebar.cockpit.STARTUP_OPTION, options.get(sidebar.cockpit.STARTUP_OPTION, ""),
+                )
+                if args[2] in ("1", marker_guard):
+                    if "-u" in command:
+                        options.pop(command[-1], None)
+                    else:
+                        options[command[3]] = command[4]
+
+        def empty_sample():
+            return snapshot(remotes={"dev": source("ssh", host="dev")})
+
+        with (
+            patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_command),
+            patch.object(sidebar.cockpit, "_option", side_effect=lambda name: options.get(name, "")),
+            patch("letee.__main__.load_sessions", return_value=[target]),
+            patch.object(sidebar.sessions, "attach_command", return_value="slow ssh attachment"),
+        ):
+            cached = snapshot(remotes={
+                "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=4),
+            })
+            # Numbered shortcuts invoke switch in another process, without observe().
+            main(["switch-session", "1"])
+            self.assertEqual(options[sidebar.cockpit.CURRENT_TARGET_OPTION], target.format())
+            status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=cached), target)
+            try:
+                with patch.object(
+                    sidebar.cockpit, "status_snapshot",
+                    return_value=sidebar.cockpit.StatusSnapshot(target, None, None, True),
+                ):
+                    deadline = status._sample((), 0).startup_deadline
+            finally:
+                status.close()
+            self.assertEqual(deadline, 15)
+            self.reconciler.reconcile((target,), target, cached, self.submit, 5, deadline)
+            self.assertIn(sidebar.cockpit.STARTUP_OPTION, options)
+            for now in (5, 8, 14.99):
+                self.reconciler.reconcile((target,), target, empty_sample(), self.submit, now, deadline)
+            self.submit.assert_not_called()
+
+            confirmed = snapshot(remotes={
+                "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=8),
+            })
+            self.reconciler.reconcile((target,), target, confirmed, self.submit, 8, deadline)
+            self.assertNotIn(sidebar.cockpit.STARTUP_OPTION, options)
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 8)
+            self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+            self.reconciler = sidebar.SessionReconciler()
+            self.submit.reset_mock()
+            _clock.return_value = 5
+            main(["switch-session", "1"])
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 14.99, deadline)
+            self.submit.assert_not_called()
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 15, deadline)
+            self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    @patch.object(sidebar.cockpit, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
+    @patch.object(sidebar.cockpit, "right_pane", return_value="%2")
+    @patch.object(time, "monotonic", return_value=5)
+    def test_delayed_overlay_observation_preserves_same_target_shortcut_startup(self, clock, _pane, _timing):
+        from letee.__main__ import main
+
+        target = Target("ssh", "work", "dev")
+        for kind in ("show_reconnecting", "show_unavailable"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                options = {sidebar.cockpit.CURRENT_TARGET_OPTION: target.format()}
+                cleared_under_lock = []
+
+                def tmux_command(*args, **kwargs):
+                    if args[0] == "set-option" and "-u" not in args:
+                        options[args[3]] = args[4]
+                    elif args[0] == "if-shell":
+                        command = shlex.split(args[-1])
+                        guard = sidebar.cockpit._option_equals(
+                            sidebar.cockpit.STARTUP_OPTION,
+                            options.get(sidebar.cockpit.STARTUP_OPTION, ""),
+                        )
+                        if args[2] in ("1", guard):
+                            if "-u" in command:
+                                with config.sessions_lock(blocking=False) as acquired:
+                                    cleared_under_lock.append(not acquired)
+                                options.pop(command[-1], None)
+                            else:
+                                options[command[3]] = command[4]
+
+                with (
+                    patch.object(config, "config_dir", return_value=Path(directory)),
+                    patch.object(sidebar.cockpit, "current_target", return_value=target),
+                    patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_command) as tmux_command_mock,
+                    patch.object(sidebar.cockpit, "_option", side_effect=lambda name: options.get(name, "")),
+                    patch("letee.__main__.load_sessions", return_value=[target]),
+                    patch.object(sidebar.sessions, "attach_command", return_value="slow ssh attachment"),
+                ):
+                    clock.return_value = 5
+                    main(["switch-session", "1"])
+                    reconciler = sidebar.SessionReconciler()
+                    reconciler.observe(sidebar.EffectResult(
+                        sidebar.Effect("switch", target), (target,), completed_at=5,
+                    ))
+                    overlay = sidebar._perform_effect(sidebar.Effect(kind, target, automatic=True), (target,))
+                    self.assertFalse(overlay.error)
+                    self.assertFalse(overlay.stale_navigation)
+                    marker_after_overlay = sidebar.cockpit.startup_deadline(target)
+
+                    # The shortcut completes before the UI observes the older overlay result.
+                    clock.return_value = 6
+                    main(["switch-session", "1"])
+                    reconciler.observe(overlay)
+                    deadline = sidebar.cockpit.startup_deadline(target)
+                    self.assertEqual(deadline, 16)
+                    self.assertIsNone(marker_after_overlay)
+                    self.assertEqual(cleared_under_lock, [True])
+                    self.assertNotIn(target, reconciler._awaiting_discovery)
+                    self.submit.reset_mock()
+                    tmux_command_mock.reset_mock()
+                    for now in (6, 10, 15.99):
+                        clock.return_value = now
+                        absent = snapshot(remotes={"dev": source("ssh", host="dev")})
+                        reconciler.reconcile((target,), target, absent, self.submit, now, deadline)
+                        queued = sidebar._perform_effect(sidebar.Effect("switch", target, automatic=True), (target,))
+                        self.assertTrue(queued.stale_navigation)
+                    self.submit.assert_not_called()
+                    tmux_command_mock.assert_not_called()
+
+    def test_failed_or_stale_explicit_navigation_does_not_delay_reconciliation(self):
+        target = Target("ssh", "work", "dev")
+        for kind in ("switch", "add_switch", "create"):
+            for error, stale in (("timeout", False), ("", True)):
+                with self.subTest(kind=kind, error=error, stale=stale):
+                    reconciler = sidebar.SessionReconciler()
+                    self.submit.reset_mock()
+                    reconciler.observe(sidebar.EffectResult(
+                        sidebar.Effect(kind, target), (target,), error=error,
+                        stale_navigation=stale, completed_at=5,
+                    ))
+                    data = snapshot(remotes={"dev": source("ssh", host="dev")})
+                    reconciler.reconcile((target,), target, data, self.submit, 5)
+                    self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=60))
+    def test_overlay_releases_startup_wait_only_after_success(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        for kind in ("show_reconnecting", "show_unavailable"):
+            for error, stale in (("", False), ("timeout", False), ("", True)):
+                with self.subTest(kind=kind, error=error, stale=stale):
+                    reconciler = sidebar.SessionReconciler()
+                    self.submit.reset_mock()
+                    data = snapshot(remotes={"dev": source("ssh", host="dev")})
+                    reconciler.reconcile((target,), target, data, self.submit, 0)
+                    reconciler.observe(sidebar.EffectResult(
+                        self.submit.call_args.args[0], (target,), completed_at=5,
+                    ))
+                    self.submit.reset_mock()
+                    outage = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+                    reconciler.reconcile((target,), target, outage, self.submit, 6)
+                    self.submit.assert_not_called()
+                    reconciler.observe(sidebar.EffectResult(
+                        sidebar.Effect(kind, target, automatic=True), (target,),
+                        error=error, stale_navigation=stale, completed_at=6,
+                    ))
+                    recovered = snapshot(remotes={"dev": source("ssh", host="dev")})
+                    reconciler.reconcile((target,), target, recovered, self.submit, 7)
+                    if error or stale:
+                        self.submit.assert_not_called()
+                        reconciler.reconcile((target,), target, recovered, self.submit, 65)
+                    self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    def test_success_suppresses_same_source_until_new_source_identity(self):
+        target = Target("local", "work")
+        data = snapshot()
+        self.reconciler.reconcile((target,), None, data, self.submit, 0)
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (target,), completed_at=1,
+        ))
+        self.submit.reset_mock()
+        self.reconciler.reconcile((target,), None, SessionSnapshot(data.local, {}), self.submit, 100)
+        self.submit.assert_not_called()
+        self.reconciler.reconcile((target,), None, snapshot(), self.submit, 100)
+        self.submit.assert_called_once()
+
+    def test_success_suppression_is_per_source_not_whole_snapshot(self):
+        target = Target("ssh", "work", "dev")
+        remote = source("ssh", host="dev")
+        data = snapshot(remotes={"dev": remote})
+        self.reconciler.reconcile((target,), None, data, self.submit, 0)
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (target,), completed_at=1,
+        ))
+        self.submit.reset_mock()
+        self.reconciler.reconcile((target,), None, snapshot(remotes={"dev": remote}), self.submit, 100)
+        self.submit.assert_not_called()
+        self.reconciler.reconcile((target,), None,
+                                  snapshot(remotes={"dev": source("ssh", host="dev")}), self.submit, 100)
+        self.submit.assert_called_once()
+
+    def test_failed_first_favorite_does_not_starve_other_targets(self):
+        first, second = Target("local", "first"), Target("local", "second")
+        data = snapshot()
+        self.reconciler.reconcile((first, second), None, data, self.submit, 0)
+        effect = self.submit.call_args.args[0]
+        self.reconciler.observe(sidebar.EffectResult(
+            effect, (first, second), error="timeout", completed_at=1,
+        ))
+        self.submit.reset_mock()
+        self.reconciler.reconcile((first, second), None, data, self.submit, 100)
+        self.submit.assert_called_once()
+        self.assertNotEqual(self.submit.call_args.args[0].target, effect.target)
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_failure_backoff_is_independent_per_target(self, _load_timing):
+        first, second = Target("local", "first"), Target("local", "second")
+        data = snapshot()
+        self.reconciler.reconcile((first,), None, data, self.submit, 0)
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (first,), error="timeout", completed_at=10,
+        ))
+        self.submit.reset_mock()
+        self.reconciler.reconcile((first, second), None, data, self.submit, 10)
+        self.submit.assert_called_once_with(sidebar.Effect("ensure_created", second, automatic=True))
+        self.reconciler.observe(sidebar.EffectResult(
+            self.submit.call_args.args[0], (first, second), error="timeout", completed_at=20,
+        ))
+        self.submit.reset_mock()
+        self.reconciler.reconcile((first, second), None, data, self.submit, 20)
+        self.submit.assert_called_once_with(sidebar.Effect("ensure_created", first, automatic=True))
+
+    def test_one_submission_per_reconcile_and_in_flight_target_does_not_starve_others(self):
+        targets = (Target("local", "first"), Target("local", "second"))
+        data = snapshot()
+        self.reconciler.reconcile(targets, None, data, self.submit, 0)
+        self.submit.assert_called_once()
+        first_effect = self.submit.call_args.args[0]
+        self.submit.reset_mock()
+        self.reconciler.reconcile(targets, None, data, self.submit, 0)
+        self.submit.assert_called_once()
+        self.assertNotEqual(self.submit.call_args.args[0].target, first_effect.target)
+
+    def test_pruning_untracked_target_discards_in_flight_state(self):
+        target = Target("local", "work")
+        data = snapshot()
+        self.reconciler.reconcile((target,), None, data, self.submit, 0)
+        self.reconciler.reconcile((), None, data, self.submit, 1)
+        self.submit.reset_mock()
+        self.reconciler.reconcile((target,), None, data, self.submit, 1)
+        self.submit.assert_called_once()
+
+    def test_successful_kill_and_rename_do_not_recreate_obsolete_target(self):
+        old, renamed = Target("local", "old"), Target("local", "renamed")
+        for kind in ("kill", "rename"):
+            with self.subTest(kind=kind):
+                state = SidebarState(favorites=[old], selected_target=old)
+                effect = sidebar.Effect(kind, old, message="renamed" if kind == "rename" else "")
+                planned = sidebar._planned_favorites(effect, (old,))
+                sidebar._apply_effect(sidebar.EffectResult(effect, planned), state, unittest.mock.Mock(), 5)
+                submitted = []
+                self.reconciler.reconcile(tuple(state.favorites), None, snapshot(),
+                                          lambda item: submitted.append(item) or True, 0)
+                self.assertNotIn(old, [item.target for item in submitted])
+                self.assertEqual(submitted, [sidebar.Effect("ensure_created", renamed, automatic=True)]
+                                 if kind == "rename" else [])
+
+    def test_pruning_untracked_target_discards_backoff_and_success_suppression(self):
+        target = Target("local", "work")
+        for error in ("timeout", ""):
+            with self.subTest(error=error):
+                reconciler = sidebar.SessionReconciler()
+                data = snapshot()
+                self.submit.reset_mock()
+                reconciler.reconcile((target,), None, data, self.submit, 0)
+                reconciler.observe(sidebar.EffectResult(
+                    self.submit.call_args.args[0], (target,), error=error, completed_at=10,
+                ))
+                reconciler.reconcile((), None, data, self.submit, 10)
+                self.submit.reset_mock()
+                reconciler.reconcile((target,), None, data, self.submit, 10)
+                self.submit.assert_called_once()
+
+
+class ReconciliationLoopTest(unittest.TestCase):
+    def _run_reconciliation(self, targets, active, initial, updates=(), keys=None):
+        poller = unittest.mock.Mock(
+            snapshot=initial, current_target=active, bell_target=None, startup_deadline=None,
+            current_agent=None, pane_active=True, refresh_pending=False,
+        )
+        samples = iter(updates)
+
+        def tick(_now):
+            poller.snapshot = next(samples, poller.snapshot)
+            return True
+
+        poller.tick.side_effect = tick
+        results = []
+        actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+        actions.submit.side_effect = lambda effect, favorites: results.append(
+            sidebar._perform_effect(effect, favorites)
+        ) or True
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
+        screen = FakeScreen(keys or [-1] * 10 + [STOP], size=(16, 60))
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=targets),
+            patch.object(sidebar, "_current_target", return_value=active),
+            patch.object(sidebar.cockpit, "current_target", return_value=active),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.sessions, "ensure_created") as ensure,
+            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar.cockpit, "show_reconnecting"),
+            patch.object(sidebar, "save_sessions"),
+        ):
+            sidebar.run(screen)
+        return ensure, switch, draw, actions
+
+    def test_startup_recreates_all_absent_local_and_remote_favorites(self):
+        local, remote = Target("local", "local"), Target("ssh", "remote", "dev")
+        ensure, switch, _, actions = self._run_reconciliation(
+            [local, remote], None, snapshot(remotes={"dev": source("ssh", host="dev")}),
+        )
+        self.assertEqual(ensure.call_args_list, [call(local), call(remote)])
+        switch.assert_not_called()
+        self.assertEqual(actions.submit.call_count, 2)
+
+    def test_startup_reattaches_absent_active_target_and_recreates_inactive(self):
+        active, inactive = Target("local", "active"), Target("local", "inactive")
+        ensure, switch, _, _ = self._run_reconciliation([active, inactive], active, snapshot())
+        switch.assert_called_once_with(active, sidebar.sessions.attach_command(active))
+        ensure.assert_called_once_with(inactive)
+
+    def test_inactive_remote_recreated_only_after_host_recovers(self):
+        target = Target("ssh", "work", "dev")
+        down = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+        recovered = snapshot(remotes={"dev": source("ssh", host="dev")})
+        ensure, switch, _, _ = self._run_reconciliation(
+            [target], None, down, [down, down, recovered],
+        )
+        ensure.assert_called_once_with(target)
+        switch.assert_not_called()
+
+    def test_active_absent_remote_reattaches_after_host_recovers(self):
+        target = Target("ssh", "work", "dev")
+        down = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+        recovered = snapshot(remotes={"dev": source("ssh", host="dev")})
+        ensure, switch, _, _ = self._run_reconciliation(
+            [target], target, down, [down, down, recovered],
+        )
+        ensure.assert_not_called()
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
+
+    def test_same_target_shortcut_after_overlay_allows_fresh_discovery_and_other_favorite(self):
+        active = Target("ssh", "work", "dev")
+        missing = Target("local", "other")
+        down = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+        present = snapshot(remotes={"dev": replace(
+            source("ssh", ("work",), host="dev"), sampled_at=12,
+        )})
+        poller = unittest.mock.Mock(
+            snapshot=down, current_target=active, bell_target=None, startup_deadline=None,
+            current_agent=None, pane_active=True, refresh_pending=False,
+        )
+        actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+        results = []
+        ticks = 0
+
+        def tick(_now):
+            nonlocal ticks
+            ticks += 1
+            if ticks == 2:
+                # The numbered shortcut runs outside the sidebar and keeps the same target.
+                poller.startup_deadline = 71
+                poller.snapshot = replace(present, remotes={"dev": replace(
+                    present.remotes["dev"], sampled_at=10,
+                )})
+            elif ticks == 3:
+                poller.snapshot = present
+            elif ticks == 4:
+                # The shared startup cleanup has completed; the overlay must stay cleared.
+                poller.startup_deadline = None
+            return True
+
+        def submit(effect, favorites):
+            actions.busy = True
+            # A switch queued during startup would be rejected by the worker.
+            results.append(sidebar.EffectResult(
+                effect, favorites, stale_navigation=effect.kind == "switch",
+            ))
+            return True
+
+        def poll():
+            actions.busy = False
+            return results.pop(0) if results else None
+
+        poller.tick.side_effect = tick
+        actions.submit.side_effect = submit
+        actions.poll.side_effect = poll
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[active, missing]),
+            patch.object(sidebar, "_current_target", return_value=active),
+            patch.object(sidebar.cockpit, "current_target", return_value=active),
+            patch.object(sidebar.cockpit, "startup_timeout", return_value=60),
+            patch.object(sidebar.SessionReconciler, "_clear_startup") as clear_startup,
+            patch.object(sidebar.time, "monotonic", return_value=12),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+        ):
+            sidebar.run(FakeScreen([-1] * 8 + [STOP], size=(16, 60)))
+        effects = [item.args[0] for item in actions.submit.call_args_list]
+        self.assertEqual(effects, [
+            sidebar.Effect("show_reconnecting", active, automatic=True),
+            sidebar.Effect("ensure_created", missing, automatic=True),
+        ])
+        clear_startup.assert_called_once_with(active, 71)
+
+    def test_background_creation_preserves_keyboard_navigation_and_active_marker(self):
+        first, second = Target("local", "first"), Target("local", "second")
+        ensure, switch, draw, _ = self._run_reconciliation(
+            [first, second], None, snapshot(), keys=[-1, curses.KEY_DOWN, -1, -1, -1, STOP],
+        )
+        self.assertEqual(ensure.call_args_list, [call(first), call(second)])
+        switch.assert_not_called()
+        self.assertEqual(draw.call_args.args[2], 1)
+        self.assertIsNone(draw.call_args.kwargs.get("current_target"))
+
+    def test_cli_mutations_while_sidebar_is_running(self):
+        from letee.__main__ import main
+
+        old, renamed = Target("local", "old"), Target("local", "renamed")
+        other = Target("local", "other")
+        for command, tracked in (("kill", True), ("rename", True), ("kill", False)):
+            for active in (old, other):
+                with self.subTest(command=command, active=active, tracked=tracked), tempfile.TemporaryDirectory() as directory:
+                    with patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+                        config.save_sessions([old, other] if tracked else [other])
+                        marker = [active]
+                        data = snapshot(local=("old", "other"))
+                        poller = unittest.mock.Mock(
+                            snapshot=data, current_target=active, bell_target=None, startup_deadline=None,
+                            current_agent=None, pane_active=True, refresh_pending=False,
+                        )
+                        ticks = [0]
+
+                        def tick(_now):
+                            ticks[0] += 1
+                            if ticks[0] == 2:
+                                main([command, old.format(), *([renamed.session] if command == "rename" else [])])
+                                poller.snapshot = snapshot(
+                                    local=("other", "renamed") if command == "rename" else ("other",),
+                                )
+                            # Deliberately leave the sampled active target stale.
+                            return True
+
+                        def mutate(*_args):
+                            with config.sessions_lock(blocking=False) as acquired:
+                                self.assertFalse(acquired)
+                            return renamed
+
+                        poller.tick.side_effect = tick
+                        poller.request_target_sync.side_effect = lambda: setattr(poller, "current_target", marker[0])
+                        results = []
+                        actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+                        actions.submit.side_effect = lambda effect, favorites: results.append(
+                            sidebar._perform_effect(effect, favorites)
+                        ) or True
+                        actions.poll.side_effect = lambda: results.pop(0) if results else None
+                        with (
+                            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                            patch.object(sidebar, "EffectRunner", return_value=actions),
+                            patch.object(sidebar, "load_hosts", return_value=[]),
+                            patch.object(sidebar, "_current_target", side_effect=lambda: marker[0]),
+                            patch.object(sidebar.cockpit, "current_target", side_effect=lambda: marker[0]),
+                            patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda target: marker.__setitem__(0, None) if marker[0] == target else False),
+                            patch.object(sidebar.cockpit, "rename_target", side_effect=lambda target, new: marker.__setitem__(0, new) if marker[0] == target else None),
+                            patch.object(sidebar.sessions, "kill", side_effect=mutate),
+                            patch.object(sidebar.sessions, "rename", side_effect=mutate),
+                            patch.multiple(sidebar, _init_colors=unittest.mock.DEFAULT, _mouse_mask=unittest.mock.DEFAULT),
+                            patch.object(sidebar.curses, "curs_set"),
+                            patch.object(sidebar, "_draw", return_value=(2, None)) as draw,
+                            patch.object(sidebar, "_bell_targets", return_value=set()),
+                            patch.object(sidebar.sessions, "ensure_created") as ensure,
+                            patch.object(sidebar.cockpit, "switch") as switch,
+                        ):
+                            sidebar.run(FakeScreen([-1] * 12 + [STOP], size=(16, 60)))
+                        ensure.assert_not_called()
+                        switch.assert_not_called()
+                        self.assertNotIn(old, config.load_sessions())
+                        expected = (renamed if command == "rename" else None) if active == old else other
+                        self.assertEqual(marker[0], expected)
+                        self.assertEqual(poller.current_target, expected)
+                        self.assertNotIn(old, [entry.target for entry in draw.call_args.args[1]])
+
+    def test_remote_removal_then_local_navigation_does_not_block_reconciliation(self):
+        old = Target("ssh", "old", "dev")
+        active, missing = Target("local", "work"), Target("local", "missing")
+        data = snapshot(local=("work",), remotes={"dev": source("ssh", host="dev")})
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([old, active, missing])
+            poller = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), old)
+            marker = [old]
+            ticks = [0]
+            original_tick = poller.tick
+
+            def tick(now):
+                ticks[0] += 1
+                if ticks[0] == 2:
+                    config.save_sessions([active, missing])
+                    marker[0] = active
+                if ticks[0] > 2:
+                    commands, poller._commands = poller._commands, []
+                    poller._sample_revision = config.sessions_revision()
+                    poller._future = unittest.mock.Mock()
+                    poller._future.done.return_value = True
+                    poller._future.result.return_value = sidebar.StatusResult(
+                        data, active, None, None, True, poller._generation,
+                        any(command == "refresh" for command, _ in commands),
+                        sampled=True, synchronized=poller._synchronize_pending,
+                    )
+                poller._next_poll = float("inf")
+                return original_tick(now)
+
+            actions = unittest.mock.Mock(busy=False, blocks_favorite_changes=False)
+            actions.poll.return_value = None
+            try:
+                with (
+                    patch.object(poller, "tick", side_effect=tick),
+                    patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                    patch.object(sidebar, "EffectRunner", return_value=actions),
+                    patch.object(sidebar, "load_hosts", return_value=[]),
+                    patch.object(sidebar, "_current_target", side_effect=lambda: marker[0]),
+                    patch.object(sidebar, "_init_colors"),
+                    patch.object(sidebar, "_mouse_mask"),
+                    patch.object(sidebar.curses, "curs_set"),
+                    patch.object(sidebar, "_draw", return_value=(2, None)),
+                    patch.object(sidebar, "_bell_targets", return_value=set()),
+                ):
+                    sidebar.run(FakeScreen([-1] * 6 + [STOP], size=(16, 60)))
+                self.assertEqual(poller.current_target, active)
+                self.assertIsNone(poller._refresh_target)
+                self.assertFalse(poller.refresh_pending)
+                self.assertIn(
+                    Effect("ensure_created", missing, automatic=True),
+                    [call.args[0] for call in actions.submit.call_args_list],
+                )
+            finally:
+                poller.close()
+
+    def test_removal_before_reconciliation_does_not_recreate_target(self):
+        target = Target("local", "work")
+        ensure, switch, _, _ = self._run_reconciliation(
+            [target], None, snapshot(), keys=[ord("r"), -1, -1, STOP],
+        )
+        ensure.assert_not_called()
+        switch.assert_not_called()
+
+
+class SidebarTrackingMutationTest(unittest.TestCase):
+    def test_explicit_remote_switch_holds_sessions_lock_during_preparation_and_launch(self):
+        target = Target("ssh", "work", "dev")
+        command = "prepared remote attach"
+
+        def assert_locked():
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+
+        def prepare(_target):
+            assert_locked()
+            return command
+
+        def launch(*args):
+            if args == ("respawn-pane", "-k", "-t", "%2", command):
+                assert_locked()
+
+        pane = PaneTarget(target, "@1", "%3", "/tmp/tmux")
+        for kind, destination, prepare_method in (
+            ("switch", target, "attach_command"),
+            ("switch_pane", pane, "pane_attach_command"),
+        ):
+            with (
+                self.subTest(kind=kind),
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(config, "config_dir", return_value=Path(directory)),
+                patch.object(sidebar.sessions, prepare_method, side_effect=prepare) as attach,
+                patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
+                patch.object(sidebar.cockpit, "startup_timeout", return_value=10),
+                patch.object(sidebar.cockpit.tmux, "tmux", side_effect=launch) as tmux_command,
+            ):
+                result = sidebar._perform_effect(sidebar.Effect(kind, destination), (target,))
+                with config.sessions_lock(blocking=False) as acquired:
+                    self.assertTrue(acquired)
+
+                self.assertFalse(result.error)
+                attach.assert_called_once_with(destination)
+                self.assertIn(call("respawn-pane", "-k", "-t", "%2", command),
+                              tmux_command.call_args_list)
+
+    def test_cli_kill_before_sidebar_rename_acquires_lock(self):
+        from contextlib import contextmanager
+        from letee.__main__ import main
+
+        killed, old, renamed = (Target("local", name) for name in ("A", "B", "new"))
+        lock = config.sessions_lock
+
+        @contextmanager
+        def kill_before_lock():
+            with patch.object(config, "sessions_lock", lock):
+                main(["kill", killed.format()])
+            with lock() as acquired:
+                yield acquired
+
+        def rename(*_args):
+            with lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+            return renamed
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+            config.save_sessions([killed, old])
+            with (
+                patch.object(sidebar, "_current_target", return_value=None),
+                patch.object(sidebar.cockpit, "current_target", return_value=None),
+                patch.object(sidebar.cockpit, "reset_to_help"),
+                patch.object(sidebar.cockpit, "rename_target"),
+                patch.object(sidebar.sessions, "kill"),
+                patch.object(sidebar.sessions, "rename", side_effect=rename),
+                patch.object(config, "sessions_lock", side_effect=kill_before_lock),
+            ):
+                result = sidebar._perform_effect(sidebar.Effect("rename", old, message="new"), (killed, old))
+            self.assertFalse(result.error)
+            self.assertEqual(config.load_sessions(), [renamed])
+            submit = unittest.mock.Mock(return_value=True)
+            sidebar.SessionReconciler().reconcile(result.favorites, None, snapshot(), submit, 0)
+            self.assertNotIn(killed, [call.args[0].target for call in submit.call_args_list])
+            with (
+                patch.object(sidebar, "_current_target", return_value=None),
+                patch.object(sidebar.sessions, "ensure_created") as ensure,
+            ):
+                sidebar._perform_effect(sidebar.Effect("ensure_created", killed, automatic=True), (killed, old))
+            ensure.assert_not_called()
+
+    def test_stale_removal_and_reorder_preserve_concurrent_tracking_changes(self):
+        killed, first, second, added = (Target("local", name) for name in ("A", "B", "C", "D"))
+        for action, expected in (("remove_session", [second, added]), ("move_session_down", [second, first, added])):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                with patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+                    state = SidebarState(favorites=[killed, first, second], selected_target=first, selected_tracked=True)
+                    effect = sidebar._transition(state, action)
+                    config.save_sessions([first, second, added])
+                    with patch.object(sidebar, "_current_target", return_value=None):
+                        result = sidebar._perform_effect(effect, (killed, first, second))
+                    self.assertFalse(result.error)
+                    self.assertEqual(config.load_sessions(), expected)
+                    self.assertEqual(result.favorites, tuple(expected))
+                    submit = unittest.mock.Mock(return_value=True)
+                    sidebar.SessionReconciler().reconcile(result.favorites, None, snapshot(), submit, 0)
+                    self.assertNotIn(killed, [call.args[0].target for call in submit.call_args_list])
+
+
+class AutomaticSessionEffectTest(unittest.TestCase):
+    def test_reachable_absent_active_session_submits_switch_without_missing_screen(self):
+        target = Target("local", "work")
+        submit = unittest.mock.Mock(return_value=True)
+        marker = sidebar._sync_active_session(target, snapshot(), None, submit)
+        self.assertIsNone(marker)
+        submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
+
+    def test_automatic_switch_preserves_selection_and_filter(self):
+        active, selected = Target("local", "active"), Target("local", "selected")
+        state = SidebarState(selected_target=selected, filter_text="selected", selected_index=2)
+        sidebar._apply_effect(sidebar.EffectResult(
+            sidebar.Effect("switch", active, automatic=True), (active, selected),
+        ), state, unittest.mock.Mock(), 5)
+        self.assertEqual((state.selected_target, state.filter_text, state.selected_index),
+                         (selected, "selected", 2))
+
+    def test_queued_creation_rechecks_tracking_before_recreating(self):
+        target = Target("local", "removed")
+        effect = sidebar.Effect("ensure_created", target, automatic=True)
+        with (
+            patch.object(sidebar, "load_sessions", return_value=[]),
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar.sessions, "ensure_created") as ensure,
+        ):
+            result = sidebar._perform_effect(effect, (target,))
+        self.assertTrue(result.stale_navigation)
+        ensure.assert_not_called()
+
+    def test_ensure_created_has_no_navigation_or_ui_side_effects(self):
+        target, selected = Target("local", "work"), Target("local", "selected")
+        favorites = (selected, target)
+        effect = sidebar.Effect("ensure_created", target, automatic=True)
+        state = SidebarState(favorites=list(favorites), selected_target=selected,
+                             filter_text="selected", status="unchanged", add_view="search")
+        before = vars(state).copy()
+        poller = unittest.mock.Mock()
+
+        def ensure_locked(_target):
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+
+        with (
+            patch.object(sidebar, "load_sessions", return_value=list(favorites)),
+            patch.object(sidebar.sessions, "ensure_created", side_effect=ensure_locked) as ensure,
+            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar, "save_sessions") as save,
+        ):
+            result = sidebar._perform_effect(effect, favorites)
+            sidebar._apply_effect(result, state, poller, 5)
+        ensure.assert_called_once_with(target)
+        switch.assert_not_called()
+        save.assert_not_called()
+        self.assertFalse(result.error)
+        self.assertEqual(result.favorites, favorites)
+        self.assertEqual(tuple(state.favorites), favorites)
+        self.assertEqual(vars(state), before)
+
+    def test_active_reconciliation_blocks_obsolete_target_mutations(self):
+        from concurrent.futures import Future
+
+        target = Target("local", "work")
+        runner = sidebar.EffectRunner()
+        try:
+            with patch.object(runner, "_start", side_effect=lambda *_: setattr(runner, "_future", Future())):
+                runner.submit(sidebar.Effect("switch", target, automatic=True), (target,))
+                self.assertTrue(runner.blocks_favorite_changes)
+                self.assertFalse(runner.submit(sidebar.Effect("rename", target, message="new"), (target,)))
+                self.assertFalse(runner.submit(sidebar.Effect("kill", target), (target,)))
+        finally:
+            runner.close()
+
+    def test_ensure_created_blocks_favorite_changes_but_queues_navigation(self):
+        from concurrent.futures import Future
+
+        target, next_target = Target("local", "work"), Target("local", "next")
+        ensure = sidebar.Effect("ensure_created", target, automatic=True)
+        navigation = sidebar.Effect("switch", next_target)
+        runner = sidebar.EffectRunner()
+        future = Future()
+        try:
+            with patch.object(runner, "_start", side_effect=lambda *_: setattr(runner, "_future", future)):
+                self.assertTrue(runner.submit(ensure, (target, next_target)))
+                self.assertTrue(runner.blocks_favorite_changes)
+                self.assertTrue(runner.submit(navigation, (target, next_target)))
+                self.assertFalse(runner.submit(sidebar.Effect("kill", target), (target, next_target)))
+                future.set_result(sidebar.EffectResult(ensure, (target, next_target)))
+                result = runner.poll()
+                self.assertEqual(result.effect, ensure)
+                self.assertTrue(runner.busy)
+                self.assertFalse(runner.blocks_favorite_changes)
+                self.assertEqual(runner._effect, navigation)
+        finally:
+            runner.close()
 
 
 class ActiveSessionAvailabilityTest(unittest.TestCase):
@@ -160,20 +1380,19 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         switch.assert_called_once()
         self.assertIsNone(sidebar._reconcile_active_session_effect(target, result, retry=retry, now=10))
 
-    def test_missing_active_session_replaces_frozen_pane_after_discovery(self):
+    def test_only_unreachable_active_sources_require_unavailable_screen(self):
         target = Target("ssh", "work", "dev")
 
-        self.assertFalse(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": None})))
-        self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev")})))
-        self.assertTrue(sidebar._should_show_unavailable(target, snapshot(remotes={"dev": source("ssh", host="dev", available=False)})))
+        self.assertEqual(sidebar._target_status(target, snapshot(remotes={"dev": None})), "connecting…")
+        self.assertIsNone(sidebar._target_status(target, snapshot(remotes={"dev": source("ssh", host="dev")})))
+        self.assertEqual(sidebar._target_status(target, snapshot(remotes={"dev": source("ssh", host="dev", available=False)})), "reconnecting…")
 
-    def test_stale_missing_effect_does_not_replace_newer_live_session(self):
+    def test_stale_absent_active_restore_does_not_replace_newer_live_session(self):
         cached_target = Target("local", "a")
         live_target = Target("local", "b")
 
         with (
             patch.object(sidebar.cockpit, "current_target", return_value=live_target),
-            patch.object(sidebar.cockpit, "show_missing") as show_missing,
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
             interrupted = sidebar._sync_active_session(
@@ -181,20 +1400,51 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
 
         self.assertIsNone(interrupted)
-        show_missing.assert_not_called()
         switch.assert_not_called()
 
-    def test_matching_live_target_still_shows_missing_message(self):
+    def test_queued_restore_rechecks_same_target_startup_under_lock(self):
+        target = Target("local", "work")
+        submitted = []
+        reconciler = sidebar.SessionReconciler()
+        reconciler.reconcile(
+            (target,), target, snapshot(),
+            lambda effect: submitted.append(effect) or True, 10,
+            shared_deadline=None,
+        )
+        self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
+
+        def fresh_deadline(_target):
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+            return 20
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(config, "config_dir", return_value=Path(directory)),
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "startup_deadline", side_effect=fresh_deadline),
+            patch.object(sidebar.time, "monotonic", return_value=11),
+            patch.object(sidebar.sessions, "attach_command") as prepare,
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            result = sidebar._perform_effect(submitted[0], (target,))
+
+        self.assertTrue(result.stale_navigation)
+        prepare.assert_not_called()
+        switch.assert_not_called()
+
+    def test_matching_live_absent_target_is_restored_immediately(self):
         target = Target("local", "a")
 
         with (
             patch.object(sidebar.cockpit, "current_target", return_value=target),
-            patch.object(sidebar.cockpit, "show_missing") as show_missing,
+            patch.object(sidebar.sessions, "attach_command", return_value="attach"),
+            patch.object(sidebar.cockpit, "switch") as switch,
         ):
             interrupted = sidebar._sync_active_session(target, snapshot(local=("b",)), None)
 
-        self.assertEqual(interrupted, target)
-        show_missing.assert_called_once_with(target)
+        self.assertIsNone(interrupted)
+        switch.assert_called_once_with(target, "attach")
 
     def test_stale_reconnecting_effect_is_dropped(self):
         cached_target = Target("ssh", "a", "dev")
@@ -279,6 +1529,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
 
                 with (
                     patch.object(sidebar.cockpit, "current_target", side_effect=lambda: active),
+                    patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
                     patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
                     patch.object(sidebar.cockpit.tmux, "tmux") as tmux_command,
                     patch.object(sidebar.sessions, "attach_command", side_effect=prepare),
@@ -297,7 +1548,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                         tmux_command.call_args_list,
                     )
 
-    def test_queued_stale_notification_does_not_mark_target(self):
+    def test_queued_stale_absent_restore_does_not_mark_target(self):
         target = Target("local", "cached")
         live_target = Target("local", "live")
         submitted = []
@@ -316,9 +1567,8 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
 
         self.assertTrue(result.stale_navigation)
         self.assertIsNone(sidebar._reconcile_active_session_effect(marker, result))
-        self.assertEqual(
-            sidebar._reconcile_active_session_effect(marker, sidebar.EffectResult(effect, ())),
-            target,
+        self.assertIsNone(
+            sidebar._reconcile_active_session_effect(marker, sidebar.EffectResult(effect, ()))
         )
 
     def test_queued_stale_restore_does_not_clear_target_marker(self):
@@ -381,20 +1631,19 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             sidebar._reconcile_active_session_effect(shown, result), shown
         )
 
-    def test_active_missing_session_shows_missing_then_restores_session(self):
+    def test_active_absent_session_restores_once_before_discovery_catches_up(self):
         target = Target("local", "work")
 
         with (
             patch.object(sidebar.cockpit, "current_target", return_value=target),
-            patch.object(sidebar.cockpit, "show_missing") as show_missing,
+            patch.object(sidebar.sessions, "attach_command", return_value="attach"),
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
             pending = sidebar._sync_active_session(target, snapshot(local=("other",)), None)
             restored = sidebar._sync_active_session(target, snapshot(local=("work",)), pending)
 
-        show_missing.assert_called_once_with(target)
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target))
-        self.assertEqual(pending, target)
+        switch.assert_called_once_with(target, "attach")
+        self.assertIsNone(pending)
         self.assertIsNone(restored)
 
     def test_active_session_shows_reconnecting_then_restores_session(self):
@@ -427,6 +1676,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             patch.object(sidebar.cockpit, "current_target", return_value=target),
             patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
             patch.object(sidebar.cockpit.tmux, "tmux") as tmux_call,
+            patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
             patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=True),
             patch.object(sidebar.sessions, "load_persistent_ssh", return_value=True),
             patch.object(sidebar.sessions.subprocess, "run", side_effect=[
@@ -471,45 +1721,35 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
             self.assertEqual(tmux_call.call_args.args, ("select-pane", "-t", "%2"))
 
-    def test_missing_overlay_transitions_once_on_remote_preparation_timeout(self):
+    def test_absent_remote_preparation_timeout_keeps_existing_pane_until_success(self):
         target = Target("ssh", "work", "dev")
-        missing = snapshot(remotes={"dev": source("ssh", sessions=(), host="dev")})
-        healthy = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
+        data = snapshot(remotes={"dev": source("ssh", host="dev")})
         retry = sidebar.RestorationRetry()
         submitted = []
         timeout = subprocess.TimeoutExpired(["ssh"], 3)
         with (
             patch.object(sidebar.cockpit, "current_target", return_value=target),
-            patch.object(sidebar.cockpit, "show_missing") as show_missing,
             patch.object(sidebar.cockpit, "show_reconnecting") as show_reconnecting,
+            patch.object(sidebar.cockpit, "show_unavailable") as show_unavailable,
             patch.object(sidebar.cockpit, "switch") as switch,
-            patch.object(sidebar.sessions, "attach_command", side_effect=[timeout, timeout, "attach"]),
+            patch.object(sidebar.sessions, "attach_command", side_effect=[timeout, "attach"]),
         ):
-            marker = None
             sidebar._sync_active_session(
-                target, missing, marker, lambda effect: submitted.append(effect) or True, retry=retry,
+                target, data, None, lambda effect: submitted.append(effect) or True, retry=retry, now=0,
             )
             result = sidebar._perform_effect(submitted.pop(), ())
-            marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry)
-            show_missing.assert_called_once_with(target)
-            self.assertEqual(retry.overlay, "show_missing")
-
-            for attempt in range(3):
-                sidebar._sync_active_session(
-                    target, healthy, marker, lambda effect: submitted.append(effect) or True,
-                    retry=retry, now=retry.deadline,
-                )
-                result = sidebar._perform_effect(submitted.pop(), ())
-                marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=10 + attempt)
-                show_reconnecting.assert_called_once_with(target)
-                if attempt < 2:
-                    self.assertTrue(result.error)
-                    self.assertEqual(marker, target)
-                    self.assertEqual(retry.overlay, "show_reconnecting")
-                    switch.assert_not_called()
-            self.assertIsNone(marker)
-            self.assertIsNone(retry.target)
-            self.assertIsNone(retry.overlay)
+            self.assertTrue(result.error)
+            marker = sidebar._reconcile_active_session_effect(None, result, retry=retry, now=10)
+            switch.assert_not_called()
+            sidebar._sync_active_session(
+                target, data, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=retry.deadline,
+            )
+            result = sidebar._perform_effect(submitted.pop(), ())
+            self.assertFalse(result.error)
+            self.assertIsNone(sidebar._reconcile_active_session_effect(marker, result, retry=retry))
+            show_reconnecting.assert_not_called()
+            show_unavailable.assert_not_called()
             switch.assert_called_once_with(target, "attach")
 
     def test_failed_switch_retries_once_snapshot_is_healthy(self):
@@ -545,6 +1785,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             bell_target=None,
             current_agent=None,
             pane_active=True,
+            startup_deadline=None,
         )
         snapshots = iter((disconnected, connected, connected))
 
@@ -608,6 +1849,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         actions.poll.side_effect = lambda: results.pop(0) if results else None
         screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
         events = []
+        poller.startup_deadline = None
 
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
@@ -646,6 +1888,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             bell_target=None,
             current_agent=None,
             pane_active=True,
+            startup_deadline=None,
             status_sampled=False,
         )
         samples = iter((False, False, False, True, False))
@@ -736,6 +1979,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                 pass
 
         actions = BusyRunner()
+        poller.startup_deadline = None
         screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
         events = []
 
@@ -1169,17 +2413,18 @@ class SidebarViewModeTest(unittest.TestCase):
         self.assertEqual(entry.status, "reconnecting…")
         self.assertIn("reconnecting…", _entry_lines(entry, False, set(), None, 40)[1])
 
-    def test_tracked_reachable_sessions_show_missing_when_absent(self):
+    def test_tracked_reachable_sessions_have_no_missing_label_when_absent(self):
         targets = (Target("local", "work"), Target("ssh", "work", "dev"))
         data = snapshot(local=("other",), remotes={"dev": source("ssh", ("other",), host="dev")})
 
         entries = [next(entry for entry in _entries(data, [target]) if entry.target == target) for target in targets]
 
-        self.assertTrue(all(entry.unavailable_favorite for entry in entries))
-        self.assertEqual([entry.status for entry in entries], ["missing", "missing"])
-        self.assertTrue(all("· ⚠ missing" in _entry_lines(entry, False, set(), None, 40)[1] for entry in entries))
-        with patch("letee.sidebar._ascii", return_value=True):
-            self.assertTrue(all("| missing" in _entry_lines(entry, False, set(), None, 40)[1] for entry in entries))
+        self.assertFalse(any(entry.unavailable_favorite for entry in entries))
+        self.assertEqual([entry.status for entry in entries], [None, None])
+        for ascii_mode in (False, True):
+            with patch("letee.sidebar._ascii", return_value=ascii_mode):
+                self.assertTrue(all("missing" not in line for entry in entries
+                                    for line in _entry_lines(entry, False, set(), None, 40)))
 
     def test_tracked_unknown_remote_host_stays_unavailable(self):
         target = Target("ssh", "work", "unknown")
@@ -2503,6 +3748,7 @@ class SidebarStateTest(unittest.TestCase):
         poller = unittest.mock.Mock()
         with (
             patch.object(sidebar.sessions, "rename", return_value=renamed) as rename,
+            patch.object(sidebar, "load_sessions", return_value=[old, other]),
             patch.object(sidebar, "save_sessions") as save,
             patch.object(sidebar.cockpit, "rename_target") as rename_marker,
         ):
@@ -2607,7 +3853,7 @@ class SidebarStateTest(unittest.TestCase):
         self.assertEqual(state.favorites, [])
         self.assertEqual(
             effect,
-            Effect("save_favorites", target=target, favorites=(), message="removed local:work"),
+            Effect("save_favorites", target=target, favorites=(), message="removed local:work", previous_favorites=(target,)),
         )
 
         self.assertIsNone(_transition(SidebarState(selected_target=target), "remove_session"))
@@ -2623,6 +3869,7 @@ class SidebarStateTest(unittest.TestCase):
         self.assertIsNotNone(effect)
         with (
             patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
             patch.object(sidebar.cockpit, "reset_to_help", side_effect=lambda _target: events.append(("reset",))) as reset,
             patch.object(sidebar.sessions, "kill") as kill,
@@ -2645,6 +3892,7 @@ class SidebarStateTest(unittest.TestCase):
 
         with (
             patch.object(sidebar, "_current_target", return_value=active),
+            patch.object(sidebar, "load_sessions", return_value=[removed, active]),
             patch.object(sidebar, "save_sessions") as save,
             patch.object(sidebar.cockpit, "reset_to_help") as reset,
             patch.object(sidebar.sessions, "kill") as kill,
@@ -2665,6 +3913,7 @@ class SidebarStateTest(unittest.TestCase):
 
         with (
             patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
             patch.object(sidebar.cockpit, "reset_to_help") as reset,
             patch.object(sidebar.sessions, "kill") as kill,
@@ -2674,8 +3923,90 @@ class SidebarStateTest(unittest.TestCase):
         save.assert_called_once_with((other,))
         reset.assert_not_called()
         kill.assert_not_called()
-        self.assertEqual(state.favorites, [other])
+        self.assertEqual(state.favorites, [target, other])
         self.assertEqual(state.status, "save failed")
+
+    def test_failed_tracking_writes_restore_latest_persisted_favorites(self):
+        first, second, added = (Target("local", name) for name in ("one", "two", "added"))
+        for action in ("remove_session", "move_session_down"):
+            with self.subTest(action=action):
+                state = SidebarState(favorites=[first, second], selected_target=first, selected_tracked=True)
+                effect = _transition(state, action)
+                with (
+                    patch.object(sidebar, "load_sessions", return_value=[first, second, added]),
+                    patch.object(sidebar, "save_sessions", side_effect=OSError("write failed")),
+                ):
+                    result = sidebar._perform_effect(effect, tuple(state.favorites))
+                sidebar._apply_effect(result, state, unittest.mock.Mock(), 5)
+                self.assertEqual(state.favorites, [first, second, added])
+                self.assertEqual(state.selected_target, first)
+                self.assertEqual(state.status, "write failed")
+
+    def test_effect_setup_failures_return_action_errors(self):
+        target = Target("local", "work")
+        for source, error in (
+            ("lock", OSError("lock failed")),
+            ("load", OSError("read failed")),
+            ("load", SystemExit("invalid session")),
+        ):
+            with self.subTest(source=source, error=error):
+                with (
+                    patch.object(sidebar.config, "sessions_lock") as lock,
+                    patch.object(sidebar, "load_sessions") as load,
+                    patch.object(sidebar.sessions, "create") as create,
+                ):
+                    if source == "lock":
+                        lock.return_value.__enter__.side_effect = error
+                    else:
+                        load.side_effect = error
+                    result = sidebar._perform_effect(Effect("create", target=target), (target,))
+                self.assertEqual(result.error, str(error))
+                self.assertEqual(result.favorites, (target,))
+                self.assertFalse(result.partial_success)
+                create.assert_not_called()
+
+    def test_effect_setup_failures_restore_optimistic_tracking_changes(self):
+        first, second = (Target("local", name) for name in ("one", "two"))
+        for action in ("remove_session", "move_session_down"):
+            for source, error in (
+                ("lock", OSError("lock failed")),
+                ("load", OSError("read failed")),
+                ("load", SystemExit("invalid session")),
+            ):
+                with self.subTest(action=action, source=source, error=error):
+                    state = SidebarState(favorites=[first, second], selected_target=first, selected_tracked=True)
+                    effect = _transition(state, action)
+                    self.assertNotEqual(state.favorites, [first, second])
+                    with (
+                        patch.object(sidebar.config, "sessions_lock") as lock,
+                        patch.object(sidebar, "load_sessions") as load,
+                        patch.object(sidebar, "save_sessions") as save,
+                    ):
+                        if source == "lock":
+                            lock.return_value.__enter__.side_effect = error
+                        else:
+                            load.side_effect = error
+                        result = sidebar._perform_effect(effect, tuple(state.favorites))
+                    sidebar._apply_effect(result, state, unittest.mock.Mock(), 5)
+                    self.assertEqual(state.favorites, [first, second])
+                    self.assertEqual(state.selected_target, first)
+                    self.assertEqual(state.status, str(error))
+                    save.assert_not_called()
+
+    def test_remove_reset_failure_keeps_successfully_persisted_removal(self):
+        target = Target("local", "one")
+        state = SidebarState(favorites=[target], selected_target=target)
+        effect = _transition(state, "remove_session")
+        with (
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "save_sessions"),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.cockpit, "reset_to_help", side_effect=OSError("reset failed")),
+        ):
+            result = sidebar._perform_effect(effect, ())
+        sidebar._apply_effect(result, state, unittest.mock.Mock(), 5)
+        self.assertEqual(state.favorites, [])
+        self.assertEqual(state.status, "reset failed")
 
     def test_reorder_favorite_swaps_and_keeps_selection(self):
         first = Target("local", "first")
@@ -2690,7 +4021,7 @@ class SidebarStateTest(unittest.TestCase):
 
         self.assertEqual(state.favorites, [second, first])
         self.assertEqual(state.selected_target, second)
-        self.assertEqual(effect, Effect("save_favorites", favorites=(second, first), message="moved local:second up"))
+        self.assertEqual(effect, Effect("save_favorites", favorites=(second, first), message="moved local:second up", favorite_move=(second, first), previous_favorites=(first, second)))
 
     def test_reorder_favorite_boundaries_skip_save(self):
         target = Target("local", "only")
@@ -2742,6 +4073,7 @@ class SidebarStateTest(unittest.TestCase):
 
         with (
             patch("letee.sidebar.sessions.kill"),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch("letee.sidebar.save_sessions") as save,
         ):
             _execute(Effect("kill", target=target), state, poller, 5)
@@ -2833,6 +4165,7 @@ class SidebarStateTest(unittest.TestCase):
             patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
             patch.object(sidebar.cockpit, "resolve_expected_right_pane_death") as resolve,
             patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=SystemExit("save failed")) as save,
         ):
             result = sidebar._perform_effect(Effect("kill", target=target), tuple(state.favorites))
@@ -2869,6 +4202,7 @@ class SidebarStateTest(unittest.TestCase):
             patch.object(sidebar.cockpit, "set_expected_right_pane_death") as expected_death,
             patch.object(sidebar.cockpit, "resolve_expected_right_pane_death", side_effect=resolve) as handshake,
             patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar, "load_sessions", return_value=[target, other]),
             patch.object(sidebar, "save_sessions", side_effect=lambda favorites: events.append(("save", favorites))) as save,
         ):
             result = sidebar._perform_effect(Effect("kill", target=target), (target, other))
@@ -2910,6 +4244,7 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState(add_view="search", creation_host="")
         poller = unittest.mock.Mock()
         with (
+            patch.object(sidebar, "load_sessions", return_value=[]),
             patch("letee.sidebar.save_sessions") as save,
             patch("letee.sidebar.sessions.attach_command", return_value="attach") as attach_command,
             patch("letee.sidebar.cockpit.switch") as switch,
@@ -2930,6 +4265,7 @@ class SidebarStateTest(unittest.TestCase):
         state = SidebarState(add_view="search", creation_host="", filter_text="new")
         poller = unittest.mock.Mock()
         with (
+            patch.object(sidebar, "load_sessions", return_value=[]),
             patch("letee.sidebar.sessions.create") as create,
             patch("letee.sidebar.save_sessions") as save,
             patch("letee.sidebar.sessions.attach_command", return_value="attach"),
@@ -3029,6 +4365,44 @@ class SidebarStateTest(unittest.TestCase):
 
 
 class AsyncSidebarWorkTest(unittest.TestCase):
+    def test_startup_deadline_is_sampled_off_ui_thread_and_rejects_old_generation(self):
+        target = Target("local", "work")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("work",)))
+        status = sidebar.AsyncStatusPoller(poller, target)
+        ui_thread = threading.get_ident()
+
+        def read_marker(sampled_target):
+            self.assertNotEqual(threading.get_ident(), ui_thread)
+            self.assertEqual(sampled_target, target)
+            return 42
+
+        try:
+            with (
+                patch.object(
+                    sidebar.cockpit, "status_snapshot",
+                    return_value=sidebar.cockpit.StatusSnapshot(target, None, None, True),
+                ),
+                patch.object(sidebar.cockpit, "startup_deadline", side_effect=read_marker),
+            ):
+                status.tick(0)
+                status._future.result(timeout=1)
+                status._next_poll = float("inf")
+                status.tick(0)
+                self.assertEqual(status.startup_deadline, 42)
+
+                status._next_poll = 0
+                status.tick(1)
+                status._future.result(timeout=1)
+                other = Target("local", "other")
+                status.observe_effect(sidebar.EffectResult(Effect("switch", other), ()))
+                self.assertIsNone(status.startup_deadline)
+                status._next_poll = float("inf")
+                status.tick(1)
+                self.assertEqual(status.current_target, other)
+                self.assertIsNone(status.startup_deadline)
+        finally:
+            status.close()
+
     def test_status_poller_uses_batched_cockpit_snapshot(self):
         target = Target("local", "work")
         poller = unittest.mock.Mock(snapshot=snapshot(local=("work",)))
@@ -3040,6 +4414,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                     "status_snapshot",
                     return_value=sidebar.cockpit.StatusSnapshot(target, target, "agent", False),
                 ) as read,
+                patch.object(sidebar.cockpit, "startup_deadline", return_value=42) as marker,
                 patch.object(sidebar, "_current_target") as legacy_target,
                 patch.object(sidebar, "_pane_active") as legacy_activity,
             ):
@@ -3048,6 +4423,8 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             status.close()
 
         read.assert_called_once_with()
+        marker.assert_called_once_with(target)
+        self.assertEqual(result.startup_deadline, 42)
         legacy_target.assert_not_called()
         legacy_activity.assert_not_called()
         self.assertEqual(
@@ -3364,6 +4741,40 @@ class AsyncSidebarWorkTest(unittest.TestCase):
         self.assertFalse(status.status_sampled)
         self.assertEqual(status._generation, generation + 1)
 
+    def test_navigation_preserves_refresh_acknowledgment_and_queued_refresh(self):
+        old = Target("local", "old")
+        target = Target("local", "work")
+        for queued_refresh in (False, True):
+            with self.subTest(queued_refresh=queued_refresh):
+                poller = unittest.mock.Mock(snapshot=snapshot(local=("old", "work")))
+                status = sidebar.AsyncStatusPoller(poller, old)
+                try:
+                    status.refresh()
+                    status._commands.clear()  # The in-flight sample consumed the refresh.
+                    status._future = unittest.mock.Mock()
+                    status._future.done.return_value = True
+                    status._future.result.return_value = sidebar.StatusResult(
+                        snapshot(local=("old",)), old, old, "stale-agent", False,
+                        status._generation, refreshed=True, sampled=True,
+                    )
+                    status.observe_effect(
+                        sidebar.EffectResult(Effect("switch", target), (target,))
+                    )
+                    if queued_refresh:
+                        status.refresh()
+                    status._next_poll = float("inf")
+
+                    self.assertFalse(status.tick(0))
+                    self.assertEqual(status.refresh_pending, queued_refresh)
+                    self.assertEqual(status.current_target, target)
+                    self.assertEqual(status.snapshot, poller.snapshot)
+                    self.assertIsNone(status.bell_target)
+                    self.assertIsNone(status.current_agent)
+                    self.assertTrue(status.pane_active)
+                    self.assertFalse(status.status_sampled)
+                finally:
+                    status.close()
+
     def test_status_poller_ignores_stale_target_after_kill_until_navigation(self):
         killed = Target("ssh", "work", "dev")
         poller = unittest.mock.Mock(
@@ -3508,6 +4919,38 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             )
             status.tick(0)
             self.assertFalse(status.refresh_pending)
+        finally:
+            status.close()
+
+    def test_remote_rename_fresh_absence_releases_wait_and_resumes_reconciliation(self):
+        old = Target("ssh", "old", "dev")
+        renamed = Target("ssh", "renamed", "dev")
+        absent = source("ssh", host="dev")
+        poller = unittest.mock.Mock(snapshot=snapshot())
+        status = sidebar.AsyncStatusPoller(poller, old)
+        reconciler = sidebar.SessionReconciler()
+        submit = unittest.mock.Mock(return_value=True)
+        status._next_poll = float("inf")
+        try:
+            with patch.object(sidebar.time, "monotonic", return_value=10):
+                status.observe_effect(sidebar.EffectResult(
+                    Effect("rename", target=old, message="renamed"), (renamed,)
+                ))
+            for sampled_at, pending in ((9, True), (10, True), (11, False)):
+                with self.subTest(sampled_at=sampled_at):
+                    data = snapshot(remotes={"dev": replace(absent, sampled_at=sampled_at)})
+                    status._future = unittest.mock.Mock()
+                    status._future.done.return_value = True
+                    status._future.result.return_value = sidebar.StatusResult(
+                        data, renamed, None, None, True, status._generation
+                    )
+                    status.tick(0)
+                    self.assertEqual(status.refresh_pending, pending)
+                    if not status.refresh_pending:
+                        reconciler.reconcile((renamed,), renamed, status.snapshot, submit, 12)
+                    if pending:
+                        submit.assert_not_called()
+            submit.assert_called_once_with(sidebar.Effect("switch", renamed, automatic=True))
         finally:
             status.close()
 
@@ -4733,6 +6176,41 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(any(call[0] == "addnstr" and "Rename session" in call[3] for call in screen.calls))
         self.assertTrue(any(call[0] == "addnstr" and "new" in call[3] for call in screen.calls))
 
+    def test_e_rejects_absent_local_and_remote_sessions_with_matching_prefix(self):
+        for target, data in (
+            (Target("local", "work"), snapshot(local=("work-other",))),
+            (Target("ssh", "work", "dev"), snapshot(remotes={
+                "dev": source("ssh", ("work-other",), host="dev"),
+            })),
+        ):
+            with self.subTest(target=target):
+                screen = FakeScreen([ord("e"), *map(ord, "new"), 10, STOP], size=(10, 80))
+                poller = unittest.mock.Mock(
+                    snapshot=data, current_target=None, bell_target=None,
+                    current_agent=None, pane_active=True,
+                )
+                poller.tick.return_value = False
+                with (
+                    patch("letee.sidebar.DiscoveryPoller", return_value=poller),
+                    patch("letee.sidebar.load_hosts", return_value=["dev"]),
+                    patch("letee.sidebar.load_sessions", return_value=[target]),
+                    patch("letee.sidebar._current_target", return_value=None),
+                    patch("letee.sidebar.curses.curs_set"),
+                    patch("letee.sidebar._mouse_mask"),
+                    patch("letee.sidebar._init_colors"),
+                    patch("letee.sidebar.sessions.rename") as rename,
+                    patch("letee.sidebar._start_rename", wraps=sidebar._start_rename) as start_rename,
+                    patch("letee.sidebar.cockpit.switch"),
+                ):
+                    run(screen)
+
+                start_rename.assert_not_called()
+                rename.assert_not_called()
+                self.assertTrue(any(
+                    call[0] == "addnstr" and "Session unavailable; rename a running session" in call[3]
+                    for call in screen.calls
+                ))
+
     def test_queued_input_is_handled_before_automatic_session_actions(self):
         screen = FakeScreen([STOP])
         with (
@@ -4800,7 +6278,7 @@ class SidebarDrawTest(unittest.TestCase):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         poller = unittest.mock.Mock()
         poller.snapshot = SessionSnapshot(
-            SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            SourceSnapshot(True, (pane.target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
             {},
         )
         poller.tick.return_value = False
@@ -4824,7 +6302,7 @@ class SidebarDrawTest(unittest.TestCase):
     def test_working_agent_redraws_at_spinner_rate(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         poller = unittest.mock.Mock()
-        poller.snapshot = SessionSnapshot(SourceSnapshot(True, (), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)), {})
+        poller.snapshot = SessionSnapshot(SourceSnapshot(True, (pane.target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)), {})
         poller.tick.return_value = False
         screen = FakeScreen([-1, -1, -1, -1, STOP], size=(10, 40))
         with (
@@ -5096,6 +6574,7 @@ class SidebarDrawTest(unittest.TestCase):
             current_target=target,
             bell_target=None,
             current_agent="first",
+            startup_deadline=None,
             pending_agent=None,
             pane_active=True,
         )
@@ -5132,34 +6611,100 @@ class SidebarDrawTest(unittest.TestCase):
         second_selected = active_agents.index("second")
         self.assertNotIn("first", active_agents[second_selected:])
 
-    def test_keyboard_reorder_is_not_blocked_by_slow_switch(self):
-        first = Target("local", "one")
-        second = Target("local", "two")
-        poller = unittest.mock.Mock(snapshot=snapshot(local=("one", "two")))
-        poller.tick.return_value = False
-        release = threading.Event()
-        screen = FakeScreen([curses.KEY_DOWN, curses.KEY_ENTER, ord("K"), STOP], size=(12, 30))
-        timer = threading.Timer(0.05, release.set)
+    def test_tracking_dispatch_returns_while_another_process_holds_lock(self):
+        first, second = Target("local", "one"), Target("local", "two")
+        for key, expected in ((ord("r"), [second]), (ord("J"), [second, first])):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                with patch.dict(os.environ, {"LETEE_CONFIG_DIR": directory}):
+                    config.save_sessions([first, second])
+                    holder = subprocess.Popen(
+                        [os.sys.executable, "-c",
+                         "from letee import config; import sys\n"
+                         "with config.sessions_lock():\n"
+                         " print('locked', flush=True)\n"
+                         " sys.stdin.readline()\n"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                    )
+                    self.assertEqual(holder.stdout.readline().strip(), "locked")
+                    timed_out = threading.Event()
 
-        with (
-            patch("letee.sidebar.DiscoveryPoller", return_value=poller),
-            patch("letee.sidebar.curses.curs_set"),
-            patch("letee.sidebar._init_colors"),
-            patch("letee.sidebar.load_sessions", return_value=[first, second]),
-            patch("letee.sidebar._current_target", return_value=second),
-            patch("letee.sidebar._agent_entries", return_value=[]),
-            patch("letee.sidebar._bell_targets", return_value=set()),
-            patch("letee.sidebar.cockpit.switch", side_effect=lambda *_: release.wait(1)),
-            patch("letee.sidebar.save_sessions") as save_sessions,
-        ):
-            timer.start()
-            try:
-                run(screen)
-            finally:
-                release.set()
-                timer.cancel()
+                    def release_lock():
+                        holder.stdin.write("release\n")
+                        holder.stdin.flush()
 
-        save_sessions.assert_called_once_with((second, first))
+                    def timeout():
+                        timed_out.set()
+                        release_lock()
+
+                    timer = threading.Timer(2, timeout)
+                    returned = []
+                    state = SidebarState(favorites=[first, second], selected_target=first)
+
+                    class Screen(FakeScreen):
+                        def getch(inner):
+                            if not inner.keys:
+                                returned.append(not timed_out.is_set())
+                                self.assertEqual(state.status, "another action is still changing sessions")
+                                timer.cancel()
+                                release_lock()
+                                return STOP
+                            return super().getch()
+
+                    poller = unittest.mock.Mock(
+                        snapshot=snapshot(local=("one", "two")), current_target=None,
+                        bell_target=None, current_agent=None, pane_active=True,
+                    )
+                    poller.tick.return_value = False
+                    timer.start()
+                    try:
+                        with (
+                            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                            patch.object(sidebar, "SidebarState", return_value=state),
+                            patch.object(sidebar.curses, "curs_set"),
+                            patch.object(sidebar, "_init_colors"),
+                            patch.object(sidebar, "_current_target", return_value=None),
+                            patch.object(sidebar, "_draw", return_value=(2, None)),
+                        ):
+                            run(Screen([key, ord("r"), ord("J")], size=(12, 30)))
+                    finally:
+                        timer.cancel()
+                        if holder.poll() is None:
+                            holder.terminate()
+                        holder.wait(timeout=5)
+                        holder.stdin.close()
+                        holder.stdout.close()
+                    self.assertEqual(returned, [True])
+                    self.assertEqual(config.load_sessions(), expected)
+
+    def test_rejected_tracking_dispatch_rolls_back_optimistic_changes(self):
+        first, second = Target("local", "one"), Target("local", "two")
+        for key in (ord("r"), ord("J")):
+            with self.subTest(key=key):
+                state = SidebarState(favorites=[first, second], selected_target=first)
+                poller = unittest.mock.Mock(
+                    snapshot=snapshot(local=("one", "two")), current_target=None,
+                    bell_target=None, current_agent=None, pane_active=True,
+                )
+                poller.tick.return_value = False
+                runner = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
+                runner.submit.return_value = False
+                runner.poll.return_value = None
+                with (
+                    patch.object(sidebar, "SidebarState", return_value=state),
+                    patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+                    patch.object(sidebar, "EffectRunner", return_value=runner),
+                    patch.object(sidebar.curses, "curs_set"),
+                    patch.object(sidebar, "_init_colors"),
+                    patch.object(sidebar, "load_sessions", return_value=[first, second]),
+                    patch.object(sidebar, "_draw", return_value=(2, None)),
+                    patch.object(sidebar, "save_sessions") as save,
+                ):
+                    run(FakeScreen([key, STOP], size=(12, 30)))
+                runner.submit.assert_called_once()
+                save.assert_not_called()
+                self.assertEqual(state.favorites, [first, second])
+                self.assertEqual(state.selected_target, first)
+                self.assertEqual(state.status, "another action is still running")
 
     def test_adjacent_move_handle_columns_start_move(self):
         target = Target("local", "one")
@@ -5261,7 +6806,8 @@ class SidebarDrawTest(unittest.TestCase):
             patch("letee.sidebar._agent_entries", return_value=[]),
             patch("letee.sidebar._bell_targets", return_value=set()),
             patch("letee.sidebar._draw", side_effect=draw_spy),
-            patch("letee.sidebar.time.monotonic", side_effect=[0, 0.1, 1.0, 1.1]),
+            # Include the initial local discovery sample's timestamp.
+            patch("letee.sidebar.time.monotonic", side_effect=[0, 0, 0.1, 1.0, 1.1]),
         ):
             run(screen)
 
@@ -6038,7 +7584,7 @@ class SidebarDrawTest(unittest.TestCase):
         kill.assert_not_called()
         self.assertFalse(any(call[0] == "addnstr" and "select session to kill" in call[3] for call in screen.calls))
 
-    def test_missing_session_kill_guides_custom_removal(self):
+    def test_absent_session_kill_guides_custom_removal(self):
         target = Target("local", "work")
         custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "remove": "D"}
         screen = FakeScreen([ord("x"), STOP], size=(8, 60))
@@ -6056,7 +7602,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         self.assertTrue(any(
-            call[0] == "addnstr" and "Session already missing; press D to remove" in call[3]
+            call[0] == "addnstr" and "Session unavailable; press D to remove" in call[3]
             for call in screen.calls
         ))
 
@@ -6080,10 +7626,20 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertFalse(any(call[0] == "addnstr" and "cancelled" in call[3] for call in screen.calls))
 
     def test_failed_kill_keeps_sidebar_open_and_shows_error_above_footer(self):
-        screen = FakeScreen([ord("x"), ord("y"), STOP], size=(8, 60))
+        screen = FakeScreen([ord("x"), ord("y"), -1, STOP], size=(8, 60))
         target = Target("local", "work")
+        runner = sidebar.EffectRunner()
+        getch = screen.getch
+
+        def wait_for_kill():
+            key = getch()
+            if key == -1 and runner._future is not None:
+                runner._future.result(timeout=1)
+            return key
 
         with (
+            patch.object(screen, "getch", side_effect=wait_for_kill),
+            patch.object(sidebar, "EffectRunner", return_value=runner),
             patch("letee.discovery.local_snapshot", return_value=source("local", ("work",))),
             patch("letee.sidebar.load_sessions", return_value=[target]),
             patch("letee.sidebar.load_hosts", return_value=[]),
@@ -7544,7 +9100,7 @@ class AgentOrderingTest(unittest.TestCase):
         panes = [PaneTarget(target, "@1", f"%{index}", "/tmp/tmux") for index in range(1, 4)]
         data = SessionSnapshot(
             SourceSnapshot(
-                True, (), frozenset(),
+                True, (target,), frozenset(),
                 agents=tuple(
                     AgentEntry(pane, f"id-{index}", "pi", "working")
                     for index, pane in enumerate(panes, 1)
@@ -7580,6 +9136,7 @@ class AgentOrderingTest(unittest.TestCase):
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar, "_draw", side_effect=draw_spy),
+            patch.object(sidebar.sessions, "ensure_created") as ensure_created,
             patch.object(sidebar.curses, "getmouse", side_effect=(
                 (0, 0, 8, 0, curses.BUTTON5_PRESSED),
                 (0, 0, 8, 0, curses.BUTTON4_PRESSED),
@@ -7587,6 +9144,7 @@ class AgentOrderingTest(unittest.TestCase):
             )),
         ):
             run(screen)
+        ensure_created.assert_not_called()
         self.assertEqual(captured[-2:], [(0, "priority"), (None, "session")])
 
 
@@ -7596,6 +9154,7 @@ class PrefixActionTest(unittest.TestCase):
             snapshot=data,
             current_target=current_target,
             bell_target=None,
+            startup_deadline=None,
             current_agent=current_agent,
             pending_agent=None,
             pane_active=True,
@@ -7919,7 +9478,7 @@ class PrefixActionTest(unittest.TestCase):
         expected_death.assert_not_called()
         save.assert_called_once_with([active])
 
-    def test_missing_session_kill_prefix_guides_custom_removal(self):
+    def test_absent_session_kill_prefix_guides_custom_removal(self):
         target = Target("local", "active")
         custom = {**config.DEFAULT_SIDEBAR_KEYBINDINGS, "remove": "D"}
 
@@ -7927,7 +9486,7 @@ class PrefixActionTest(unittest.TestCase):
             screen = self._run([curses.KEY_F6, curses.KEY_F9, STOP], [target], target, snapshot())
 
         self.assertTrue(any(
-            call[0] == "addnstr" and "Session already missing; press D" in call[3]
+            call[0] == "addnstr" and "Session unavailable; press D" in call[3]
             for call in screen.calls
         ))
 
@@ -8207,8 +9766,18 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         )
         poller.tick.return_value = False
         screen = FakeScreen([curses.KEY_MOUSE, -1, STOP], size=(12, 30))
+        runner = sidebar.EffectRunner()
+        getch = screen.getch
+
+        def wait_for_switch():
+            key = getch()
+            if key == -1 and runner._future is not None:
+                runner._future.result(timeout=1)
+            return key
 
         with (
+            patch.object(screen, "getch", side_effect=wait_for_switch),
+            patch.object(sidebar, "EffectRunner", return_value=runner),
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "DiscoveryPoller"),
             patch.object(sidebar, "load_hosts", return_value=[]),

@@ -100,7 +100,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 
 Session and agent cycling preserve compact or hidden mode and do not focus the sidebar. Recovery of an invalid cockpit may restore the split layout. Without an active listed agent, Right opens the first agent and Left the last. With no agents, neither changes the current pane.
 
-Without an active tracked session, Down opens the first tracked session and Up the last. With no tracked sessions, neither changes the current pane. Session cycling includes missing-session launchers and sessions beyond the first nine slots.
+Without an active tracked session, Down opens the first tracked session and Up the last. With no tracked sessions, neither changes the current pane. Session cycling includes all tracked sessions and sessions beyond the first nine slots.
 
 The focus commands reveal the selected row even after scrolling. Without a matching active entry, Sessions selects its first row or Add when empty, and Agents selects the ordering row. Add-menu focus behavior is unchanged.
 
@@ -131,7 +131,9 @@ The Sessions view lists tracked sessions in persisted manual order. The first ni
 
 Tracked sessions persist in `~/.config/letee/sessions` for the default server and `~/.config/letee/servers/<name>/sessions` for named servers. Configuration, hosts, prefix, dimensions, timeout, and SSH settings stay shared across named servers. Tracked sessions, ordering, the active target, alerts, and cockpit panes stay isolated. The same inner session can be tracked by multiple servers, so overlapping servers can show duplicate alerts.
 
-Missing sessions remain launchers. Press `Enter` on one to recreate and attach it with tmux `new-session -A`. Prefix remove/kill actions use the active right-pane target, never the sidebar selection. For these actions, missing or untracked active targets show a status message and do nothing.
+At startup and during discovery, letee automatically recreates absent tracked sessions when their host is reachable. The active session is reattached; inactive sessions are recreated in the background without switching the right pane or changing sidebar selection. Unreachable hosts keep their connecting or reconnecting status until discovery recovers. Recreation starts a new shell, not the processes or pane contents from the old session.
+
+Remove a session from tracking to stop automatic recreation. Killing through letee also removes it from that cockpit's tracked list. Another cockpit still tracking the same inner session can recreate it. Killing a tracked session outside letee causes it to be recreated. Prefix remove/kill actions use the active right-pane target, never the sidebar selection. For these actions, absent or untracked active targets show a status message and do nothing.
 
 ## Add session menu
 

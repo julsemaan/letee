@@ -222,31 +222,37 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "switch":
         target = parse_target(args.target)
         cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        with config.sessions_lock():
+            cockpit.switch(target, lambda: sessions.attach_command(target))
         return 0
     if args.command == "switch-session":
-        favorites = load_sessions()
-        if args.slot > len(favorites):
-            raise SystemExit(f"No session in slot {args.slot}")
-        target = favorites[args.slot - 1]
-        cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        with config.sessions_lock():
+            favorites = load_sessions()
+            if args.slot > len(favorites):
+                raise SystemExit(f"No session in slot {args.slot}")
+            target = favorites[args.slot - 1]
+            cockpit.require_cockpit()
+            cockpit.switch(target, lambda: sessions.attach_command(target))
         return 0
     if args.command == "kill":
         target = parse_target(args.target)
-        sessions.kill(target)
-        favorites = load_sessions()
-        if target in favorites:
-            favorites.remove(target)
+        with config.sessions_lock():
+            sessions.kill(target)
+            favorites = load_sessions()
+            if target in favorites:
+                favorites.remove(target)
             save_sessions(favorites)
+            cockpit.reset_to_help(target)
         return 0
     if args.command == "rename":
         target = parse_target(args.target)
         renamed = Target(target.kind, args.new_name, target.host)
-        if target not in load_sessions():
-            raise SystemExit(f"Session not tracked: {target.format()}")
-        renamed = sessions.rename(target, renamed.session)
-        config.replace_session(target, renamed)
+        with config.sessions_lock():
+            if target not in load_sessions():
+                raise SystemExit(f"Session not tracked: {target.format()}")
+            renamed = sessions.rename(target, renamed.session)
+            config.replace_session(target, renamed)
+            cockpit.rename_target(target, renamed)
         return 0
     if args.command == "create":
         target = Target("local", args.session) if args.create_kind == "local" else Target("ssh", args.session, args.host)

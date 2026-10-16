@@ -396,7 +396,7 @@ def _run(
         raise SystemExit(f"{operation} {target.format()} timed out") from error
     except subprocess.CalledProcessError as error:
         reason = (error.stderr or "").strip() or f"exit status {error.returncode}"
-        raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
+        raise SystemExit(f"{operation} {target.format()} failed: {reason}") from error
     except OSError as error:
         reason = error.strerror or str(error)
         raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
@@ -426,6 +426,39 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
         if overlay:
             command += f" && {{ {INNER_TMUX} source-file {REMOTE_OVERLAY_PATH} || true; }}"
         _run("create", target, ssh_command(target.host or "", command))
+
+
+def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
+    """Create a detached session, or accept an exact, verified duplicate.
+
+    Reuse create's overlay behavior. Only duplicate-session failures are
+    recoverable; connection, timeout, and overlay failures still propagate.
+    """
+    try:
+        create(target, overlay=overlay)
+    except SystemExit as error:
+        cause = error.__cause__
+        if (
+            not isinstance(cause, subprocess.CalledProcessError)
+            or cause.returncode != 1
+            or (cause.stderr or "").strip() != f"duplicate session: {target.session}"
+            or str(error) != f"create {target.format()} failed: duplicate session: {target.session}"
+        ):
+            raise
+        # Another creator may have won the race. Never use -A here: it can
+        # attach to an existing session even when combined with -d.
+        if target.kind == "local":
+            command = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=" + target.session)
+            kwargs = {"env": _inner_server_env()}
+        else:
+            command = ssh_command(
+                target.host or "", f"{INNER_TMUX} has-session -t {shlex.quote('=' + target.session)}",
+            )
+            kwargs = {}
+        try:
+            _run("create", target, command, **kwargs)
+        except SystemExit:
+            raise error
 
 
 def kill(target: Target) -> None:

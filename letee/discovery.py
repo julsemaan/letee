@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -62,6 +62,7 @@ class SourceSnapshot:
     panes: tuple[PaneTarget, ...] = ()
     agents: tuple[AgentEntry, ...] = ()
     focused_panes: frozenset[PaneTarget] = frozenset()
+    sampled_at: float = field(default_factory=time.monotonic, compare=False)
 
 
 @dataclass(frozen=True)
@@ -242,6 +243,7 @@ def _source_result(
 
 
 def local_snapshot() -> SourceSnapshot:
+    sampled_at = time.monotonic()
     try:
         proc = subprocess.run(
             ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes", "-a", "-F", PANES_FORMAT],
@@ -257,7 +259,7 @@ def local_snapshot() -> SourceSnapshot:
     snapshot = _source_result(proc.returncode, proc.stdout, proc.stderr, kind="local")
     if not snapshot.available:
         return snapshot
-    return SourceSnapshot(snapshot.available, snapshot.sessions, snapshot.bells, snapshot.error, snapshot.panes, _read_local_agents(snapshot.panes), snapshot.focused_panes)
+    return replace(snapshot, agents=_read_local_agents(snapshot.panes), sampled_at=sampled_at)
 
 
 def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
@@ -431,7 +433,10 @@ class DiscoveryPoller:
         error = _read_output(request.errors, stderr)
         request.output.close()
         request.errors.close()
-        snapshot = _source_result(returncode, text, error, kind="ssh", host=host)
+        snapshot = replace(
+            _source_result(returncode, text, error, kind="ssh", host=host),
+            sampled_at=request.started,
+        )
         changed = snapshot != self.remotes[host]
         self.remotes[host] = snapshot
         del self._active[host]
@@ -519,6 +524,7 @@ class DiscoveryPoller:
                 tuple(item for item in source.panes if item.target != target),
                 tuple(item for item in source.agents if item.pane_target.target != target),
                 frozenset(item for item in source.focused_panes if item.target != target),
+                source.sampled_at,
             )
             return
         if target.host not in self.remotes:
@@ -537,6 +543,7 @@ class DiscoveryPoller:
                 tuple(item for item in source.panes if item.target != target),
                 tuple(item for item in source.agents if item.pane_target.target != target),
                 frozenset(item for item in source.focused_panes if item.target != target),
+                source.sampled_at,
             )
 
     def close(self) -> None:
