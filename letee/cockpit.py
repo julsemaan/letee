@@ -829,7 +829,7 @@ def switch(
         debug.emit(f"switch_{kind}", **fields, stage=name, status="completed")
         return result
 
-    def update_markers() -> None:
+    def update_markers() -> float:
         # Publish before the active target so shortcut navigation is protected too.
         deadline = float(time.monotonic() + startup_timeout(target))
         tmux.tmux("set-option", "-t", tmux.SESSION, STARTUP_OPTION, f"{target.format()}\t{deadline}")
@@ -841,8 +841,9 @@ def switch(
         else:
             tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_AGENT_OPTION)
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
+        return deadline
 
-    stage("marker_update", "current_target_marker", update_markers)
+    deadline = stage("marker_update", "current_target_marker", update_markers)
     if callable(attach_command):
         stage(
             "respawn",
@@ -852,6 +853,10 @@ def switch(
         try:
             attach_command = stage("prepare", "attach_command_preparation", attach_command)
         except BaseException as error:
+            try:
+                clear_startup(target, deadline)
+            except BaseException:
+                pass
             try:
                 timed_out = isinstance(error, subprocess.TimeoutExpired) or isinstance(error.__cause__, subprocess.TimeoutExpired)
                 command = _reconnecting_command(target) if target.kind == "ssh" and timed_out else _unavailable_command(target)

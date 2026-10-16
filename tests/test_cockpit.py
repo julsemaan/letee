@@ -1411,6 +1411,62 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Switching session", events[0][1])
         self.assertIn("Session ssh:dev:work is unavailable.", events[2][1])
 
+    @patch.object(cockpit.time, "monotonic", return_value=5)
+    @patch.object(cockpit, "startup_timeout", return_value=10)
+    def test_failed_preparation_clears_its_startup_marker(self, _timeout, _clock):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            self.assertRaisesRegex(RuntimeError, "preparation failed"),
+        ):
+            cockpit.switch(target, unittest.mock.Mock(side_effect=RuntimeError("preparation failed")))
+
+        tmux_call.assert_any_call(
+            "if-shell", "-F", cockpit._option_equals(cockpit.STARTUP_OPTION, "ssh:dev:work\t15.0"),
+            f"set-option -u -t {cockpit.tmux.SESSION} {cockpit.STARTUP_OPTION}",
+        )
+
+    @patch.object(cockpit.time, "monotonic", return_value=5)
+    @patch.object(cockpit, "startup_timeout", return_value=10)
+    def test_failed_preparation_cleanup_preserves_newer_startup_marker(self, _timeout, _clock):
+        target = Target("ssh", "work", "dev")
+
+        def prepare():
+            cockpit.tmux.tmux("set-option", "-t", cockpit.tmux.SESSION, cockpit.STARTUP_OPTION, "ssh:dev:work\t25.0")
+            raise RuntimeError("preparation failed")
+
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            self.assertRaisesRegex(RuntimeError, "preparation failed"),
+        ):
+            cockpit.switch(target, prepare)
+
+        cleanup = [
+            item.args for item in tmux_call.call_args_list
+            if item.args[-1] == f"set-option -u -t {cockpit.tmux.SESSION} {cockpit.STARTUP_OPTION}"
+        ]
+        self.assertEqual(cleanup, [(
+            "if-shell", "-F", cockpit._option_equals(cockpit.STARTUP_OPTION, "ssh:dev:work\t15.0"),
+            f"set-option -u -t {cockpit.tmux.SESSION} {cockpit.STARTUP_OPTION}",
+        )])
+
+    def test_failed_preparation_preserves_original_exception_when_cleanup_fails(self):
+        target = Target("ssh", "work", "dev")
+        error = RuntimeError("preparation failed")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            patch.object(cockpit, "clear_startup", side_effect=OSError("cleanup failed")) as clear,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            cockpit.switch(target, unittest.mock.Mock(side_effect=error))
+
+        clear.assert_called_once()
+        self.assertIs(raised.exception, error)
+        self.assertIn("Session ssh:dev:work is unavailable.", tmux_call.call_args.args[4])
+
     def test_switch_rejects_missing_cockpit_without_preparing(self):
         prepare = unittest.mock.Mock(return_value="attach work")
         with patch.object(cockpit, "right_pane", return_value=None):
