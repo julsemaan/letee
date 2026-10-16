@@ -833,6 +833,7 @@ def switch(
         # Publish before the active target so shortcut navigation is protected too.
         deadline = float(time.monotonic() + startup_timeout(target))
         tmux.tmux("set-option", "-t", tmux.SESSION, STARTUP_OPTION, f"{target.format()}\t{deadline}")
+        tmux.tmux("set-option", "-u", "-t", tmux.SESSION, RENAMED_TARGET_OPTION)
         marker_update = f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())}"
         tmux.tmux("if-shell", "-F", "1", marker_update)
         if agent_id:

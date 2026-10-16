@@ -1119,6 +1119,34 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit.rename_target(Target("local", "new"), Target("local", "newer"))
             self.assertEqual(cockpit.current_target(), Target("local", "newer"))
 
+    def test_renamed_target_survives_reattach_then_another_rename(self):
+        old, new, newer = (Target("local", name) for name in ("old", "new", "newer"))
+        options = {cockpit.CURRENT_TARGET_OPTION: old.format()}
+
+        def update(*args, **kwargs):
+            if args[0] == "set-option":
+                if "-u" in args:
+                    options.pop(args[-1], None)
+                else:
+                    options[args[-2]] = args[-1]
+            elif args[0] == "if-shell":
+                update(*shlex.split(args[-1]))
+            elif args[0] == "respawn-pane":
+                pane_command.return_value = args[-1]
+
+        with (
+            patch.object(cockpit, "_option", side_effect=lambda key: options.get(key, "")),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit, "startup_timeout", return_value=1),
+            patch.object(cockpit.tmux, "out", return_value="tmux -L letee.inner new-session -A -s old") as pane_command,
+            patch.object(cockpit.tmux, "tmux", side_effect=update),
+        ):
+            cockpit.rename_target(old, new)
+            cockpit.switch(new, "tmux -L letee.inner new-session -A -s new")
+            cockpit.rename_target(new, newer)
+            self.assertEqual(cockpit.current_target(), newer)
+            self.assertEqual(cockpit.current_target(), newer)
+
     def test_rename_target_updates_active_and_bell_markers_without_switching(self):
         old = Target("local", "old")
         new = Target("local", "new")
@@ -1267,6 +1295,7 @@ class CockpitLayoutTest(unittest.TestCase):
             calls,
             [
                 ("set-option", "-t", "letee", cockpit.STARTUP_OPTION, "local:work\t15.0"),
+                ("set-option", "-u", "-t", "letee", cockpit.RENAMED_TARGET_OPTION),
                 (
                     "if-shell",
                     "-F",
