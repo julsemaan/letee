@@ -168,6 +168,7 @@ class StatusResult:
     refreshed: bool = False
     suppression_expired: bool = False
     sampled: bool = False
+    startup_deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,7 @@ class StatusPollState:
     current_agent: str | None
     pane_active: bool
     suppressed_target: Target | None
+    startup_deadline: float | None
 
 
 def _trace_target(value: Target | PaneTarget | None) -> str | None:
@@ -476,9 +478,9 @@ class SessionReconciler:
         snapshot: SessionSnapshot,
         submit: Callable[[Effect], bool],
         now: float,
+        shared_deadline: float | None = None,
     ) -> None:
         targets = list(dict.fromkeys(favorites + ((active,) if active else ())))
-        shared_deadline = cockpit.startup_deadline(active) if active else None
         for records in (self._pending, self._completed, self._awaiting_discovery, self._retries):
             for target in list(records):
                 if target not in targets:
@@ -1701,6 +1703,7 @@ class AsyncStatusPoller:
         self.status_sampled = False
         self.snapshot = poller.snapshot
         self.current_target = current_target
+        self.startup_deadline: float | None = None
         self.bell_target: Target | None = None
         self.current_agent: str | None = None
         self.pane_active = True
@@ -1722,6 +1725,7 @@ class AsyncStatusPoller:
             self.current_agent,
             self.pane_active,
             self._suppressed_target,
+            self.startup_deadline,
         )
 
     def _sample(
@@ -1736,6 +1740,7 @@ class AsyncStatusPoller:
         bell_target = state.bell_target
         stored_agent = state.current_agent
         pane_active = state.pane_active
+        startup_deadline = state.startup_deadline
         suppression_expired = False
         sampled = False
         try:
@@ -1758,6 +1763,7 @@ class AsyncStatusPoller:
             current_target = status.current_target if status.current_target is not None else state.current_target
             if current_target == suppressed_target:
                 current_target = None
+            startup_deadline = cockpit.startup_deadline(current_target) if current_target else None
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
             snapshot = self._poller.snapshot
@@ -1777,6 +1783,7 @@ class AsyncStatusPoller:
             any(command == "refresh" for command, _ in commands),
             suppression_expired,
             sampled,
+            startup_deadline,
         )
 
     def tick(self, now: float) -> bool:
@@ -1808,6 +1815,7 @@ class AsyncStatusPoller:
                 if result.suppression_expired:
                     self._suppressed_target = None
                 self.current_target = result.current_target
+                self.startup_deadline = result.startup_deadline
                 self.bell_target = result.bell_target
                 if self._pending_agent is None:
                     self.current_agent = result.current_agent
@@ -1834,6 +1842,7 @@ class AsyncStatusPoller:
                 and result.effect.kind in ("switch", "add_switch", "switch_pane")
             ):
                 self._generation += 1
+                self.startup_deadline = None
             if not result.partial_success:
                 return
         target = result.effect.target
@@ -1843,6 +1852,7 @@ class AsyncStatusPoller:
             self.current_agent = None
             self._pending_agent = None
             self._generation += 1
+            self.startup_deadline = None
         elif result.effect.kind == "switch_pane" and isinstance(target, PaneTarget):
             self._suppressed_target = None
             self.current_target = target.target
@@ -1851,6 +1861,7 @@ class AsyncStatusPoller:
                 (target, result.effect.message) if result.effect.message else None
             )
             self._generation += 1
+            self.startup_deadline = None
         elif (
             result.effect.kind == "show_reconnecting"
             and not result.effect.automatic
@@ -1861,6 +1872,7 @@ class AsyncStatusPoller:
             self.current_agent = None
             self._pending_agent = None
             self._generation += 1
+            self.startup_deadline = None
         elif result.effect.kind == "rename" and isinstance(target, Target):
             renamed = _renamed_target(result.effect)
             if renamed is None:
@@ -1871,15 +1883,18 @@ class AsyncStatusPoller:
             if self.bell_target == target:
                 self.bell_target = renamed
             self._generation += 1
+            self.startup_deadline = None
         elif result.effect.kind == "kill" and isinstance(target, Target):
             if result.reset_matched or self.current_target == target:
                 self._suppressed_target = target
                 self.current_target = None
                 self._generation += 1
+                self.startup_deadline = None
         elif result.effect.kind == "save_favorites" and isinstance(target, Target):
             if target not in result.favorites and self.current_target == target:
                 self.current_target = None
                 self._generation += 1
+                self.startup_deadline = None
 
     @property
     def refresh_pending(self) -> bool:
@@ -3673,6 +3688,7 @@ def run(stdscr: curses.window) -> None:
                     if not actions.busy:
                         reconciler.reconcile(
                             tuple(state.favorites), current_target, poller.snapshot, queue_effect, now,
+                            poller.startup_deadline,
                         )
                 except SystemExit as error:
                     show_status(str(error))

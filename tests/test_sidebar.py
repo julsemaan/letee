@@ -59,6 +59,12 @@ class SessionReconcilerTest(unittest.TestCase):
         self.reconciler = sidebar.SessionReconciler()
         self.submit = unittest.mock.Mock(return_value=True)
 
+    @patch.object(sidebar.cockpit, "startup_deadline", return_value=None)
+    def test_reconciliation_does_not_read_startup_marker(self, read_marker):
+        target = Target("local", "work")
+        self.reconciler.reconcile((target,), target, snapshot(local=("work",)), self.submit, 0)
+        read_marker.assert_not_called()
+
     def test_absent_active_target_switches_even_when_untracked(self):
         target = Target("local", "work")
         self.reconciler.reconcile((), target, snapshot(), self.submit, 0)
@@ -168,10 +174,9 @@ class SessionReconcilerTest(unittest.TestCase):
         self.assertNotIn(first, self.reconciler._awaiting_discovery)
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
-    @patch.object(sidebar.cockpit, "startup_deadline", return_value=10)
     @patch.object(sidebar.cockpit, "clear_startup")
     def test_explicit_navigation_waits_for_startup_timeout_with_empty_discovery(
-        self, _clear_startup, _startup_deadline, _load_timing,
+        self, _clear_startup, _load_timing,
     ):
         target = Target("ssh", "work", "dev")
         for kind in ("switch", "add_switch", "create"):
@@ -184,9 +189,9 @@ class SessionReconcilerTest(unittest.TestCase):
                 # Attachment preparation consumes part of the shared startup wait.
                 for now in (5, 8, 10, 14.99):
                     data = snapshot(remotes={"dev": source("ssh", host="dev")})
-                    reconciler.reconcile((target,), target, data, self.submit, now)
+                    reconciler.reconcile((target,), target, data, self.submit, now, 10)
                 self.submit.assert_not_called()
-                reconciler.reconcile((target,), target, data, self.submit, 15)
+                reconciler.reconcile((target,), target, data, self.submit, 15, 10)
                 self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
@@ -248,16 +253,26 @@ class SessionReconcilerTest(unittest.TestCase):
             # Numbered shortcuts invoke switch in another process, without observe().
             main(["switch-session", "1"])
             self.assertEqual(options[sidebar.cockpit.CURRENT_TARGET_OPTION], target.format())
-            self.reconciler.reconcile((target,), target, cached, self.submit, 5)
+            status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=cached), target)
+            try:
+                with patch.object(
+                    sidebar.cockpit, "status_snapshot",
+                    return_value=sidebar.cockpit.StatusSnapshot(target, None, None, True),
+                ):
+                    deadline = status._sample((), 0).startup_deadline
+            finally:
+                status.close()
+            self.assertEqual(deadline, 15)
+            self.reconciler.reconcile((target,), target, cached, self.submit, 5, deadline)
             self.assertIn(sidebar.cockpit.STARTUP_OPTION, options)
             for now in (5, 8, 14.99):
-                self.reconciler.reconcile((target,), target, empty_sample(), self.submit, now)
+                self.reconciler.reconcile((target,), target, empty_sample(), self.submit, now, deadline)
             self.submit.assert_not_called()
 
             confirmed = snapshot(remotes={
                 "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=8),
             })
-            self.reconciler.reconcile((target,), target, confirmed, self.submit, 8)
+            self.reconciler.reconcile((target,), target, confirmed, self.submit, 8, deadline)
             self.assertNotIn(sidebar.cockpit.STARTUP_OPTION, options)
             self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 8)
             self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
@@ -266,9 +281,9 @@ class SessionReconcilerTest(unittest.TestCase):
             self.submit.reset_mock()
             _clock.return_value = 5
             main(["switch-session", "1"])
-            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 14.99)
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 14.99, deadline)
             self.submit.assert_not_called()
-            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 15)
+            self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 15, deadline)
             self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
     def test_failed_or_stale_explicit_navigation_does_not_delay_reconciliation(self):
@@ -428,7 +443,7 @@ class SessionReconcilerTest(unittest.TestCase):
 class ReconciliationLoopTest(unittest.TestCase):
     def _run_reconciliation(self, targets, active, initial, updates=(), keys=None):
         poller = unittest.mock.Mock(
-            snapshot=initial, current_target=active, bell_target=None,
+            snapshot=initial, current_target=active, bell_target=None, startup_deadline=None,
             current_agent=None, pane_active=True, refresh_pending=False,
         )
         samples = iter(updates)
@@ -523,7 +538,7 @@ class ReconciliationLoopTest(unittest.TestCase):
                         marker = [active]
                         data = snapshot(local=("old", "other"))
                         poller = unittest.mock.Mock(
-                            snapshot=data, current_target=active, bell_target=None,
+                            snapshot=data, current_target=active, bell_target=None, startup_deadline=None,
                             current_agent=None, pane_active=True, refresh_pending=False,
                         )
                         ticks = [0]
@@ -1168,6 +1183,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             bell_target=None,
             current_agent=None,
             pane_active=True,
+            startup_deadline=None,
         )
         snapshots = iter((disconnected, connected, connected))
 
@@ -1231,6 +1247,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         actions.poll.side_effect = lambda: results.pop(0) if results else None
         screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
         events = []
+        poller.startup_deadline = None
 
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
@@ -1269,6 +1286,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             bell_target=None,
             current_agent=None,
             pane_active=True,
+            startup_deadline=None,
             status_sampled=False,
         )
         samples = iter((False, False, False, True, False))
@@ -1359,6 +1377,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                 pass
 
         actions = BusyRunner()
+        poller.startup_deadline = None
         screen = FakeScreen([-1, -1, -1, -1, -1, STOP], size=(12, 40))
         events = []
 
@@ -3653,6 +3672,44 @@ class SidebarStateTest(unittest.TestCase):
 
 
 class AsyncSidebarWorkTest(unittest.TestCase):
+    def test_startup_deadline_is_sampled_off_ui_thread_and_rejects_old_generation(self):
+        target = Target("local", "work")
+        poller = unittest.mock.Mock(snapshot=snapshot(local=("work",)))
+        status = sidebar.AsyncStatusPoller(poller, target)
+        ui_thread = threading.get_ident()
+
+        def read_marker(sampled_target):
+            self.assertNotEqual(threading.get_ident(), ui_thread)
+            self.assertEqual(sampled_target, target)
+            return 42
+
+        try:
+            with (
+                patch.object(
+                    sidebar.cockpit, "status_snapshot",
+                    return_value=sidebar.cockpit.StatusSnapshot(target, None, None, True),
+                ),
+                patch.object(sidebar.cockpit, "startup_deadline", side_effect=read_marker),
+            ):
+                status.tick(0)
+                status._future.result(timeout=1)
+                status._next_poll = float("inf")
+                status.tick(0)
+                self.assertEqual(status.startup_deadline, 42)
+
+                status._next_poll = 0
+                status.tick(1)
+                status._future.result(timeout=1)
+                other = Target("local", "other")
+                status.observe_effect(sidebar.EffectResult(Effect("switch", other), ()))
+                self.assertIsNone(status.startup_deadline)
+                status._next_poll = float("inf")
+                status.tick(1)
+                self.assertEqual(status.current_target, other)
+                self.assertIsNone(status.startup_deadline)
+        finally:
+            status.close()
+
     def test_status_poller_uses_batched_cockpit_snapshot(self):
         target = Target("local", "work")
         poller = unittest.mock.Mock(snapshot=snapshot(local=("work",)))
@@ -3664,6 +3721,7 @@ class AsyncSidebarWorkTest(unittest.TestCase):
                     "status_snapshot",
                     return_value=sidebar.cockpit.StatusSnapshot(target, target, "agent", False),
                 ) as read,
+                patch.object(sidebar.cockpit, "startup_deadline", return_value=42) as marker,
                 patch.object(sidebar, "_current_target") as legacy_target,
                 patch.object(sidebar, "_pane_active") as legacy_activity,
             ):
@@ -3672,6 +3730,8 @@ class AsyncSidebarWorkTest(unittest.TestCase):
             status.close()
 
         read.assert_called_once_with()
+        marker.assert_called_once_with(target)
+        self.assertEqual(result.startup_deadline, 42)
         legacy_target.assert_not_called()
         legacy_activity.assert_not_called()
         self.assertEqual(
@@ -5789,6 +5849,7 @@ class SidebarDrawTest(unittest.TestCase):
             current_target=target,
             bell_target=None,
             current_agent="first",
+            startup_deadline=None,
             pending_agent=None,
             pane_active=True,
         )
@@ -8292,6 +8353,7 @@ class PrefixActionTest(unittest.TestCase):
             snapshot=data,
             current_target=current_target,
             bell_target=None,
+            startup_deadline=None,
             current_agent=current_agent,
             pending_agent=None,
             pane_active=True,
