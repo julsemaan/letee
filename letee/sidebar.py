@@ -543,9 +543,6 @@ class SessionReconciler:
         if result.effect.kind in ("show_reconnecting", "show_unavailable") and not result.error and not result.stale_navigation:
             # Overlays replace the starting attachment, so discovery need not wait for it.
             self._awaiting_discovery.pop(target, None)
-            shared_deadline = cockpit.startup_deadline(target)
-            if shared_deadline is not None:
-                cockpit.clear_startup(target, shared_deadline)
         if target not in self._pending:
             return
         if not result.effect.automatic or result.effect.kind not in ("switch", "ensure_created"):
@@ -1215,7 +1212,7 @@ def _effect_error(effect: Effect, error: BaseException) -> str:
 
 def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
     writes_tracking = effect.kind in ("add_switch", "create", "rename", "kill", "save_favorites")
-    if effect.automatic or writes_tracking or effect.kind == "switch":
+    if effect.automatic or writes_tracking or effect.kind in ("switch", "show_reconnecting", "show_unavailable"):
         with config.sessions_lock():
             if writes_tracking:
                 favorites = tuple(load_sessions())
@@ -1305,6 +1302,11 @@ def _perform_locked_effect(effect: Effect, favorites: tuple[Target, ...]) -> Eff
             partial_success = True
             if isinstance(effect.target, Target) and _current_target() == effect.target:
                 cockpit.reset_to_help(effect.target)
+        if effect.kind in ("show_reconnecting", "show_unavailable") and isinstance(effect.target, Target):
+            # Clear only the attachment replaced under this lock, not a later shortcut launch.
+            deadline = cockpit.startup_deadline(effect.target)
+            if deadline is not None:
+                cockpit.clear_startup(effect.target, deadline)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
         diagnostics.log(
             "effect_error",

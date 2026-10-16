@@ -286,6 +286,74 @@ class SessionReconcilerTest(unittest.TestCase):
             self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 15, deadline)
             self.submit.assert_called_once_with(sidebar.Effect("switch", target, automatic=True))
 
+    @patch.object(sidebar.cockpit, "load_timing", return_value=config.Timing(ssh_auth_timeout=10))
+    @patch.object(sidebar.cockpit, "right_pane", return_value="%2")
+    @patch.object(time, "monotonic", return_value=5)
+    def test_delayed_overlay_observation_preserves_same_target_shortcut_startup(self, clock, _pane, _timing):
+        from letee.__main__ import main
+
+        target = Target("ssh", "work", "dev")
+        for kind in ("show_reconnecting", "show_unavailable"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                options = {sidebar.cockpit.CURRENT_TARGET_OPTION: target.format()}
+                cleared_under_lock = []
+
+                def tmux_command(*args, **kwargs):
+                    if args[0] == "set-option" and "-u" not in args:
+                        options[args[3]] = args[4]
+                    elif args[0] == "if-shell":
+                        command = shlex.split(args[-1])
+                        guard = sidebar.cockpit._option_equals(
+                            sidebar.cockpit.STARTUP_OPTION,
+                            options.get(sidebar.cockpit.STARTUP_OPTION, ""),
+                        )
+                        if args[2] in ("1", guard):
+                            if "-u" in command:
+                                with config.sessions_lock(blocking=False) as acquired:
+                                    cleared_under_lock.append(not acquired)
+                                options.pop(command[-1], None)
+                            else:
+                                options[command[3]] = command[4]
+
+                with (
+                    patch.object(config, "config_dir", return_value=Path(directory)),
+                    patch.object(sidebar.cockpit, "current_target", return_value=target),
+                    patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_command) as tmux_command_mock,
+                    patch.object(sidebar.cockpit, "_option", side_effect=lambda name: options.get(name, "")),
+                    patch("letee.__main__.load_sessions", return_value=[target]),
+                    patch.object(sidebar.sessions, "attach_command", return_value="slow ssh attachment"),
+                ):
+                    clock.return_value = 5
+                    main(["switch-session", "1"])
+                    reconciler = sidebar.SessionReconciler()
+                    reconciler.observe(sidebar.EffectResult(
+                        sidebar.Effect("switch", target), (target,), completed_at=5,
+                    ))
+                    overlay = sidebar._perform_effect(sidebar.Effect(kind, target, automatic=True), (target,))
+                    self.assertFalse(overlay.error)
+                    self.assertFalse(overlay.stale_navigation)
+                    marker_after_overlay = sidebar.cockpit.startup_deadline(target)
+
+                    # The shortcut completes before the UI observes the older overlay result.
+                    clock.return_value = 6
+                    main(["switch-session", "1"])
+                    reconciler.observe(overlay)
+                    deadline = sidebar.cockpit.startup_deadline(target)
+                    self.assertEqual(deadline, 16)
+                    self.assertIsNone(marker_after_overlay)
+                    self.assertEqual(cleared_under_lock, [True])
+                    self.assertNotIn(target, reconciler._awaiting_discovery)
+                    self.submit.reset_mock()
+                    tmux_command_mock.reset_mock()
+                    for now in (6, 10, 15.99):
+                        clock.return_value = now
+                        absent = snapshot(remotes={"dev": source("ssh", host="dev")})
+                        reconciler.reconcile((target,), target, absent, self.submit, now, deadline)
+                        queued = sidebar._perform_effect(sidebar.Effect("switch", target, automatic=True), (target,))
+                        self.assertTrue(queued.stale_navigation)
+                    self.submit.assert_not_called()
+                    tmux_command_mock.assert_not_called()
+
     def test_failed_or_stale_explicit_navigation_does_not_delay_reconciliation(self):
         target = Target("ssh", "work", "dev")
         for kind in ("switch", "add_switch", "create"):
