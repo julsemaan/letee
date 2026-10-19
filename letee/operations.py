@@ -222,10 +222,10 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             finally:
                 config.save_sessions(list(planned))
         elif effect.kind == "save_favorites":
+            active = isinstance(target, Target) and cockpit.current_target() == target
             config.save_sessions(planned)
             partial = True
             if isinstance(target, Target):
-                active = cockpit.current_target() == target
                 try:
                     _advance(state, invalidated=target, new_launch=active)
                 finally:

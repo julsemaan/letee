@@ -32,6 +32,19 @@ class OperationsTest(unittest.TestCase):
                 self.assertFalse(operations.perform(operations.Effect("switch", self.work), ()).error)
             switch.assert_called_once()
 
+    def test_remove_probe_failure_keeps_tracking_and_operation_state(self):
+        state = config.load_operations()
+        with patch.object(cockpit, "current_target", side_effect=OSError("probe failed")), \
+             patch.object(cockpit, "reset_to_help") as reset:
+            result = operations.perform(operations.Effect("save_favorites", self.work))
+
+        self.assertEqual(result.error, "probe failed")
+        self.assertEqual(result.favorites, (self.work,))
+        self.assertEqual(config.load_sessions(), [self.work])
+        self.assertEqual(config.load_operations(), state)
+        self.assertFalse(result.partial_success)
+        reset.assert_not_called()
+
     def test_same_target_relaunch_invalidates_old_overlay(self):
         with patch.object(cockpit, "current_target", return_value=self.work), patch.object(cockpit, "switch"), patch.object(cockpit, "show_unavailable") as overlay:
             first = operations.perform(operations.Effect("switch", self.work), ())
