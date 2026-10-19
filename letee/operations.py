@@ -151,21 +151,21 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
         return EffectResult(effect, planned, error, stale_navigation=stale,
                             partial_success=partial, reset_matched=reset, launch_id=state["launch"],
                             completed_at=time.monotonic())
-    if effect.automatic:
-        revision = state.get("revisions", {}).get(target.format(), "") if target else ""
-        if (effect.launch_id != state["launch"] or effect.target_revision != revision
-                or (target is not None and target.format() in state["invalidated"])):
-            return result(stale=True)
-        if effect.kind == "ensure_created":
-            if target not in favorites and target != cockpit.current_target():
-                return result(stale=True)
-        elif target != cockpit.current_target():
-            return result(stale=True)
-        if isinstance(target, Target):
-            deadline = cockpit.startup_deadline(target)
-            if deadline is not None and time.monotonic() < deadline:
-                return result(stale=True)
     try:
+        if effect.automatic:
+            revision = state.get("revisions", {}).get(target.format(), "") if target else ""
+            if (effect.launch_id != state["launch"] or effect.target_revision != revision
+                    or (target is not None and target.format() in state["invalidated"])):
+                return result(stale=True)
+            if effect.kind == "ensure_created":
+                if target not in favorites and target != cockpit.current_target():
+                    return result(stale=True)
+            elif target != cockpit.current_target():
+                return result(stale=True)
+            if isinstance(target, Target):
+                deadline = cockpit.startup_deadline(target)
+                if deadline is not None and time.monotonic() < deadline:
+                    return result(stale=True)
         if effect.kind in ("switch", "add_switch", "switch_pane", "create") and isinstance(target, Target):
             if effect.kind == "create":
                 sessions.create(target)

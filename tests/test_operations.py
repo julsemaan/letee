@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -39,6 +40,37 @@ class OperationsTest(unittest.TestCase):
             self.assertNotEqual(first.launch_id, second.launch_id)
             self.assertTrue(operations.perform(delayed, ()).stale_navigation)
             overlay.assert_not_called()
+
+    def test_automatic_probe_failure_keeps_identity_after_same_target_relaunch(self):
+        for probe in ("current_target", "startup_deadline"):
+            with self.subTest(probe=probe):
+                old_launch = operations.launch_identity()
+                sessions_lock = config.sessions_lock
+                relaunched = []
+
+                @contextmanager
+                def relaunch_after_unlock():
+                    try:
+                        with sessions_lock() as acquired:
+                            yield acquired
+                    finally:
+                        with patch.object(config, "sessions_lock", sessions_lock), \
+                             patch.object(cockpit, "current_target", return_value=self.work), \
+                             patch.object(cockpit, "startup_deadline", return_value=None), \
+                             patch.object(cockpit, "switch"):
+                            relaunched.append(operations.perform(operations.Effect("switch", self.work)))
+
+                with patch.object(config, "sessions_lock", relaunch_after_unlock), \
+                     patch.object(cockpit, "current_target", return_value=self.work), \
+                     patch.object(cockpit, "startup_deadline", return_value=None), \
+                     patch.object(cockpit, probe, side_effect=OSError("probe failed")):
+                    result = operations.perform(operations.Effect("show_unavailable", self.work, automatic=True))
+
+                self.assertEqual(result.error, "probe failed")
+                self.assertFalse(relaunched[0].error)
+                self.assertNotEqual(old_launch, relaunched[0].launch_id)
+                self.assertEqual(result.launch_id, old_launch)
+                self.assertFalse(operations.is_current(result))
 
     def test_other_process_mutations_reject_queued_restoration(self):
         script = """
