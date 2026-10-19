@@ -63,6 +63,8 @@ def capture(effect: Effect) -> Effect:
 
 
 def _advance(state: dict, invalidated: Target | None = None, explicit: Target | None = None, *, new_launch: bool = True) -> None:
+    original = state
+    state = {**state, "revisions": dict(state.get("revisions", {})), "invalidated": list(state["invalidated"])}
     if new_launch:
         state["launch"] = uuid.uuid4().hex
     if invalidated is not None:
@@ -74,6 +76,7 @@ def _advance(state: dict, invalidated: Target | None = None, explicit: Target | 
         if explicit.format() in state["invalidated"]:
             state["invalidated"].remove(explicit.format())
     config.save_operations(state)
+    original.update(state)
 
 
 def is_current(result: EffectResult) -> bool:

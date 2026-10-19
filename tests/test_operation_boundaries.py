@@ -278,6 +278,35 @@ class OperationBoundariesTest(unittest.TestCase):
                     retry = operations.perform(operations.Effect("switch", self.work, automatic=True))
                     self.assertTrue(retry.stale_navigation)
 
+    def test_failed_operations_publication_leaves_state_unchanged(self):
+        state = {"launch": "initial", "revisions": {self.work.format(): "revision"},
+                 "invalidated": [self.work.format()]}
+        with patch.object(config, "save_operations", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                operations._advance(state, invalidated=Target("local", "other"), explicit=self.work)
+        self.assertEqual(state, {"launch": "initial", "revisions": {self.work.format(): "revision"},
+                                 "invalidated": [self.work.format()]})
+
+    def test_failed_operations_publication_error_remains_current_and_visible(self):
+        state = {"launch": "initial", "revisions": {self.work.format(): "revision"},
+                 "invalidated": [self.work.format()]}
+        with config.sessions_lock():
+            config.save_operations(state)
+        with (
+            patch.object(operations, "_state", return_value=state),
+            patch.object(config, "save_operations", side_effect=OSError("disk full")),
+            patch.object(cockpit, "switch") as switch,
+        ):
+            result = operations.perform(operations.Effect("switch", self.work))
+        self.assertEqual(state, config.load_operations())
+        self.assertEqual(result.error, "disk full")
+        self.assertEqual(result.launch_id, "initial")
+        self.assertTrue(operations.is_current(result))
+        switch.assert_not_called()
+        sidebar_state = sidebar.SidebarState()
+        sidebar._apply_effect(result, sidebar_state, Mock(), 5)
+        self.assertEqual(sidebar_state.status, "disk full")
+
     def test_automatic_preparation_timeout_preserves_overlay_and_identity(self):
         identity = operations.launch_identity()
         with patch.object(cockpit, "current_target", return_value=self.work), patch.object(cockpit, "startup_deadline", return_value=None), patch.object(cockpit, "switch") as switch, patch.object(operations.sessions, "attach_command", side_effect=subprocess.TimeoutExpired("prepare", 2)):
