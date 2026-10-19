@@ -2449,6 +2449,48 @@ class SidebarViewModeTest(OperationTestCase):
 
 
 class ReconnectingSelectionTest(OperationTestCase):
+    @patch.object(sidebar.cockpit, "startup_timeout", return_value=10)
+    @patch.object(sidebar.cockpit, "right_pane", return_value="%2")
+    @patch.object(time, "monotonic", return_value=5)
+    def test_explicit_reconnecting_clears_new_marker_and_recovery_attaches(self, _clock, _pane, _timeout):
+        target = Target("ssh", "work", "dev")
+        for previous_deadline in (None, 12.0):
+            with self.subTest(previous_deadline=previous_deadline):
+                options = {}
+                if previous_deadline is not None:
+                    options[sidebar.cockpit.STARTUP_OPTION] = f"{target.format()}\t{previous_deadline}"
+
+                def tmux_command(*args, **kwargs):
+                    if args[0] == "set-option" and "-u" not in args:
+                        options[args[3]] = args[4]
+                    elif args[0] == "if-shell":
+                        guard = sidebar.cockpit._option_equals(
+                            sidebar.cockpit.STARTUP_OPTION,
+                            options.get(sidebar.cockpit.STARTUP_OPTION, ""),
+                        )
+                        if args[2] == guard:
+                            options.pop(shlex.split(args[-1])[-1], None)
+
+                with (
+                    patch.object(sidebar.cockpit, "current_target", return_value=target),
+                    patch.object(sidebar.cockpit.tmux, "tmux", side_effect=tmux_command),
+                    patch.object(sidebar.cockpit, "_option", side_effect=lambda name: options.get(name, "")),
+                ):
+                    result = sidebar._perform_effect(Effect("show_reconnecting", target), (target,))
+                    self.assertFalse(result.error)
+                    interrupted = sidebar._reconcile_active_session_effect(None, result)
+                    self.assertEqual(interrupted, target)
+                    submit = unittest.mock.Mock(return_value=True)
+                    recovered = snapshot(remotes={
+                        "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=6),
+                    })
+                    sidebar._sync_active_session(
+                        target, recovered, interrupted, submit, now=6,
+                        shared_deadline=sidebar.cockpit.startup_deadline(target),
+                    )
+                    submit.assert_called_once_with(Effect("switch", target, automatic=True))
+                    self.assertIsNone(sidebar.cockpit.startup_deadline(target))
+
     def test_enter_on_reconnecting_session_shows_progress_without_attaching(self):
         target = Target("ssh", "work", "dev")
         data = snapshot(

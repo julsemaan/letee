@@ -236,6 +236,7 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 else:
                     _advance(state, explicit=target)
                     cockpit.switch_reconnecting(target, launch_id=state["launch"])
+                    deadline = cockpit.startup_deadline(target)
             else:
                 cockpit.show_unavailable(target)
             if deadline is not None:
