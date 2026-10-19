@@ -592,6 +592,12 @@ def _sync_active_session(
         return interrupted if submit is not None else next_marker
 
     status = _target_status(target, snapshot)
+    if (
+        status in ("connecting…", "reconnecting…", "unavailable")
+        and shared_deadline is not None
+        and (time.monotonic() if now is None else now) < shared_deadline
+    ):
+        return interrupted
     if status in ("connecting…", "reconnecting…"):
         if interrupted != target and not run(Effect("show_reconnecting", target, automatic=True)):
             return interrupted

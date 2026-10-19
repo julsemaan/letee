@@ -1287,6 +1287,52 @@ class AutomaticSessionEffectTest(OperationTestCase):
 
 
 class ActiveSessionAvailabilityTest(OperationTestCase):
+    def test_pending_startup_overlays_do_not_starve_local_favorite(self):
+        active = Target("ssh", "work", "dev")
+        missing = Target("local", "other")
+        for remotes, overlay in (
+            ({"dev": None}, "show_reconnecting"),
+            ({"dev": source("ssh", host="dev", available=False)}, "show_reconnecting"),
+            ({}, "show_unavailable"),
+        ):
+            for marker in (None, active):
+                with self.subTest(remotes=remotes, marker=marker):
+                    data = snapshot(remotes=remotes)
+                    submitted = []
+
+                    def submit(effect):
+                        submitted.append(effect)
+                        return True
+
+                    interrupted = sidebar._sync_active_session(
+                        active, data, marker, submit, now=10, shared_deadline=42,
+                    )
+                    self.assertEqual(interrupted, marker)
+                    self.assertEqual(submitted, [])
+                    reconciler = sidebar.SessionReconciler()
+                    reconciler.reconcile(
+                        (active, missing), active, data, submit, 10, shared_deadline=42,
+                    )
+                    self.assertEqual(submitted, [Effect("ensure_created", missing, automatic=True)])
+                    with (
+                        patch.object(sidebar.sessions, "ensure_created") as ensure,
+                        patch.object(config, "load_sessions", return_value=[active, missing]),
+                        patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+                    ):
+                        effect = operations.capture(submitted.pop())
+                        result = sidebar._perform_effect(effect, (active, missing))
+                    self.assertFalse(result.error)
+                    self.assertFalse(result.stale_navigation)
+                    ensure.assert_called_once_with(missing)
+
+                    sidebar._sync_active_session(
+                        active, data, marker, submit, now=42, shared_deadline=42,
+                    )
+                    self.assertEqual(
+                        submitted,
+                        [] if marker == active else [Effect(overlay, active, automatic=True)],
+                    )
+
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
     def test_restoration_backoff_uses_completion_time_and_healthy_discovery_does_not_reset(self, _load_timing):
         target = Target("local", "work")
@@ -2502,6 +2548,7 @@ class ReconnectingSelectionTest(OperationTestCase):
             bell_target=None,
             current_agent=None,
             pane_active=True,
+            startup_deadline=None,
         )
         poller.tick.return_value = False
         poller.observe_effect.side_effect = lambda result: setattr(poller, "current_target", target)
