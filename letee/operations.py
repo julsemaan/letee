@@ -191,11 +191,12 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             if target not in favorites:
                 raise SystemExit(f"Session not tracked: {target.format()}")
             renamed = renamed_target(effect)
+            active = cockpit.current_target() == target
             sessions.rename(target, renamed.session)
             partial = True
             try:
                 try:
-                    _advance(state, invalidated=target, explicit=renamed, new_launch=cockpit.current_target() == target)
+                    _advance(state, invalidated=target, explicit=renamed, new_launch=active)
                 finally:
                     cockpit.rename_target(target, renamed)
             finally:

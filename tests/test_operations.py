@@ -217,6 +217,39 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
             worker.join(1)
         submit.assert_not_called()
 
+    def test_rename_probe_failure_prevents_mutation(self):
+        state = config.load_operations()
+        with patch.object(cockpit, "current_target", side_effect=OSError("probe failed")), \
+             patch.object(operations.sessions, "rename") as rename, \
+             patch.object(cockpit, "rename_target") as rename_target:
+            result = operations.perform(operations.Effect("rename", self.work, message="other"))
+
+        self.assertEqual(result.error, "probe failed")
+        self.assertFalse(result.partial_success)
+        self.assertEqual(config.load_sessions(), [self.work])
+        self.assertEqual(config.load_operations(), state)
+        rename.assert_not_called()
+        rename_target.assert_not_called()
+
+    def test_rename_marker_failure_still_invalidates_old_active_target(self):
+        renamed = Target("local", "other")
+        with patch.object(cockpit, "current_target", side_effect=[self.work, OSError("probe failed")]) as probe, \
+             patch.object(operations.sessions, "rename") as rename, \
+             patch.object(cockpit, "rename_target", side_effect=OSError("marker cleanup failed")):
+            result = operations.perform(operations.Effect("rename", self.work, message="other"))
+
+        self.assertEqual(result.error, "marker cleanup failed")
+        self.assertTrue(result.partial_success)
+        rename.assert_called_once_with(self.work, "other")
+        probe.assert_called_once_with()
+        self.assertEqual(config.load_sessions(), [renamed])
+        self.assertIn(self.work.format(), config.load_operations()["invalidated"])
+        with patch.object(cockpit, "current_target", return_value=self.work), \
+             patch.object(operations.sessions, "ensure_created") as ensure:
+            restore = operations.perform(operations.Effect("ensure_created", self.work, automatic=True))
+        self.assertTrue(restore.stale_navigation)
+        ensure.assert_not_called()
+
     def test_rename_back_allows_fresh_restoration_not_old_queued_work(self):
         queued = operations.capture(operations.Effect("ensure_created", self.work, automatic=True))
         with patch.object(cockpit, "current_target", return_value=None), \
