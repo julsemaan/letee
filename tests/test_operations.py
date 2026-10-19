@@ -243,7 +243,7 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
 
         with patch.object(cockpit, "current_target", return_value=target), \
              patch.object(cockpit, "startup_deadline", return_value=None), \
-             patch.object(cockpit, "switch", side_effect=lambda target, command, **kwargs: launched.append(command)), \
+             patch.object(cockpit, "switch", side_effect=lambda target, command, **kwargs: launched.append((target, command, kwargs["launch_id"]))), \
              patch.object(cockpit, "rename_target"), \
              patch.object(operations.sessions, "load_tmux_config_overlay", return_value=False), \
              patch.object(operations.sessions, "_run", side_effect=run):
@@ -251,13 +251,23 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
             self.assertFalse(result.error)
             operations.rename(target, renamed.session)
 
-        # Execute the pane's delayed remote command only after rename completes.
-        tokens = shlex.split(shlex.split(launched[0])[-1])
-        if "new-session" in tokens:
-            remote_sessions.add(tokens[tokens.index("-s") + 1])
+        # Execute delayed remote commands against the renamed remote state.
+        def attach(command):
+            tokens = shlex.split(shlex.split(command)[-1])
+            if "new-session" in tokens:
+                remote_sessions.add(tokens[tokens.index("-s") + 1])
+            self.assertIn("attach-session", tokens)
+            session = tokens[tokens.index("-t") + 1].removeprefix("=")
+            return session if session in remote_sessions else None
+
+        self.assertIsNone(attach(launched[0][1]))
+        self.assertEqual(len(launched), 2)
+        self.assertEqual(launched[1][0], renamed)
+        self.assertEqual(attach(launched[1][1]), renamed.session)
+        self.assertNotEqual(launched[0][2], launched[1][2])
+        self.assertEqual(launched[1][2], operations.launch_identity())
         self.assertEqual(remote_sessions, {"other"})
         self.assertEqual(ensured, [target])
-        self.assertIn("attach-session", tokens)
         self.assertIn(target.format(), config.load_operations()["invalidated"])
 
     def test_rename_probe_failure_prevents_mutation(self):

@@ -203,6 +203,8 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                     _advance(state, invalidated=target, explicit=renamed, new_launch=active)
                 finally:
                     cockpit.rename_target(target, renamed)
+                if active:
+                    cockpit.switch(renamed, sessions.attach_command(renamed, attach_only=True), launch_id=state["launch"])
             finally:
                 config.save_sessions(list(planned))
         elif effect.kind == "kill" and isinstance(target, Target):

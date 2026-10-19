@@ -1032,7 +1032,13 @@ class ReconciliationLoopTest(OperationTestCase):
                         ):
                             sidebar.run(FakeScreen([-1] * 12 + [STOP], size=(16, 60)))
                         ensure.assert_not_called()
-                        switch.assert_not_called()
+                        if command == "rename" and active == old:
+                            switch.assert_called_once_with(
+                                renamed, sidebar.sessions.attach_command(renamed, attach_only=True),
+                                launch_id=config.load_operations()["launch"],
+                            )
+                        else:
+                            switch.assert_not_called()
                         self.assertNotIn(old, config.load_sessions())
                         expected = (renamed if command == "rename" else None) if active == old else other
                         self.assertEqual(marker[0], expected)
