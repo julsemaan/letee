@@ -1778,6 +1778,13 @@ class AsyncStatusPoller:
             self._pending_agent = None
             self._generation += 1
             self.startup_deadline = None
+        elif (
+            result.effect.kind in ("show_reconnecting", "show_unavailable")
+            and result.effect.automatic
+            and not result.error
+        ):
+            self._generation += 1
+            self.startup_deadline = None
         elif result.effect.kind == "rename" and isinstance(target, Target):
             renamed = _renamed_target(result.effect)
             if renamed is None:

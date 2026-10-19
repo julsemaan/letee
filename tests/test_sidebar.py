@@ -4422,6 +4422,64 @@ class SidebarStateTest(OperationTestCase):
 
 
 class AsyncSidebarWorkTest(OperationTestCase):
+    def test_automatic_overlays_reject_pending_startup_samples_and_reattach(self):
+        target = Target("ssh", "work", "dev")
+        recovered = snapshot(remotes={
+            "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=10),
+        })
+        for kind in ("show_reconnecting", "show_unavailable"):
+            with self.subTest(kind=kind):
+                sampled = threading.Event()
+                release = threading.Event()
+
+                def block_discovery(_host):
+                    sampled.set()
+                    self.assertTrue(release.wait(2))
+
+                poller = unittest.mock.Mock(snapshot=recovered, tick=block_discovery)
+                status = sidebar.AsyncStatusPoller(poller, target)
+                status.startup_deadline = 42
+                status.current_agent = "agent"
+                pending_agent = (PaneTarget(target, "@1", "%2", "/tmp/tmux"), "agent")
+                status._pending_agent = pending_agent
+                launch_id = status.launch_id
+                try:
+                    with (
+                        patch.object(sidebar.operations, "sample_target", return_value=(
+                            launch_id,
+                            sidebar.cockpit.StatusSnapshot(target, None, None, True),
+                            target, 42,
+                        )),
+                        patch.object(sidebar.cockpit, "startup_timeout", return_value=60),
+                    ):
+                        status.tick(0)
+                        self.assertTrue(sampled.wait(1))
+                        status.observe_effect(sidebar.EffectResult(
+                            Effect(kind, target, automatic=True), (target,), launch_id=launch_id,
+                        ))
+                        self.assertIsNone(status.startup_deadline)
+                        self.assertEqual(status.current_target, target)
+                        self.assertEqual(status.current_agent, "agent")
+                        self.assertEqual(status.pending_agent, pending_agent)
+                        self.assertEqual(status.launch_id, launch_id)
+
+                        release.set()
+                        status._future.result(timeout=1)
+                        status._next_poll = float("inf")
+                        status.tick(1)
+                        self.assertFalse(status.status_sampled)
+                        self.assertIsNone(status.startup_deadline)
+                        submit = unittest.mock.Mock(return_value=True)
+                        interrupted = sidebar._sync_active_session(
+                            target, status.snapshot, target, submit,
+                            shared_deadline=status.startup_deadline, now=10,
+                        )
+                        submit.assert_called_once_with(Effect("switch", target, automatic=True))
+                        self.assertEqual(interrupted, target)
+                finally:
+                    release.set()
+                    status.close()
+
     def test_startup_deadline_is_sampled_off_ui_thread_and_rejects_old_generation(self):
         target = Target("local", "work")
         poller = unittest.mock.Mock(launch_id=None, snapshot=snapshot(local=("work",)))
