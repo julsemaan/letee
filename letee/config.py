@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import fcntl
+import json
 from functools import lru_cache
 import math
 import os
@@ -152,6 +153,21 @@ def sessions_lock(*, blocking: bool = True):
             yield True
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def load_operations() -> dict:
+    try:
+        return json.loads(sessions_path().with_suffix(".operations").read_text())
+    except FileNotFoundError:
+        return {"launch": "", "invalidated": []}
+
+
+def save_operations(state: dict) -> None:
+    """Atomic publication; caller owns sessions_lock."""
+    path = sessions_path().with_suffix(".operations")
+    temporary = path.with_suffix(".operations.tmp")
+    temporary.write_text(json.dumps(state))
+    os.replace(temporary, path)
 
 
 def sessions_revision() -> tuple[int, int] | None:

@@ -1619,7 +1619,7 @@ class CockpitLayoutTest(unittest.TestCase):
                     patch.object(cockpit.tmux, "out", return_value=command),
                     patch.object(cockpit.tmux, "tmux") as tmux_call,
                 ):
-                    self.assertIsNone(cockpit.current_target())
+                    self.assertIsNone(cockpit.current_target(repair=True))
 
                 tmux_call.assert_called_once_with(
                     "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
@@ -1649,7 +1649,7 @@ class CockpitLayoutTest(unittest.TestCase):
                     patch.object(cockpit.tmux, "out", return_value=command),
                     patch.object(cockpit.tmux, "tmux") as tmux_call,
                 ):
-                    self.assertIsNone(cockpit.current_target())
+                    self.assertIsNone(cockpit.current_target(repair=True))
 
                 tmux_call.assert_called_once_with(
                     "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
@@ -1668,7 +1668,7 @@ class CockpitLayoutTest(unittest.TestCase):
                     patch.object(cockpit.tmux, "out", return_value=command),
                     patch.object(cockpit.tmux, "tmux") as tmux_call,
                 ):
-                    self.assertIsNone(cockpit.current_target())
+                    self.assertIsNone(cockpit.current_target(repair=True))
 
                 tmux_call.assert_called_once_with(
                     "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION

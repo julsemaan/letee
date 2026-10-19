@@ -132,6 +132,7 @@ RIGHT_PANE_OPTION = "@letee_right_pane"
 CURRENT_TARGET_OPTION = "@letee_current_target"
 RENAMED_TARGET_OPTION = "@letee_renamed_target"
 STARTUP_OPTION = "@letee_startup"
+STARTUP_LAUNCH_OPTION = "@letee_startup_launch"
 EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
 EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION = "@letee_expected_right_pane_death_target"
 EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION = "@letee_expected_right_pane_death_generation"
@@ -777,6 +778,7 @@ def switch(
     *,
     action_id: str | None = None,
     input_id: str | None = None,
+    launch_id: str | None = None,
 ) -> None:
     debug = diagnostics.get_diagnostics(server=tmux.SERVER)
     context = debug.context_values()
@@ -833,6 +835,8 @@ def switch(
         # Publish before the active target so shortcut navigation is protected too.
         deadline = float(time.monotonic() + startup_timeout(target))
         tmux.tmux("set-option", "-t", tmux.SESSION, STARTUP_OPTION, f"{target.format()}\t{deadline}")
+        if launch_id is not None:
+            tmux.tmux("set-option", "-t", tmux.SESSION, STARTUP_LAUNCH_OPTION, launch_id)
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, RENAMED_TARGET_OPTION)
         marker_update = f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())}"
         tmux.tmux("if-shell", "-F", "1", marker_update)
@@ -854,7 +858,7 @@ def switch(
             attach_command = stage("prepare", "attach_command_preparation", attach_command)
         except BaseException as error:
             try:
-                clear_startup(target, deadline)
+                clear_startup(target, deadline, launch_id)
             except BaseException:
                 pass
             try:
@@ -954,10 +958,13 @@ def startup_deadline(target: Target) -> float | None:
         return None
 
 
-def clear_startup(target: Target, deadline: float) -> None:
+def clear_startup(target: Target, deadline: float, launch_id: str | None = None) -> None:
     marker = f"{target.format()}\t{deadline}"
+    guard = _option_equals(STARTUP_OPTION, marker)
+    if launch_id is not None:
+        guard = f"#{{&&:{guard},{_option_equals(STARTUP_LAUNCH_OPTION, launch_id)}}}"
     tmux.tmux(
-        "if-shell", "-F", _option_equals(STARTUP_OPTION, marker),
+        "if-shell", "-F", guard,
         f"set-option -u -t {tmux.SESSION} {STARTUP_OPTION}",
     )
 
@@ -1028,8 +1035,8 @@ def show_reconnecting(target: Target) -> None:
     tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _reconnecting_command(target))
 
 
-def switch_reconnecting(target: Target) -> None:
-    switch(target, _reconnecting_command(target))
+def switch_reconnecting(target: Target, *, launch_id: str | None = None) -> None:
+    switch(target, _reconnecting_command(target), launch_id=launch_id)
 
 
 def _parse_target_option(text: str) -> Target | None:
@@ -1067,12 +1074,17 @@ def status_snapshot() -> StatusSnapshot | None:
     return _parse_status_snapshot(text)
 
 
-def current_target() -> Target | None:
+def current_target(*, repair: bool = False) -> Target | None:
+    """Inspect without mutation. Only operations may request marker repair."""
     target = _target_option(CURRENT_TARGET_OPTION)
     pane = right_pane()
     if not pane:
         return target
     command = tmux.out("display-message", "-p", "-t", pane, "#{pane_start_command}", check=False)
+    if target is not None:
+        deadline = startup_deadline(target)
+        if deadline is not None and time.monotonic() < deadline:
+            return target
     attach = r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s [A-Za-z0-9_.-]+|(?:.* )?attach-session(?: .*?)? -t [A-Za-z0-9_.-]+)"
     inner_attach = rf"(?:^| )tmux (?:-L {re.escape(INNER_SERVER_SOCKET)}|-S (?:\S*/)?{re.escape(INNER_SERVER_SOCKET)})(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s|(?:.* )?attach-session(?: .*?)? -t) ([A-Za-z0-9_.-]+)"
     try:
@@ -1098,10 +1110,12 @@ def current_target() -> Target | None:
             if parsed_target is not None and target != parsed_target:
                 if _option(RENAMED_TARGET_OPTION) == f"{target.format()} {parsed_target.format()}":
                     return target
-                tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
+                if repair:
+                    tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
                 return None
             if re.search(attach, parsed_command) and parsed_target is None:
-                tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
+                if repair:
+                    tmux.tmux("set-option", "-u", "-t", tmux.SESSION, CURRENT_TARGET_OPTION)
                 return None
             return target
         return parsed_target

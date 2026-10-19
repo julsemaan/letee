@@ -15,16 +15,18 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
 
-from . import __version__, cockpit, config, diagnostics, sessions
+from . import __version__, cockpit, config, diagnostics, operations, sessions as sessions
+from .operations import (
+    Effect, EffectResult, perform as _perform_effect,
+    renamed_target as _renamed_target,
+)
 from .discovery import DiscoveryPoller, SessionSnapshot, SourceSnapshot
 from .config import (
     load_agent_panel_resize_step,
     load_hosts,
-    load_sessions,
     load_sidebar_keybindings,
     load_status_timeout,
     load_timing,
-    save_sessions,
 )
 from .names import PaneTarget, Target, validate_name
 
@@ -71,22 +73,6 @@ class InputEvent:
     @property
     def key(self) -> object:
         return self.key_code
-
-
-@dataclass(frozen=True)
-class Effect:
-    kind: Literal[
-        "switch", "switch_pane", "add_switch", "create", "kill", "kill_agent", "rename",
-        "save_favorites", "status", "show_reconnecting", "ensure_created",
-        "show_unavailable",
-    ]
-    target: Target | PaneTarget | None = None
-    favorites: tuple[Target, ...] | None = None
-    message: str = ""
-    automatic: bool = False
-    agent_id: str = ""
-    favorite_move: tuple[Target, Target] | None = None
-    previous_favorites: tuple[Target, ...] | None = None
 
 
 @dataclass
@@ -147,19 +133,6 @@ class Entry:
 
 
 @dataclass(frozen=True)
-class EffectResult:
-    effect: Effect
-    favorites: tuple[Target, ...]
-    error: str = ""
-    stale_navigation: bool = False
-    action_id: str | None = None
-    input_id: str | None = None
-    partial_success: bool = False
-    reset_matched: bool = False
-    completed_at: float | None = field(default=None, compare=False)
-
-
-@dataclass(frozen=True)
 class StatusResult:
     snapshot: SessionSnapshot
     current_target: Target | None
@@ -172,6 +145,7 @@ class StatusResult:
     sampled: bool = False
     startup_deadline: float | None = None
     synchronized: bool = False
+    launch_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -468,19 +442,20 @@ class RestorationRetry:
 
 class SessionReconciler:
     def __init__(self) -> None:
-        self._pending: dict[Target, SourceSnapshot] = {}
+        self._pending: dict[Target, tuple[str, SourceSnapshot]] = {}
         self._completed: dict[Target, SourceSnapshot] = {}
         self._awaiting_discovery: dict[Target, tuple[float, float]] = {}
         self._retries: dict[Target, RestorationRetry] = {}
         self._last: Target | None = None
-        self._startup_clears: dict[tuple[Target, float], threading.Thread] = {}
+        self._startup_clears: dict[tuple[Target, float, str | None], threading.Thread] = {}
+        self._shared_launch_id: str | None = None
 
-    def _clear_startup(self, target: Target, deadline: float) -> None:
-        key = (target, deadline)
+    def _clear_startup(self, target: Target, deadline: float, launch_id: str | None = None) -> None:
+        key = (target, deadline, launch_id)
         if key in self._startup_clears:
             return
         worker = threading.Thread(
-            target=cockpit.clear_startup, args=key,
+            target=operations.clear_startup, args=key,
             name="letee-startup-cleanup", daemon=True,
         )
         self._startup_clears[key] = worker
@@ -494,10 +469,15 @@ class SessionReconciler:
         submit: Callable[[Effect], bool],
         now: float,
         shared_deadline: float | None = None,
+        shared_launch_id: str | None = None,
     ) -> None:
+        if shared_launch_id != self._shared_launch_id:
+            if active is not None:
+                self._awaiting_discovery.pop(active, None)
+            self._shared_launch_id = shared_launch_id
         # Retain completed clears while their marker is cached, and all pending clears.
         for key, worker in list(self._startup_clears.items()):
-            if key != (active, shared_deadline) and not worker.is_alive():
+            if key != (active, shared_deadline, shared_launch_id) and not worker.is_alive():
                 del self._startup_clears[key]
         targets = list(dict.fromkeys(favorites + ((active,) if active else ())))
         for records in (self._pending, self._completed, self._awaiting_discovery, self._retries):
@@ -523,12 +503,12 @@ class SessionReconciler:
                 self._completed.pop(target, None)
                 self._awaiting_discovery.pop(target, None)
                 if target == active and shared_deadline is not None:
-                    self._clear_startup(target, shared_deadline)
+                    self._clear_startup(target, shared_deadline, shared_launch_id)
                 continue
             if target == active and shared_deadline is not None:
                 if now < shared_deadline:
                     continue
-                self._clear_startup(target, shared_deadline)
+                self._clear_startup(target, shared_deadline, shared_launch_id)
             if startup_wait is not None:
                 if target == active and now < startup_wait[1]:
                     continue
@@ -542,8 +522,9 @@ class SessionReconciler:
             ):
                 continue
             kind = "switch" if target == active else "ensure_created"
-            if submit(Effect(kind, target, automatic=True)):
-                self._pending[target] = source
+            effect = Effect(kind, target, automatic=True)
+            if submit(effect):
+                self._pending[target] = (effect.request_id, source)
                 self._last = target
             return
 
@@ -551,20 +532,25 @@ class SessionReconciler:
         target = result.effect.target
         if not isinstance(target, Target):
             return
+        # Completion owns its queue slot even when it no longer owns the UI.
+        pending = self._pending.get(target)
+        source = None
+        if pending is not None and pending[0] == result.effect.request_id:
+            _, source = self._pending.pop(target)
+        if not operations.is_current(result):
+            return
         if result.effect.kind in ("switch", "add_switch", "create") and not result.error and not result.stale_navigation:
             # respawn-pane confirms launch, not asynchronous session creation.
             timing = load_timing()
             timeout = timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
             completed_at = result.completed_at if result.completed_at is not None else time.monotonic()
             self._awaiting_discovery[target] = (completed_at, completed_at + timeout)
+            self._shared_launch_id = result.launch_id
         if result.effect.kind in ("show_reconnecting", "show_unavailable") and not result.error and not result.stale_navigation:
             # Overlays replace the starting attachment, so discovery need not wait for it.
             self._awaiting_discovery.pop(target, None)
-        if target not in self._pending:
+        if source is None or not result.effect.automatic or result.effect.kind not in ("switch", "ensure_created"):
             return
-        if not result.effect.automatic or result.effect.kind not in ("switch", "ensure_created"):
-            return
-        source = self._pending.pop(target)
         if result.stale_navigation:
             return
         if result.error:
@@ -634,7 +620,7 @@ def _reconcile_active_session_effect(
     retry: RestorationRetry | None = None,
     now: float | None = None,
 ) -> Target | None:
-    if result.stale_navigation:
+    if result.stale_navigation or not operations.is_current(result):
         return unavailable_target_shown
     target = result.effect.target
     if isinstance(target, PaneTarget):
@@ -1180,182 +1166,6 @@ def _set_status(
     state.status_deadline = time.monotonic() + timeout
 
 
-def _renamed_target(effect: Effect) -> Target | None:
-    if effect.kind != "rename" or not isinstance(effect.target, Target):
-        return None
-    return Target(effect.target.kind, effect.message, effect.target.host)
-
-
-def _planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[Target, ...]:
-    if effect.kind in ("add_switch", "create") and isinstance(effect.target, Target):
-        return favorites if effect.target in favorites else (*favorites, effect.target)
-    if effect.kind == "kill" and isinstance(effect.target, Target):
-        return tuple(target for target in favorites if target != effect.target)
-    if effect.kind == "rename" and isinstance(effect.target, Target):
-        renamed = _renamed_target(effect)
-        if renamed is not None:
-            planned: list[Target] = []
-            seen: set[Target] = set()
-            for target in favorites:
-                candidate = renamed if target == effect.target else target
-                if candidate not in seen:
-                    planned.append(candidate)
-                    seen.add(candidate)
-            return tuple(planned)
-    if effect.kind == "save_favorites":
-        if isinstance(effect.target, Target):
-            return tuple(target for target in favorites if target != effect.target)
-        if effect.favorite_move is not None:
-            source, destination = effect.favorite_move
-            if source in favorites and destination in favorites:
-                planned = list(favorites)
-                destination_index = planned.index(destination)
-                planned.remove(source)
-                planned.insert(destination_index, source)
-                return tuple(planned)
-        return favorites
-    return favorites
-
-
-def _effect_error(effect: Effect, error: BaseException) -> str:
-    if isinstance(error, subprocess.TimeoutExpired):
-        target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
-        return f"{effect.kind}{f' {target.format()}' if isinstance(target, Target) else ''} timed out"
-    if isinstance(error, subprocess.CalledProcessError):
-        return (error.stderr or error.stdout or "").strip() or f"exit status {error.returncode}"
-    if isinstance(error, OSError):
-        return error.strerror or str(error)
-    message = str(error)
-    if effect.kind == "kill_agent":
-        prefix = "kill agent "
-        marker = " failed: "
-        if message.startswith(prefix):
-            _, separator, reason = message.partition(marker)
-            if separator:
-                return reason
-            if message.endswith(" timed out"):
-                return "timed out"
-    return message
-
-
-def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
-    writes_tracking = effect.kind in ("add_switch", "create", "rename", "kill", "save_favorites")
-    if effect.automatic or writes_tracking or effect.kind in ("switch", "switch_pane", "show_reconnecting", "show_unavailable"):
-        fallback = effect.previous_favorites if effect.previous_favorites is not None else favorites
-        try:
-            with config.sessions_lock():
-                if writes_tracking:
-                    favorites = tuple(load_sessions())
-                    fallback = favorites
-                if (
-                    effect.kind == "ensure_created"
-                    and effect.target not in load_sessions()
-                    and effect.target != _current_target()
-                ):
-                    return EffectResult(effect, favorites, stale_navigation=True)
-                return _perform_locked_effect(effect, favorites)
-        except (OSError, SystemExit) as error:
-            return EffectResult(effect, fallback, _effect_error(effect, error))
-    return _perform_locked_effect(effect, favorites)
-
-
-def _perform_locked_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResult:
-    planned = _planned_favorites(effect, favorites)
-    partial_success = False
-    reset_matched = False
-    try:
-        if (
-            effect.automatic
-            and effect.kind in ("switch", "show_reconnecting", "show_unavailable")
-            and isinstance(effect.target, Target)
-            and _current_target() != effect.target
-        ):
-            return EffectResult(effect, planned, stale_navigation=True)
-        if effect.kind in ("switch", "add_switch") and isinstance(effect.target, Target):
-            if effect.kind == "add_switch" and planned != favorites:
-                save_sessions(list(planned))
-            if effect.automatic:
-                deadline = cockpit.startup_deadline(effect.target)
-                if deadline is not None and time.monotonic() < deadline:
-                    return EffectResult(effect, planned, stale_navigation=True)
-                # Keep the current overlay until preparation finishes without navigation.
-                attach_command = sessions.attach_command(effect.target)
-                if _current_target() != effect.target:
-                    return EffectResult(effect, planned, stale_navigation=True)
-                cockpit.switch(effect.target, attach_command)
-            else:
-                cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
-        elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            cockpit.switch(effect.target.target, lambda: sessions.pane_attach_command(effect.target), effect.message)
-        elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
-            sessions.kill_agent(effect.target)
-        elif effect.kind == "ensure_created" and isinstance(effect.target, Target):
-            sessions.ensure_created(effect.target)
-        elif effect.kind == "create" and isinstance(effect.target, Target):
-            sessions.create(effect.target)
-            if planned != favorites:
-                save_sessions(list(planned))
-            cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
-        elif effect.kind == "rename" and isinstance(effect.target, Target):
-            renamed = _renamed_target(effect)
-            if renamed is None:
-                raise SystemExit("invalid rename effect")
-            sessions.rename(effect.target, renamed.session)
-            cockpit.rename_target(effect.target, renamed)
-            if planned != favorites:
-                save_sessions(list(planned))
-        elif effect.kind == "kill" and isinstance(effect.target, Target):
-            active = _current_target() == effect.target
-            if active:
-                cockpit.set_expected_right_pane_death(effect.target)
-            try:
-                sessions.kill(effect.target)
-            except (SystemExit, OSError, subprocess.SubprocessError):
-                if active:
-                    cockpit.resolve_expected_right_pane_death(effect.target, False)
-                raise
-            partial_success = True
-            try:
-                if active:
-                    cockpit.resolve_expected_right_pane_death(effect.target, True)
-                else:
-                    reset_matched = cockpit.reset_to_help(effect.target)
-            finally:
-                if planned != favorites:
-                    save_sessions(list(planned))
-        elif effect.kind == "show_reconnecting" and isinstance(effect.target, Target):
-            if effect.automatic:
-                cockpit.show_reconnecting(effect.target)
-            else:
-                cockpit.switch_reconnecting(effect.target)
-        elif effect.kind == "show_unavailable" and isinstance(effect.target, Target):
-            cockpit.show_unavailable(effect.target)
-        elif effect.kind == "save_favorites":
-            save_sessions(planned)
-            partial_success = True
-            if isinstance(effect.target, Target) and _current_target() == effect.target:
-                cockpit.reset_to_help(effect.target)
-        if effect.kind in ("show_reconnecting", "show_unavailable") and isinstance(effect.target, Target):
-            # Clear only the attachment replaced under this lock, not a later shortcut launch.
-            deadline = cockpit.startup_deadline(effect.target)
-            if deadline is not None:
-                cockpit.clear_startup(effect.target, deadline)
-    except (SystemExit, OSError, subprocess.SubprocessError) as error:
-        diagnostics.log(
-            "effect_error",
-            **_trace_effect(effect),
-            error_type=type(error).__name__,
-        )
-        return EffectResult(
-            effect,
-            favorites if effect.kind == "save_favorites" and not partial_success else planned,
-            _effect_error(effect, error),
-            partial_success=partial_success,
-            reset_matched=reset_matched,
-        )
-    return EffectResult(effect, planned, reset_matched=reset_matched)
-
-
 def _effect_state_trace(state: SidebarState) -> dict[str, object]:
     return {
         "favorites": [target.format() for target in state.favorites],
@@ -1389,6 +1199,8 @@ def _apply_effect(
     status_timeout: float,
 ) -> bool:
     effect = result.effect
+    if not operations.is_current(result):
+        return False
     if effect.automatic and result.stale_navigation:
         _log_effect_applied(result, state)
         return False
@@ -1621,6 +1433,7 @@ class EffectRunner:
         favorites: tuple[Target, ...],
         input_id: str | None = None,
     ) -> bool:
+        effect = operations.capture(effect)
         debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         action_id = debug.new_action_id()
         debug.emit(
@@ -1742,13 +1555,8 @@ class EffectRunner:
         self._start(effect, favorites, next_action_id, next_input_id)
         if result.effect.kind == "ensure_created":
             return result
-        stale_result = EffectResult(
-            result.effect,
-            result.favorites,
-            result.error,
-            stale_navigation=True,
-            action_id=action_id,
-            input_id=input_id,
+        stale_result = replace(
+            result, stale_navigation=True, action_id=action_id, input_id=input_id,
         )
         return stale_result
 
@@ -1771,6 +1579,7 @@ class AsyncStatusPoller:
         self.snapshot = poller.snapshot
         self.current_target = current_target
         self.startup_deadline: float | None = None
+        self.launch_id: str | None = operations.launch_identity()
         self.bell_target: Target | None = None
         self.current_agent: str | None = None
         self.pane_active = True
@@ -1805,6 +1614,7 @@ class AsyncStatusPoller:
         state: StatusPollState | None = None,
         synchronize: bool = False,
     ) -> StatusResult:
+        launch_id = None
         state = state or self._poll_state()
         snapshot = state.snapshot
         current_target = state.current_target
@@ -1821,12 +1631,9 @@ class AsyncStatusPoller:
                     self._poller.discard(target)
                 elif command == "refresh":
                     self._poller.refresh()
+            launch_id, status, synchronized_target, startup_deadline = operations.sample_target(synchronize=synchronize)
             if synchronize:
-                # Serializing with navigation keeps validate-and-clear from erasing a
-                # marker published by a switch that has not respawned its pane yet.
-                with config.sessions_lock():
-                    current_target = _current_target()
-            status = cockpit.status_snapshot()
+                current_target = synchronized_target
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
             sampled = True
@@ -1844,7 +1651,6 @@ class AsyncStatusPoller:
                 suppression_expired = False
             if current_target == suppressed_target:
                 current_target = None
-            startup_deadline = cockpit.startup_deadline(current_target) if current_target else None
             active_host = current_target.host if current_target and current_target.kind == "ssh" else None
             self._poller.tick(active_host)
             snapshot = self._poller.snapshot
@@ -1868,6 +1674,7 @@ class AsyncStatusPoller:
             sampled,
             startup_deadline,
             synchronized,
+            launch_id,
         )
 
     def tick(self, now: float) -> bool:
@@ -1882,6 +1689,7 @@ class AsyncStatusPoller:
                 )
             if (
                 result.generation == self._generation
+                and (result.launch_id is None or result.launch_id == operations.launch_identity())
                 and self._sample_revision == config.sessions_revision()
             ):
                 changed = (
@@ -1908,6 +1716,7 @@ class AsyncStatusPoller:
                     self._suppressed_target = None
                 self.current_target = result.current_target
                 self.startup_deadline = result.startup_deadline
+                self.launch_id = result.launch_id
                 self.bell_target = result.bell_target
                 if self._pending_agent is None:
                     self.current_agent = result.current_agent
@@ -1928,8 +1737,10 @@ class AsyncStatusPoller:
         return changed
 
     def observe_effect(self, result: EffectResult) -> None:
-        if result.stale_navigation:
+        if result.stale_navigation or not operations.is_current(result):
             return
+        if result.launch_id is not None:
+            self.launch_id = result.launch_id
         if result.error:
             if (
                 not result.partial_success
@@ -2908,7 +2719,7 @@ def run(stdscr: curses.window) -> None:
     sidebar_keys = load_sidebar_keybindings()
     initial_target = _current_target()
     tracking_revision = config.sessions_revision()
-    state = SidebarState(favorites=list(load_sessions()), selected_target=initial_target)
+    state = SidebarState(favorites=list(config.load_sessions()), selected_target=initial_target)
     poller = AsyncStatusPoller(DiscoveryPoller(load_hosts()), initial_target)
     actions = EffectRunner()
     if debug.enabled:
@@ -3297,6 +3108,8 @@ def run(stdscr: curses.window) -> None:
         return prompt_event
 
     def queue_effect(effect: Effect, input_id: str | None = None) -> bool:
+        if effect.automatic and isinstance(poller.launch_id, str):
+            effect = replace(effect, launch_id=poller.launch_id)
         if input_id is None:
             return actions.submit(effect, tuple(state.favorites))
         return actions.submit(effect, tuple(state.favorites), input_id=input_id)
@@ -3757,15 +3570,13 @@ def run(stdscr: curses.window) -> None:
                 rebuild()
                 state.scroll_offset = min(scroll_offset, max(0, len(entries) - 1)) if scroll_offset is not None else None
             if not burst_count and not actions.busy:
-                with config.sessions_lock(blocking=False) as acquired:
-                    if acquired:
-                        revision = config.sessions_revision()
-                        if revision != tracking_revision:
-                            state.favorites[:] = load_sessions()
-                            poller.request_target_sync()
-                            tracking_revision = revision
-                            poller.refresh()
-                            rebuild()
+                tracking = operations.tracking_snapshot(tracking_revision)
+                if tracking is not None:
+                    tracking_revision, favorites = tracking
+                    state.favorites[:] = favorites
+                    poller.request_target_sync()
+                    poller.refresh()
+                    rebuild()
             if restoration_retry.target != current_target:
                 restoration_retry.reset()
             if getattr(poller, "status_sampled", False) is True:
@@ -3797,7 +3608,7 @@ def run(stdscr: curses.window) -> None:
                     if not actions.busy:
                         reconciler.reconcile(
                             tuple(state.favorites), current_target, poller.snapshot, queue_effect, now,
-                            poller.startup_deadline,
+                            poller.startup_deadline, poller.launch_id,
                         )
                 except SystemExit as error:
                     show_status(str(error))

@@ -22,6 +22,22 @@ make build-check   # build distributions and validate metadata
 make check         # all quality gates
 ```
 
+## Session coordination
+
+`letee.operations` owns server-scoped session transactions. CLI commands and sidebar workers submit intent there rather than acquire `sessions_lock` themselves. Reload tracking, validate automatic work, prepare attachments, and publish launches within one transaction. Never nest lock acquisitions or wait for a transaction on the curses thread. Status synchronization and startup-marker cleanup run in workers too.
+
+The coordination rules are:
+
+- Intentional kill, removal, and rename invalidate queued restoration. Automatic work rechecks persisted launch identity, per-target revision, and tracking under the lock. Renaming A to B and back to A still invalidates previously queued work for A. Explicit navigation may select an intentionally removed target again.
+- Every attachment launch gets a new persisted identity, even for the same target. Delayed overlays, status samples, and startup cleanup cannot modify a newer launch.
+- A completion releases only its own pending request, even if its launch is obsolete. Obsolete results cannot update current UI state or clear newer pending work.
+- Attachment startup retains its deadline and discovery-freshness checks. A cached discovery sample cannot confirm a newly launched attachment. `_awaiting_discovery` remains necessary because pane respawn confirms launch, not session creation.
+- Killing the active session retains the expected-pane-death handshake. Successful kill or rename persists tracking even if subsequent pane updates fail.
+
+Keep regression scenarios for queued restoration versus kill/remove/rename, same-target relaunch versus delayed results, slow preparation, slot lookup under the lock, and CLI create remaining untracked. Run `make test`, not host E2E tests.
+
+The coordination migration stays in this PR because extracting the partially migrated callers would leave restoration safeguards incomplete. A future prerequisite extraction should move operations, persistence, and all CLI/sidebar callers together, with the coordination regressions; leave automatic restoration and discovery-specific policy in the feature PR. Do not consolidate CLI and sidebar startup paths without proving their deadline and freshness behavior equivalent.
+
 ## End-to-end tests
 
 WARNING: These tests are not working (yet). Only use `make test` for now.
