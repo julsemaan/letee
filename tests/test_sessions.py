@@ -159,6 +159,19 @@ class SessionOperationsTest(unittest.TestCase):
                     "ssh -o ConnectTimeout=2 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o AddKeysToAgent=yes -o ControlMaster=no -o 'ControlPath=~/.ssh/letee-%C' -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'",
                 )
 
+    def test_attach_only_commands_never_create_local_or_remote_sessions(self):
+        for kind, host in (("local", None), ("ssh", "dev")):
+            for overlay in (False, True):
+                with self.subTest(kind=kind, overlay=overlay), \
+                     patch.object(sessions, "_install_overlay"):
+                    command = attach_command(Target(kind, "work", host), overlay=overlay, attach_only=True)
+                    tmux_command = command if kind == "local" else shlex.split(command)[-1]
+                    tokens = shlex.split(tmux_command)
+                    self.assertNotIn("new-session", tokens)
+                    self.assertIn("attach-session", tokens)
+                    self.assertEqual(tokens[tokens.index("-t") + 1], "=work")
+                    self.assertEqual("source-file" in tokens, overlay)
+
     def test_pane_attach_commands_select_exact_local_and_remote_pane(self):
         local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
         remote = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/tmp/tmux socket")

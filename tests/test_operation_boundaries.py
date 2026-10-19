@@ -309,7 +309,7 @@ class OperationBoundariesTest(unittest.TestCase):
 
     def test_automatic_preparation_timeout_preserves_overlay_and_identity(self):
         identity = operations.launch_identity()
-        with patch.object(cockpit, "current_target", return_value=self.work), patch.object(cockpit, "startup_deadline", return_value=None), patch.object(cockpit, "switch") as switch, patch.object(operations.sessions, "attach_command", side_effect=subprocess.TimeoutExpired("prepare", 2)):
+        with patch.object(cockpit, "current_target", return_value=self.work), patch.object(cockpit, "startup_deadline", return_value=None), patch.object(cockpit, "switch") as switch, patch.object(operations.sessions, "ensure_created"), patch.object(operations.sessions, "attach_command", side_effect=subprocess.TimeoutExpired("prepare", 2)):
             result = operations.perform(operations.Effect("switch", self.work, automatic=True))
         self.assertIn("timed out", result.error)
         self.assertEqual(result.launch_id, identity)

@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -216,6 +217,48 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
         for worker, _ in reconciler._startup_clears.values():
             worker.join(1)
         submit.assert_not_called()
+
+    def test_delayed_automatic_attachment_does_not_recreate_renamed_remote_session(self):
+        target = Target("ssh", "work", "dev")
+        renamed = Target("ssh", "other", "dev")
+        config.save_sessions([target])
+        remote_sessions = {"work"}
+        launched = []
+        ensured = []
+
+        def run(operation, target, command, **kwargs):
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertFalse(acquired)
+            tokens = shlex.split(command[-1])
+            if operation == "create" and "new-session" in tokens:
+                ensured.append(target)
+                if target.session in remote_sessions:
+                    error = subprocess.CalledProcessError(1, command, stderr="duplicate session: work")
+                    raise SystemExit("create ssh:dev:work failed: duplicate session: work") from error
+                remote_sessions.add(target.session)
+            elif operation == "rename":
+                remote_sessions.remove(target.session)
+                remote_sessions.add(tokens[-1])
+            return ""
+
+        with patch.object(cockpit, "current_target", return_value=target), \
+             patch.object(cockpit, "startup_deadline", return_value=None), \
+             patch.object(cockpit, "switch", side_effect=lambda target, command, **kwargs: launched.append(command)), \
+             patch.object(cockpit, "rename_target"), \
+             patch.object(operations.sessions, "load_tmux_config_overlay", return_value=False), \
+             patch.object(operations.sessions, "_run", side_effect=run):
+            result = operations.perform(operations.Effect("switch", target, automatic=True))
+            self.assertFalse(result.error)
+            operations.rename(target, renamed.session)
+
+        # Execute the pane's delayed remote command only after rename completes.
+        tokens = shlex.split(shlex.split(launched[0])[-1])
+        if "new-session" in tokens:
+            remote_sessions.add(tokens[tokens.index("-s") + 1])
+        self.assertEqual(remote_sessions, {"other"})
+        self.assertEqual(ensured, [target])
+        self.assertIn("attach-session", tokens)
+        self.assertIn(target.format(), config.load_operations()["invalidated"])
 
     def test_rename_probe_failure_prevents_mutation(self):
         state = config.load_operations()

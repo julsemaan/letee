@@ -866,8 +866,8 @@ class ReconciliationLoopTest(OperationTestCase):
     def test_startup_reattaches_absent_active_target_and_recreates_inactive(self):
         active, inactive = Target("local", "active"), Target("local", "inactive")
         ensure, switch, _, _ = self._run_reconciliation([active, inactive], active, snapshot())
-        switch.assert_called_once_with(active, sidebar.sessions.attach_command(active), launch_id=ANY)
-        ensure.assert_called_once_with(inactive)
+        switch.assert_called_once_with(active, sidebar.sessions.attach_command(active, attach_only=True), launch_id=ANY)
+        self.assertEqual(ensure.call_args_list, [call(active), call(inactive)])
 
     def test_inactive_remote_recreated_only_after_host_recovers(self):
         target = Target("ssh", "work", "dev")
@@ -886,8 +886,8 @@ class ReconciliationLoopTest(OperationTestCase):
         ensure, switch, _, _ = self._run_reconciliation(
             [target], target, down, [down, down, recovered],
         )
-        ensure.assert_not_called()
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), launch_id=ANY)
+        ensure.assert_called_once_with(target)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target, attach_only=True), launch_id=ANY)
 
     def test_same_target_shortcut_after_overlay_allows_fresh_discovery_and_other_favorite(self):
         active = Target("ssh", "work", "dev")
@@ -1301,6 +1301,12 @@ class AutomaticSessionEffectTest(OperationTestCase):
 
 
 class ActiveSessionAvailabilityTest(OperationTestCase):
+    def setUp(self):
+        super().setUp()
+        ensure_created = patch.object(sidebar.sessions, "ensure_created")
+        ensure_created.start()
+        self.addCleanup(ensure_created.stop)
+
     def test_pending_startup_overlays_do_not_starve_local_favorite(self):
         active = Target("ssh", "work", "dev")
         missing = Target("local", "other")
@@ -1596,7 +1602,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             with self.subTest(automatic=automatic):
                 active = target
 
-                def prepare(_target):
+                def prepare(_target, **kwargs):
                     nonlocal active
                     active = live_target
                     return "prepared attach"
@@ -1736,7 +1742,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             )
 
         show_reconnecting.assert_called_once_with(target)
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), launch_id=ANY)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target, attach_only=True), launch_id=ANY)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -1843,7 +1849,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                 pending,
             )
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), launch_id=ANY)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target, attach_only=True), launch_id=ANY)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
@@ -1892,7 +1898,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
         ):
             sidebar.run(screen)
 
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), launch_id=ANY)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target, attach_only=True), launch_id=ANY)
         self.assertEqual(draw.call_args_list[-1].args[3], "tmux unavailable")
 
     def test_production_loop_restores_reconnected_active_ssh_session_without_input(self):
@@ -1942,7 +1948,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             sidebar.run(screen)
 
         self.assertEqual(events, ["reconnecting", "switch"])
-        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target), launch_id=ANY)
+        switch.assert_called_once_with(target, sidebar.sessions.attach_command(target, attach_only=True), launch_id=ANY)
         observed = [call.args[0].effect for call in poller.observe_effect.call_args_list]
         self.assertEqual(
             observed,

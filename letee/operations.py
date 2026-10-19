@@ -174,8 +174,12 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 sessions.create(target)
             if planned != favorites:
                 config.save_sessions(list(planned))
+            # Ensure creation under the lock; delayed pane commands must not recreate renamed targets.
             # Automatic preparation must leave the current overlay in place on failure.
-            command = sessions.attach_command(target) if effect.automatic else None
+            command = None
+            if effect.automatic:
+                sessions.ensure_created(target)
+                command = sessions.attach_command(target, attach_only=True)
             if effect.automatic and cockpit.current_target() != target:
                 return result(stale=True)
             _advance(state, explicit=None if effect.automatic else target)

@@ -353,16 +353,18 @@ def _overlay_source(target: Target) -> str:
     return REMOTE_OVERLAY_PATH if target.kind == "ssh" else shlex.quote(str(OVERLAY_FILE))
 
 
-def attach_command(target: Target, *, overlay: bool | None = None) -> str:
+def attach_command(target: Target, *, overlay: bool | None = None, attach_only: bool = False) -> str:
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     if overlay and target.kind == "ssh":
         _install_overlay(target)
-    new_session = f"{INNER_TMUX} -T clipboard new-session -A -s {shlex.quote(target.session)}"
+    action = (f"attach-session -t {shlex.quote('=' + target.session)}" if attach_only
+              else f"new-session -A -s {shlex.quote(target.session)}")
+    command = f"{INNER_TMUX} -T clipboard {action}"
     if overlay:
-        new_session += f" \\; source-file {_overlay_source(target)}"
+        command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
-        return f"env -u TMUX {new_session}"
-    return shlex.join(ssh_command("-t", target.host or "", new_session, interactive=True))
+        return f"env -u TMUX {command}"
+    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
 
 
 def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None) -> str:
