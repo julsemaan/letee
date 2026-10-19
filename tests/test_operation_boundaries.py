@@ -175,6 +175,50 @@ class OperationBoundariesTest(unittest.TestCase):
                     self.assertEqual(results[0][0], operations.launch_identity())
                     self.assertEqual(results[0][2], self.work)
 
+    def test_first_worker_sample_repairs_rejected_marker_without_tracking_change(self):
+        marker = {cockpit.CURRENT_TARGET_OPTION: self.work.format()}
+        data = SessionSnapshot(SourceSnapshot(True, (), frozenset()), {})
+
+        def clear_marker(*args):
+            self.assertEqual(args, ("set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION))
+            marker.clear()
+
+        def read_status():
+            target = self.work if marker else None
+            return cockpit.StatusSnapshot(target, None, None, True)
+
+        with (
+            patch.object(cockpit, "_option", side_effect=lambda name: marker.get(name, "")),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value="tmux new-session -A -s work"),
+            patch.object(cockpit.tmux, "tmux", side_effect=clear_marker),
+            patch.object(cockpit, "startup_deadline", return_value=None),
+            patch.object(cockpit, "status_snapshot", side_effect=read_status),
+            patch.object(operations, "sample_target", wraps=operations.sample_target) as sample,
+        ):
+            initial_target = cockpit.current_target()
+            self.assertIsNone(initial_target)
+            self.assertTrue(marker)
+            revision = config.sessions_revision()
+            status = sidebar.AsyncStatusPoller(Mock(snapshot=data), initial_target)
+            try:
+                status.tick(0)
+                first = status._future.result(timeout=2)
+                status.tick(0)
+                sample.assert_called_once_with(synchronize=True)
+                self.assertTrue(first.synchronized)
+                self.assertFalse(marker)
+                self.assertIsNone(status.current_target)
+                self.assertFalse(status._synchronize_pending)
+                status.tick(sidebar.STATUS_POLL_INTERVAL)
+                subsequent = status._future.result(timeout=2)
+                status.tick(sidebar.STATUS_POLL_INTERVAL)
+                self.assertFalse(subsequent.synchronized)
+                self.assertIsNone(status.current_target)
+                self.assertEqual(config.sessions_revision(), revision)
+            finally:
+                status.close()
+
     def test_same_target_old_status_failure_and_cleanup_cannot_change_relaunch(self):
         data = SessionSnapshot(SourceSnapshot(True, (), frozenset()), {})
         with patch.object(cockpit, "current_target", return_value=self.work), patch.object(cockpit, "startup_deadline", return_value=None), patch.object(cockpit, "switch") as switch:

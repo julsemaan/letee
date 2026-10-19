@@ -4440,6 +4440,7 @@ class AsyncSidebarWorkTest(OperationTestCase):
                     return_value=sidebar.cockpit.StatusSnapshot(target, None, None, True),
                 ),
                 patch.object(sidebar.cockpit, "startup_deadline", side_effect=read_marker),
+                patch.object(sidebar.cockpit, "current_target", return_value=target),
             ):
                 status.tick(0)
                 status._future.result(timeout=1)
@@ -4805,6 +4806,7 @@ class AsyncSidebarWorkTest(OperationTestCase):
             with self.subTest(queued_refresh=queued_refresh):
                 poller = unittest.mock.Mock(launch_id=None, snapshot=snapshot(local=("old", "work")))
                 status = sidebar.AsyncStatusPoller(poller, old)
+                status._synchronize_pending = False  # Startup synchronization has completed.
                 try:
                     status.refresh()
                     status._commands.clear()  # The in-flight sample consumed the refresh.
@@ -4946,6 +4948,7 @@ class AsyncSidebarWorkTest(OperationTestCase):
         fresh = snapshot(remotes={"dev": source("ssh", ("renamed",), host="dev")})
         poller = unittest.mock.Mock(launch_id=None, snapshot=stale)
         status = sidebar.AsyncStatusPoller(poller, old)
+        status._synchronize_pending = False  # Startup synchronization has completed.
         status._next_poll = float("inf")
         try:
             status.refresh()
@@ -4985,6 +4988,7 @@ class AsyncSidebarWorkTest(OperationTestCase):
         absent = source("ssh", host="dev")
         poller = unittest.mock.Mock(launch_id=None, snapshot=snapshot())
         status = sidebar.AsyncStatusPoller(poller, old)
+        status._synchronize_pending = False  # Startup synchronization has completed.
         reconciler = sidebar.SessionReconciler()
         submit = unittest.mock.Mock(return_value=True)
         status._next_poll = float("inf")
@@ -5204,7 +5208,10 @@ class AsyncSidebarWorkTest(OperationTestCase):
             return sidebar.cockpit.StatusSnapshot(None, None, None, True)
 
         try:
-            with patch.object(sidebar.cockpit, "status_snapshot", side_effect=read_status):
+            with (
+                patch.object(sidebar.cockpit, "status_snapshot", side_effect=read_status),
+                patch.object(sidebar.cockpit, "current_target", return_value=stale_target),
+            ):
                 self.assertFalse(status.tick(0))
                 self.assertTrue(started.wait(1))
                 status._next_poll = float("inf")

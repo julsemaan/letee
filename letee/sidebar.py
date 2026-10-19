@@ -1589,7 +1589,7 @@ class AsyncStatusPoller:
         self._refresh_started_at = 0.0
         self._pending_agent: tuple[PaneTarget, str] | None = None
         self._suppressed_target: Target | None = None
-        self._synchronize_pending = False
+        self._synchronize_pending = True
         self._sample_revision = config.sessions_revision()
 
     @property
