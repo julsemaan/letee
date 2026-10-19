@@ -4948,6 +4948,53 @@ class AsyncSidebarWorkTest(OperationTestCase):
         finally:
             status.close()
 
+    def test_status_poller_resynchronizes_suppressed_target_on_new_launch(self):
+        target = Target("local", "work")
+        for launch_id in ("old", "new"):
+            with (
+                self.subTest(launch_id=launch_id),
+                patch.object(sidebar.operations, "launch_identity", return_value="old") as identity,
+                patch.object(sidebar.cockpit, "current_target", return_value=None) as current,
+                patch.object(sidebar.cockpit, "status_snapshot", return_value=(
+                    sidebar.cockpit.StatusSnapshot(target, None, None, True)
+                )),
+                patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+            ):
+                status = sidebar.AsyncStatusPoller(
+                    unittest.mock.Mock(snapshot=snapshot(local=("work",))), target,
+                )
+                status._next_poll = float("inf")
+
+                def accept_sample(*, synchronize=False):
+                    result = status._sample((), status._generation, synchronize=synchronize)
+                    status._future = unittest.mock.Mock()
+                    status._future.done.return_value = True
+                    status._future.result.return_value = result
+                    status.tick(-1)
+
+                try:
+                    # Synchronization after a kill clears the active target but retains suppression.
+                    accept_sample(synchronize=True)
+                    self.assertIsNone(status.current_target)
+                    self.assertEqual(status._suppressed_target, target)
+                    self.assertFalse(status._synchronize_pending)
+
+                    current.return_value = target
+                    identity.return_value = launch_id
+                    accept_sample()
+                    self.assertIsNone(status.current_target)
+                    self.assertEqual(status._suppressed_target, target)
+                    self.assertEqual(status.launch_id, launch_id)
+                    self.assertEqual(status._synchronize_pending, launch_id == "new")
+
+                    if status._synchronize_pending:
+                        accept_sample(synchronize=True)
+                        self.assertEqual(status.current_target, target)
+                        self.assertIsNone(status._suppressed_target)
+                        self.assertFalse(status._synchronize_pending)
+                finally:
+                    status.close()
+
     def test_status_poller_keeps_current_target_after_kill_of_other_session(self):
         killed = Target("local", "killed")
         active = Target("local", "active")

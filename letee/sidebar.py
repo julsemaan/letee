@@ -1716,6 +1716,8 @@ class AsyncStatusPoller:
                     self._suppressed_target = None
                 self.current_target = result.current_target
                 self.startup_deadline = result.startup_deadline
+                if result.sampled and not result.synchronized and result.launch_id != self.launch_id:
+                    self.request_target_sync()
                 self.launch_id = result.launch_id
                 self.bell_target = result.bell_target
                 if self._pending_agent is None:
