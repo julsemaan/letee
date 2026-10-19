@@ -297,14 +297,15 @@ def sample_target(*, synchronize: bool = False):
         return launch_id, status, current, deadline
 
 
-def clear_startup(target: Target, deadline: float, launch_id: str | None = None) -> None:
+def clear_startup(target: Target, deadline: float, launch_id: str | None = None) -> bool:
     try:
         with config.sessions_lock():
             if launch_id is None or launch_id == launch_identity():
                 cockpit.clear_startup(target, deadline, launch_id)
     except (OSError, SystemExit, subprocess.SubprocessError):
         # The next discovery observation can retry cleanup.
-        return
+        return False
+    return True
 
 
 def tracking_snapshot(revision):

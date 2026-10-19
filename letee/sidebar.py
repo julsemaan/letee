@@ -447,18 +447,24 @@ class SessionReconciler:
         self._awaiting_discovery: dict[Target, tuple[float, float]] = {}
         self._retries: dict[Target, RestorationRetry] = {}
         self._last: Target | None = None
-        self._startup_clears: dict[tuple[Target, float, str | None], threading.Thread] = {}
+        self._startup_clears: dict[tuple[Target, float, str | None], tuple[threading.Thread, threading.Event]] = {}
         self._shared_launch_id: str | None = None
 
     def _clear_startup(self, target: Target, deadline: float, launch_id: str | None = None) -> None:
         key = (target, deadline, launch_id)
         if key in self._startup_clears:
             return
+        succeeded = threading.Event()
+
+        def clear() -> None:
+            if operations.clear_startup(*key):
+                succeeded.set()
+
         worker = threading.Thread(
-            target=operations.clear_startup, args=key,
+            target=clear,
             name="letee-startup-cleanup", daemon=True,
         )
-        self._startup_clears[key] = worker
+        self._startup_clears[key] = (worker, succeeded)
         worker.start()
 
     def reconcile(
@@ -475,9 +481,11 @@ class SessionReconciler:
             if active is not None:
                 self._awaiting_discovery.pop(active, None)
             self._shared_launch_id = shared_launch_id
-        # Retain completed clears while their marker is cached, and all pending clears.
-        for key, worker in list(self._startup_clears.items()):
-            if key != (active, shared_deadline, shared_launch_id) and not worker.is_alive():
+        # Retain successful clears while their marker is cached, and all pending clears.
+        for key, (worker, succeeded) in list(self._startup_clears.items()):
+            if not worker.is_alive() and (
+                not succeeded.is_set() or key != (active, shared_deadline, shared_launch_id)
+            ):
                 del self._startup_clears[key]
         targets = list(dict.fromkeys(favorites + ((active,) if active else ())))
         for records in (self._pending, self._completed, self._awaiting_discovery, self._retries):

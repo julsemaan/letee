@@ -304,6 +304,7 @@ class SessionReconcilerTest(OperationTestCase):
                 def clear(*args):
                     entered.set()
                     release.wait(2)
+                    return True
 
                 def reconcile():
                     reconciler.reconcile((target,), target, data, self.submit, 15, 10)
@@ -320,11 +321,24 @@ class SessionReconcilerTest(OperationTestCase):
                     finally:
                         release.set()
                         ui.join(2)
-                        for worker in reconciler._startup_clears.values():
+                        for worker, _ in reconciler._startup_clears.values():
                             worker.join(2)
                     # A completed clear must not be repeated for a cached deadline either.
                     reconcile()
                     cleanup.assert_called_once_with(target, 10, None)
+
+    @patch.object(sidebar.cockpit, "startup_timeout", return_value=10)
+    def test_failed_startup_cleanup_retries_same_marker(self, _timeout):
+        target = Target("local", "work")
+        data = snapshot(local=("work",))
+        with patch.object(sidebar.cockpit, "clear_startup", side_effect=[OSError("tmux failed"), None]) as cleanup:
+            for expected_calls in (1, 2, 2):
+                self.reconciler.reconcile((target,), target, data, self.submit, 15, 10)
+                for worker, _ in self.reconciler._startup_clears.values():
+                    worker.join(2)
+                self.assertEqual(cleanup.call_count, expected_calls)
+            cleanup.assert_called_with(target, 10, None)
+        self.submit.assert_not_called()
 
     @patch.object(sidebar.cockpit, "startup_timeout", return_value=10)
     def test_delayed_startup_cleanup_keeps_exact_marker_guard(self, _timeout):
@@ -345,7 +359,7 @@ class SessionReconcilerTest(OperationTestCase):
                 self.reconciler.reconcile((target,), target, snapshot(), self.submit, 15, 25)
             finally:
                 release.set()
-                for worker in self.reconciler._startup_clears.values():
+                for worker, _ in self.reconciler._startup_clears.values():
                     worker.join(2)
         self.assertEqual(guards, [(
             "if-shell", "-F",
@@ -561,7 +575,7 @@ class SessionReconcilerTest(OperationTestCase):
                 "dev": replace(source("ssh", ("work",), host="dev"), sampled_at=8),
             })
             self.reconciler.reconcile((target,), target, confirmed, self.submit, 8, deadline)
-            for worker in self.reconciler._startup_clears.values():
+            for worker, _ in self.reconciler._startup_clears.values():
                 worker.join(2)
             self.assertNotIn(sidebar.cockpit.STARTUP_OPTION, options)
             self.reconciler.reconcile((target,), target, empty_sample(), self.submit, 8)

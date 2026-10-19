@@ -213,7 +213,7 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
         })
         # Shared deadline starts before slow preparation; local wait starts at completion.
         reconciler.reconcile((remote,), remote, snapshot, submit, 16, 15, result.launch_id)
-        for worker in reconciler._startup_clears.values():
+        for worker, _ in reconciler._startup_clears.values():
             worker.join(1)
         submit.assert_not_called()
 
