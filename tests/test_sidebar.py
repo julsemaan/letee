@@ -9046,15 +9046,92 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertFalse(any(record["event"] == "mouse_recovery_candidate" for record in records))
         self.assertFalse(any(record["event"] == "effect_requested" for record in records))
 
-    def test_unpaired_release_activates_mapped_target(self):
+    def test_first_click_after_idle_recovers_only_with_tmux_click_signal(self):
+        target = Target("local", "one")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        for region, row in (("sessions", 2), ("agents", 14)):
+            with self.subTest(region=region):
+                poller = unittest.mock.Mock(
+                    snapshot=SessionSnapshot(SourceSnapshot(
+                        True, (target,), frozenset(),
+                        agents=(AgentEntry(pane, "id", "pi", "idle"),),
+                    ), {}),
+                    current_target=None, bell_target=None, current_agent=None,
+                    pending_agent=None, pane_active=False,
+                )
+                def enter_sidebar(_now):
+                    poller.pane_active = True
+                    return False
+                poller.tick.side_effect = enter_sidebar
+                # No preceding press. Focus entry alone must not turn hover into a click.
+                events = [
+                    (0, 7, row, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 7, row, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 7, row, 0, curses.BUTTON1_RELEASED),
+                    (0, 7, row, 0, curses.BUTTON1_PRESSED),
+                    (0, 7, row, 0, curses.BUTTON1_RELEASED),
+                ]
+                record_start = len(self.records()) if self.log_path.exists() else 0
+                with patch.object(sidebar, "_draw", return_value=(2, None)):
+                    records = self._run_mouse_trace(
+                        events, poller=poller, size=(20, 30),
+                        keys=[-1, curses.KEY_MOUSE, curses.KEY_F2, curses.KEY_MOUSE,
+                              curses.KEY_MOUSE, -1, curses.KEY_F2, curses.KEY_MOUSE,
+                              curses.KEY_MOUSE, -1, STOP],
+                    )
+                effects = [r for r in records[record_start:] if r["event"] == "effect_requested"]
+                self.assertEqual(len(effects), 2)
+                self.assertTrue(all(r["target"] == target.format() for r in effects))
+                self.assertTrue(all(
+                    r["effect"] == ("switch_pane" if region == "agents" else "switch")
+                    for r in effects
+                ))
+
+    def test_recent_press_does_not_authorize_motion_navigation(self):
         records = self._run_mouse_trace([
             (0, 0, 1, 0, curses.BUTTON1_PRESSED),
             (0, 0, 2, 0, curses.REPORT_MOUSE_POSITION),
         ])
+        self.assertFalse(any(record["event"] == "effect_requested" for record in records))
 
-        effects = [record for record in records if record["event"] == "effect_requested"]
-        self.assertEqual(len(effects), 1)
-        self.assertEqual((effects[0]["effect"], effects[0]["target"]), ("switch", "local:one"))
+    def test_tmux_click_signal_recovers_without_debug_logging(self):
+        with patch.dict(os.environ, {}, clear=True):
+            switch = self._run_mouse_trace([
+                (0, 7, 2, 0, curses.REPORT_MOUSE_POSITION),
+                (0, 7, 2, 0, curses.BUTTON1_RELEASED),
+            ], keys=[curses.KEY_F2, curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
+                collect_records=False)
+        switch.assert_called_once()
+
+    def test_tmux_click_signal_is_consumed_by_normal_press(self):
+        switch = self._run_mouse_trace([
+            (0, 7, 2, 0, curses.BUTTON1_PRESSED),
+            (0, 7, 2, 0, curses.BUTTON1_RELEASED),
+            (0, 7, 2, 0, curses.REPORT_MOUSE_POSITION),
+        ], keys=[curses.KEY_F2, curses.KEY_MOUSE, curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
+            collect_records=False)
+        switch.assert_called_once()
+
+    def test_tmux_click_signal_does_not_recover_handles_or_empty_rows(self):
+        for column, row in ((29, 2), (7, 1), (7, 4)):
+            with self.subTest(column=column, row=row):
+                switch = self._run_mouse_trace([
+                    (0, column, row, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 7, 2, 0, curses.REPORT_MOUSE_POSITION),
+                ], keys=[curses.KEY_F2, curses.KEY_MOUSE, curses.KEY_MOUSE, -1, STOP],
+                    collect_records=False)
+                switch.assert_not_called()
+
+    def test_tmux_click_signal_expires_or_is_cleared_by_keyboard_input(self):
+        for intervening_keys, window in (([ord("j")], 1), ([], 0)):
+            with self.subTest(keys=intervening_keys, window=window), patch.object(
+                sidebar, "MOUSE_RECOVERY_WINDOW", window
+            ):
+                switch = self._run_mouse_trace([
+                    (0, 7, 2, 0, curses.REPORT_MOUSE_POSITION),
+                ], keys=[curses.KEY_F2, *intervening_keys, curses.KEY_MOUSE, -1, STOP],
+                    collect_records=False)
+                switch.assert_not_called()
 
     def test_unpaired_release_without_recent_click_is_ignored(self):
         records = self._run_mouse_trace([
