@@ -7,8 +7,8 @@ import stat
 import subprocess
 import sys
 
-from . import __version__, config, cockpit, sessions, tmux
-from .config import ensure_config, load_sessions, save_sessions
+from . import __version__, config, cockpit, operations, tmux
+from .config import ensure_config
 from .discovery import discover
 from .names import (
     DEFAULT_SERVER,
@@ -221,38 +221,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "switch":
         target = parse_target(args.target)
-        cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        operations.navigate(target)
         return 0
     if args.command == "switch-session":
-        favorites = load_sessions()
-        if args.slot > len(favorites):
-            raise SystemExit(f"No session in slot {args.slot}")
-        target = favorites[args.slot - 1]
-        cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        operations.navigate(slot=args.slot)
         return 0
     if args.command == "kill":
         target = parse_target(args.target)
-        sessions.kill(target)
-        favorites = load_sessions()
-        if target in favorites:
-            favorites.remove(target)
-            save_sessions(favorites)
+        operations.kill(target)
         return 0
     if args.command == "rename":
         target = parse_target(args.target)
-        renamed = Target(target.kind, args.new_name, target.host)
-        if target not in load_sessions():
-            raise SystemExit(f"Session not tracked: {target.format()}")
-        renamed = sessions.rename(target, renamed.session)
-        config.replace_session(target, renamed)
+        operations.rename(target, args.new_name)
         return 0
     if args.command == "create":
         target = Target("local", args.session) if args.create_kind == "local" else Target("ssh", args.session, args.host)
-        sessions.create(target)
-        cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        operations.create_and_switch(target)
         return 0
 
 

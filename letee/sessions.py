@@ -353,16 +353,18 @@ def _overlay_source(target: Target) -> str:
     return REMOTE_OVERLAY_PATH if target.kind == "ssh" else shlex.quote(str(OVERLAY_FILE))
 
 
-def attach_command(target: Target, *, overlay: bool | None = None) -> str:
+def attach_command(target: Target, *, overlay: bool | None = None, attach_only: bool = False) -> str:
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     if overlay and target.kind == "ssh":
         _install_overlay(target)
-    new_session = f"{INNER_TMUX} -T clipboard new-session -A -s {shlex.quote(target.session)}"
+    action = (f"attach-session -t {shlex.quote('=' + target.session)}" if attach_only
+              else f"new-session -A -s {shlex.quote(target.session)}")
+    command = f"{INNER_TMUX} -T clipboard {action}"
     if overlay:
-        new_session += f" \\; source-file {_overlay_source(target)}"
+        command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
-        return f"env -u TMUX {new_session}"
-    return shlex.join(ssh_command("-t", target.host or "", new_session, interactive=True))
+        return f"env -u TMUX {command}"
+    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
 
 
 def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None) -> str:
@@ -396,7 +398,7 @@ def _run(
         raise SystemExit(f"{operation} {target.format()} timed out") from error
     except subprocess.CalledProcessError as error:
         reason = (error.stderr or "").strip() or f"exit status {error.returncode}"
-        raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
+        raise SystemExit(f"{operation} {target.format()} failed: {reason}") from error
     except OSError as error:
         reason = error.strerror or str(error)
         raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
@@ -426,6 +428,39 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
         if overlay:
             command += f" && {{ {INNER_TMUX} source-file {REMOTE_OVERLAY_PATH} || true; }}"
         _run("create", target, ssh_command(target.host or "", command))
+
+
+def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
+    """Create a detached session, or accept an exact, verified duplicate.
+
+    Reuse create's overlay behavior. Only duplicate-session failures are
+    recoverable; connection, timeout, and overlay failures still propagate.
+    """
+    try:
+        create(target, overlay=overlay)
+    except SystemExit as error:
+        cause = error.__cause__
+        if (
+            not isinstance(cause, subprocess.CalledProcessError)
+            or cause.returncode != 1
+            or (cause.stderr or "").strip() != f"duplicate session: {target.session}"
+            or str(error) != f"create {target.format()} failed: duplicate session: {target.session}"
+        ):
+            raise
+        # Another creator may have won the race. Never use -A here: it can
+        # attach to an existing session even when combined with -d.
+        if target.kind == "local":
+            command = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=" + target.session)
+            kwargs = {"env": _inner_server_env()}
+        else:
+            command = ssh_command(
+                target.host or "", f"{INNER_TMUX} has-session -t {shlex.quote('=' + target.session)}",
+            )
+            kwargs = {}
+        try:
+            _run("create", target, command, **kwargs)
+        except SystemExit:
+            raise error
 
 
 def kill(target: Target) -> None:
