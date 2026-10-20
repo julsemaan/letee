@@ -2178,9 +2178,8 @@ def _mouse_mask(motion: bool = False) -> tuple[int, int | None]:
         getattr(curses, "BUTTON3_PRESSED", 0),
         getattr(curses, "BUTTON4_PRESSED", 0),
         getattr(curses, "BUTTON5_PRESSED", 0),
+        getattr(curses, "REPORT_MOUSE_POSITION", 0),
     ]
-    if motion:
-        events.append(getattr(curses, "REPORT_MOUSE_POSITION", 0))
 
     def set_motion_mode() -> None:
         try:
@@ -2205,6 +2204,12 @@ def _mouse_mask(motion: bool = False) -> tuple[int, int | None]:
             supported = result
     except curses.error as error:
         diagnostics.error(error, handling="ignore", operation="mouse_mask")
+    try:
+        # ncurses otherwise holds reports for mouseinterval and drops the older
+        # of two clicks that share a batch, and delays every click by ~166ms.
+        curses.mouseinterval(0)
+    except (AttributeError, curses.error) as error:
+        diagnostics.error(error, handling="ignore", operation="mouse_interval")
     if motion:
         set_motion_mode()
     return mask, supported
@@ -2835,6 +2840,7 @@ def run(stdscr: curses.window) -> None:
     _init_colors()
     curses.curs_set(0)
     mouse_mask_result = _mouse_mask()
+    mouse_snapshot = _mouse_diagnostics(mouse_mask_result) if debug.enabled else None
     status_timeout = load_status_timeout()
     agent_panel_resize_step = load_agent_panel_resize_step()
     sidebar_keys = load_sidebar_keybindings()
@@ -2866,7 +2872,7 @@ def run(stdscr: curses.window) -> None:
             screen_width=width,
             requested_mouse_mask=requested_mask,
             supported_mouse_mask=supported_mask,
-            mouse_debug=_mouse_diagnostics(mouse_mask_result),
+            mouse_debug=mouse_snapshot,
             current_target=_trace_target(initial_target),
             pane_active=poller.pane_active,
         )
@@ -2926,6 +2932,7 @@ def run(stdscr: curses.window) -> None:
     last_event_outcome = "ignored"
     last_event_marked = False
     failed_mouse: tuple[str | None, int, bool] | None = None
+    last_mouse_click_at = float("-inf")
     last_current_target = initial_target
     last_pane_active = poller.pane_active
     last_focused_region = state.focused_region
@@ -3899,7 +3906,7 @@ def run(stdscr: curses.window) -> None:
                             row=row,
                             decoded_button_flags={},
                             decode_error=decode_error,
-                            mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
+                            mouse_debug=mouse_snapshot,
                             mode="name",
                         )
                         trace_mouse_decision(
@@ -4016,7 +4023,7 @@ def run(stdscr: curses.window) -> None:
                         row=row,
                         decoded_button_flags={},
                         decode_error=decode_error,
-                        mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
+                        mouse_debug=mouse_snapshot,
                     )
                     trace_mouse_decision(
                         mouse_input_id, "malformed_event", row, mouse_col, reason=reason
@@ -4067,6 +4074,8 @@ def run(stdscr: curses.window) -> None:
                     | (getattr(curses, "BUTTON4_PRESSED", 0) or 0)
                     | (getattr(curses, "BUTTON5_PRESSED", 0) or 0)
                 )
+                if _mouse_activates(mouse_state):
+                    last_mouse_click_at = now
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
@@ -4125,11 +4134,19 @@ def run(stdscr: curses.window) -> None:
                     elif region_hint == "agents":
                         mouse_state |= activation_bits
                 if state.move_source is None and mouse_state & motion and not mouse_state & button_bits:
-                    trace_mouse_decision(
-                        mouse_input_id, "ignored_motion", row, mouse_col, reason="not_moving"
-                    )
-                    mark_input(False, "ignored_motion")
-                    continue
+                    # tmux forwards no motion to a pane that tracks buttons only, so this
+                    # is a release ncurses could not pair with a press. Recover it when the
+                    # user was just clicking in the sidebar.
+                    # ponytail: a drag started in the right pane and released over the
+                    # sidebar also lands here; accept it rather than losing real clicks.
+                    if state.add_view is None and now - last_mouse_click_at <= MOUSE_RECOVERY_WINDOW:
+                        mouse_state |= getattr(curses, "BUTTON1_PRESSED", 0) or 0
+                    else:
+                        trace_mouse_decision(
+                            mouse_input_id, "ignored_motion", row, mouse_col, reason="not_moving"
+                        )
+                        mark_input(False, "ignored_motion")
+                        continue
                 if state.move_source is not None:
                     start, end = _viewport(
                         entries, state.selected_index, separator - session_top + 2,

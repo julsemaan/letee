@@ -4029,23 +4029,26 @@ class SidebarDrawTest(unittest.TestCase):
         self.assertTrue(_mouse_activates(curses.BUTTON1_CLICKED))
         self.assertFalse(_mouse_activates(curses.BUTTON1_RELEASED))
 
-    def test_mouse_mask_enables_motion_only_for_move_mode(self):
-        base = (
+    def test_mouse_mask_includes_position_reports_and_disables_batching(self):
+        expected = (
             curses.BUTTON1_CLICKED
             | curses.BUTTON1_PRESSED
             | curses.BUTTON1_RELEASED
             | curses.BUTTON3_PRESSED
             | curses.BUTTON4_PRESSED
             | getattr(curses, "BUTTON5_PRESSED", 0)
+            | curses.REPORT_MOUSE_POSITION
         )
         with (
             patch("letee.sidebar.curses.mousemask") as mousemask,
+            patch("letee.sidebar.curses.mouseinterval") as mouseinterval,
             patch("letee.sidebar.os.write"),
         ):
             _mouse_mask()
             _mouse_mask(True)
 
-        self.assertEqual(mousemask.call_args_list, [call(base), call(base | curses.REPORT_MOUSE_POSITION)])
+        self.assertEqual(mousemask.call_args_list, [call(expected), call(expected)])
+        self.assertEqual(mouseinterval.call_args_list, [call(0), call(0)])
 
     def test_mouse_mask_restores_base_tracking_after_disabling_motion(self):
         events = []
@@ -9020,6 +9023,29 @@ class SidebarDiagnosticsTest(unittest.TestCase):
             )
 
         self.assertFalse(any(record["event"] == "mouse_recovery_candidate" for record in records))
+        self.assertFalse(any(record["event"] == "effect_requested" for record in records))
+
+    def test_unpaired_release_activates_mapped_target(self):
+        records = self._run_mouse_trace([
+            (0, 0, 1, 0, curses.BUTTON1_PRESSED),
+            (0, 0, 2, 0, curses.REPORT_MOUSE_POSITION),
+        ])
+
+        effects = [record for record in records if record["event"] == "effect_requested"]
+        self.assertEqual(len(effects), 1)
+        self.assertEqual((effects[0]["effect"], effects[0]["target"]), ("switch", "local:one"))
+
+    def test_unpaired_release_without_recent_click_is_ignored(self):
+        records = self._run_mouse_trace([
+            (0, 0, 2, 0, curses.REPORT_MOUSE_POSITION),
+        ])
+
+        decisions = [
+            (record["decision"], record.get("reason"))
+            for record in records
+            if record["event"] == "mouse_decision"
+        ]
+        self.assertIn(("ignored_motion", "not_moving"), decisions)
         self.assertFalse(any(record["event"] == "effect_requested" for record in records))
 
     def test_focus_transition_is_recorded_without_mouse_input(self):
