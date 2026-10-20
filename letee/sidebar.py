@@ -295,7 +295,22 @@ def _mouse_diagnostics(
         name: option(name)
         for name in ("mouse", "focus-follows-mouse", "focus-events")
     }
-    binding = _tmux_query("list-keys", "-T", "root", "MouseDown1Pane")
+    bindings = {}
+    for field_name, key in (
+        ("tmux_mouse_down1_pane_binding", "MouseDown1Pane"),
+        ("tmux_mouse_drag1_pane_binding", "MouseDrag1Pane"),
+        ("tmux_mouse_drag_end1_pane_binding", "MouseDragEnd1Pane"),
+        ("tmux_mouse_up1_pane_binding", "MouseUp1Pane"),
+    ):
+        binding = _tmux_query("list-keys", "-T", "root", key)
+        bindings[field_name] = {
+            "present": bool(binding),
+            "selects_pane": bool(binding and "select-pane" in binding),
+            "forwards_mouse": bool(
+                binding and ("send-keys -M" in binding or "send -M" in binding)
+            ),
+            "sends_f2_marker": bool(binding and "F2" in binding.split()),
+        }
     result: dict[str, object] = {
         "curses_has_mouse": has_mouse,
         "terminfo_kmous": capabilities["kmous"],
@@ -317,13 +332,7 @@ def _mouse_diagnostics(
         "tmux_client_termname": _tmux_query(
             "display-message", "-p", "#{client_termname}"
         ),
-        "tmux_mouse_down1_pane_binding": {
-            "present": bool(binding),
-            "selects_pane": bool(binding and "select-pane" in binding),
-            "forwards_mouse": bool(
-                binding and ("send-keys -M" in binding or "send -M" in binding)
-            ),
-        },
+        **bindings,
     }
     if mouse_mask is not None:
         result["requested_mouse_mask"] = mouse_mask[0]
@@ -2867,6 +2876,8 @@ def run(stdscr: curses.window) -> None:
             ),
             tmux_version=tmux_version,
             term=os.environ.get("TERM"),
+            term_program=os.environ.get("TERM_PROGRAM"),
+            term_program_version=os.environ.get("TERM_PROGRAM_VERSION"),
             tmux_pane=os.environ.get("TMUX_PANE"),
             screen_height=height,
             screen_width=width,

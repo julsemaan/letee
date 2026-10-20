@@ -8870,6 +8870,7 @@ class SidebarDiagnosticsTest(unittest.TestCase):
             patch.object(sidebar, "_mouse_mask", return_value=(0, 0)),
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar.curses, "getmouse", return_value=(0, 0, 2, 0, curses.BUTTON1_PRESSED)),
+            patch.dict(os.environ, {"TERM_PROGRAM": "kitty", "TERM_PROGRAM_VERSION": "0.40.1"}),
             patch.object(sidebar.cockpit.tmux, "out", return_value="tmux 3.4"),
             patch.object(sidebar.cockpit, "switch"),
         ):
@@ -8885,6 +8886,8 @@ class SidebarDiagnosticsTest(unittest.TestCase):
             (startup["requested_mouse_mask"], startup["supported_mouse_mask"], startup["tmux_version"]),
             (0, 0, "tmux 3.4"),
         )
+        self.assertEqual(startup["term_program"], "kitty")
+        self.assertEqual(startup["term_program_version"], "0.40.1")
         input_record = next(record for record in records if record["event"] == "input_received" and record["key_name"] == "KEY_MOUSE")
         related = [record for record in records if record.get("input_id") == input_record["input_id"]]
         mapped = next(record for record in related if record["event"] == "mouse_mapped")
@@ -9248,7 +9251,12 @@ class SidebarDiagnosticsTest(unittest.TestCase):
                     "focus-events": "on",
                 }[args[4]]
             if args[:3] == ("list-keys", "-T", "root"):
-                return "bind-key MouseDown1Pane select-pane -t = \\; send-keys -M"
+                return {
+                    "MouseDown1Pane": "bind-key MouseDown1Pane send-keys -t = F2 ; select-pane -t = ; send-keys -M",
+                    "MouseDrag1Pane": "bind-key MouseDrag1Pane send-keys -M",
+                    "MouseDragEnd1Pane": "bind-key MouseDragEnd1Pane send -M",
+                    "MouseUp1Pane": "",
+                }[args[3]]
             return "xterm-kitty"
 
         with (
@@ -9266,6 +9274,17 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         self.assertEqual(state["tmux_focus_follows_mouse"], "off")
         self.assertTrue(state["tmux_mouse_down1_pane_binding"]["selects_pane"])
         self.assertTrue(state["tmux_mouse_down1_pane_binding"]["forwards_mouse"])
+        self.assertTrue(state["tmux_mouse_down1_pane_binding"]["sends_f2_marker"])
+        self.assertTrue(state["tmux_mouse_drag1_pane_binding"]["forwards_mouse"])
+        self.assertTrue(state["tmux_mouse_drag_end1_pane_binding"]["forwards_mouse"])
+        self.assertFalse(state["tmux_mouse_up1_pane_binding"]["present"])
+        self.assertFalse(state["tmux_mouse_up1_pane_binding"]["sends_f2_marker"])
+        self.assertEqual(state["tmux_client_termname"], "xterm-kitty")
+
+    def test_mouse_diagnostics_do_not_mistake_f20_for_click_marker(self):
+        with patch.object(sidebar, "_tmux_query", return_value="send-keys F20"):
+            state = sidebar._mouse_diagnostics()
+        self.assertFalse(state["tmux_mouse_down1_pane_binding"]["sends_f2_marker"])
 
 
 class SidebarKeybindingTest(unittest.TestCase):
