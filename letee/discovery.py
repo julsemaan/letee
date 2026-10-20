@@ -550,8 +550,7 @@ def _stop_process(
         try:
             os.killpg(pid, signal.SIGTERM)
             operation.fields["term_sent"] = True
-        except ProcessLookupError as error:
-            diagnostics.error(error, handling="ignore", operation="discovery.process_cleanup", request_id=request_id, reason="term_group_missing")
+        except ProcessLookupError:
             operation.fields["term_group_missing"] = True
         if running:
             try:
@@ -562,8 +561,7 @@ def _stop_process(
         try:
             os.killpg(pid, signal.SIGKILL)
             operation.fields["kill_sent"] = True
-        except ProcessLookupError as error:
-            diagnostics.error(error, handling="ignore", operation="discovery.process_cleanup", request_id=request_id, reason="kill_group_missing")
+        except ProcessLookupError:
             operation.fields["kill_group_missing"] = True
         process.wait()
         return process.communicate()
@@ -621,11 +619,23 @@ class DiscoveryPoller:
         )
 
     def _finish_request(self, host: str, request: _Request, returncode: int) -> bool:
+        age = self._clock() - request.started
         stdout, stderr = _stop_process(
             request.process, request_id=request.request_id,
             keep_group=not request.master_preexisting
             and _persistent_master_alive(host, self._persistent_ssh) is not False,
         )
+        if age > self._timing.remote_command_timeout:
+            request.output.close()
+            request.errors.close()
+            del self._active[host]
+            self._next[host] = self._clock()
+            diagnostics.log(
+                "discovery.request_finished", host=host, request_id=request.request_id,
+                outcome="expired", age_seconds=age, returncode=returncode,
+                **_availability_fields(self.remotes[host], self.remotes[host]),
+            )
+            return False
         text = _read_output(request.output, stdout, request_id=request.request_id, stream="stdout")
         error = _read_output(request.errors, stderr, request_id=request.request_id, stream="stderr")
         request.output.close()

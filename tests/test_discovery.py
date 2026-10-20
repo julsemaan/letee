@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import Mock, call, patch
 
 from letee.discovery import (
+    AgentEntry,
     DiscoveryPoller,
     REMOTE_COMMAND,
     SessionSnapshot,
@@ -191,11 +192,9 @@ class DiscoveryInstrumentationTest(unittest.TestCase):
         self.assertFalse(fields["term_sent"])
         self.assertEqual(fields["request_id"], "request-1")
         self.assertEqual(fields["outcome"], "completed")
-        error = next(fields for event, fields in self.events if event == "error" and fields.get("reason") == "term_group_missing")
-        self.assertEqual(error["handling"], "ignore")
-        self.assertEqual(error["operation"], "discovery.process_cleanup")
-        self.assertEqual(error["request_id"], "request-1")
-        self.assertEqual(error["error_type"], "ProcessLookupError")
+        self.assertTrue(fields["kill_group_missing"])
+        self.assertEqual(process.wait_timeouts, [None])
+        self.assertFalse(any(event == "error" for event, _ in self.events))
         self.assertNotIn("PRIVATE", repr(self.events))
 
     def test_snapshot_wait_error_cleans_process_and_returns_safe_diagnostics(self):
@@ -269,6 +268,46 @@ class DiscoveryInstrumentationTest(unittest.TestCase):
             replace(EMPTY_LOCAL, request_id="request-a"),
             replace(EMPTY_LOCAL, request_id="request-b"),
         )
+
+    def test_expired_completion_preserves_snapshot_and_refreshes_on_next_tick(self):
+        now = [0.0]
+        expired = FakeProcess(pid=123)
+        fresh = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n")
+        popen = Mock(side_effect=[expired, fresh])
+        poller = DiscoveryPoller(
+            ["dev"], local=lambda: EMPTY_LOCAL, popen=popen,
+            clock=lambda: now[0], persistent_ssh=False,
+        )
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%1", "/tmp/tmux")
+        previous = SourceSnapshot(True, (pane.target,), frozenset(), panes=(pane,),
+                                  agents=(AgentEntry(pane, "agent-1", "agent", "working"),))
+        poller.remotes["dev"] = previous
+        poller.tick()
+        request = poller._active["dev"]
+        # The completed command's old output contains no agents.
+        request.output.write(b"work:@1:%1:0:-:/tmp/tmux\n")
+        expired.returncode = 0
+        now[0] = poller._timing.remote_command_timeout + 100
+        with patch("letee.discovery.os.killpg", side_effect=ProcessLookupError):
+            self.assertFalse(poller.tick())
+        self.assertIs(poller.remotes["dev"], previous)
+        self.assertTrue(request.output.closed)
+        self.assertTrue(request.errors.closed)
+        self.assertTrue(expired.communicated)
+        self.assertEqual(expired.wait_timeouts, [None])
+        self.assertNotIn("dev", poller._active)
+        self.assertEqual(poller._next["dev"], now[0])
+        fields = next(fields for event, fields in self.events
+                      if event == "discovery.request_finished" and fields.get("outcome") == "expired")
+        self.assertEqual(fields["request_id"], request.request_id)
+        self.assertEqual(fields["age_seconds"], now[0])
+        self.assertFalse(any(event == "error" for event, _ in self.events))
+        self.assertTrue(poller.tick())
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(poller.remotes["dev"].sessions, previous.sessions)
+        # A fresh result that genuinely has no agents must still replace it.
+        self.assertEqual(poller.remotes["dev"].agents, ())
+        poller.close()
 
     def test_timeout_and_schedule_share_request_id(self):
         now = [0.0]
@@ -1281,6 +1320,31 @@ class DiscoveryPollerTest(unittest.TestCase):
         killpg.assert_not_called()
         self.assertTrue(process.communicated)
         self.assertEqual(poller.snapshot.remotes["dev"].sessions, (Target("ssh", "work", "dev"),))
+
+    def test_expired_request_preserves_new_or_uncertain_master_group(self):
+        for master_alive in (True, None):
+            with self.subTest(master_alive=master_alive):
+                now = [0.0]
+                process = FakeProcess(pid=111)
+                poller = self.make_poller(
+                    ["dev"], popen=Mock(return_value=process),
+                    clock=lambda: now[0], persistent_ssh=True,
+                )
+                with (
+                    patch("letee.discovery._persistent_master_alive", side_effect=(False, master_alive)),
+                    patch("letee.discovery.os.killpg") as killpg,
+                ):
+                    poller.tick()
+                    request = poller._active["dev"]
+                    process.returncode = 0
+                    now[0] = poller._timing.remote_command_timeout + 1
+                    self.assertFalse(poller.tick())
+                killpg.assert_not_called()
+                self.assertTrue(process.communicated)
+                self.assertTrue(request.output.closed)
+                self.assertTrue(request.errors.closed)
+                self.assertIsNone(poller.remotes["dev"])
+                poller.close()
 
     def test_completed_request_cleans_group_when_master_predates_request(self):
         process = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n", pid=113)

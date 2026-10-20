@@ -2983,7 +2983,8 @@ def run(stdscr: curses.window) -> None:
     def read_input(timeout_ms: int) -> InputEvent | None:
         stdscr.timeout(timeout_ms)
         try:
-            key = stdscr.getch()
+            with diagnostics.operation("sidebar_input_read", timeout_ms=timeout_ms):
+                key = stdscr.getch()
         except KeyboardInterrupt as error:
             diagnostics.error(error, handling="reraise" if state.add_view is None else "cancel", operation="read_input")
             if state.add_view is None:

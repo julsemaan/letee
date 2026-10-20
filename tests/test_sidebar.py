@@ -8426,6 +8426,21 @@ class SidebarDiagnosticsTest(unittest.TestCase):
                 # The status is intentionally visible, but its text must not enter diagnostics.
                 self.assertNotIn("PRIVATE", json.dumps(records))
 
+    def test_input_read_spans_record_timeout_and_duration_without_input(self):
+        self._run_mouse_trace([], keys=[-1, STOP])
+        records = self.records()
+        starts = [r for r in records if r["event"] == "operation_start" and r.get("name") == "sidebar_input_read"]
+        ends = [r for r in records if r["event"] == "operation_end" and r.get("name") == "sidebar_input_read"]
+        self.assertTrue(starts)
+        self.assertEqual(len(starts), len(ends))
+        self.assertEqual(starts[0]["timeout_ms"], 0)
+        for start, end in zip(starts, ends):
+            self.assertEqual(start["operation_id"], end["operation_id"])
+            self.assertEqual(start["timeout_ms"], end["timeout_ms"])
+            self.assertGreaterEqual(end["duration_ms"], 0)
+            self.assertNotIn("key_code", end)
+            self.assertNotIn("key_name", end)
+
     def test_read_input_interrupt_is_reraised_or_cancels_name_editor(self):
         for prefix, handling in (([], "reraise"), ([ord("e")], "cancel")):
             with self.subTest(handling=handling):
@@ -8772,11 +8787,17 @@ class SidebarDiagnosticsTest(unittest.TestCase):
                 self.assertNotIn("PRIVATE", json.dumps(records))
 
     def test_unchanged_render_is_deduplicated_but_heartbeat_repeats(self):
-        clock = [0]
-        def monotonic():
+        clock = [0.0]
+        original_getch = FakeScreen.getch
+
+        def getch(screen):
             clock[0] += 0.1
-            return clock[0]
-        with patch.object(sidebar.time, "monotonic", side_effect=monotonic):
+            return original_getch(screen)
+
+        with (
+            patch.object(sidebar.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(FakeScreen, "getch", getch),
+        ):
             records = self._run_mouse_trace([], keys=[*([-1] * 200), STOP])
         renders = [r for r in records if r["event"] == "sidebar_render"]
         hits = [r for r in renders if r["outcome"] == "cache_hit"]
