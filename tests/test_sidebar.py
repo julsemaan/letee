@@ -286,6 +286,19 @@ class SessionReconcilerTest(OperationTestCase):
         self.reconciler = sidebar.SessionReconciler()
         self.submit = unittest.mock.Mock(return_value=True)
 
+    def test_failed_attachment_retries_existing_session_with_backoff(self):
+        target = Target("ssh", "work", "host")
+        data = snapshot(remotes={"host": source("ssh", ("work",), host="host")})
+        effect = sidebar.Effect("switch", target, automatic=True)
+        self.reconciler.observe(sidebar.EffectResult(effect, (), launch_id="launch", completed_at=0))
+        self.reconciler.reconcile((target,), target, data, self.submit, 1,
+                                  shared_launch_id="launch", attachment_failed=True)
+        self.submit.assert_not_called()
+        self.reconciler.reconcile((target,), target, data, self.submit, 100,
+                                  shared_launch_id="launch", attachment_failed=True)
+        self.assertEqual(self.submit.call_args.args[0].kind, "switch")
+        self.assertEqual(self.submit.call_args.args[0].target, target)
+
     @patch.object(sidebar.cockpit, "startup_deadline", return_value=None)
     def test_reconciliation_does_not_read_startup_marker(self, read_marker):
         target = Target("local", "work")

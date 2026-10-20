@@ -167,7 +167,8 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 return result(stale=True)
             if isinstance(target, Target):
                 deadline = cockpit.startup_deadline(target)
-                if deadline is not None and time.monotonic() < deadline:
+                if (deadline is not None and time.monotonic() < deadline
+                        and not cockpit.attachment_failed(target, state["launch"])):
                     return result(stale=True)
         if effect.kind in ("switch", "add_switch", "switch_pane", "create") and isinstance(target, Target):
             if effect.kind == "create":
@@ -300,6 +301,8 @@ def sample_target(*, synchronize: bool = False):
         status = cockpit.status_snapshot()
         target = current if synchronize else status.current_target if status else None
         deadline = cockpit.startup_deadline(target) if target else None
+        if status is not None and target is not None:
+            status = replace(status, attachment_failed=cockpit.attachment_failed(target, launch_id))
         return launch_id, status, current, deadline
 
 

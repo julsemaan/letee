@@ -133,6 +133,7 @@ CURRENT_TARGET_OPTION = "@letee_current_target"
 RENAMED_TARGET_OPTION = "@letee_renamed_target"
 STARTUP_OPTION = "@letee_startup"
 STARTUP_LAUNCH_OPTION = "@letee_startup_launch"
+ATTACHMENT_FAILURE_OPTION = "@letee_attachment_failure"
 EXPECTED_RIGHT_PANE_DEATH_OPTION = "@letee_expected_right_pane_death"
 EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION = "@letee_expected_right_pane_death_target"
 EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION = "@letee_expected_right_pane_death_generation"
@@ -151,6 +152,7 @@ class StatusSnapshot:
     bell_target: Target | None
     current_agent: str | None
     pane_active: bool
+    attachment_failed: bool = False
 
 
 def _letee_command(*args: str) -> str:
@@ -481,6 +483,8 @@ def _right_pane_death_action(
     )
     return (
         f"{cleanup} ; {restore_target}{marker_cleanup} ; "
+        f"set-option -F -t {tmux.SESSION} {ATTACHMENT_FAILURE_OPTION} "
+        f"'#{{{CURRENT_TARGET_OPTION}}}:#{{{STARTUP_LAUNCH_OPTION}}}' ; "
         f"respawn-pane -k -t {right} {shlex.quote(_unavailable_command(target))} ; select-pane -t {left}"
     )
 
@@ -945,6 +949,10 @@ def reset_to_help(target: Target) -> bool:
 def startup_timeout(target: Target) -> float:
     timing = load_timing()
     return timing.ssh_auth_timeout if target.kind == "ssh" else timing.local_command_timeout
+
+
+def attachment_failed(target: Target, launch_id: str) -> bool:
+    return _option(ATTACHMENT_FAILURE_OPTION) == f"{target.format()}:{launch_id}"
 
 
 def startup_deadline(target: Target) -> float | None:

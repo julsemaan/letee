@@ -915,7 +915,12 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertLess(command.index(expected_marker), command.index(current_target))
         self.assertLess(command.index(current_target), command.index(help_command))
         self.assertIn(help_command, command)
-        # A markerless death uses the unavailable fallback, even without a target marker.
+        # A markerless death reports the failed attachment's target and launch.
+        self.assertIn(
+            "set-option -F -t letee @letee_attachment_failure "
+            "'#{@letee_current_target}:#{@letee_startup_launch}'",
+            command,
+        )
         self.assertIn("Active session is unavailable.", command)
         self.assertIn("select-pane -t %1", command)
 

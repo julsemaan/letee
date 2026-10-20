@@ -146,6 +146,7 @@ class StatusResult:
     startup_deadline: float | None = None
     synchronized: bool = False
     launch_id: str | None = None
+    attachment_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -449,6 +450,7 @@ class SessionReconciler:
         self._last: Target | None = None
         self._startup_clears: dict[tuple[Target, float, str | None], tuple[threading.Thread, threading.Event]] = {}
         self._shared_launch_id: str | None = None
+        self._failed_launch: str | None = None
 
     def _clear_startup(self, target: Target, deadline: float, launch_id: str | None = None) -> None:
         key = (target, deadline, launch_id)
@@ -476,11 +478,16 @@ class SessionReconciler:
         now: float,
         shared_deadline: float | None = None,
         shared_launch_id: str | None = None,
+        attachment_failed: bool = False,
     ) -> None:
         if shared_launch_id != self._shared_launch_id:
             if active is not None:
                 self._awaiting_discovery.pop(active, None)
             self._shared_launch_id = shared_launch_id
+        if attachment_failed and active is not None and self._failed_launch != shared_launch_id:
+            self._failed_launch = shared_launch_id
+            self._awaiting_discovery.pop(active, None)
+            self._retries.setdefault(active, RestorationRetry()).failed(active, now)
         # Retain successful clears while their marker is cached, and all pending clears.
         for key, (worker, succeeded) in list(self._startup_clears.items()):
             if not worker.is_alive() and (
@@ -501,7 +508,8 @@ class SessionReconciler:
             if source is None or not source.available:
                 continue
             startup_wait = self._awaiting_discovery.get(target)
-            if target in source.sessions:
+            failed_attachment = target == active and attachment_failed
+            if target in source.sessions and not failed_attachment:
                 # Cached or already-running discovery cannot confirm a new attachment.
                 if startup_wait is not None and source.sampled_at <= startup_wait[0]:
                     continue
@@ -509,12 +517,13 @@ class SessionReconciler:
                     if source.sampled_at <= shared_deadline - cockpit.startup_timeout(target):
                         continue
                 self._completed.pop(target, None)
+                self._retries.pop(target, None)
                 self._awaiting_discovery.pop(target, None)
                 if target == active and shared_deadline is not None:
                     self._clear_startup(target, shared_deadline, shared_launch_id)
                 continue
             if target == active and shared_deadline is not None:
-                if now < shared_deadline:
+                if now < shared_deadline and not failed_attachment:
                     continue
                 self._clear_startup(target, shared_deadline, shared_launch_id)
             if startup_wait is not None:
@@ -564,10 +573,9 @@ class SessionReconciler:
         if result.error:
             retry = self._retries.setdefault(target, RestorationRetry())
             retry.failed(target, result.completed_at if result.completed_at is not None else time.monotonic())
-        else:
+        elif result.effect.kind == "ensure_created":
             self._retries.pop(target, None)
-            if result.effect.kind == "ensure_created":
-                self._completed[target] = source
+            self._completed[target] = source
 
 
 def _sync_active_session(
@@ -1594,6 +1602,7 @@ class AsyncStatusPoller:
         self.current_target = current_target
         self.startup_deadline: float | None = None
         self.launch_id: str | None = operations.launch_identity()
+        self.attachment_failed = False
         self.bell_target: Target | None = None
         self.current_agent: str | None = None
         self.pane_active = True
@@ -1629,6 +1638,7 @@ class AsyncStatusPoller:
         synchronize: bool = False,
     ) -> StatusResult:
         launch_id = None
+        attachment_failed = False
         state = state or self._poll_state()
         snapshot = state.snapshot
         current_target = state.current_target
@@ -1671,6 +1681,7 @@ class AsyncStatusPoller:
             bell_target = status.bell_target
             stored_agent = status.current_agent
             pane_active = status.pane_active
+            attachment_failed = status.attachment_failed
             synchronized = synchronize
         except (OSError, SystemExit, subprocess.SubprocessError):
             if synchronize:
@@ -1689,6 +1700,7 @@ class AsyncStatusPoller:
             startup_deadline,
             synchronized,
             launch_id,
+            attachment_failed,
         )
 
     def tick(self, now: float) -> bool:
@@ -1730,6 +1742,7 @@ class AsyncStatusPoller:
                     self._suppressed_target = None
                 self.current_target = result.current_target
                 self.startup_deadline = result.startup_deadline
+                self.attachment_failed = result.attachment_failed
                 if result.sampled and not result.synchronized and result.launch_id != self.launch_id:
                     self.request_target_sync()
                 self.launch_id = result.launch_id
@@ -1756,6 +1769,8 @@ class AsyncStatusPoller:
         if result.stale_navigation or not operations.is_current(result):
             return
         if result.launch_id is not None:
+            if result.launch_id != self.launch_id:
+                self.attachment_failed = False
             self.launch_id = result.launch_id
         if result.error:
             if (
@@ -3631,7 +3646,7 @@ def run(stdscr: curses.window) -> None:
                     if not actions.busy:
                         reconciler.reconcile(
                             tuple(state.favorites), current_target, poller.snapshot, queue_effect, now,
-                            poller.startup_deadline, poller.launch_id,
+                            poller.startup_deadline, poller.launch_id, poller.attachment_failed is True,
                         )
                 except SystemExit as error:
                     show_status(str(error))

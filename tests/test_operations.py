@@ -23,6 +23,28 @@ class OperationsTest(unittest.TestCase):
         self.work = Target("local", "work")
         config.save_sessions([self.work])
 
+    def test_attachment_failure_is_launch_scoped_and_allows_retry_during_startup(self):
+        launch = operations.launch_identity()
+        marker = f"{self.work.format()}:{launch}"
+        with patch.object(cockpit, "_option", return_value=marker), \
+             patch.object(cockpit, "current_target", return_value=self.work), \
+             patch.object(cockpit, "status_snapshot", return_value=cockpit.StatusSnapshot(self.work, None, None, True)), \
+             patch.object(cockpit, "startup_deadline", return_value=float("inf")), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch") as switch:
+            self.assertTrue(operations.sample_target()[1].attachment_failed)
+            result = operations.perform(operations.Effect("switch", self.work, automatic=True))
+            self.assertFalse(result.error)
+            self.assertFalse(result.stale_navigation)
+            ensure.assert_called_once_with(self.work)
+            switch.assert_called_once()
+            self.assertNotEqual(launch, result.launch_id)
+            self.assertFalse(operations.sample_target()[1].attachment_failed)
+            queued = operations.perform(operations.Effect("switch", self.work, automatic=True))
+            self.assertTrue(queued.stale_navigation)
+            self.assertEqual(switch.call_count, 1)
+
     def test_remove_invalidates_queued_restore_but_explicit_navigation_is_allowed(self):
         restore = operations.capture(operations.Effect("switch", self.work, automatic=True))
         with patch.object(cockpit, "current_target", return_value=self.work), patch.object(cockpit, "reset_to_help"), patch.object(cockpit, "switch") as switch:
