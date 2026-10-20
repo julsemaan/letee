@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import tomllib
 
+from . import diagnostics
 from .names import DEFAULT_SERVER, Target, normalize_server, parse_target, validate_host
 
 DEFAULT_PREFIX = "C-s"
@@ -120,11 +121,15 @@ def paths() -> tuple[Path, Path]:
 
 def ensure_config() -> tuple[Path, Path]:
     cfg, wrapper = paths()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    if not cfg.exists():
-        cfg.write_text(CONFIG_TEXT)
-    if not wrapper.exists():
-        wrapper.write_text(WRAPPER_TEXT)
+    try:
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        if not cfg.exists():
+            cfg.write_text(CONFIG_TEXT)
+        if not wrapper.exists():
+            wrapper.write_text(WRAPPER_TEXT)
+    except OSError as exc:
+        diagnostics.error(exc, handling="raise", reason="config_creation_failed")
+        raise
     return cfg, wrapper
 
 
@@ -140,7 +145,11 @@ def _load_config() -> tuple[Path, dict]:
     try:
         return cfg, tomllib.loads(cfg.read_text())
     except tomllib.TOMLDecodeError as e:
+        diagnostics.error(e, handling="exit", reason="invalid_config_toml")
         raise SystemExit(f"Invalid config TOML {cfg}: {e}") from e
+    except (OSError, UnicodeError) as exc:
+        diagnostics.error(exc, handling="raise", reason="config_read_failed")
+        raise
 
 
 @lru_cache(maxsize=1)
@@ -148,11 +157,13 @@ def load_timing() -> Timing:
     cfg, data = _load_config()
     raw = data.get("timing", {})
     if not isinstance(raw, dict):
+        diagnostics.error(handling="exit", reason="invalid_timing_table")
         raise SystemExit(f"Invalid config {cfg}: [timing] must be a table")
     defaults = asdict(Timing())
     integer_keys = {"ssh_connect_timeout", "ssh_keepalive_interval", "ssh_keepalive_count_max"}
     for key, value in raw.items():
         if key not in defaults:
+            diagnostics.error(handling="exit", reason="unknown_timing_key")
             raise SystemExit(f"Invalid config {cfg}: unknown timing key {key!r}")
         integer = key in integer_keys
         try:
@@ -162,13 +173,16 @@ def load_timing() -> Timing:
                 or value <= 0
                 or not math.isfinite(value)
             )
-        except OverflowError:
+        except OverflowError as exc:
+            diagnostics.error(exc, handling="fallback", reason="timing_value_overflow")
             invalid = True
         if invalid:
+            diagnostics.error(handling="exit", reason="invalid_timing_value")
             requirement = "a positive integer" if integer else "a positive finite duration"
             raise SystemExit(f"Invalid config {cfg}: timing.{key} must be {requirement}")
     timing = Timing(**{**defaults, **raw})
     if timing.retry_initial_delay > timing.retry_max_delay:
+        diagnostics.error(handling="exit", reason="invalid_retry_delay_range")
         raise SystemExit(f"Invalid config {cfg}: timing.retry_initial_delay must not exceed timing.retry_max_delay")
     return timing
 
@@ -195,39 +209,49 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
+        diagnostics.error(handling="exit", reason="invalid_keybindings_table")
         raise SystemExit(f"Invalid config {cfg}: [{block_name}] must be a table")
     aliases = _SIDEBAR_ALIASES if sidebar else _KEYBINDING_ALIASES
     normalized: dict[str, str] = {}
     for key, value in raw.items():
         canon = aliases.get(key, key)
         if canon not in defaults:
+            diagnostics.error(handling="exit", reason="unknown_keybinding_action")
             raise SystemExit(f"Invalid config {cfg}: unknown {block_name} action {key!r}")
         if canon in normalized:
+            diagnostics.error(handling="exit", reason="duplicate_keybinding_action")
             raise SystemExit(f"Invalid config {cfg}: duplicate {block_name} action {canon!r} via alias {key!r}")
         normalized[canon] = value
     raw = normalized
     merged: dict[str, str] = {**defaults}
     for action, value in raw.items():
         if not isinstance(value, str):
+            diagnostics.error(handling="exit", reason="invalid_keybinding_type")
             kind = "single-character key" if sidebar else "tmux key token"
             raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} must be a {kind}")
         if sidebar:
             if len(value) != 1 or not value.isprintable() or value.isspace() or not value.isascii():
+                diagnostics.error(handling="exit", reason="invalid_sidebar_key")
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} must be a single-character ASCII key")
             eff = _effective_token(value, sidebar=True)
             if eff in _RESERVED_SLOTS:
+                diagnostics.error(handling="exit", reason="reserved_sidebar_key")
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is reserved (session slots 1 through 9)")
         else:
             has_pref, eff = _split_prefix(value)
             # Plain tokens bind globally via `bind-key -n`; only `prefix+...` values use tmux's prefix table.
             # Validation uses the effective token after removing the optional `prefix+`.
             if not eff:
+                diagnostics.error(handling="exit", reason="empty_keybinding_token")
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is not a valid tmux key token")
             if not _validate_tmux_token(eff):
+                diagnostics.error(handling="exit", reason="invalid_keybinding_token")
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is not a valid tmux key token")
             if eff in _RESERVED_SLOTS:
+                diagnostics.error(handling="exit", reason="reserved_tmux_key")
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} is reserved (session slots 1 through 9)")
             if eff == prefix:
+                diagnostics.error(handling="exit", reason="keybinding_prefix_conflict")
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {value!r} conflicts with prefix {prefix!r}")
         merged[action] = value
     # duplicate bindings: normalized, table-sensitive (prefix+ lowercased; `a` vs `prefix+a` remain distinct)
@@ -236,6 +260,7 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
         has_pref, eff = _split_prefix(token) if not sidebar else (False, token)
         identity = (has_pref, eff)
         if identity in seen:
+            diagnostics.error(handling="exit", reason="duplicate_keybinding")
             raise SystemExit(f"Invalid config {cfg}: duplicate binding {token!r} for {seen[identity]!r} and {action!r} in [{block_name}]")
         seen[identity] = action
     # prefix conflicts for defaults that equal prefix even if not overridden
@@ -243,6 +268,7 @@ def _load_keybindings_block(data: dict, cfg: Path, prefix: str, block_name: str,
         for action, token in merged.items():
             _, eff = _split_prefix(token)
             if eff == prefix and action not in raw:
+                diagnostics.error(handling="exit", reason="default_keybinding_prefix_conflict")
                 raise SystemExit(f"Invalid config {cfg}: {block_name}.{action} {token!r} conflicts with prefix {prefix!r}")
     return merged
 
@@ -251,6 +277,7 @@ def load_keybindings() -> dict[str, str]:
     cfg, data = _load_config()
     prefix = data.get("prefix", DEFAULT_PREFIX)
     if not isinstance(prefix, str) or not prefix or not prefix.isprintable() or any(char.isspace() for char in prefix):
+        diagnostics.error(handling="exit", reason="invalid_prefix")
         raise SystemExit(f"Invalid config {cfg}: prefix must be a non-empty, printable, whitespace-free string")
     return _load_keybindings_block(data, cfg, prefix, "keybindings", DEFAULT_KEYBINDINGS, sidebar=False)
 
@@ -259,6 +286,7 @@ def load_sidebar_keybindings() -> dict[str, str]:
     cfg, data = _load_config()
     prefix = data.get("prefix", DEFAULT_PREFIX)
     if not isinstance(prefix, str) or not prefix or not prefix.isprintable() or any(char.isspace() for char in prefix):
+        diagnostics.error(handling="exit", reason="invalid_prefix")
         raise SystemExit(f"Invalid config {cfg}: prefix must be a non-empty, printable, whitespace-free string")
     return _load_keybindings_block(data, cfg, prefix, "sidebar_keybindings", DEFAULT_SIDEBAR_KEYBINDINGS, sidebar=True)
 
@@ -267,6 +295,7 @@ def load_prefix() -> str:
     cfg, data = _load_config()
     prefix = data.get("prefix", DEFAULT_PREFIX)
     if not isinstance(prefix, str) or not prefix or not prefix.isprintable() or any(char.isspace() for char in prefix):
+        diagnostics.error(handling="exit", reason="invalid_prefix")
         raise SystemExit(f"Invalid config {cfg}: prefix must be a non-empty, printable, whitespace-free string")
     return prefix
 
@@ -275,9 +304,11 @@ def load_sidebar_width() -> int:
     cfg, data = _load_config()
     width = data.get("sidebar_width", DEFAULT_SIDEBAR_WIDTH)
     if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+        diagnostics.error(handling="exit", reason="invalid_sidebar_width")
         raise SystemExit(f"Invalid config {cfg}: sidebar_width must be a positive integer")
     mode = data.get("sidebar_collapse_mode", DEFAULT_SIDEBAR_COLLAPSE_MODE)
     if mode == "compact" and width < 8:
+        diagnostics.error(handling="exit", reason="compact_sidebar_too_narrow")
         raise SystemExit(f"Invalid config {cfg}: sidebar_width must be at least 8 in compact mode")
     return width
 
@@ -286,6 +317,7 @@ def load_sidebar_collapse_mode() -> str:
     cfg, data = _load_config()
     mode = data.get("sidebar_collapse_mode", DEFAULT_SIDEBAR_COLLAPSE_MODE)
     if mode not in ("compact", "hidden"):
+        diagnostics.error(handling="exit", reason="invalid_sidebar_collapse_mode")
         raise SystemExit(f"Invalid config {cfg}: sidebar_collapse_mode must be 'compact' or 'hidden'")
     return mode
 
@@ -294,6 +326,7 @@ def load_status_timeout() -> int:
     cfg, data = _load_config()
     timeout = data.get("status_timeout", DEFAULT_STATUS_TIMEOUT)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+        diagnostics.error(handling="exit", reason="invalid_status_timeout")
         raise SystemExit(f"Invalid config {cfg}: status_timeout must be a positive integer")
     return timeout
 
@@ -302,6 +335,7 @@ def load_agent_panel_resize_step() -> int:
     cfg, data = _load_config()
     step = data.get("agent_panel_resize_step", DEFAULT_AGENT_PANEL_RESIZE_STEP)
     if isinstance(step, bool) or not isinstance(step, int) or not 1 <= step <= 100:
+        diagnostics.error(handling="exit", reason="invalid_agent_panel_resize_step")
         raise SystemExit(
             f"Invalid config {cfg}: agent_panel_resize_step must be an integer from 1 through 100"
         )
@@ -312,6 +346,7 @@ def load_persistent_ssh() -> bool:
     cfg, data = _load_config()
     persistent = data.get("persistent_ssh", DEFAULT_PERSISTENT_SSH)
     if not isinstance(persistent, bool):
+        diagnostics.error(handling="exit", reason="invalid_persistent_ssh")
         raise SystemExit(f"Invalid config {cfg}: persistent_ssh must be a boolean")
     return persistent
 
@@ -320,6 +355,7 @@ def load_tmux_config_overlay() -> bool:
     cfg, data = _load_config()
     overlay = data.get("tmux_config_overlay", DEFAULT_TMUX_CONFIG_OVERLAY)
     if not isinstance(overlay, bool):
+        diagnostics.error(handling="exit", reason="invalid_tmux_config_overlay")
         raise SystemExit(f"Invalid config {cfg}: tmux_config_overlay must be a boolean")
     return overlay
 
@@ -328,25 +364,34 @@ def load_hosts() -> list[str]:
     cfg, data = _load_config()
     hosts = data.get("hosts", [])
     if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
+        diagnostics.error(handling="exit", reason="invalid_hosts_list")
         raise SystemExit(f"Invalid config {cfg}: hosts must be a list of strings")
     try:
         return [validate_host(host) for host in hosts]
     except SystemExit as error:
+        diagnostics.error(error, handling="exit", reason="invalid_config_host")
         raise SystemExit(f"Invalid config {cfg}: {error}") from error
 
 
 def load_sessions(server: str | None = None) -> list[Target]:
     path = sessions_path(server)
-    if not path.exists():
-        return []
+    try:
+        if not path.exists():
+            diagnostics.log("config.sessions_missing", handling="fallback")
+            return []
+        lines = path.read_text().splitlines()
+    except (OSError, UnicodeError) as exc:
+        diagnostics.error(exc, handling="raise", reason="sessions_read_failed")
+        raise
     favorites: list[Target] = []
     seen: set[Target] = set()
-    for line_number, line in enumerate(path.read_text().splitlines(), 1):
+    for line_number, line in enumerate(lines, 1):
         if not (text := line.strip()):
             continue
         try:
             target = parse_target(text)
         except SystemExit as e:
+            diagnostics.error(e, handling="exit", reason="invalid_favorite", line_number=line_number)
             raise SystemExit(f"Invalid favorite in {path}:{line_number}: {e}") from e
         if target not in seen:
             favorites.append(target)
@@ -356,8 +401,12 @@ def load_sessions(server: str | None = None) -> list[Target]:
 
 def save_sessions(favorites: list[Target] | tuple[Target, ...], server: str | None = None) -> None:
     path = sessions_path(server)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(f"{target.format()}\n" for target in favorites))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f"{target.format()}\n" for target in favorites))
+    except (OSError, UnicodeError) as exc:
+        diagnostics.error(exc, handling="raise", reason="sessions_write_failed")
+        raise
 
 
 def replace_session(old: Target, new: Target, server: str | None = None) -> list[Target]:

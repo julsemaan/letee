@@ -8196,6 +8196,634 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         sidebar.diagnostics.flush()
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
+    def test_status_worker_and_fallback_inherit_request_context(self):
+        status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), None)
+        debug = sidebar.diagnostics.get_diagnostics()
+        try:
+            with (
+                debug.context(action_id="action-parent", input_id="input-parent"),
+                patch.object(sidebar.cockpit, "status_snapshot", side_effect=OSError("PRIVATE")),
+            ):
+                status.tick(0)
+                status._future.result(timeout=2)
+                status.tick(0)
+        finally:
+            status.close()
+        records = self.records()
+        request = next(r for r in records if r["event"] == "status_requested")
+        error = next(r for r in records if r["event"] == "error")
+        for key in ("request_id", "sample_id", "snapshot_id", "action_id", "input_id"):
+            self.assertEqual(error[key], request[key])
+        self.assertEqual(error["operation"], "status_sample")
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_status_unexpected_future_failure_is_correlated_and_propagated(self):
+        status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), None)
+        try:
+            with patch.object(status, "_sample", side_effect=ValueError("PRIVATE")):
+                status.tick(0)
+                with self.assertRaises(ValueError):
+                    status._future.result(timeout=2)
+                with self.assertRaises(ValueError):
+                    status.tick(0)
+        finally:
+            status.close()
+        records = self.records()
+        request = next(r for r in records if r["event"] == "status_requested")
+        errors = [r for r in records if r["event"] == "error"]
+        self.assertEqual({r["name"] for r in errors}, {"status_sample", "status_collect"})
+        self.assertTrue(all(r["sample_id"] == request["sample_id"] for r in errors))
+        result = next(r for r in records if r["event"] == "status_result")
+        self.assertEqual((result["accepted"], result["reason"]), (False, "worker_failed"))
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_effect_worker_failure_preserves_context_through_collection(self):
+        runner = sidebar.EffectRunner()
+        try:
+            with (
+                sidebar.diagnostics.get_diagnostics().context(request_id="parent-request"),
+                patch.object(sidebar, "_perform_effect", side_effect=ValueError("PRIVATE")),
+            ):
+                runner.submit(sidebar.Effect("switch", Target("local", "one")), (), input_id="input-test")
+                with self.assertRaises(ValueError):
+                    runner._future.result(timeout=2)
+                with self.assertRaises(ValueError):
+                    runner.poll()
+        finally:
+            runner.close()
+        records = self.records()
+        errors = [r for r in records if r["event"] == "error"]
+        self.assertEqual({r["operation"] for r in errors}, {"effect_worker", "effect_collect"})
+        self.assertEqual(len({r["error_id"] for r in errors}), 1)
+        self.assertTrue(all(r["request_id"] == "parent-request" and r["input_id"] == "input-test" for r in errors))
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_handled_effect_failures_and_partial_kill_do_not_log_status_text(self):
+        target = Target("local", "one")
+        for error in (OSError("PRIVATE"), SystemExit("PRIVATE"), subprocess.TimeoutExpired("PRIVATE", 1)):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(sidebar.cockpit, "switch", side_effect=error):
+                    result = sidebar._perform_effect(sidebar.Effect("switch", target), (target,))
+                self.assertTrue(result.error)
+        with (
+            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar.sessions, "kill"),
+            patch.object(sidebar.cockpit, "reset_to_help", side_effect=OSError("PRIVATE")),
+            patch.object(sidebar, "save_sessions"),
+        ):
+            partial = sidebar._perform_effect(sidebar.Effect("kill", target), (target,))
+        self.assertTrue(partial.partial_success)
+        sidebar._log_effect_applied(partial, SidebarState(status="PRIVATE"))
+        records = self.records()
+        errors = [r for r in records if r["event"] == "error"]
+        self.assertEqual(len(errors), 4)
+        self.assertTrue(all(r["handling"] == "status" for r in errors))
+        applied = next(r for r in records if r["event"] == "effect_applied")
+        self.assertTrue(applied["status_present"])
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_restoration_wrapped_timeout_records_cause_and_overlay_fallback(self):
+        target = Target("ssh", "one", "host")
+        timeout = subprocess.TimeoutExpired("PRIVATE command", 1, output="PRIVATE output")
+        error = SystemExit("PRIVATE message")
+        error.__cause__ = timeout
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.sessions, "attach_command", side_effect=error),
+            patch.object(sidebar.cockpit, "show_reconnecting") as reconnecting,
+        ):
+            result = sidebar._perform_effect(sidebar.Effect(
+                "switch", target, automatic=True, restoration_overlay="show_missing",
+            ), ())
+        self.assertEqual(result.restoration_overlay, "show_reconnecting")
+        reconnecting.assert_called_once_with(target)
+        records = self.records()
+        errors = [r for r in records if r["event"] == "error"]
+        self.assertEqual({r["operation"] for r in errors}, {"restoration_attach", "perform_effect"})
+        self.assertEqual(len({r["error_id"] for r in errors}), 1)
+        self.assertEqual([cause["type"] for cause in errors[0]["causes"]], ["SystemExit", "TimeoutExpired"])
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_compact_render_summarizes_statuses_without_labels(self):
+        with (
+            patch.object(sidebar.cockpit, "sidebar_compact", return_value=True),
+            patch.object(sidebar, "_entries", return_value=[sidebar.Entry(
+                "PRIVATE session label", "session", target=Target("local", "one"), status="unavailable",
+            )]),
+            patch.object(sidebar, "_agent_entries", return_value=[sidebar.Entry(
+                "PRIVATE agent label", "agent", agent_id="agent-test", status="working",
+            )]),
+        ):
+            records = self._run_mouse_trace([], keys=[-1, -1, STOP])
+        render = next(r for r in records if r["event"] == "sidebar_render")
+        self.assertEqual(render["mode"], "compact")
+        self.assertEqual(render["session_statuses"], {"unavailable": 1})
+        self.assertEqual(render["agent_statuses"], {"working": 1})
+        self.assertEqual(render["viewport"]["width"], 30)
+        visible = [r for r in records if r["event"] == "sidebar_entry_draw"]
+        self.assertEqual({r["status"] for r in visible}, {"unavailable", "working"})
+        self.assertTrue(all(r["compact"] and r["row_count"] == 1 for r in visible))
+        self.assertTrue(all(r["entry_id"] == render["entry_id"] and r["render_id"] == render["render_id"] for r in visible))
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_status_discovery_failure_keeps_snapshot_with_diagnostics(self):
+        data = snapshot(local=("one",))
+        discovery = unittest.mock.Mock(snapshot=data)
+        discovery.tick.side_effect = subprocess.TimeoutExpired("PRIVATE", 1)
+        status = sidebar.AsyncStatusPoller(discovery, None)
+        try:
+            with patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(None, None, None, True)):
+                status.tick(0)
+                status._future.result(timeout=2)
+                status.tick(0)
+                self.assertIs(status.snapshot, data)
+        finally:
+            status.close()
+        error = next(r for r in self.records() if r["event"] == "error")
+        self.assertEqual((error["operation"], error["error_type"]), ("status_sample", "TimeoutExpired"))
+        self.assertIn("sample_id", error)
+        self.assertNotIn("PRIVATE", json.dumps(self.records()))
+
+    def test_layout_repair_handled_and_unexpected_failures_are_diagnosed(self):
+        for error in (OSError("PRIVATE"), RuntimeError("PRIVATE")):
+            with self.subTest(error=type(error).__name__):
+                stop = threading.Event()
+                def repair(_pane):
+                    stop.set()
+                    raise error
+                with patch.object(sidebar.cockpit, "repair_layout", side_effect=repair):
+                    if isinstance(error, OSError):
+                        sidebar._maintain_sidebar(stop, "%1")
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            sidebar._maintain_sidebar(stop, "%1")
+        records = self.records()
+        errors = [r for r in records if r["event"] == "error"]
+        self.assertEqual([r["handling"] for r in errors], ["ignore", "reraise"])
+        self.assertTrue(all(r["operation"] == "layout_repair" for r in errors))
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_fallback_handlers_capture_types_without_exception_text(self):
+        cases = (
+            ("key_name", "letee.sidebar.curses.keyname", curses.error, lambda: sidebar._key_name(7)),
+            ("tmux_query", "letee.sidebar.cockpit.tmux.out", OSError, lambda: sidebar._tmux_query("show-options")),
+            ("mouse_capability", "letee.sidebar.curses.has_mouse", curses.error, sidebar._mouse_diagnostics),
+            ("terminal_capability", "letee.sidebar.curses.tigetstr", ValueError, sidebar._mouse_diagnostics),
+            ("init_colors", "letee.sidebar.curses.has_colors", curses.error, sidebar._init_colors),
+            ("validate_session_name", "letee.sidebar.validate_name", SystemExit, lambda: sidebar._valid_session_name("one")),
+            ("mouse_motion_mode", "letee.sidebar.os.write", OSError, sidebar._mouse_mask),
+            ("mouse_mask", "letee.sidebar.curses.mousemask", curses.error, sidebar._mouse_mask),
+            ("mouse_cleanup", "letee.sidebar.os.write", OSError, sidebar._mouse_cleanup),
+        )
+        for operation, target, error_type, invoke in cases:
+            with self.subTest(operation=operation):
+                start = len(self.records()) if self.log_path.exists() else 0
+                with (
+                    patch.object(sidebar.cockpit.tmux, "out", return_value=""),
+                    patch.object(sidebar.os, "write", return_value=0),
+                    patch.object(sidebar.curses, "mousemask", return_value=(0, 0)),
+                    patch(target, side_effect=error_type("PRIVATE"), create=True),
+                    sidebar.diagnostics.get_diagnostics().context(request_id="handler-request"),
+                ):
+                    invoke()
+                errors = [r for r in self.records()[start:] if r["event"] == "error" and r.get("operation") == operation]
+                self.assertTrue(errors)
+                self.assertTrue(all(r["error_type"] == error_type.__name__ and r["request_id"] == "handler-request" for r in errors))
+                self.assertTrue(all(r["handling"] == ("validation" if operation == "validate_session_name" else "ignore" if operation.startswith("mouse_m") or operation == "mouse_cleanup" else "fallback") for r in errors))
+                if operation == "terminal_capability":
+                    self.assertEqual({r["capability"] for r in errors}, {"kmous", "XM"})
+        sidebar._numeric_tmux_id("invalid")
+        self.assertTrue(any(r.get("operation") == "numeric_tmux_id" for r in self.records()))
+        self.assertNotIn("PRIVATE", json.dumps(self.records()))
+
+    def test_mouse_decode_handlers_keep_input_identity_in_normal_and_name_views(self):
+        for prefix, operation in (([], "sidebar_mouse"), ([ord("e")], "name_mouse")):
+            with self.subTest(operation=operation):
+                start = len(self.records()) if self.log_path.exists() else 0
+                records = self._run_mouse_trace(
+                    [curses.error("PRIVATE")], keys=[*prefix, curses.KEY_MOUSE, -1, STOP],
+                )[start:]
+                errors = [r for r in records if r["event"] == "error" and r.get("operation") in ("read_mouse", operation)]
+                self.assertEqual({r["operation"] for r in errors}, {"read_mouse", operation})
+                received = next(r for r in records if r["event"] == "input_received" and r["key_name"] == "KEY_MOUSE")
+                self.assertTrue(all(r["input_id"] == received["input_id"] and r["handling"] == "ignore" for r in errors))
+                self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_status_handlers_report_sync_and_rename_failures(self):
+        for name, keys in (("_sync_active_session", [-1, STOP]), ("_rename_key", [ord("e"), ord("x"), STOP])):
+            with self.subTest(handler=name):
+                start = len(self.records()) if self.log_path.exists() else 0
+                with patch.object(sidebar, name, side_effect=SystemExit("PRIVATE")):
+                    records = self._run_mouse_trace([], keys=keys)[start:]
+                errors = [r for r in records if r["event"] == "error" and r.get("operation") == name[1:]]
+                self.assertTrue(errors)
+                self.assertTrue(all(r["handling"] == "status" and r["error_type"] == "SystemExit" for r in errors))
+                if name == "_rename_key":
+                    self.assertTrue(all(r["input_id"] for r in errors))
+                # The status is intentionally visible, but its text must not enter diagnostics.
+                self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_read_input_interrupt_is_reraised_or_cancels_name_editor(self):
+        for prefix, handling in (([], "reraise"), ([ord("e")], "cancel")):
+            with self.subTest(handling=handling):
+                start = len(self.records()) if self.log_path.exists() else 0
+                with patch.object(FakeScreen, "getch", side_effect=[*prefix, KeyboardInterrupt("PRIVATE"), STOP]):
+                    if handling == "reraise":
+                        with self.assertRaises(KeyboardInterrupt):
+                            self._run_mouse_trace([])
+                    else:
+                        self._run_mouse_trace([])
+                error = next(r for r in self.records()[start:] if r["event"] == "error" and r.get("operation") == "read_input")
+                self.assertEqual((error["handling"], error["error_type"]), (handling, "KeyboardInterrupt"))
+                self.assertNotIn("PRIVATE", json.dumps(self.records()[start:]))
+
+    def test_compact_write_failure_ignores_only_bottom_right_row(self):
+        for row, handling in ((0, "reraise"), (3, "ignore")):
+            with self.subTest(row=row):
+                start = len(self.records()) if self.log_path.exists() else 0
+                screen = FakeScreen([], size=(4, 5))
+                original = screen.addnstr
+
+                def write(y, *args):
+                    if y == row:
+                        raise curses.error("PRIVATE")
+                    return original(y, *args)
+
+                with patch.object(screen, "addnstr", side_effect=write):
+                    manager = self.assertRaises(curses.error) if handling == "reraise" else nullcontext()
+                    with manager:
+                        sidebar._draw_compact(
+                            screen, [], [sidebar.Entry("PRIVATE label", "agent")],
+                            0, 0, None, None, 50, set(), None, None, None, set(), None,
+                        )
+                error = next(r for r in self.records()[start:] if r["event"] == "error" and r.get("operation") == "compact_write_row")
+                self.assertEqual((error["row"], error["handling"]), (row, handling))
+                self.assertNotIn("PRIVATE", json.dumps(self.records()[start:]))
+
+    def test_accepted_status_links_discovery_requests_to_visible_entries(self):
+        data = sidebar.replace(
+            snapshot(local=("one",), remotes={
+                "dev": sidebar.replace(source("ssh", ("remote",), host="dev"), request_id="remote-request"),
+                "pending": None,
+            }),
+            local=sidebar.replace(source("local", ("one",)), request_id="local-request"),
+        )
+        poller = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), None)
+        try:
+            with patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(None, None, None, True)):
+                poller.tick(0)
+                poller._future.result(timeout=2)
+                poller.tick(0)
+            accepted_trace = dict(poller.snapshot_trace)
+            with patch.object(poller, "tick", return_value=False):
+                records = self._run_mouse_trace([], keys=[-1, STOP], poller=poller)
+        finally:
+            poller.close()
+        requested = next(r for r in records if r["event"] == "status_requested")
+        result = next(r for r in records if r["event"] == "status_result")
+        completed = next(r for r in records if r["event"] == "status_worker_completed")
+        self.assertTrue(result["accepted"])
+        for record in (result, completed):
+            self.assertEqual(record["discovery_requests"], {"local": "local-request", "dev": "remote-request", "pending": None})
+        entries = next(r for r in records if r["event"] == "entries_built")
+        visible = [r for r in records if r["event"] == "sidebar_entry_draw"]
+        self.assertTrue(visible)
+        for record in (result, completed, entries, *visible):
+            for key, value in accepted_trace.items():
+                self.assertEqual(record[key], value)
+                self.assertEqual(record[key], requested[key])
+        self.assertTrue(all(r["entry_id"] == entries["entry_id"] for r in visible))
+
+    def test_background_remote_recovery_reaches_screen_without_input_or_switching_active_local(self):
+        from letee.discovery import _source_result
+
+        active = Target("local", "one")
+        offline = _source_result(255, "", "PRIVATE connection failure", kind="ssh", host="dev", request_id="remote-offline")
+        discovery = unittest.mock.Mock(snapshot=snapshot(local=("one",), remotes={"dev": offline}))
+        poller = sidebar.AsyncStatusPoller(discovery, active)
+        try:
+            with patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(active, None, None, True)):
+                poller.tick(0)
+                poller._future.result(timeout=2)
+                poller.tick(0)
+                recovered = _source_result(0, "remote:@1:%2:0::/tmp/remote\twork\n", "", kind="ssh", host="dev", request_id="remote-recovered")
+                discovery.snapshot = snapshot(local=("one",), remotes={"dev": recovered})
+                poller.tick(1)
+                poller._future.result(timeout=2)
+                poller.tick(1)
+            with patch.object(poller, "tick", return_value=False), patch.object(poller, "close"):
+                switch = self._run_mouse_trace([], keys=[-1, STOP], poller=poller, current_target=active, collect_records=False, size=(30, 30), favorites=[active, Target("ssh", "remote", "dev")])
+            switch.assert_not_called()
+            self.assertEqual(poller.current_target, active)
+        finally:
+            poller.close()
+        records = self.records()
+        accepted = [r for r in records if r["event"] == "status_result" and r["accepted"]]
+        self.assertEqual([r["discovery_requests"]["dev"] for r in accepted], ["remote-offline", "remote-recovered"])
+        drawn = next(r for r in records if r["event"] == "sidebar_entry_draw" and r.get("target") == "ssh:dev:remote")
+        self.assertEqual(drawn["snapshot_id"], accepted[-1]["snapshot_id"])
+        self.assertIsNone(drawn["status"])
+        self.assertFalse(any(r["event"] == "input_received" for r in records))
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_failed_status_submission_preserves_snapshot_and_request_trace(self):
+        data = snapshot(local=("one",))
+        poller = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), None)
+        original_trace = dict(poller.snapshot_trace)
+        try:
+            with (
+                patch.object(poller._executor, "submit", side_effect=RuntimeError("PRIVATE")),
+                sidebar.diagnostics.get_diagnostics().context(action_id="parent-action", input_id="parent-input"),
+                self.assertRaises(RuntimeError),
+            ):
+                poller.tick(0)
+            self.assertIs(poller.snapshot, data)
+            self.assertEqual(poller.snapshot_trace, original_trace)
+            self.assertIsNone(poller._future)
+        finally:
+            poller.close()
+        records = self.records()
+        requested = next(r for r in records if r["event"] == "status_requested")
+        failed = next(r for r in records if r["event"] == "error" and r.get("name") == "status_submit")
+        for key in ("request_id", "sample_id", "snapshot_id", "action_id", "input_id"):
+            self.assertEqual(failed[key], requested[key])
+        self.assertEqual((failed["handling"], failed["error_type"]), ("propagate", "RuntimeError"))
+        self.assertFalse(any(r["event"] in ("status_worker_started", "status_result") for r in records))
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_tmux_version_failures_keep_startup_running(self):
+        for error in (OSError("PRIVATE"), SystemExit("PRIVATE"), subprocess.TimeoutExpired("PRIVATE", 1)):
+            with self.subTest(error=type(error).__name__):
+                start = len(self.records()) if self.log_path.exists() else 0
+                def query(*args, **kwargs):
+                    if args == ("-V",):
+                        raise error
+                    return ""
+
+                records = self._run_mouse_trace([], keys=[-1, STOP], tmux_side_effect=query)[start:]
+                failed = next(r for r in records if r["event"] == "error" and r.get("operation") == "tmux_version")
+                startup = next(r for r in records if r["event"] == "sidebar_startup")
+                self.assertEqual((failed["error_type"], failed["handling"]), (type(error).__name__, "fallback"))
+                self.assertIsNone(startup["tmux_version"])
+                self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_kill_failure_logs_same_error_at_handler_and_effect_boundary(self):
+        target = Target("local", "one")
+        for error in (OSError("PRIVATE"), SystemExit("PRIVATE"), subprocess.TimeoutExpired("PRIVATE", 1)):
+            with self.subTest(error=type(error).__name__):
+                start = len(self.records()) if self.log_path.exists() else 0
+                with (
+                    patch.object(sidebar, "_current_target", return_value=None),
+                    patch.object(sidebar.sessions, "kill", side_effect=error),
+                ):
+                    result = sidebar._perform_effect(sidebar.Effect("kill", target), (target,))
+                self.assertTrue(result.error)
+                errors = [r for r in self.records()[start:] if r["event"] == "error"]
+                self.assertEqual({r["operation"] for r in errors}, {"kill_session", "perform_effect"})
+                self.assertEqual({r["handling"] for r in errors}, {"reraise", "status"})
+                self.assertEqual(len({r["error_id"] for r in errors}), 1)
+                self.assertNotIn("PRIVATE", json.dumps(self.records()[start:]))
+
+    def test_wrapper_interrupt_is_diagnosed_before_retry_and_close(self):
+        with patch.object(sidebar.curses, "wrapper", side_effect=[KeyboardInterrupt("PRIVATE"), None]) as wrapper:
+            self.assertEqual(sidebar.main(), 0)
+        self.assertEqual(wrapper.call_count, 2)
+        errors = [r for r in self.records() if r["event"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual((errors[0]["operation"], errors[0]["handling"], errors[0]["error_type"]),
+                         ("sidebar_wrapper", "retry", "KeyboardInterrupt"))
+        self.assertNotIn("PRIVATE", json.dumps(errors))
+
+    def test_executor_submission_failure_is_diagnosed(self):
+        for runner in (
+            sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), None),
+            sidebar.EffectRunner(),
+        ):
+            try:
+                with patch.object(runner._executor, "submit", side_effect=RuntimeError("PRIVATE")):
+                    with self.assertRaises(RuntimeError):
+                        if isinstance(runner, sidebar.AsyncStatusPoller):
+                            runner.tick(0)
+                        else:
+                            runner.submit(sidebar.Effect("switch", Target("local", "one")), ())
+            finally:
+                runner.close()
+        errors = [r for r in self.records() if r["event"] == "error"]
+        self.assertEqual({r["name"] for r in errors}, {"status_submit", "effect_submit"})
+        self.assertTrue(all(r["handling"] == "propagate" for r in errors))
+        self.assertNotIn("PRIVATE", json.dumps(errors))
+
+    def test_restoration_runner_rejection_is_linked_to_automatic_request(self):
+        target = Target("local", "one")
+        marker = sidebar._sync_active_session(
+            target, snapshot(local=("one",)), target, submit=lambda effect: False,
+        )
+        self.assertEqual(marker, target)
+        records = self.records()
+        request = next(r for r in records if r["event"] == "restoration_requested")
+        deferred = next(r for r in records if r["event"] == "restoration_deferred")
+        self.assertEqual(deferred["reason"], "runner_rejected")
+        for key in ("target", "effect", "automatic", "source"):
+            self.assertEqual(deferred[key], request[key])
+        self.assertEqual((deferred["automatic"], deferred["source"]), (True, "automatic"))
+
+    def test_background_recovery_without_input_links_failure_backoff_and_retry(self):
+        target = Target("ssh", "one", "dev")
+        connected = snapshot(remotes={"dev": source("ssh", ("one",), host="dev")})
+        disconnected = snapshot(remotes={"dev": source("ssh", ("one",), host="dev", available=False)})
+        poller = unittest.mock.Mock(
+            snapshot=disconnected, current_target=target, bell_target=None, current_agent=None,
+            pane_active=True, refresh_pending=True, status_sampled=True,
+            snapshot_trace={"snapshot_id": "recovery-snapshot"},
+        )
+        ticks = []
+
+        def tick(_now):
+            ticks.append(_now)
+            poller.refresh_pending = False
+            if len(ticks) > 2:
+                poller.snapshot = connected
+            return True
+
+        poller.tick.side_effect = tick
+        runner = sidebar.EffectRunner()
+        submit = runner._executor.submit
+
+        def finish_worker(*args, **kwargs):
+            future = submit(*args, **kwargs)
+            future.result(timeout=2)
+            return future
+
+        clock = [0]
+
+        def monotonic():
+            clock[0] += 0.1
+            return clock[0]
+
+        with (
+            patch.object(sidebar, "EffectRunner", return_value=runner),
+            patch.object(runner._executor, "submit", side_effect=finish_worker),
+            patch.object(sidebar.time, "monotonic", side_effect=monotonic),
+            patch.object(sidebar, "load_timing", return_value=config.Timing()),
+            patch.object(sidebar.sessions, "attach_command", return_value=["tmux", "attach"]),
+            patch.object(sidebar.cockpit, "show_reconnecting") as overlay,
+        ):
+            records = self._run_mouse_trace(
+                [], keys=[*([-1] * 24), STOP], poller=poller, current_target=target,
+                switch_side_effect=[OSError("PRIVATE"), None],
+            )
+        overlay.assert_called_once_with(target)
+        heartbeat = next(r for r in records if r["event"] == "sidebar_heartbeat")
+        self.assertEqual(heartbeat["restoration_defer_reason"], "refresh_pending")
+        requests = [r for r in records if r["event"] == "restoration_requested"]
+        self.assertEqual([r["effect"] for r in requests], ["show_reconnecting", "switch", "switch"])
+        submitted = [r for r in records if r["event"] == "effect_submitted" and r["accepted"]]
+        self.assertEqual(len(submitted), 3)
+        self.assertTrue(all(r["automatic"] and r.get("input_id") is None for r in submitted))
+        for event in ("effect_worker_completed", "effect_applied"):
+            self.assertEqual([r["action_id"] for r in submitted], [r["action_id"] for r in records if r["event"] == event])
+        failed = next(r for r in records if r["event"] == "error" and r.get("operation") == "perform_effect")
+        backoff = next(r for r in records if r["event"] == "restoration_backoff")
+        self.assertEqual(failed["action_id"], submitted[1]["action_id"])
+        self.assertEqual(backoff["action_id"], failed["action_id"])
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_restoration_backoff_defer_and_stale_result_are_diagnosed(self):
+        target = Target("local", "one")
+        retry = sidebar.RestorationRetry()
+        failed = sidebar.EffectResult(
+            sidebar.Effect("switch", target, automatic=True), (), error="PRIVATE",
+            action_id="restore-action", input_id="restore-input", completed_at=10,
+        )
+        with patch.object(sidebar, "load_timing", return_value=config.Timing()):
+            sidebar._reconcile_active_session_effect(target, failed, retry=retry)
+            sidebar._sync_active_session(target, snapshot(local=("one",)), target, retry=retry, now=10.5)
+            sidebar._reconcile_active_session_effect(
+                target, sidebar.replace(failed, stale_navigation=True), retry=retry,
+            )
+        records = self.records()
+        backoff = next(r for r in records if r["event"] == "restoration_backoff")
+        self.assertEqual((backoff["delay"], backoff["deadline"]), (1, 11))
+        self.assertEqual(backoff["action_id"], "restore-action")
+        deferred = next(r for r in records if r["event"] == "restoration_deferred")
+        self.assertEqual(deferred["reason"], "backoff")
+        outcomes = [r["outcome"] for r in records if r["event"] == "restoration_result"]
+        self.assertEqual(outcomes, ["failed", "stale_navigation"])
+        self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_restoration_deferral_heartbeat_and_launch_reset_do_not_change_retry_equality(self):
+        target = Target("local", "one")
+        retry = sidebar.RestorationRetry(target, 10, 20)
+        expected = sidebar.RestorationRetry(target, 10, 20)
+        for now in (10, 10.1, 11, 15, 15.1):
+            sidebar._sync_active_session(target, snapshot(local=("one",)), target, retry=retry, now=now)
+        self.assertEqual(retry, expected)
+        result = sidebar.EffectResult(sidebar.Effect("switch", target, automatic=True), (), action_id="restore-action")
+        self.assertIsNone(sidebar._reconcile_active_session_effect(target, result, retry=retry))
+        records = self.records()
+        self.assertEqual(len([r for r in records if r["event"] == "restoration_deferred"]), 2)
+        completed = next(r for r in records if r["event"] == "restoration_result")
+        self.assertEqual(completed["outcome"], "attachment_launched")
+        self.assertEqual(completed["action_id"], "restore-action")
+        self.assertEqual(len([r for r in records if r["event"] == "restoration_reset"]), 1)
+        self.assertEqual(retry, sidebar.RestorationRetry())
+
+    def test_draw_and_refresh_failures_retry_with_inherited_render_correlation(self):
+        trace = {"request_id": "request-test", "sample_id": "sample-test", "snapshot_id": "snapshot-test"}
+        for method, operation in (("addnstr", "sidebar_draw"), ("refresh", "sidebar_refresh")):
+            with self.subTest(method=method):
+                start = len(self.records()) if self.log_path.exists() else 0
+                poller = unittest.mock.Mock(
+                    snapshot=snapshot(local=("one",)), current_target=None, bell_target=None,
+                    current_agent=None, pane_active=True, snapshot_trace=trace,
+                )
+                original = getattr(FakeScreen, method)
+                calls = []
+
+                def fail_once(screen, *args, **kwargs):
+                    calls.append(args)
+                    if len(calls) == 1:
+                        raise curses.error("PRIVATE")
+                    return original(screen, *args, **kwargs)
+
+                with patch.object(FakeScreen, method, autospec=True, side_effect=fail_once):
+                    records = self._run_mouse_trace([], keys=[-1, -1, STOP], poller=poller)[start:]
+                failed = next(r for r in records if r["event"] == "sidebar_render" and r["outcome"] == "draw_failed")
+                drawn = next(r for r in records if r["event"] == "sidebar_render" and r["outcome"] == "drawn")
+                errors = [r for r in records if r["event"] == "error" and r.get("render_id") == failed["render_id"]]
+                self.assertEqual(len(errors), 2 if method == "addnstr" else 3)
+                self.assertEqual(len({r["error_id"] for r in errors}), 1)
+                self.assertTrue(any(r.get("name") == operation and r["handling"] == "propagate" for r in errors))
+                self.assertTrue(any(r.get("operation") == "sidebar_draw" and r["handling"] == "retry" for r in errors))
+                if method == "refresh":
+                    refresh_error = next(r for r in errors if r.get("name") == "sidebar_refresh")
+                    draw_error = next(r for r in errors if r.get("name") == "sidebar_draw")
+                    self.assertEqual(refresh_error["parent_operation_id"], draw_error["operation_id"])
+                for record in [*errors, failed, drawn]:
+                    for key, value in trace.items():
+                        self.assertEqual(record[key], value)
+                    self.assertEqual(record["entry_id"], failed["entry_id"])
+                visible = [r for r in records if r["event"] == "sidebar_entry_draw" and r["render_id"] == drawn["render_id"]]
+                self.assertTrue(visible)
+                self.assertTrue(all(r["entry_id"] == drawn["entry_id"] and r["snapshot_id"] == trace["snapshot_id"] for r in visible))
+                self.assertNotIn("PRIVATE", json.dumps(records))
+
+    def test_unchanged_render_is_deduplicated_but_heartbeat_repeats(self):
+        clock = [0]
+        def monotonic():
+            clock[0] += 0.1
+            return clock[0]
+        with patch.object(sidebar.time, "monotonic", side_effect=monotonic):
+            records = self._run_mouse_trace([], keys=[*([-1] * 200), STOP])
+        renders = [r for r in records if r["event"] == "sidebar_render"]
+        hits = [r for r in renders if r["outcome"] == "cache_hit"]
+        self.assertGreaterEqual(len(hits), 2)
+        self.assertLess(len(hits), 10)
+        heartbeats = [r for r in records if r["event"] == "sidebar_heartbeat" and r["reason"] == "idle"]
+        self.assertGreaterEqual(len(heartbeats), 1)
+        for record in [*renders, *heartbeats]:
+            self.assertEqual(record["mode"], "normal")
+            self.assertEqual(record["session_count"], 1)
+            self.assertIn("session_statuses", record)
+            self.assertIn("session_scroll_offset", record)
+            self.assertNotIn("status_text", record)
+
+    def test_status_sample_trace_accepts_and_discards_without_changing_snapshot(self):
+        data = snapshot(local=("one",))
+        status = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=data), None)
+        try:
+            with patch.object(sidebar.cockpit, "status_snapshot", return_value=None):
+                status.tick(0)
+                status._future.result(timeout=2)
+                status.tick(0)
+                self.assertIs(status.snapshot, data)
+                status.tick(1)
+                status._future.result(timeout=2)
+                status._generation += 1
+                status.tick(1)
+        finally:
+            status.close()
+        records = self.records()
+        requested = [r for r in records if r["event"] == "status_requested"]
+        results = [r for r in records if r["event"] == "status_result"]
+        self.assertEqual([r["accepted"] for r in results[:2]], [True, False])
+        self.assertEqual(results[1]["reason"], "generation_changed")
+        self.assertEqual(requested[0]["request_id"], results[0]["request_id"])
+        self.assertTrue(results[0]["sample_id"])
+        self.assertTrue(results[0]["snapshot_id"])
+        self.assertEqual(status.snapshot_trace, {key: results[0][key] for key in ("request_id", "sample_id", "snapshot_id")})
+        self.assertTrue(any(r["event"] == "status_worker_started" for r in records))
+        self.assertTrue(any(r.get("handling") == "fallback" for r in records))
+
+    def test_render_trace_links_entries_draw_and_cache_without_terminal_text(self):
+        records = self._run_mouse_trace([], keys=[-1, -1, STOP])
+        entries = next(r for r in records if r["event"] == "entries_built")
+        renders = [r for r in records if r["event"] == "sidebar_render"]
+        self.assertTrue(any(r["outcome"] == "drawn" for r in renders))
+        self.assertTrue(any(r["outcome"] == "cache_hit" for r in renders))
+        self.assertTrue(all(r["entry_id"] == entries["entry_id"] for r in renders))
+        self.assertFalse(any("terminal_text" in r or "lines" in r for r in records))
+
     def test_mouse_press_trace_correlates_receive_map_submit_and_completion(self):
         target = Target("local", "one")
         poller = unittest.mock.Mock(
@@ -8254,29 +8882,33 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         )
         self.assertTrue(all("applied" in record and "ignored" in record for record in processed))
 
-    def _run_mouse_trace(self, mouse_events, keys=None, poller=None, collect_records=True):
+    def _run_mouse_trace(
+        self, mouse_events, keys=None, poller=None, collect_records=True,
+        current_target=None, switch_side_effect=None, tmux_side_effect=None, size=(12, 30), favorites=None,
+    ):
         target = Target("local", "one")
         poller = poller or unittest.mock.Mock(
             snapshot=snapshot(local=("one",)),
             current_target=None,
             bell_target=None,
             current_agent=None,
+            pending_agent=None,
             pane_active=True,
         )
         poller.tick.return_value = False
-        screen = FakeScreen(keys or [*(curses.KEY_MOUSE for _ in mouse_events), -1, STOP], size=(12, 30))
+        screen = FakeScreen(keys or [*(curses.KEY_MOUSE for _ in mouse_events), -1, STOP], size=size)
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "DiscoveryPoller"),
             patch.object(sidebar, "load_hosts", return_value=[]),
-            patch.object(sidebar, "load_sessions", return_value=[target]),
-            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar, "load_sessions", return_value=[target] if favorites is None else favorites),
+            patch.object(sidebar, "_current_target", return_value=current_target),
             patch.object(sidebar, "_init_colors"),
             patch.object(sidebar, "_mouse_mask", return_value=(0, 0)),
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar.curses, "getmouse", side_effect=mouse_events),
-            patch.object(sidebar.cockpit.tmux, "out", return_value="tmux 3.4"),
-            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar.cockpit.tmux, "out", return_value="tmux 3.4", side_effect=tmux_side_effect),
+            patch.object(sidebar.cockpit, "switch", side_effect=switch_side_effect) as switch,
         ):
             sidebar.run(screen)
         return self.records() if collect_records else switch
@@ -8329,8 +8961,9 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         ]
         self.assertEqual(len(candidates), 1)
         candidate = candidates[0]
-        self.assertEqual(candidate["failed_input_id"], "input-1")
-        self.assertEqual(candidate["release_input_id"], "input-2")
+        received = [record for record in records if record["event"] == "input_received"]
+        self.assertEqual(candidate["failed_input_id"], received[0]["input_id"])
+        self.assertEqual(candidate["release_input_id"], received[1]["input_id"])
         self.assertEqual((candidate["release_row"], candidate["release_column"]), (2, 7))
         self.assertEqual(candidate["region_hint"], "sessions")
         self.assertLess(candidate["failure_age_ms"], 1_000)

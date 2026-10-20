@@ -5,10 +5,79 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from letee import diagnostics
 from letee.tmux import set_server, tmux
 
 
 TMUX_MODULE = importlib.import_module("letee.tmux")
+
+
+class TmuxDiagnosticsTests(unittest.TestCase):
+    def test_subprocess_failures_preserve_behavior_and_report_decisions(self):
+        failures = (
+            (subprocess.TimeoutExpired(["secret"], 1, output="secret"), SystemExit, "exit"),
+            (subprocess.CalledProcessError(3, ["secret"], output="secret", stderr="secret"), subprocess.CalledProcessError, "raise"),
+            (OSError("secret"), OSError, "raise"),
+        )
+        for failure, expected, handling in failures:
+            with (
+                self.subTest(expected=expected),
+                patch.object(TMUX_MODULE, "tmux_executable", return_value="tmux"),
+                patch.object(TMUX_MODULE.subprocess, "run", side_effect=failure),
+                patch.object(diagnostics, "error", create=True) as error,
+            ):
+                with self.assertRaises(expected):
+                    tmux("secret", timeout=1)
+                self.assertIs(error.call_args.args[0], failure)
+                self.assertEqual(error.call_args.kwargs["handling"], handling)
+                self.assertNotIn("secret", repr(error.call_args.kwargs))
+
+    def test_unchecked_nonzero_status_is_returned_and_reported(self):
+        proc = subprocess.CompletedProcess(["secret"], 7, "secret", "secret")
+        with (
+            patch.object(TMUX_MODULE, "tmux_executable", return_value="tmux"),
+            patch.object(TMUX_MODULE.subprocess, "run", return_value=proc),
+            patch.object(diagnostics, "error", create=True) as error,
+        ):
+            self.assertIs(tmux("secret", check=False, timeout=1), proc)
+        self.assertEqual(error.call_args.kwargs["returncode"], 7)
+        self.assertNotIn("secret", repr(error.call_args))
+
+    def test_platform_fallbacks_report_safe_reasons(self):
+        for system, version, architecture, reason in (
+            ("Darwin", "private", "arm64", "macos_version_unavailable"),
+            ("Darwin", "14.6", "arm64", "unsupported_macos_version"),
+            ("FreeBSD", "", "x86_64", "unsupported_platform"),
+            ("Linux", "", "private", "unsupported_architecture"),
+        ):
+            with (
+                self.subTest(reason=reason),
+                patch.object(TMUX_MODULE.platform, "system", return_value=system),
+                patch.object(TMUX_MODULE.platform, "mac_ver", return_value=(version, (), "")),
+                patch.object(TMUX_MODULE.platform, "machine", return_value=architecture),
+                patch.object(diagnostics, "error") as error,
+                patch.object(diagnostics, "log") as log,
+            ):
+                self.assertEqual(TMUX_MODULE.tmux_executable(), "tmux")
+                event = error if reason == "macos_version_unavailable" else log
+                self.assertEqual(event.call_args.kwargs["reason"], reason)
+                self.assertNotIn("private", repr(event.call_args.kwargs))
+                if event is error:
+                    self.assertEqual(event.call_args.kwargs["handling"], "fallback")
+                else:
+                    self.assertEqual(event.call_args.args, ("tmux.bundle_fallback",))
+
+    def test_bundle_access_failure_reports_path_fallback_without_path(self):
+        failure = PermissionError("secret")
+        with (
+            patch.object(TMUX_MODULE, "_platform_directory", return_value="linux-x86_64"),
+            patch.object(TMUX_MODULE.os, "lstat", side_effect=failure),
+            patch.object(diagnostics, "error", create=True) as error,
+        ):
+            self.assertEqual(TMUX_MODULE.tmux_executable(), "tmux")
+        self.assertIs(error.call_args.args[0], failure)
+        self.assertEqual(error.call_args.kwargs["handling"], "fallback")
+        self.assertNotIn("secret", repr(error.call_args.kwargs))
 
 
 class TmuxTests(unittest.TestCase):

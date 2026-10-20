@@ -1,4 +1,6 @@
 import importlib
+import json
+import os
 import socket
 import subprocess
 import tempfile
@@ -9,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import letee.sessions as sessions
-from letee import __version__
+from letee import __version__, diagnostics
 from letee.__main__ import _tmux_socket_dir, main
 from letee.discovery import SessionSnapshot, SourceSnapshot
 from letee.names import Target
@@ -24,6 +26,122 @@ class MainTest(unittest.TestCase):
 
         config.set_server(None)
         tmux.set_server(None)
+
+    def test_attachment_exit_callback_records_captured_state_without_tmux_queries(self):
+        with (
+            patch.object(MAIN_MODULE.diagnostics, "log") as log,
+            patch.object(MAIN_MODULE.tmux, "tmux") as tmux_call,
+        ):
+            result = main([
+                "-L", "work", "attachment-exited", "%2", "attachment-1", "42",
+                "ssh:dev:work", "agent-1", "switch-1", "255", "", "1",
+            ])
+        self.assertEqual(result, 0)
+        tmux_call.assert_not_called()
+        log.assert_called_once_with(
+            "attachment_exited", right_pane="%2", attachment_id="attachment-1",
+            generation=42, target="ssh:dev:work", agent_id="agent-1",
+            switch_id="switch-1", exit_status=255, exit_signal=None, expected_death="1",
+            parent_run_id=None, intentional=True,
+        )
+
+    def test_unknown_attachment_exit_keeps_generation_without_old_identity(self):
+        with (
+            patch.object(MAIN_MODULE.diagnostics, "log") as log,
+            patch.object(MAIN_MODULE.tmux, "tmux") as command,
+        ):
+            self.assertEqual(main([
+                "attachment-exited", "%2", "", "234", "", "", "", "0", "", "",
+                "--parent-run-id", "",
+            ]), 0)
+        command.assert_not_called()
+        fields = log.call_args.kwargs
+        self.assertEqual(fields["generation"], 234)
+        for field in ("attachment_id", "target", "agent_id", "switch_id", "parent_run_id"):
+            self.assertIsNone(fields[field])
+        self.assertFalse(fields["intentional"])
+
+    def test_attachment_signal_callback_correlates_parent_and_unexpected_death(self):
+        with patch.object(MAIN_MODULE.diagnostics, "log") as log:
+            self.assertEqual(main([
+                "-L", "work", "attachment-exited", "%2", "old-id", "123",
+                "local:work", "", "old-switch", "", "TERM", "",
+                "--parent-run-id", "old-run",
+            ]), 0)
+        self.assertEqual(log.call_args.kwargs["exit_signal"], 15)
+        self.assertIsNone(log.call_args.kwargs["exit_status"])
+        self.assertEqual(log.call_args.kwargs["parent_run_id"], "old-run")
+        self.assertFalse(log.call_args.kwargs["intentional"])
+
+    def test_cli_reports_and_audits_os_error_without_changing_message(self):
+        error = FileNotFoundError(2, "No such file", "tmux")
+        output = StringIO()
+        with (
+            patch.object(MAIN_MODULE, "main", side_effect=error),
+            patch.object(MAIN_MODULE.diagnostics, "error") as audit,
+            patch.object(MAIN_MODULE.sys, "stderr", output),
+        ):
+            self.assertEqual(MAIN_MODULE.run_cli([]), 1)
+        self.assertEqual(output.getvalue(), "letee: tmux: No such file\n")
+        audit.assert_called_once_with(error, handling="reported", operation="cli")
+
+    def test_successful_help_exit_is_not_reported_as_failure(self):
+        error = SystemExit(0)
+        with patch.object(MAIN_MODULE, "main", side_effect=error), patch.object(MAIN_MODULE.diagnostics, "log") as log, patch.object(MAIN_MODULE.diagnostics, "error") as audit:
+            with self.assertRaises(SystemExit) as raised:
+                MAIN_MODULE.run_cli([])
+        self.assertIs(raised.exception, error)
+        log.assert_called_once_with("cli_exit", outcome="completed", exit_code=0)
+        audit.assert_not_called()
+
+    def test_cli_audits_propagated_errors_without_replacing_them(self):
+        for error in (SystemExit(2), RuntimeError("private detail"), KeyboardInterrupt()):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(MAIN_MODULE, "main", side_effect=error),
+                patch.object(MAIN_MODULE.diagnostics, "error") as audit,
+                self.assertRaises(type(error)) as raised,
+            ):
+                MAIN_MODULE.run_cli([])
+            self.assertIs(raised.exception, error)
+            audit.assert_called_once_with(error, handling="cancel" if isinstance(error, KeyboardInterrupt) else "propagate", operation="cli")
+
+    def test_nonzero_server_probes_are_audited_without_output(self):
+        failure = subprocess.CompletedProcess([], 7, "private stdout", "private stderr")
+        with (
+            patch.object(MAIN_MODULE, "_run_server_tmux", return_value=failure),
+            patch.object(MAIN_MODULE.diagnostics, "error") as audit,
+        ):
+            self.assertIsNone(MAIN_MODULE._server_attached("work"))
+        audit.assert_called_once_with(
+            handling="fallback", operation="server_marker_probe", returncode=7, server="work",
+        )
+
+    def test_nonzero_client_probe_and_legacy_cleanup_are_audited(self):
+        verified = subprocess.CompletedProcess([], 0, "1\n", "")
+        failure = subprocess.CompletedProcess([], 9, "private stdout", "private stderr")
+        with (
+            patch.object(MAIN_MODULE, "_run_server_tmux", side_effect=[verified, failure]),
+            patch.object(MAIN_MODULE.diagnostics, "error") as audit,
+        ):
+            self.assertIsNone(MAIN_MODULE._server_attached("work"))
+        audit.assert_called_once_with(
+            handling="fallback", operation="server_clients_probe", returncode=9, server="work",
+        )
+        for responses, operation, handling in (
+            ([failure], "legacy_marker_probe", "fallback"),
+            ([verified, failure], "legacy_server_kill", "ignored"),
+        ):
+            with (
+                self.subTest(operation=operation),
+                patch.object(MAIN_MODULE, "_legacy_socket_present", return_value=True),
+                patch.object(MAIN_MODULE, "_run_legacy_tmux", side_effect=responses),
+                patch.object(MAIN_MODULE.diagnostics, "error") as audit,
+            ):
+                MAIN_MODULE._cleanup_legacy_server("work")
+            audit.assert_called_once_with(
+                handling=handling, operation=operation, returncode=9, server="work",
+            )
 
     def test_version_prints_without_configuring_or_starting_cockpit(self):
         output = StringIO()
@@ -490,6 +608,141 @@ class MainTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].args[0], ("tmux", "-L", "letee.inner", "new-session", "-d", "-s", "work"))
         self.assertEqual(run.call_args_list[1].args[0], ("tmux", "-L", "letee.inner", "source-file", str(sessions.OVERLAY_FILE)))
         self.assertIn("\\; source-file", command)
+
+
+class MainDiagnosticsTest(unittest.TestCase):
+    def setUp(self):
+        diagnostics.close()
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        self.log_path = Path(tempdir.name) / "main.jsonl"
+        env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(diagnostics.close)
+        guard = patch.object(MAIN_MODULE.subprocess, "run", side_effect=AssertionError("unexpected subprocess"))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def records(self):
+        diagnostics.flush()
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def assert_handled(self, operation, error_type=None, handling="fallback"):
+        matches = [r for r in self.records() if r["event"] == "error" and r.get("operation") == operation]
+        self.assertTrue(matches, operation)
+        self.assertEqual(matches[-1]["handling"], handling)
+        if error_type is not None:
+            self.assertEqual(matches[-1]["error_type"], error_type)
+        self.assertNotIn("PRIVATE_FAILURE", self.log_path.read_text())
+
+    def test_missing_legacy_socket_and_socket_directory_return_empty_fallbacks(self):
+        with patch.object(MAIN_MODULE.os, "lstat", side_effect=OSError("PRIVATE_FAILURE")):
+            self.assertFalse(MAIN_MODULE._legacy_socket_present("work"))
+        self.assert_handled("legacy_socket_probe", "OSError")
+        with patch.object(Path, "iterdir", side_effect=OSError("PRIVATE_FAILURE")):
+            self.assertEqual(MAIN_MODULE.list_servers(), [])
+        self.assert_handled("list_server_sockets", "OSError")
+
+    def test_server_probe_and_legacy_cleanup_exceptions_are_private_fallbacks(self):
+        verified = subprocess.CompletedProcess([], 0, "1\n", "")
+        for error in (OSError("PRIVATE_FAILURE"), subprocess.TimeoutExpired(["PRIVATE_FAILURE"], 1, output="PRIVATE_FAILURE", stderr="PRIVATE_FAILURE")):
+            for stage in ("marker", "clients_or_kill"):
+                responses = [error] if stage == "marker" else [verified, error]
+                with (
+                    self.subTest(error=type(error).__name__, stage=stage),
+                    patch.object(MAIN_MODULE, "_run_server_tmux", side_effect=responses),
+                ):
+                    self.assertIsNone(MAIN_MODULE._server_attached("work"))
+                self.assert_handled("server_attached_probe", type(error).__name__)
+                with (
+                    patch.object(MAIN_MODULE, "_legacy_socket_present", return_value=True),
+                    patch.object(MAIN_MODULE, "_run_legacy_tmux", side_effect=responses),
+                ):
+                    self.assertIsNone(MAIN_MODULE._cleanup_legacy_server("work"))
+                self.assert_handled("legacy_server_cleanup", type(error).__name__)
+
+    def test_unverified_markers_are_logged_without_leaking_output(self):
+        unverified = subprocess.CompletedProcess([], 0, "PRIVATE_FAILURE", "PRIVATE_FAILURE")
+        with patch.object(MAIN_MODULE, "_run_server_tmux", return_value=unverified) as run:
+            self.assertIsNone(MAIN_MODULE._server_attached("work"))
+        run.assert_called_once()
+        with (
+            patch.object(MAIN_MODULE, "_legacy_socket_present", return_value=True),
+            patch.object(MAIN_MODULE, "_run_legacy_tmux", return_value=unverified) as run,
+        ):
+            MAIN_MODULE._cleanup_legacy_server("work")
+        run.assert_called_once()
+        events = [r["event"] for r in self.records()]
+        self.assertIn("server_unverified", events)
+        self.assertIn("legacy_server_unverified", events)
+        self.assertNotIn("PRIVATE_FAILURE", self.log_path.read_text())
+
+    def test_nonzero_marker_client_and_kill_results_omit_subprocess_output(self):
+        verified = subprocess.CompletedProcess([], 0, "1\n", "")
+        failure = subprocess.CompletedProcess(["PRIVATE_FAILURE"], 7, "PRIVATE_FAILURE", "PRIVATE_FAILURE")
+        for helper, responses, operation, handling in (
+            (MAIN_MODULE._server_attached, [failure], "server_marker_probe", "fallback"),
+            (MAIN_MODULE._server_attached, [verified, failure], "server_clients_probe", "fallback"),
+            (MAIN_MODULE._cleanup_legacy_server, [failure], "legacy_marker_probe", "fallback"),
+            (MAIN_MODULE._cleanup_legacy_server, [verified, failure], "legacy_server_kill", "ignored"),
+        ):
+            runner = "_run_server_tmux" if helper == MAIN_MODULE._server_attached else "_run_legacy_tmux"
+            with (
+                self.subTest(operation=operation),
+                patch.object(MAIN_MODULE, "_legacy_socket_present", return_value=True),
+                patch.object(MAIN_MODULE, runner, side_effect=responses),
+            ):
+                self.assertIsNone(helper("work"))
+            self.assert_handled(operation, handling=handling)
+            record = next(r for r in self.records() if r.get("operation") == operation)
+            self.assertEqual(record["returncode"], 7)
+
+    def test_invalid_socket_server_names_are_skipped_and_audited(self):
+        for prefix, operation in (("letee@v1", "server_name_parse"), ("letee", "legacy_server_name_parse")):
+            with (
+                self.subTest(prefix=prefix),
+                patch.object(Path, "iterdir", return_value=iter([Path(prefix + "-PRIVATE_FAILURE!")])),
+                patch.object(MAIN_MODULE, "_server_attached") as probe,
+                patch.object(MAIN_MODULE, "_cleanup_legacy_server") as cleanup,
+            ):
+                self.assertEqual(MAIN_MODULE.list_servers(), [])
+            probe.assert_not_called()
+            cleanup.assert_not_called()
+            self.assert_handled(operation, "SystemExit", "ignored")
+
+    def test_cli_reported_errors_flush_diagnostics_without_private_exception_payloads(self):
+        errors = (
+            subprocess.CalledProcessError(3, ["tmux", "PRIVATE_FAILURE"], output="PRIVATE_FAILURE stdout", stderr="PRIVATE_FAILURE stderr"),
+            OSError(5, "PRIVATE_FAILURE", "/PRIVATE_FAILURE"),
+            UnicodeDecodeError("utf-8", b"PRIVATE_FAILURE\xff", 15, 16, "PRIVATE_FAILURE"),
+            subprocess.TimeoutExpired(["PRIVATE_FAILURE"], 1, output="PRIVATE_FAILURE", stderr="PRIVATE_FAILURE"),
+        )
+        for error in errors:
+            output = StringIO()
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(MAIN_MODULE, "main", side_effect=error),
+                patch.object(MAIN_MODULE.sys, "stderr", output),
+                patch.object(diagnostics, "flush", wraps=diagnostics.flush) as flush,
+            ):
+                self.assertEqual(MAIN_MODULE.run_cli([]), 1)
+            flush.assert_called_once_with()
+            self.assertTrue(output.getvalue().startswith("letee: "))
+            self.assert_handled("cli", type(error).__name__, "reported")
+
+    def test_cli_propagation_flushes_and_retains_original_exception_privately(self):
+        for error in (SystemExit("PRIVATE_FAILURE"), KeyboardInterrupt("PRIVATE_FAILURE"), RuntimeError("PRIVATE_FAILURE")):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(MAIN_MODULE, "main", side_effect=error),
+                patch.object(diagnostics, "flush", wraps=diagnostics.flush) as flush,
+                self.assertRaises(type(error)) as raised,
+            ):
+                MAIN_MODULE.run_cli([])
+            self.assertIs(raised.exception, error)
+            flush.assert_called_once_with()
+            self.assert_handled("cli", type(error).__name__, "cancel" if isinstance(error, KeyboardInterrupt) else "propagate")
 
 
 if __name__ == "__main__":
