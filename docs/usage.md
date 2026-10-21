@@ -166,18 +166,35 @@ Set `LETEE_ASCII=1` for text-only labels, icons, spinner frames, cursors, and el
 
 ## Debug logging
 
-Set `LETEE_DEBUG_LOG` to a file path to write opt-in JSONL diagnostics. Logging is off when the variable is unset.
+Set `LETEE_DEBUG_LOG` to an absolute file path to enable opt-in JSONL diagnostics. Logging is off when unset. For a fresh default or named cockpit:
 
 ```sh
-letee kill-server
-LETEE_DEBUG_LOG="$HOME/.local/state/letee/click-debug.jsonl" letee
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/debug.jsonl" letee
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-debug.jsonl" letee -L work
 ```
 
-For a named server:
+An existing tmux server keeps its environment and running sidebar. Setting the variable on an attach command alone does not enable that sidebar. The simplest option is to recreate only the outer cockpit:
 
 ```sh
 letee -L work kill-server
-LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-click-debug.jsonl" letee -L work
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-debug.jsonl" letee -L work
 ```
 
-The startup record and any ncurses mouse decode failure include the relevant tmux and terminal mouse state. A `mouse_recovery_candidate` record links a failed mouse decode to a later button release. Eligible candidates are replayed as left-button activations for sidebar rows. After reproducing the missed click, stop or detach letee and preserve the log.
+Omit `-L work` for the default cockpit. Inner sessions and tracked-session files survive. To keep the existing outer cockpit instead, use the same tmux executable as the cockpit, set its environment, then restart its sidebar:
+
+```sh
+socket=letee@v1-work                  # use letee@v1 for the default cockpit
+log="$HOME/.local/state/letee/work-debug.jsonl"
+tmux -L "$socket" set-environment -g LETEE_DEBUG_LOG "$log"
+left=$(tmux -L "$socket" show-options -qv -t letee @letee_sidebar_pane)
+tmux -L "$socket" respawn-pane -k -t "$left"
+LETEE_DEBUG_LOG="$log" letee -L work  # reattach and install the diagnostic exit hook
+```
+
+Restarting the sidebar resets its transient UI state. Reattaching updates the native pane-death hook; restarting the sidebar alone does not. New CLI commands also need `LETEE_DEBUG_LOG` in their own environment. To disable collection, unset it in both environments, restart the sidebar and reattach without it, or recreate the outer cockpit without it.
+
+Reproduce the problem, note the time, cockpit name, target and action, then preserve the log with the letee version and relevant timing settings. Detaching does not stop collection. Logs append across runs, so use a new path per reproduction. Include events before and after the failure, not just `error` records. Input, effects, discovery, status samples, rendering and attachments carry correlation IDs. Status results map each source's discovery request to the accepted snapshot; `sidebar_entry_draw` identifies visible entries. Error IDs link observations and exception chains. `attachment_started` means tmux accepted the respawn, not that SSH connected successfully. Mouse startup state and `mouse_recovery_candidate` events help diagnose missed clicks. An unpaired release inside the sidebar is recovered as a click, so it appears as an `activate` decision without a preceding press.
+
+Logs contain host/session names, agent IDs, sidebar keystrokes, mouse coordinates and terminal metadata. They omit raw subprocess output, attachment shell commands, agent-status payloads, exception messages and locals. Error records retain exception types and source coordinates. Review logs before sharing; they are not anonymous. Files are owner-readable/writable, but parent-directory permissions are not tightened.
+
+The asynchronous logger queues at most 4096 items and drops excess records rather than blocking the application. Later records report the cumulative `dropped_records` count. Flush and shutdown each wait at most one second. Capacity, timeout and sink failures share one warning per logger; records may be lost, including on abrupt termination. Logs have no rotation or file-size limit, so stop collection after reproducing. See [Development guide](../DEVELOPMENT.md#diagnostic-coverage) for event coverage and limits.

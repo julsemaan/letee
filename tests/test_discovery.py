@@ -1,4 +1,7 @@
+from contextlib import contextmanager, nullcontext
+import json
 import os
+import tempfile
 import select
 import signal
 import subprocess
@@ -8,6 +11,7 @@ import unittest
 from unittest.mock import Mock, call, patch
 
 from letee.discovery import (
+    AgentEntry,
     DiscoveryPoller,
     REMOTE_COMMAND,
     SessionSnapshot,
@@ -69,6 +73,464 @@ def _read_child_info(read_fd):
     line = pipe.readline().decode().strip()
     child_pid, process_group = (int(value) for value in line.split(":", 1))
     return pipe, child_pid, process_group
+
+
+class DiscoveryInstrumentationTest(unittest.TestCase):
+    def setUp(self):
+        self.events = []
+        ids = iter(f"discovery-{index}" for index in range(100))
+        id_patch = patch("letee.discovery.diagnostics.get_diagnostics", return_value=Mock(new_id=lambda kind: next(ids), context_values=lambda: {}, context=lambda **fields: nullcontext()))
+        id_patch.start()
+        self.addCleanup(id_patch.stop)
+
+        @contextmanager
+        def operation(name, **fields):
+            state = Mock(fields=fields, outcome="completed")
+            try:
+                yield state
+            finally:
+                self.events.append((name, dict(state.fields, outcome=state.outcome)))
+
+        for name, replacement in (
+            ("operation", operation),
+            ("log", lambda event, **fields: self.events.append((event, fields))),
+            ("error", lambda exc=None, **fields: self.events.append(("error", {"error_type": type(exc).__name__, **fields}))),
+        ):
+            patcher = patch(f"letee.discovery.diagnostics.{name}", replacement, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_local_agent_directory_error_returns_empty_and_logs_safe_fallback(self):
+        from letee.discovery import _read_local_agents
+        directory = Mock()
+        directory.glob.side_effect = OSError("private directory")
+        with patch("letee.discovery._status_dir", return_value=directory):
+            self.assertEqual(_read_local_agents((), request_id="request-1"), ())
+        error = next(fields for event, fields in self.events if event == "error")
+        self.assertEqual(error["reason"], "directory_read")
+        self.assertEqual(error["handling"], "fallback")
+        self.assertEqual(error["request_id"], "request-1")
+        self.assertNotIn("private", repr(self.events))
+
+    def test_snapshot_spawn_failures_return_unavailable_and_safe_diagnostics(self):
+        for remote in (False, True):
+            self.events.clear()
+            with (
+                self.subTest(remote=remote),
+                patch("letee.discovery._persistent_master_alive", return_value=False),
+                patch("letee.discovery.subprocess.Popen", side_effect=OSError("private spawn")),
+                patch("letee.discovery.subprocess.run", side_effect=OSError("private spawn")),
+            ):
+                snapshot = remote_snapshot("dev") if remote else local_snapshot()
+            self.assertFalse(snapshot.available)
+            operation = "discovery.remote_snapshot" if remote else "discovery.local_snapshot"
+            fields = next(fields for event, fields in self.events if event == operation)
+            self.assertEqual(fields["outcome"], "spawn_failed")
+            error = next(fields for event, fields in self.events if event == "error")
+            self.assertEqual(error["handling"], "fallback")
+            self.assertEqual(error["request_id"], snapshot.request_id)
+            self.assertNotIn("private", repr(self.events))
+
+    def test_synchronous_timeouts_return_unavailable_with_correlated_safe_events(self):
+        for remote in (False, True):
+            self.events.clear()
+            process = GroupTimeoutProcess(pid=123)
+            failure = subprocess.TimeoutExpired(["PRIVATE command"], 5, output="PRIVATE stdout", stderr="PRIVATE stderr")
+            with (
+                self.subTest(remote=remote),
+                patch("letee.discovery._persistent_master_alive", return_value=False),
+                patch("letee.discovery.subprocess.run", side_effect=failure),
+                patch("letee.discovery.subprocess.Popen", return_value=process),
+                patch("letee.discovery.os.killpg") as killpg,
+            ):
+                snapshot = remote_snapshot("dev") if remote else local_snapshot()
+            self.assertFalse(snapshot.available)
+            self.assertEqual(snapshot.error, "timed out")
+            self.assertIsNotNone(snapshot.request_id)
+            operation = "discovery.remote_snapshot" if remote else "discovery.local_snapshot"
+            fields = next(fields for event, fields in self.events if event == operation)
+            self.assertEqual(fields["outcome"], "timed_out")
+            self.assertEqual(fields["request_id"], snapshot.request_id)
+            error = next(fields for event, fields in self.events if event == "error" and fields.get("operation") == operation)
+            self.assertEqual(error["handling"], "fallback")
+            self.assertEqual(error["reason"], "timeout")
+            self.assertEqual(error["request_id"], snapshot.request_id)
+            if remote:
+                cleanup = next(fields for event, fields in self.events if event == "discovery.process_cleanup")
+                self.assertEqual(cleanup["request_id"], snapshot.request_id)
+                self.assertEqual(cleanup["reason"], "wait_incomplete")
+                self.assertEqual(killpg.call_args_list, [call(123, signal.SIGTERM), call(123, signal.SIGKILL)])
+                self.assertTrue(process.communicated)
+            self.assertNotIn("PRIVATE", repr(self.events))
+
+    def test_master_check_exceptions_log_safe_inconclusive_fallback(self):
+        for failure in (
+            subprocess.TimeoutExpired(["PRIVATE command"], 0.5, output="PRIVATE stdout", stderr="PRIVATE stderr"),
+            OSError("PRIVATE check failure"),
+            subprocess.SubprocessError("PRIVATE subprocess failure"),
+        ):
+            self.events.clear()
+            with self.subTest(failure=type(failure).__name__), patch("letee.discovery.subprocess.run", side_effect=failure):
+                self.assertIsNone(_persistent_master_alive("dev", True))
+            fields = next(fields for event, fields in self.events if event == "discovery.master_check")
+            self.assertEqual(fields["outcome"], "inconclusive")
+            error = next(fields for event, fields in self.events if event == "error")
+            self.assertEqual(error["handling"], "fallback")
+            self.assertEqual(error["operation"], "discovery.master_check")
+            self.assertEqual(error["error_type"], type(failure).__name__)
+            self.assertEqual(error["host"], "dev")
+            self.assertNotIn("PRIVATE", repr(self.events))
+
+    def test_term_missing_group_is_ignored_and_cleanup_still_reaps(self):
+        process = FakeProcess(0, stdout="PRIVATE output", pid=123)
+        with patch("letee.discovery.os.killpg", side_effect=ProcessLookupError("PRIVATE group")) as killpg:
+            self.assertEqual(_stop_process(process, request_id="request-1"), ("PRIVATE output", ""))
+        self.assertEqual(killpg.call_args_list, [call(123, signal.SIGTERM), call(123, signal.SIGKILL)])
+        self.assertTrue(process.communicated)
+        fields = next(fields for event, fields in self.events if event == "discovery.process_cleanup")
+        self.assertTrue(fields["term_group_missing"])
+        self.assertFalse(fields["term_sent"])
+        self.assertEqual(fields["request_id"], "request-1")
+        self.assertEqual(fields["outcome"], "completed")
+        self.assertTrue(fields["kill_group_missing"])
+        self.assertEqual(process.wait_timeouts, [None])
+        self.assertFalse(any(event == "error" for event, _ in self.events))
+        self.assertNotIn("PRIVATE", repr(self.events))
+
+    def test_snapshot_wait_error_cleans_process_and_returns_safe_diagnostics(self):
+        process = Mock(pid=123)
+        process.wait.side_effect = OSError("private wait")
+        with (
+            patch("letee.discovery._persistent_master_alive", return_value=False),
+            patch("letee.discovery.subprocess.Popen", return_value=process),
+            patch("letee.discovery._stop_process", return_value=(None, None)) as stop,
+        ):
+            snapshot = remote_snapshot("dev")
+        self.assertFalse(snapshot.available)
+        stop.assert_called_once_with(process, request_id=snapshot.request_id, reason="wait_incomplete", keep_group=False)
+        fields = next(fields for event, fields in self.events if event == "discovery.remote_snapshot")
+        self.assertEqual(fields["outcome"], "wait_failed")
+        self.assertTrue(any(event == "error" and fields.get("handling") == "fallback" for event, fields in self.events))
+        self.assertNotIn("private", repr(self.events))
+
+    def test_poll_error_is_reraised_with_correlated_terminal_diagnostic(self):
+        for failure, outcome in ((OSError("private poll"), "failed"), (KeyboardInterrupt(), "cancelled")):
+            self.events.clear()
+            process = FakeProcess()
+            poller = DiscoveryPoller(
+                ["dev"], local=lambda: EMPTY_LOCAL, popen=lambda *a, **k: process,
+                clock=lambda: 0, persistent_ssh=False,
+            )
+            poller.tick()
+            request = poller._active["dev"]
+            with patch.object(process, "poll", side_effect=failure):
+                with self.assertRaises(type(failure)) as raised:
+                    poller.tick()
+            self.assertIs(raised.exception, failure)
+            terminal = next(fields for event, fields in self.events if event == "discovery.request_finished")
+            self.assertEqual(terminal["outcome"], outcome)
+            self.assertEqual(terminal["request_id"], request.request_id)
+            self.assertNotIn("private", repr(self.events))
+            poller.close()
+            self.assertTrue(request.output.closed)
+            self.assertTrue(request.errors.closed)
+            self.assertTrue(process.communicated)
+
+    def test_parse_summary_counts_rejections_without_payloads(self):
+        snapshot = _source_result(
+            0, "work:@1:%1:0:-:/private/socket\nbad line\n\n__LETEE_AGENT_STATUS__\nnot json\n{}\n",
+            "private stderr", kind="ssh", host="dev",
+        )
+        self.assertTrue(snapshot.available)
+        fields = next(fields for event, fields in self.events if event == "discovery.source_result")
+        self.assertEqual(fields["pane_count"], 1)
+        self.assertEqual(fields["malformed_agent_count"], 1)
+        self.assertNotIn("private", repr(self.events))
+        self.assertNotIn("not json", repr(self.events))
+
+    def test_remote_reader_emits_bounded_failure_summary(self):
+        from letee.discovery import _REMOTE_READER
+        with tempfile.TemporaryDirectory() as directory:
+            from pathlib import Path
+            Path(directory, "valid.json").write_text('{"hello":"private value"}')
+            Path(directory, "broken.json").write_text("private invalid json")
+            result = subprocess.run(
+                [sys.executable, "-c", _REMOTE_READER], capture_output=True, text=True,
+                env=dict(os.environ, AGENT_STATUS_DIR=directory), check=True,
+            )
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        summary = records[-1]["_letee_discovery"]
+        self.assertEqual(summary, {"file_count": 2, "loaded_count": 1, "failed_count": 1})
+        self.assertNotIn("private", json.dumps(summary))
+
+    def test_snapshot_correlation_does_not_affect_equality(self):
+        self.assertEqual(
+            replace(EMPTY_LOCAL, request_id="request-a"),
+            replace(EMPTY_LOCAL, request_id="request-b"),
+        )
+
+    def test_expired_completion_preserves_snapshot_and_refreshes_on_next_tick(self):
+        now = [0.0]
+        expired = FakeProcess(pid=123)
+        fresh = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n")
+        popen = Mock(side_effect=[expired, fresh])
+        poller = DiscoveryPoller(
+            ["dev"], local=lambda: EMPTY_LOCAL, popen=popen,
+            clock=lambda: now[0], persistent_ssh=False,
+        )
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%1", "/tmp/tmux")
+        previous = SourceSnapshot(True, (pane.target,), frozenset(), panes=(pane,),
+                                  agents=(AgentEntry(pane, "agent-1", "agent", "working"),))
+        poller.remotes["dev"] = previous
+        poller.tick()
+        request = poller._active["dev"]
+        # The completed command's old output contains no agents.
+        request.output.write(b"work:@1:%1:0:-:/tmp/tmux\n")
+        expired.returncode = 0
+        now[0] = poller._timing.remote_command_timeout + 100
+        with patch("letee.discovery.os.killpg", side_effect=ProcessLookupError):
+            self.assertFalse(poller.tick())
+        self.assertIs(poller.remotes["dev"], previous)
+        self.assertTrue(request.output.closed)
+        self.assertTrue(request.errors.closed)
+        self.assertTrue(expired.communicated)
+        self.assertEqual(expired.wait_timeouts, [None])
+        self.assertNotIn("dev", poller._active)
+        self.assertEqual(poller._next["dev"], now[0])
+        fields = next(fields for event, fields in self.events
+                      if event == "discovery.request_finished" and fields.get("outcome") == "expired")
+        self.assertEqual(fields["request_id"], request.request_id)
+        self.assertEqual(fields["age_seconds"], now[0])
+        self.assertFalse(any(event == "error" for event, _ in self.events))
+        self.assertTrue(poller.tick())
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(poller.remotes["dev"].sessions, previous.sessions)
+        # A fresh result that genuinely has no agents must still replace it.
+        self.assertEqual(poller.remotes["dev"].agents, ())
+        poller.close()
+
+    def test_timeout_and_schedule_share_request_id(self):
+        now = [0.0]
+        poller = DiscoveryPoller(
+            ["dev"], local=lambda: EMPTY_LOCAL, popen=lambda *a, **k: FakeProcess(),
+            clock=lambda: now[0], persistent_ssh=False,
+        )
+        poller.tick()
+        now[0] = load_timing().remote_command_timeout
+        poller.tick()
+        terminal = next(fields for event, fields in self.events if event == "discovery.request_finished")
+        scheduled = next(fields for event, fields in self.events if event == "discovery.scheduled")
+        self.assertEqual(terminal["outcome"], "timed_out")
+        self.assertEqual(terminal["request_id"], scheduled["request_id"])
+        self.assertIsNotNone(terminal["request_id"])
+        self.assertEqual(scheduled["interval"], load_timing().retry_initial_delay)
+
+    def test_cleanup_records_escalation_and_expected_missing_group(self):
+        process = GroupTimeoutProcess(pid=123)
+        with patch("letee.discovery.os.killpg", side_effect=[None, ProcessLookupError()]):
+            _stop_process(process, request_id="request-1", reason="timeout")
+        fields = next(fields for event, fields in self.events if event == "discovery.process_cleanup")
+        self.assertTrue(fields["term_sent"])
+        self.assertTrue(fields["term_wait_timed_out"])
+        self.assertTrue(fields["kill_group_missing"])
+        self.assertFalse(fields["kill_sent"])
+        self.assertEqual(fields["request_id"], "request-1")
+        self.assertTrue(process.communicated)
+
+    def test_remote_metadata_is_allowlisted_and_capped(self):
+        payload = {"_letee_discovery": {"file_count": 10**20, "loaded_count": -1, "failed_count": "private", "private": "secret"}}
+        snapshot = _source_result(0, "\n__LETEE_AGENT_STATUS__\n" + json.dumps(payload), "", kind="ssh", host="dev")
+        self.assertTrue(snapshot.available)
+        fields = next(fields for event, fields in self.events if event == "discovery.source_result")
+        self.assertEqual(fields["remote_reader_counts"], {"file_count": 1024 * 1024})
+        self.assertNotIn("private", repr(self.events))
+        self.assertNotIn("secret", repr(self.events))
+
+    def test_agent_rejection_reasons_are_aggregated_without_identifiers(self):
+        _read_agents((), [None, {}, {"schema_version": "agent-status/v1alpha1"}])
+        fields = next(fields for event, fields in self.events if event == "discovery.agents_parsed")
+        self.assertEqual(fields["rejected_count"], 3)
+        self.assertEqual(fields["reasons"], {"invalid_payload": 1, "unsupported_schema": 1, "invalid_runtime": 1})
+
+    def test_spawn_failure_and_close_have_terminal_events(self):
+        for process, outcome in ((OSError("private spawn failure"), "spawn_failed"), (FakeProcess(), "closed")):
+            self.events.clear()
+            popen = Mock(side_effect=process) if isinstance(process, OSError) else Mock(return_value=process)
+            poller = DiscoveryPoller(["dev"], local=lambda: EMPTY_LOCAL, popen=popen, clock=lambda: 0, persistent_ssh=False)
+            poller.tick()
+            poller.close()
+            fields = next(fields for event, fields in self.events if event == "discovery.request_finished")
+            self.assertEqual(fields["outcome"], outcome)
+            self.assertNotIn("private", repr(self.events))
+
+    def test_repeated_identical_results_do_not_change_with_new_request_ids(self):
+        poller = DiscoveryPoller(
+            ["dev"], local=lambda: EMPTY_LOCAL, popen=lambda *a, **k: FakeProcess(0),
+            clock=lambda: 0, persistent_ssh=False,
+        )
+        self.assertTrue(poller.tick())
+        first_id = poller.remotes["dev"].request_id
+        poller.refresh()
+        self.assertFalse(poller.tick())
+        self.assertNotEqual(first_id, poller.remotes["dev"].request_id)
+
+
+class DiscoveryDiagnosticFaultTest(unittest.TestCase):
+    def setUp(self):
+        from pathlib import Path
+        from letee.diagnostics import Diagnostics
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "events.jsonl"
+        self.logger = Diagnostics(self.path)
+        self.addCleanup(self.logger.close)
+        patcher = patch("letee.diagnostics.get_diagnostics", return_value=self.logger)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def records(self):
+        self.logger.flush()
+        text = self.path.read_text()
+        self.assertNotIn("PRIVATE", text)
+        return [json.loads(line) for line in text.splitlines()]
+
+    def test_local_read_error_has_safe_frames(self):
+        from pathlib import Path
+        from letee.discovery import _read_local_agents
+        Path(self.directory.name, "status.json").write_text("{}")
+        with patch("letee.discovery._status_dir", return_value=Path(self.directory.name)), patch.object(Path, "read_text", side_effect=PermissionError("PRIVATE file")):
+            _read_local_agents((), request_id="read-1")
+        error = next(record for record in self.records() if record["event"] == "error")
+        self.assertEqual(error["handling"], "skip")
+        self.assertEqual(error["error_type"], "PermissionError")
+        self.assertTrue(error["causes"][0]["frames"])
+        self.assertEqual(error["request_id"], "read-1")
+
+    def test_missing_remote_reader_is_distinct_and_private(self):
+        snapshot = _source_result(0, "\n__LETEE_AGENT_STATUS__\n", "PRIVATE python missing", kind="ssh", host="dev")
+        self.assertTrue(snapshot.available)
+        error = next(record for record in self.records() if record["event"] == "error")
+        self.assertEqual(error["reason"], "remote_reader_missing")
+        self.assertEqual(error["handling"], "fallback")
+        _source_result(0, "\n__LETEE_AGENT_STATUS__\n", "", kind="ssh", host="dev")
+        _source_result(0, '\n__LETEE_AGENT_STATUS__\n{"_letee_discovery": {}}', "PRIVATE stderr", kind="ssh", host="dev")
+        self.assertEqual(len([r for r in self.records() if r["event"] == "error"]), 1)
+
+    def test_idle_state_changes_and_heartbeat_are_not_per_tick(self):
+        now = [0.0]
+        process = FakeProcess()
+        poller = DiscoveryPoller(["dev"], local=lambda: EMPTY_LOCAL, popen=lambda *a, **k: process, clock=lambda: now[0], persistent_ssh=False)
+        poller.tick()
+        for _ in range(10):
+            poller.tick()
+        states = [record for record in self.records() if record["event"] == "discovery.poll_state"]
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0]["state"], "inflight")
+        now[0] = 30
+        with patch.object(poller, "_timing", replace(load_timing(), remote_command_timeout=60)):
+            poller.tick()
+        self.assertEqual(len([r for r in self.records() if r["event"] == "discovery.poll_state"]), 2)
+        process.returncode = 0
+        poller.tick()
+        poller.tick()
+        states = [r["state"] for r in self.records() if r["event"] == "discovery.poll_state"]
+        self.assertEqual(states, ["inflight", "inflight", "not_due"])
+        poller.close()
+
+    def test_precheck_failure_and_cancellation_finish_attempt_with_context(self):
+        for failure, outcome in ((OSError("PRIVATE precheck"), "failed"), (KeyboardInterrupt("PRIVATE cancel"), "cancelled")):
+            with self.subTest(outcome=outcome):
+                poller = DiscoveryPoller(["dev"], local=lambda: EMPTY_LOCAL, clock=lambda: 0, persistent_ssh=False)
+                with self.logger.context(action_id="action-parent"), patch("letee.discovery._persistent_master_alive", side_effect=failure):
+                    with self.assertRaises(type(failure)):
+                        poller.tick()
+                terminal = [r for r in self.records() if r["event"] == "discovery.request_finished"][-1]
+                self.assertEqual(terminal["outcome"], outcome)
+                self.assertEqual(terminal["action_id"], "action-parent")
+                errors = [r for r in self.records() if r["event"] == "error"]
+                self.assertEqual(errors[-1]["request_id"], terminal["request_id"])
+                self.assertTrue(errors[-1]["causes"][0]["frames"])
+
+    def test_invalid_timestamps_are_counted_without_values(self):
+        panes = _parse_source_snapshot("work:@1:%1:0:-:/PRIVATE/socket", kind="local").panes
+        payload = {
+            "schema_version": "agent-status/v1alpha1", "agent_id": "PRIVATE-id", "agent_name": "PRIVATE-name",
+            "runtime": {"lifecycle": "running", "updated_at": "PRIVATE-timestamp"},
+            "x_meta": {"tmux_socket": "/PRIVATE/socket", "tmux_pane": "%1"},
+        }
+        self.assertEqual(_read_agents(panes, [payload]), ())
+        payload["runtime"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+        payload["task"] = {"state": "working", "status_timestamp": "PRIVATE-task-timestamp"}
+        self.assertIsNone(_read_agents(panes, [payload])[0].task_status_timestamp)
+        reasons = [r["reasons"] for r in self.records() if r["event"] == "discovery.agents_parsed"]
+        self.assertEqual(reasons, [{"invalid_runtime_timestamp": 1}, {"invalid_task_timestamp": 1}])
+
+    def test_tempfile_failure_finishes_attempt_and_closes_first_file(self):
+        poller = DiscoveryPoller(["dev"], local=lambda: EMPTY_LOCAL, clock=lambda: 0, persistent_ssh=False)
+        output = tempfile.TemporaryFile()
+        with patch("letee.discovery.tempfile.TemporaryFile", side_effect=[output, OSError("PRIVATE tempfile")]):
+            with self.assertRaises(OSError):
+                poller.tick()
+        self.assertTrue(output.closed)
+        records = self.records()
+        starting = next(r for r in records if r["event"] == "discovery.request_starting")
+        terminal = next(r for r in records if r["event"] == "discovery.request_finished")
+        self.assertEqual(terminal["request_id"], starting["request_id"])
+        self.assertEqual(terminal["outcome"], "failed")
+
+    def test_spawn_cancellation_closes_temporary_files(self):
+        files = [tempfile.TemporaryFile(), tempfile.TemporaryFile()]
+        poller = DiscoveryPoller(["dev"], local=lambda: EMPTY_LOCAL, popen=Mock(side_effect=KeyboardInterrupt("PRIVATE spawn")), clock=lambda: 0, persistent_ssh=False)
+        with patch("letee.discovery.tempfile.TemporaryFile", side_effect=files):
+            with self.assertRaises(KeyboardInterrupt):
+                poller.tick()
+        self.assertTrue(all(file.closed for file in files))
+        records = self.records()
+        terminal = next(r for r in records if r["event"] == "discovery.request_finished")
+        self.assertEqual(terminal["outcome"], "cancelled")
+        self.assertEqual(next(r for r in records if r["event"] == "error")["handling"], "cancel")
+
+    def test_synchronous_tempfile_failure_is_correlated_before_spawn(self):
+        with patch("letee.discovery._persistent_master_alive", return_value=False), patch("letee.discovery.tempfile.TemporaryFile", side_effect=OSError("PRIVATE tempfile")):
+            with self.assertRaises(OSError):
+                remote_snapshot("dev")
+        records = self.records()
+        terminal = next(r for r in records if r["event"] == "operation_end" and r["name"] == "discovery.remote_attempt")
+        self.assertEqual(terminal["outcome"], "failed")
+        error = next(r for r in records if r["event"] == "error")
+        self.assertEqual(error["request_id"], terminal["request_id"])
+        self.assertTrue(error["causes"][0]["frames"])
+
+    def test_success_records_availability_counts_and_not_due_state(self):
+        poller = DiscoveryPoller(["dev"], local=lambda: EMPTY_LOCAL, popen=lambda *a, **k: FakeProcess(0), clock=lambda: 0, persistent_ssh=False)
+        poller.tick()
+        records = self.records()
+        terminal = next(r for r in records if r["event"] == "discovery.request_finished")
+        self.assertIsNone(terminal["available_before"])
+        self.assertTrue(terminal["available_after"])
+        self.assertEqual(terminal["pane_count_before"], 0)
+        self.assertEqual(terminal["pane_count_after"], 0)
+        self.assertEqual(next(r for r in records if r["event"] == "discovery.poll_state")["state"], "not_due")
+        initialized = next(r for r in records if r["event"] == "discovery.poller_initialized")
+        self.assertEqual(initialized["remote_command_timeout"], load_timing().remote_command_timeout)
+
+    def test_cleanup_failure_propagates_under_request_context(self):
+        process = FakeProcess(0)
+        poller = DiscoveryPoller(["dev"], local=lambda: EMPTY_LOCAL, popen=lambda *a, **k: process, clock=lambda: 0, persistent_ssh=False)
+        with self.logger.context(action_id="action-worker"):
+            poller._start_request("dev")
+        process.communicate = Mock(side_effect=OSError("PRIVATE cleanup"))
+        with self.assertRaises(OSError):
+            poller.tick()
+        records = self.records()
+        terminal = next(r for r in records if r["event"] == "discovery.request_finished")
+        self.assertEqual(terminal["outcome"], "failed")
+        error = next(r for r in records if r["event"] == "error" and r.get("name") == "discovery.process_cleanup")
+        self.assertEqual(error["handling"], "propagate")
+        self.assertEqual(error["action_id"], "action-worker")
+        self.assertEqual(error["request_id"], terminal["request_id"])
+        process.communicate = Mock(return_value=("", ""))
+        poller.close()
 
 
 class DiscoverySnapshotTest(unittest.TestCase):
@@ -859,6 +1321,31 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertTrue(process.communicated)
         self.assertEqual(poller.snapshot.remotes["dev"].sessions, (Target("ssh", "work", "dev"),))
 
+    def test_expired_request_preserves_new_or_uncertain_master_group(self):
+        for master_alive in (True, None):
+            with self.subTest(master_alive=master_alive):
+                now = [0.0]
+                process = FakeProcess(pid=111)
+                poller = self.make_poller(
+                    ["dev"], popen=Mock(return_value=process),
+                    clock=lambda: now[0], persistent_ssh=True,
+                )
+                with (
+                    patch("letee.discovery._persistent_master_alive", side_effect=(False, master_alive)),
+                    patch("letee.discovery.os.killpg") as killpg,
+                ):
+                    poller.tick()
+                    request = poller._active["dev"]
+                    process.returncode = 0
+                    now[0] = poller._timing.remote_command_timeout + 1
+                    self.assertFalse(poller.tick())
+                killpg.assert_not_called()
+                self.assertTrue(process.communicated)
+                self.assertTrue(request.output.closed)
+                self.assertTrue(request.errors.closed)
+                self.assertIsNone(poller.remotes["dev"])
+                poller.close()
+
     def test_completed_request_cleans_group_when_master_predates_request(self):
         process = FakeProcess(0, "work:@1:%1:0:-:/tmp/tmux\n", pid=113)
         poller = self.make_poller(
@@ -1017,6 +1504,34 @@ class DiscoveryPollerTest(unittest.TestCase):
 
         self.assertEqual(killpg.call_args_list, [call(105, signal.SIGTERM), call(105, signal.SIGKILL)])
         self.assertTrue(process.communicated)
+
+
+class RemoteTrailerBudgetTest(unittest.TestCase):
+    def test_diagnostic_trailers_do_not_reduce_original_payload_budget(self):
+        import io
+        from letee import discovery
+
+        summary = json.dumps({"_letee_discovery": {"file_count": 0, "loaded_count": 0, "failed_count": 0}}).encode() + b"\n"
+        exit_record = b'{"_letee_reader_exit": 0}\n'
+        for trailer in (summary, exit_record, summary + exit_record):
+            for size in (discovery.MAX_REMOTE_OUTPUT - 1, discovery.MAX_REMOTE_OUTPUT, discovery.MAX_REMOTE_OUTPUT + 1):
+                with self.subTest(size=size, trailer=trailer):
+                    payload = b"x" * (size - 1) + b"\n"
+                    result = discovery._read_output(io.BytesIO(payload + trailer), stream="stdout")
+                    if size > discovery.MAX_REMOTE_OUTPUT:
+                        self.assertIsNone(result)
+                    else:
+                        self.assertEqual(result, (payload + trailer).decode())
+        self.assertIsNone(discovery._read_output(io.BytesIO(b"x" * (discovery.MAX_REMOTE_OUTPUT + 1)), stream="stdout"))
+
+    def test_remote_reader_status_distinguishes_missing_python_and_failure(self):
+        for code, reason in ((127, "remote_python_missing"), (1, "remote_reader_failed")):
+            with self.subTest(code=code), patch("letee.discovery.diagnostics.error") as error:
+                snapshot = _source_result(0, '\n__LETEE_AGENT_STATUS__\n' + json.dumps({"_letee_reader_exit": code}), "SECRET raw output", kind="ssh", host="dev")
+                self.assertTrue(snapshot.available)
+                self.assertEqual(error.call_args.kwargs["reason"], reason)
+                self.assertEqual(error.call_args.kwargs["returncode"], code)
+                self.assertNotIn("SECRET", str(error.call_args))
 
 
 if __name__ == "__main__":
