@@ -545,9 +545,9 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
         )
         callback = (
             (f"env LETEE_DEBUG_LOG={shlex.quote(str(debug.path.resolve()))} "
-             + _letee_command("attachment-exited")).replace("#", "##") + " "
+             + _letee_command("attachment-exited")).replace("#", "##")
+            + f" --parent-run-id #{{q:{ATTACHMENT_RUN_OPTION}}}'' -- "
             + " ".join(f"#{{q:{field}}}''" for field in fields)
-            + f" --parent-run-id #{{q:{ATTACHMENT_RUN_OPTION}}}''"
         )
         # Only matching generations may carry identity. Placeholder processes and
         # exits before identity installation deliberately report unknown metadata.

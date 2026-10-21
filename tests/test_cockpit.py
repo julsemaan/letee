@@ -1974,8 +1974,8 @@ class CockpitDiagnosticsTest(unittest.TestCase):
         self.assertEqual(args[1], f"LETEE_DEBUG_LOG={path}")
         start = args.index("attachment-exited")
         self.assertEqual(args[start + 1:], [
+            "--parent-run-id", "old-run", "--",
             "%2", "old-id", "123", "local:old", "", "switch-1", "", "TERM", "",
-            "--parent-run-id", "old-run",
         ])
 
     def test_disabled_attachment_diagnostics_preserve_original_commands(self):

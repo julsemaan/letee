@@ -45,6 +45,18 @@ class MainTest(unittest.TestCase):
             parent_run_id=None, intentional=True,
         )
 
+    def test_attachment_exit_callback_preserves_dash_prefixed_agent_ids(self):
+        for agent_id in ("-agent", "--help"):
+            with self.subTest(agent_id=agent_id), patch.object(MAIN_MODULE.diagnostics, "log") as log:
+                self.assertEqual(main([
+                    "attachment-exited", "--parent-run-id", "old-run", "--",
+                    "%2", "old-id", "123", "local:work", agent_id, "old-switch",
+                    "0", "", "",
+                ]), 0)
+            self.assertEqual(log.call_args.args, ("attachment_exited",))
+            self.assertEqual(log.call_args.kwargs["agent_id"], agent_id)
+            self.assertEqual(log.call_args.kwargs["parent_run_id"], "old-run")
+
     def test_unknown_attachment_exit_keeps_generation_without_old_identity(self):
         with (
             patch.object(MAIN_MODULE.diagnostics, "log") as log,
