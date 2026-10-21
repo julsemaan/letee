@@ -40,7 +40,7 @@ class Diagnostics:
         server: str | None = None,
     ) -> None:
         configured = os.environ.get("LETEE_DEBUG_LOG") if path is None else path
-        self.configured = configured
+        self.configured = configured or None
         self.path: Path | None = None
         self.server = server or _server_name()
         self.run_id = uuid.uuid4().hex

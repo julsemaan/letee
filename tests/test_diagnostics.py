@@ -21,6 +21,17 @@ class DiagnosticsTest(unittest.TestCase):
             self.assertFalse(list(Path(tempdir).iterdir()))
             self.assertFalse(diagnostics.enabled)
 
+    def test_empty_environment_path_reuses_disabled_singleton(self):
+        from letee import diagnostics as module
+
+        with patch.dict(os.environ, {"LETEE_DEBUG_LOG": ""}), patch.object(module, "_DEFAULT", None):
+            logger = module.get_diagnostics()
+            self.addCleanup(logger.close)
+
+            self.assertFalse(logger.enabled)
+            self.assertIs(module.get_diagnostics(), logger)
+            self.assertIs(module.get_diagnostics(), logger)
+
     def test_enabled_logging_writes_jsonl_with_metadata(self):
         with tempfile.TemporaryDirectory() as tempdir, patch.dict(
             os.environ, {"LETEE_DEBUG_LOG": str(Path(tempdir) / "trace.jsonl")}, clear=True
