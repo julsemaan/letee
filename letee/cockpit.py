@@ -373,7 +373,7 @@ def _install_bindings(
     tmux.tmux(
         "bind-key", "-n", "MouseDown1Pane",
         f"if-shell -F -t = '#{{==:#{{pane_id}},{sidebar_pane}}}' "
-        "{ send-keys -M -t = ; select-pane -t = } "
+        "{ send-keys -t = F2 ; send-keys -M -t = ; select-pane -t = } "
         "{ select-pane -t = ; send-keys -M }",
     )
     tmux.tmux("bind-key", prefix, "send-prefix")

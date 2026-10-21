@@ -295,7 +295,22 @@ def _mouse_diagnostics(
         name: option(name)
         for name in ("mouse", "focus-follows-mouse", "focus-events")
     }
-    binding = _tmux_query("list-keys", "-T", "root", "MouseDown1Pane")
+    bindings = {}
+    for field_name, key in (
+        ("tmux_mouse_down1_pane_binding", "MouseDown1Pane"),
+        ("tmux_mouse_drag1_pane_binding", "MouseDrag1Pane"),
+        ("tmux_mouse_drag_end1_pane_binding", "MouseDragEnd1Pane"),
+        ("tmux_mouse_up1_pane_binding", "MouseUp1Pane"),
+    ):
+        binding = _tmux_query("list-keys", "-T", "root", key)
+        bindings[field_name] = {
+            "present": bool(binding),
+            "selects_pane": bool(binding and "select-pane" in binding),
+            "forwards_mouse": bool(
+                binding and ("send-keys -M" in binding or "send -M" in binding)
+            ),
+            "sends_f2_marker": bool(binding and "F2" in binding.split()),
+        }
     result: dict[str, object] = {
         "curses_has_mouse": has_mouse,
         "terminfo_kmous": capabilities["kmous"],
@@ -317,13 +332,7 @@ def _mouse_diagnostics(
         "tmux_client_termname": _tmux_query(
             "display-message", "-p", "#{client_termname}"
         ),
-        "tmux_mouse_down1_pane_binding": {
-            "present": bool(binding),
-            "selects_pane": bool(binding and "select-pane" in binding),
-            "forwards_mouse": bool(
-                binding and ("send-keys -M" in binding or "send -M" in binding)
-            ),
-        },
+        **bindings,
     }
     if mouse_mask is not None:
         result["requested_mouse_mask"] = mouse_mask[0]
@@ -2867,6 +2876,8 @@ def run(stdscr: curses.window) -> None:
             ),
             tmux_version=tmux_version,
             term=os.environ.get("TERM"),
+            term_program=os.environ.get("TERM_PROGRAM"),
+            term_program_version=os.environ.get("TERM_PROGRAM_VERSION"),
             tmux_pane=os.environ.get("TMUX_PANE"),
             screen_height=height,
             screen_width=width,
@@ -2932,7 +2943,7 @@ def run(stdscr: curses.window) -> None:
     last_event_outcome = "ignored"
     last_event_marked = False
     failed_mouse: tuple[str | None, int, bool] | None = None
-    last_mouse_click_at = float("-inf")
+    pending_mouse_click_at = float("-inf")
     last_current_target = initial_target
     last_pane_active = poller.pane_active
     last_focused_region = state.focused_region
@@ -3827,6 +3838,14 @@ def run(stdscr: curses.window) -> None:
                 return
             if key != curses.KEY_MOUSE:
                 clear_mouse_failure()
+            # The tmux MouseDown1Pane binding sends F2 before forwarding the report.
+            # Consume this evidence on the next input, even if decoding fails.
+            click_forwarded = now - pending_mouse_click_at <= MOUSE_RECOVERY_WINDOW
+            pending_mouse_click_at = float("-inf")
+            if key == curses.KEY_F2:
+                pending_mouse_click_at = now
+                mark_input(True, "mouse_click_signal")
+                continue
             if key == getattr(curses, "KEY_RESIZE", -999):
                 compact = cockpit.sidebar_compact()
                 rendered = None
@@ -4075,8 +4094,6 @@ def run(stdscr: curses.window) -> None:
                     | (getattr(curses, "BUTTON4_PRESSED", 0) or 0)
                     | (getattr(curses, "BUTTON5_PRESSED", 0) or 0)
                 )
-                if _mouse_activates(mouse_state):
-                    last_mouse_click_at = now
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
@@ -4135,12 +4152,12 @@ def run(stdscr: curses.window) -> None:
                     elif region_hint == "agents":
                         mouse_state |= activation_bits
                 if state.move_source is None and mouse_state & motion and not mouse_state & button_bits:
-                    # tmux forwards no motion to a pane that tracks buttons only, so this
-                    # is a release ncurses could not pair with a press. Recover it when the
-                    # user was just clicking in the sidebar.
-                    # ponytail: a drag started in the right pane and released over the
-                    # sidebar also lands here; accept it rather than losing real clicks.
-                    if state.add_view is None and now - last_mouse_click_at <= MOUSE_RECOVERY_WINDOW:
+                    # Motion alone is not click evidence. Recover only the report
+                    # paired with tmux's explicit click signal, never a move handle.
+                    if (
+                        click_forwarded and state.add_view is None
+                        and not _move_handle_hit(mouse_col, stdscr.getmaxyx()[1])
+                    ):
                         mouse_state |= getattr(curses, "BUTTON1_PRESSED", 0) or 0
                     else:
                         trace_mouse_decision(

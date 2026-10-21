@@ -709,7 +709,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 (
                     "bind-key", "-n", "MouseDown1Pane",
                     "if-shell -F -t = '#{==:#{pane_id},%1}' "
-                    "{ send-keys -M -t = ; select-pane -t = } "
+                    "{ send-keys -t = F2 ; send-keys -M -t = ; select-pane -t = } "
                     "{ select-pane -t = ; send-keys -M }",
                 ),
                 ("bind-key", "C-x", "send-prefix"),
@@ -735,7 +735,7 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
-    def test_mouse_binding_uses_sidebar_id_and_preserves_branch_order(self):
+    def test_mouse_binding_signals_sidebar_click_before_forwarding_and_focus(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
@@ -745,7 +745,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             binding[3],
             "if-shell -F -t = '#{==:#{pane_id},%sidebar}' "
-            "{ send-keys -M -t = ; select-pane -t = } "
+            "{ send-keys -t = F2 ; send-keys -M -t = ; select-pane -t = } "
             "{ select-pane -t = ; send-keys -M }",
         )
 
@@ -823,7 +823,14 @@ class CockpitLayoutTest(unittest.TestCase):
 
     def test_internal_action_keys_fit_screen_terminal_function_key_range(self):
         # screen terminfo defines F1 through F12, but not F13.
-        for action, key in cockpit.SIDEBAR_ACTION_KEYS.items():
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux") as tmux_call:
+            cockpit._install_bindings("C-x", "%sidebar", "%right")
+        binding = next(c.args[3] for c in tmux_call.call_args_list
+                       if c.args[:3] == ("bind-key", "-n", "MouseDown1Pane"))
+        tokens = shlex.split(binding)
+        marker = tokens[tokens.index("send-keys") + 3]
+        self.assertNotIn(marker, (*cockpit.SIDEBAR_ACTION_KEYS.values(), "F6", "F7"))
+        for action, key in {**cockpit.SIDEBAR_ACTION_KEYS, "mouse_click": marker}.items():
             with self.subTest(action=action):
                 self.assertLessEqual(int(key.removeprefix("F")), 12)
 
