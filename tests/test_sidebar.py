@@ -9090,6 +9090,52 @@ class SidebarDiagnosticsTest(unittest.TestCase):
                     for r in effects
                 ))
 
+    def test_tmux_click_signal_recovers_pure_release(self):
+        target = Target("local", "one")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
+        for region, row in (("sessions", 2), ("agents", 14)):
+            for debug_enabled in (True, False):
+                with self.subTest(region=region, debug=debug_enabled):
+                    poller = unittest.mock.Mock(
+                        snapshot=SessionSnapshot(SourceSnapshot(
+                            True, (target,), frozenset(),
+                            agents=(AgentEntry(pane, "id", "pi", "idle"),),
+                        ), {}),
+                        current_target=None, bell_target=None, current_agent=None,
+                        pending_agent=None, pane_active=True,
+                    )
+                    with (
+                        patch.dict(os.environ, dict(os.environ) if debug_enabled else {}, clear=True),
+                        patch.object(sidebar, "_draw", return_value=(2, None)),
+                    ):
+                        switch = self._run_mouse_trace(
+                            [(0, 7, row, 0, curses.BUTTON1_RELEASED)],
+                            keys=[curses.KEY_F2, curses.KEY_MOUSE, -1, STOP],
+                            poller=poller, size=(20, 30), collect_records=False,
+                        )
+                    _assert_deferred_switch(self, switch, target, *(["id"] if region == "agents" else []))
+
+    def test_tmux_pure_release_requires_unconsumed_signal_and_safe_row(self):
+        release = (0, 7, 2, 0, curses.BUTTON1_RELEASED)
+        for keys, events, window in (
+            ([curses.KEY_MOUSE], [release], 1),
+            ([curses.KEY_F2, curses.KEY_MOUSE], [release], 0),
+            ([curses.KEY_F2, ord("j"), curses.KEY_MOUSE], [release], 1),
+            ([curses.KEY_F2, curses.KEY_MOUSE, curses.KEY_MOUSE],
+             [(0, 7, 1, 0, curses.REPORT_MOUSE_POSITION), release], 1),
+            ([curses.KEY_F2, curses.KEY_MOUSE, curses.KEY_MOUSE],
+             [(0, 29, 2, 0, curses.BUTTON1_RELEASED), release], 1),
+            ([curses.KEY_F2, curses.KEY_MOUSE, curses.KEY_MOUSE],
+             [(0, 7, 1, 0, curses.BUTTON1_RELEASED), release], 1),
+        ):
+            with self.subTest(keys=keys, events=events, window=window), patch.object(
+                sidebar, "MOUSE_RECOVERY_WINDOW", window
+            ):
+                switch = self._run_mouse_trace(
+                    events, keys=[*keys, -1, STOP], collect_records=False,
+                )
+                switch.assert_not_called()
+
     def test_recent_press_does_not_authorize_motion_navigation(self):
         records = self._run_mouse_trace([
             (0, 0, 1, 0, curses.BUTTON1_PRESSED),

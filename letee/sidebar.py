@@ -4132,7 +4132,7 @@ def run(stdscr: curses.window) -> None:
                     )
                     recovered_mouse = trace_mouse_recovery_candidate(
                         mouse_input_id, region_hint, row, mouse_col, mouse_state
-                    )
+                    ) or click_forwarded
                 else:
                     clear_mouse_failure()
                 if recovered_mouse and state.add_view is None and state.move_source is None:
