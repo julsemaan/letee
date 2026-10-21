@@ -557,6 +557,13 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
         unknown_callback = callback
         for field in unknown_fields:
             unknown_callback = unknown_callback.replace(f"#{{q:{field}}}", "")
+        marker_target_match = _option_equals(
+            EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION, f"#{{{ATTACHMENT_TARGET_OPTION}}}"
+        )
+        marker_generation_match = _option_equals(EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION, "#{pane_pid}")
+        marker_match = f"#{{&&:{marker_target_match},{marker_generation_match}}}"
+        marker = f"#{{q:{EXPECTED_RIGHT_PANE_DEATH_OPTION}}}"
+        callback = callback.replace(marker, f"#{{?{marker_match},{marker},}}")
         generation_match = _option_equals(ATTACHMENT_GENERATION_OPTION, "#{pane_pid}")
         match = f"#{{&&:#{{pane_dead}},{generation_match}}}"
         # A delayed hook may already see a live successor. Its PID is not an

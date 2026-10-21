@@ -1966,6 +1966,15 @@ class CockpitDiagnosticsTest(unittest.TestCase):
             "pane_dead_status": "", "pane_dead_signal": "TERM",
             cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION: "", cockpit.ATTACHMENT_RUN_OPTION: "old-run",
         }
+        marker_guard = (
+            "#{?#{&&:"
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}}},"
+            f"#{{{cockpit.ATTACHMENT_TARGET_OPTION}}}}},"
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION}}},#{{pane_pid}}}}"
+            f"}},#{{q:{cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION}}},}}"
+        )
+        self.assertIn(marker_guard + "''", callback)
+        callback = callback.replace(marker_guard, "")
         # Match tmux format_quote_shell without running a host tmux server.
         for field, value in values.items():
             quoted = "".join("\\" + char if char in "|&;<>()$`\\\"'*?[# =%" else char for char in value)
@@ -1977,6 +1986,38 @@ class CockpitDiagnosticsTest(unittest.TestCase):
             "--parent-run-id", "old-run", "--",
             "%2", "old-id", "123", "local:old", "", "switch-1", "", "TERM", "",
         ])
+
+    def test_callback_expected_death_requires_matching_target_and_generation(self):
+        with patch.object(cockpit.tmux, "tmux") as command:
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+        tokens = shlex.split(command.call_args.args[-1])
+        callback = tokens[tokens.index("run-shell") + 2]
+        target_match = (
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}}},"
+            f"#{{{cockpit.ATTACHMENT_TARGET_OPTION}}}}}"
+        )
+        generation_match = (
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION}}},#{{pane_pid}}}}"
+        )
+        guard = f"#{{&&:{target_match},{generation_match}}}"
+        marker = f"#{{q:{cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION}}}"
+        self.assertIn(f"#{{?{guard},{marker},}}''", callback)
+        for target, generation, value, expected in (
+            ("local:old", "123", "pending", "pending"),
+            ("local:earlier", "123", "pending", ""),
+            ("local:old", "100", "pending", ""),
+            ("local:old", "123", "", ""),
+        ):
+            with self.subTest(target=target, generation=generation, marker=value):
+                # Expand the asserted tmux comparisons and conditional, then
+                # check that the shell retains even an empty final argument.
+                expanded = callback.replace(target_match, str(int(target == "local:old")))
+                expanded = expanded.replace(generation_match, str(int(generation == "123")))
+                expanded = expanded.replace("#{&&:1,1}", "1")
+                expanded = expanded.replace("#{&&:0,1}", "0").replace("#{&&:1,0}", "0")
+                expanded = expanded.replace(f"#{{?1,{marker},}}", value)
+                expanded = expanded.replace(f"#{{?0,{marker},}}", "")
+                self.assertEqual(shlex.split(expanded)[-1], expected)
 
     def test_disabled_attachment_diagnostics_preserve_original_commands(self):
         with (
