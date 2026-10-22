@@ -370,7 +370,7 @@ def _local_snapshot(request_id: str | None) -> SourceSnapshot:
 
 def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
     return ssh_command(
-        "-o", "BatchMode=yes",
+        "-n", "-o", "BatchMode=yes",
         validate_host(host), REMOTE_COMMAND,
         persistent_ssh=persistent_ssh,
     )

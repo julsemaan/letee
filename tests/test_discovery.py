@@ -708,7 +708,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
             "-o", f"ServerAliveCountMax={timing.ssh_keepalive_count_max}",
             "-o", "AddKeysToAgent=yes",
         )
-        discovery = ("-o", "BatchMode=yes", "dev", REMOTE_COMMAND)
+        discovery = ("-n", "-o", "BatchMode=yes", "dev", REMOTE_COMMAND)
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
             "-o", "ControlPersist=10m",
@@ -740,6 +740,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
             remote_snapshot("dev")
 
         self.assertNotIn("ControlMaster=auto", popen.call_args.args[0])
+        self.assertIn("-n", popen.call_args.args[0])
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
     def test_master_check_is_skipped_without_persistence(self):
@@ -1050,6 +1051,7 @@ class DiscoveryPollerTest(unittest.TestCase):
 
         load.assert_called_once_with()
         self.assertNotIn("ControlMaster=auto", popen.call_args.args[0])
+        self.assertIn("-n", popen.call_args.args[0])
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         poller.close()
 
