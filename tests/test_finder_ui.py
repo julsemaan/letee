@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from finder_fixtures import sample_workspace
-from letee import finder_ui, tui
+from letee import finder_ui, tmux, tui
 from letee.workspace import Workspace
 
 
@@ -62,6 +62,16 @@ def frame_text(frame):
 class FinderUITest(unittest.TestCase):
     def setUp(self):
         self.workspace = sample_workspace()
+        self.stored_scope = ""
+
+        def save_scope(*args, **kwargs):
+            self.stored_scope = args[-1]
+
+        for name, effect in (("out", lambda *args, **kwargs: self.stored_scope),
+                             ("tmux", save_scope)):
+            patcher = patch.object(tmux, name, side_effect=effect)
+            setattr(self, "tmux_" + name, patcher.start())
+            self.addCleanup(patcher.stop)
         for name, value in (("curs_set", 1), ("mousemask", (0, 0)),
                             ("get_escdelay", 1000), ("set_escdelay", None)):
             patcher = patch.object(curses, name, return_value=value)
@@ -75,6 +85,47 @@ class FinderUITest(unittest.TestCase):
         window = FakeWindow(keys)
         result = finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None, **kwargs)
         return result, window
+
+    def test_missing_or_invalid_scope_defaults_to_all(self):
+        for stored in ("", "invalid", "windows"):
+            with self.subTest(stored=stored):
+                self.stored_scope = stored
+                _, window = self.run_ui(["\x1b"])
+                self.assertTrue(any(text == "[All] " and attr & curses.A_REVERSE
+                                    for _, _, text, attr in window.frames[0][0]))
+                self.assertEqual(self.stored_scope, "All")
+
+    def test_reopening_remembers_keyboard_and_mouse_scope_on_cancel(self):
+        for key, expected in (("\x14", "Sessions"), (curses.KEY_MOUSE, "Windows")):
+            for cancel in ("\x1b", "\x03"):
+                with self.subTest(key=key, cancel=cancel):
+                    self.stored_scope = ""
+                    with patch.object(curses, "getmouse", return_value=(0, 20, 1, 0, curses.BUTTON1_CLICKED)):
+                        self.run_ui([key, "e", "\t", curses.KEY_DOWN, cancel])
+                    self.assertEqual(self.stored_scope, expected)
+                    _, window = self.run_ui(["\x1b"])
+                    self.assertTrue(any(text == f"[{expected}] " and attr & curses.A_REVERSE
+                                        for _, _, text, attr in window.frames[0][0]))
+                    self.assertEqual(window.frames[0][1], (0, 2))
+
+    def test_scope_io_is_outside_input_loop(self):
+        def check_io():
+            self.tmux_out.assert_called_once_with(
+                "show-options", "-qv", "-t", tmux.SESSION, "@letee_finder_scope")
+            self.tmux_tmux.assert_not_called()
+            return "\x1b"
+
+        self.run_ui(["\x14", check_io])
+        self.tmux_tmux.assert_called_once_with(
+            "set-option", "-t", tmux.SESSION, "@letee_finder_scope", "Sessions", capture=True)
+
+    def test_successful_navigation_saves_scope_for_reopening(self):
+        window = FakeWindow(["\x14", "\x14", "\n"] + [-1] * 1000)
+        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
+        self.assertEqual(self.stored_scope, "Windows")
+        _, reopened = self.run_ui(["\x1b"])
+        self.assertTrue(any(text == "[Windows] " and attr & curses.A_REVERSE
+                            for _, _, text, attr in reopened.frames[0][0]))
 
     def test_edit_cursor_clear_and_scope(self):
         result, window = self.run_ui([
