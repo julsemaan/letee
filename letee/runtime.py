@@ -6,9 +6,10 @@ import subprocess
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 
-from . import cockpit, tmux
+from . import cockpit, diagnostics, tmux
 from .discovery import DiscoveryPoller, SessionSnapshot
 from .names import PaneTarget, Target
 from .workspace import Workspace, workspace_from_json, workspace_to_json
@@ -80,6 +81,10 @@ class StatusPoller:
         self._refresh_target: Target | None = None
         self._pending_agent: tuple[PaneTarget, str] | None = None
         self._suppressed_target: Target | None = None
+        debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
+        # Diagnostic identity must not participate in snapshot equality.
+        self.snapshot_trace: dict[str, object] = {"snapshot_id": debug.new_id("snapshot")}
+        self._future_trace: dict[str, object] = {}
 
     @property
     def pending_agent(self) -> tuple[PaneTarget, str] | None:
@@ -135,8 +140,8 @@ class StatusPoller:
             bell_target = status.bell_target
             stored_agent = status.current_agent
             pane_active = status.pane_active
-        except (OSError, SystemExit, subprocess.SubprocessError):
-            pass
+        except (OSError, SystemExit, subprocess.SubprocessError) as error:
+            diagnostics.error(error, handling="fallback", operation="status_sample", generation=generation)
         current_agent = _focused_agent_id(snapshot, current_target, stored_agent)
         return StatusResult(
             snapshot,
@@ -150,13 +155,56 @@ class StatusPoller:
             sampled,
         )
 
+    def _run_sample(
+        self,
+        commands: tuple[tuple[str, Target | None], ...],
+        generation: int,
+        state: StatusPollState,
+        trace: dict[str, object],
+    ) -> StatusResult:
+        with diagnostics.get_diagnostics().context(**trace):
+            diagnostics.log("status_worker_started", generation=generation)
+            with diagnostics.operation("status_sample", generation=generation):
+                result = self._sample(commands, generation, state)
+            diagnostics.log(
+                "status_worker_completed", generation=generation,
+                sampled=result.sampled, refreshed=result.refreshed,
+                session_count=len(result.snapshot.sessions), agent_count=len(result.snapshot.agents),
+                local_available=result.snapshot.local.available,
+                remote_states={host: "pending" if source is None else "available" if source.available else "unavailable"
+                               for host, source in result.snapshot.remotes.items()},
+                discovery_requests={"local": result.snapshot.local.request_id,
+                                    **{host: source.request_id if source else None
+                                       for host, source in result.snapshot.remotes.items()}},
+            )
+            return result
+
     def tick(self, now: float) -> bool:
+        debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         changed = False
         self.status_sampled = False
         if self._future is not None and self._future.done():
-            result = self._future.result()
+            with debug.context(**self._future_trace):
+                try:
+                    with diagnostics.operation("status_collect"):
+                        result = self._future.result()
+                except BaseException:
+                    # status_collect records the exception before this result boundary.
+                    debug.emit("status_result", accepted=False, reason="worker_failed", generation=self._generation)
+                    raise
             self._future = None
-            if result.generation == self._generation:
+            accepted = result.generation == self._generation
+            debug.emit(
+                "status_result", **self._future_trace, accepted=accepted,
+                reason="current_generation" if accepted else "generation_changed",
+                generation=result.generation, current_generation=self._generation,
+                sampled=result.sampled, refreshed=result.refreshed,
+                discovery_requests={"local": result.snapshot.local.request_id,
+                                    **{host: source.request_id if source else None
+                                       for host, source in result.snapshot.remotes.items()}},
+            )
+            if accepted:
+                self.snapshot_trace = dict(self._future_trace)
                 changed = (
                     result.snapshot != self.snapshot
                     or result.current_target != self.current_target
@@ -190,9 +238,22 @@ class StatusPoller:
                 self.pane_active = result.pane_active
         if self._future is None and now >= self._next_poll:
             commands, self._commands = tuple(self._commands), []
-            self._future = self._executor.submit(
-                self._sample, commands, self._generation, self._poll_state()
+            self._future_trace = {
+                "request_id": debug.new_id("request"),
+                "sample_id": debug.new_id("sample"),
+                "snapshot_id": debug.new_id("snapshot"),
+                **debug.context_values(),
+            }
+            debug.emit(
+                "status_requested", **self._future_trace, generation=self._generation,
+                commands=[command for command, _ in commands],
             )
+            with debug.context(**self._future_trace):
+                with diagnostics.operation("status_submit", generation=self._generation):
+                    self._future = self._executor.submit(
+                        copy_context().run, self._run_sample, commands, self._generation, self._poll_state(),
+                        dict(self._future_trace),
+                    )
             self._next_poll = now + STATUS_POLL_INTERVAL
         return changed
 
@@ -257,18 +318,21 @@ class StatusPoller:
         return self._refresh_pending or self._refresh_target is not None
 
     def refresh(self) -> bool:
+        diagnostics.log("status_refresh_requested", generation=self._generation, **self.snapshot_trace)
         self._commands.append(("refresh", None))
         self._refresh_pending = True
         self._next_poll = 0.0
         return False
 
     def discard(self, target: Target) -> None:
+        diagnostics.log("status_discard_requested", target=target.format(), generation=self._generation)
         self._commands.append(("discard", target))
         self._next_poll = 0.0
 
     def close(self) -> None:
-        self._executor.shutdown(wait=True, cancel_futures=True)
-        self._poller.close()
+        with diagnostics.operation("status_shutdown"):
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            self._poller.close()
 
 
 def _write_workspace(payload: str) -> None:

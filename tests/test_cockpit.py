@@ -709,7 +709,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 (
                     "bind-key", "-n", "MouseDown1Pane",
                     "if-shell -F -t = '#{==:#{pane_id},%1}' "
-                    "{ send-keys -M -t = ; select-pane -t = } "
+                    "{ send-keys -t = F2 ; send-keys -M -t = ; select-pane -t = } "
                     "{ select-pane -t = ; send-keys -M }",
                 ),
                 ("bind-key", "C-x", "send-prefix"),
@@ -736,7 +736,7 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
-    def test_mouse_binding_uses_sidebar_id_and_preserves_branch_order(self):
+    def test_mouse_binding_signals_sidebar_click_before_forwarding_and_focus(self):
         calls = []
 
         with patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
@@ -746,7 +746,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             binding[3],
             "if-shell -F -t = '#{==:#{pane_id},%sidebar}' "
-            "{ send-keys -M -t = ; select-pane -t = } "
+            "{ send-keys -t = F2 ; send-keys -M -t = ; select-pane -t = } "
             "{ select-pane -t = ; send-keys -M }",
         )
 
@@ -824,7 +824,14 @@ class CockpitLayoutTest(unittest.TestCase):
 
     def test_internal_action_keys_fit_screen_terminal_function_key_range(self):
         # screen terminfo defines F1 through F12, but not F13.
-        for action, key in cockpit.SIDEBAR_ACTION_KEYS.items():
+        with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux") as tmux_call:
+            cockpit._install_bindings("C-x", "%sidebar", "%right")
+        binding = next(c.args[3] for c in tmux_call.call_args_list
+                       if c.args[:3] == ("bind-key", "-n", "MouseDown1Pane"))
+        tokens = shlex.split(binding)
+        marker = tokens[tokens.index("send-keys") + 3]
+        self.assertNotIn(marker, (*cockpit.SIDEBAR_ACTION_KEYS.values(), "F6", "F7"))
+        for action, key in {**cockpit.SIDEBAR_ACTION_KEYS, "mouse_click": marker}.items():
             with self.subTest(action=action):
                 self.assertLessEqual(int(key.removeprefix("F")), 12)
 
@@ -891,6 +898,46 @@ class CockpitLayoutTest(unittest.TestCase):
         valid.assert_called_once_with()
         ensure_cockpit.assert_called_once_with()
         tmux_call.assert_called_once_with("send-keys", "-t", "%7", "F7", "F10")
+
+    def test_pane_death_diagnostics_capture_identity_before_native_recovery(self):
+        with (
+            patch.object(cockpit.diagnostics, "get_diagnostics") as logger,
+            patch.object(cockpit.tmux, "tmux") as call,
+        ):
+            logger.return_value.enabled = True
+            logger.return_value.path = Path("/tmp/log with ' quote.jsonl")
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+        hook = call.call_args.args[-1]
+        self.assertIn("run-shell -b", hook)
+        self.assertIn("attachment-exited", hook)
+        for field in ("pane_pid", "pane_dead_status", "pane_dead_signal", "@letee_attachment_id"):
+            self.assertIn(f"#{{q:{field}}}", hook)
+        self.assertIn("LETEE_DEBUG_LOG=", hook)
+        self.assertIn("--parent-run-id", hook)
+        self.assertLess(hook.index("run-shell -b"), hook.index("respawn-pane"))
+
+    def test_pane_death_hook_has_no_callback_when_logging_disabled(self):
+        with (
+            patch.dict(os.environ, {"LETEE_DEBUG_LOG": ""}),
+            patch.object(cockpit.tmux, "tmux") as call,
+        ):
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+        hook = call.call_args.args[-1]
+        self.assertNotIn("run-shell", hook)
+        self.assertIn("respawn-pane", hook)
+
+    def test_attach_flushes_diagnostics_before_exec(self):
+        events = []
+        with (
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", return_value="/dev/pts/1"),
+            patch.object(cockpit.tmux, "tmux_executable", return_value="tmux"),
+            patch.object(cockpit.diagnostics, "flush", side_effect=lambda: events.append("flush")),
+            patch.object(cockpit.os, "execvp", side_effect=lambda *args: events.append("exec")),
+        ):
+            cockpit._attach()
+        self.assertEqual(events, ["flush", "exec"])
 
     def test_right_pane_reset_uses_expected_death_marker(self):
         calls = []
@@ -1675,6 +1722,12 @@ class CockpitDiagnosticsTest(unittest.TestCase):
         self.log_path = Path(self.tempdir.name) / "cockpit.jsonl"
         self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
         self.env.start()
+        # Open the async writer before tests replace os.open/os.close for TTY failures.
+        diagnostics.log("test_started")
+        diagnostics.flush()
+        self.out = patch.object(cockpit.tmux, "out", return_value="")
+        self.out.start()
+        self.addCleanup(self.out.stop)
 
     def tearDown(self):
         diagnostics.close()
@@ -1684,6 +1737,429 @@ class CockpitDiagnosticsTest(unittest.TestCase):
     def records(self):
         diagnostics.flush()
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def assert_handled(self, operation, error_type, handling="fallback"):
+        records = self.records()
+        matches = [r for r in records if r["event"] == "error" and r.get("operation") == operation]
+        self.assertTrue(matches, operation)
+        self.assertEqual(matches[-1]["handling"], handling)
+        self.assertEqual(matches[-1]["error_type"], error_type)
+        self.assertNotIn("PRIVATE_FAILURE", self.log_path.read_text())
+
+    def test_authentication_group_probe_and_retry_have_distinct_origins(self):
+        def prepare(host):
+            diagnostics.log("auth_test", host=host)
+            return True
+
+        def probe(hosts):
+            for host in hosts:
+                diagnostics.log("auth_test", host=host)
+            return [False] * len(hosts)
+
+        with (
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sessions, "ensure_ssh_agent", return_value=True),
+            patch.object(cockpit.sessions, "group_hosts", return_value=[["dev", "peer"]]),
+            patch.object(cockpit.sessions, "prepare_host", side_effect=prepare),
+            patch.object(cockpit.sessions, "probe_hosts", side_effect=probe),
+            patch("builtins.print"),
+        ):
+            cockpit._prepare_remote_hosts(["dev", "peer"])
+        records = self.records()
+        attempts = [r for r in records if r["event"] == "auth_test"]
+        self.assertEqual([r["host"] for r in attempts], ["dev", "peer", "peer"])
+        self.assertEqual([r["origin"] for r in attempts], ["startup_interactive", "startup_batch", "startup_retry"])
+        self.assertTrue(all(r["active"] is False for r in attempts))
+        self.assertTrue(any(r["event"] == "ssh_preparation_host" and r["outcome"] == "retrying" for r in records))
+        result = [r for r in records if r["event"] == "ssh_preparation"][-1]
+        self.assertEqual((result["outcome"], result["ready_count"], result["failed_count"]), ("completed", 2, 0))
+
+    def test_help_and_menu_keybinding_failures_use_defaults_privately(self):
+        with (
+            patch.object(cockpit, "load_keybindings", side_effect=SystemExit("PRIVATE_FAILURE")),
+            patch.object(cockpit, "load_sidebar_keybindings", return_value=cockpit.DEFAULT_SIDEBAR_KEYBINDINGS),
+        ):
+            command = cockpit.help_command("C-b")
+        self.assertIn(cockpit._display_key("C-b", cockpit.DEFAULT_KEYBINDINGS["focus_agents"]), command)
+        self.assert_handled("help_keybindings", "SystemExit")
+        target = Target("local", "work")
+        for operation, show, args in (
+            ("session_menu_keybindings", cockpit.show_session_menu, (target, 1, 2)),
+            ("agent_menu_keybindings", cockpit.show_agent_menu, ("agent", PaneTarget(target, "@1", "%3", "/tmp/letee.inner"), 1, 2)),
+        ):
+            with (
+                self.subTest(operation=operation),
+                patch.object(cockpit, "load_sidebar_keybindings", side_effect=SystemExit("PRIVATE_FAILURE")),
+                patch.object(cockpit, "_option", return_value="%1"),
+                patch.object(cockpit.tmux, "tmux") as command,
+            ):
+                show(*args)
+            self.assertIn(cockpit.DEFAULT_SIDEBAR_KEYBINDINGS["kill"], command.call_args.args)
+            self.assert_handled(operation, "SystemExit")
+
+    def test_root_binding_query_failure_still_installs_bindings(self):
+        with (
+            patch.object(cockpit, "help_command", return_value="help"),
+            patch.object(cockpit, "_option", side_effect=OSError("PRIVATE_FAILURE")),
+            patch.object(cockpit.tmux, "tmux") as command,
+        ):
+            cockpit._install_bindings("C-b", "%1", "%2", cockpit.DEFAULT_KEYBINDINGS)
+        command.assert_any_call("unbind-key", "-a", "-T", "prefix")
+        self.assert_handled("root_keybindings", "OSError")
+
+    def test_layout_query_failure_allows_fallback(self):
+        with patch.object(cockpit.tmux, "out", side_effect=OSError("PRIVATE_FAILURE")):
+            self.assertIs(cockpit._ensure_client_size(), True)
+        self.assert_handled("layout_client_query", "OSError")
+        self.assertTrue(any(r["event"] == "layout_client_query_error" for r in self.records()))
+
+    def test_layout_parse_and_tty_failures_are_ignored_privately(self):
+        for stage, operation in (
+            ("parse", "layout_client_parse"),
+            ("open", "layout_tty_open"),
+            ("size", "layout_tty_size"),
+            ("close", "layout_tty_close"),
+        ):
+            raw = "PRIVATE_FAILURE:/dev/pts/3:80:24:letee" if stage == "parse" else "1234:/dev/pts/3:80:24:letee"
+            with (
+                self.subTest(stage=stage),
+                patch.object(cockpit.tmux, "out", return_value=raw),
+                patch.object(cockpit.os, "open", return_value=123, side_effect=OSError("PRIVATE_FAILURE") if stage == "open" else None),
+                patch.object(cockpit.os, "get_terminal_size", return_value=os.terminal_size((80, 24)), side_effect=OSError("PRIVATE_FAILURE") if stage == "size" else None),
+                patch.object(cockpit.os, "close", side_effect=OSError("PRIVATE_FAILURE") if stage == "close" else None) as close,
+                patch.object(cockpit.os, "kill") as kill,
+            ):
+                self.assertIs(cockpit._ensure_client_size(), True)
+            if stage in ("size", "close"):
+                close.assert_called_once_with(123)
+            kill.assert_not_called()
+            self.assert_handled(operation, "ValueError" if stage == "parse" else "OSError", "ignored")
+
+    def test_layout_signal_failures_abort_repair_privately(self):
+        for error in (ProcessLookupError("PRIVATE_FAILURE"), PermissionError("PRIVATE_FAILURE"), OSError("PRIVATE_FAILURE")):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(cockpit.tmux, "out", return_value="1234:/dev/pts/3:80:24:letee"),
+                patch.object(cockpit.os, "open", return_value=123),
+                patch.object(cockpit.os, "get_terminal_size", return_value=os.terminal_size((100, 24))),
+                patch.object(cockpit.os, "close"),
+                patch.object(cockpit.os, "kill", side_effect=error),
+                patch.object(cockpit.tmux, "tmux") as command,
+            ):
+                cockpit.repair_layout("%1")
+            command.assert_not_called()
+            self.assert_handled("layout_client_signal", type(error).__name__)
+        signals = [r for r in self.records() if r["event"] == "layout_client_signal"]
+        self.assertEqual(len(signals), 3)
+        self.assertTrue(all(r["status"] == "error" for r in signals))
+
+    def test_attach_tty_failure_still_executes_attach(self):
+        with (
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+            patch.object(cockpit.sys.stdout, "isatty", return_value=True),
+            patch.object(cockpit.os, "ttyname", side_effect=OSError("PRIVATE_FAILURE")),
+            patch.object(cockpit.os, "execvp") as execute,
+        ):
+            self.assertEqual(cockpit._attach(), 0)
+        self.assertEqual(execute.call_args.args[1][-4:], ["attach-session", "-d", "-t", cockpit.TARGET])
+        self.assert_handled("attach_tty", "OSError")
+
+    def test_cancelled_preparation_does_not_build_or_attach(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=os.terminal_size((100, 24))),
+            patch.object(cockpit, "_valid", return_value=False),
+            patch.object(cockpit, "load_hosts", return_value=["dev"]),
+            patch.object(cockpit, "_prepare_remote_hosts", side_effect=KeyboardInterrupt("PRIVATE_FAILURE")),
+            patch.object(cockpit, "ensure_cockpit") as ensure,
+            patch.object(cockpit, "_attach") as attach,
+            patch.object(cockpit.sys, "stderr"),
+        ):
+            self.assertEqual(cockpit.cockpit(), 130)
+        ensure.assert_not_called()
+        attach.assert_not_called()
+        self.assert_handled("ssh_preparation", "KeyboardInterrupt", "cancelled")
+        self.assertTrue(any(r["event"] == "operation_end" and r["name"] == "cockpit.launch" and r["outcome"] == "cancelled" for r in self.records()))
+
+    def test_invalid_target_options_and_recovered_targets_are_audited(self):
+        self.assertIsNone(cockpit._parse_target_option("PRIVATE_FAILURE"))
+        self.assert_handled("target_option_parse", "SystemExit", "ignored")
+        with (
+            patch.object(cockpit, "_target_option", return_value=None),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value="ssh invalid! tmux -L letee.inner new-session -A -s work"),
+        ):
+            self.assertIsNone(cockpit.current_target())
+        self.assert_handled("current_target_parse", "SystemExit", "ignored")
+        self.assertNotIn("invalid!", self.log_path.read_text())
+
+    def test_right_pane_lookup_failure_preserves_exception_and_stage(self):
+        error = SystemExit("PRIVATE_FAILURE")
+        with (
+            patch.object(cockpit, "right_pane", side_effect=error),
+            patch.object(cockpit.tmux, "tmux") as command,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            cockpit.switch(Target("local", "work"), "PRIVATE_FAILURE command")
+        self.assertIs(raised.exception, error)
+        command.assert_not_called()
+        self.assert_handled("switch_right_pane_lookup", "SystemExit", "propagated")
+        self.assertTrue(any(r["event"] == "switch_error" and r["stage"] == "right_pane_lookup" for r in self.records()))
+        self.assertFalse(any(r["event"] == "switch_completed" for r in self.records()))
+
+    def test_switch_recovery_failure_preserves_original_preparation_error(self):
+        original = RuntimeError("PRIVATE_FAILURE preparation")
+        recovery = OSError("PRIVATE_FAILURE recovery")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as command,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            def execute(*args, **kwargs):
+                if args[0] == "respawn-pane" and "unavailable" in args[-1]:
+                    raise recovery
+            command.side_effect = execute
+            cockpit.switch(Target("local", "work"), lambda: (_ for _ in ()).throw(original))
+        self.assertIs(raised.exception, original)
+        self.assert_handled("switch_error_recovery", "OSError", "ignored")
+        self.assert_handled("attach_command_preparation", "RuntimeError", "propagated")
+        self.assertFalse(any(r["event"] == "switch_completed" for r in self.records()))
+
+    def test_attachment_diagnostic_failures_are_audited_without_stopping_switch(self):
+        def execute(*args, **kwargs):
+            if args[0] == "if-shell" and cockpit.ATTACHMENT_ID_OPTION in args[-1]:
+                raise SystemExit("PRIVATE_FAILURE identity")
+            return subprocess.CompletedProcess(args, 0, stdout="letee-respawn-succeeded\n123\n")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", side_effect=OSError("PRIVATE_FAILURE probe")),
+            patch.object(cockpit.tmux, "tmux", side_effect=execute),
+        ):
+            cockpit.switch(Target("local", "work"), "PRIVATE_FAILURE shell")
+        self.assert_handled("attachment_replacement_probe", "OSError", "ignored")
+        self.assert_handled("attachment_identity", "SystemExit", "ignored")
+        self.assertTrue(any(r["event"] == "switch_completed" for r in self.records()))
+
+    def test_generation_probe_failure_is_audited_only_after_confirmed_respawn(self):
+        for error in (
+            subprocess.CalledProcessError(1, ["PRIVATE_FAILURE"], output=b"letee-respawn-succeeded\n", stderr="PRIVATE_FAILURE"),
+            SystemExit("PRIVATE_FAILURE"),
+            subprocess.CalledProcessError(1, ["PRIVATE_FAILURE"], output="PRIVATE_FAILURE"),
+        ):
+            with self.subTest(error=type(error).__name__), patch.object(cockpit.tmux, "tmux", side_effect=error):
+                if isinstance(error, subprocess.CalledProcessError) and error.stdout == b"letee-respawn-succeeded\n":
+                    self.assertEqual(cockpit._respawn_attachment("%2", "PRIVATE_FAILURE shell"), "")
+                    self.assert_handled("attachment_generation", "CalledProcessError", "ignored")
+                else:
+                    before = len(self.records())
+                    with self.assertRaises(type(error)) as raised:
+                        cockpit._respawn_attachment("%2", "PRIVATE_FAILURE shell")
+                    self.assertIs(raised.exception, error)
+                    self.assertEqual(len(self.records()), before)
+        self.assertNotIn("PRIVATE_FAILURE", self.log_path.read_text())
+
+    def test_callback_shell_quoting_preserves_path_and_empty_arguments(self):
+        path = self.log_path.parent / "log with ' #{literal} quote.jsonl"
+        with (
+            patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(path)}),
+            patch.object(cockpit.tmux, "tmux") as call,
+        ):
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+        tokens = shlex.split(call.call_args.args[-1])
+        callback = tokens[tokens.index("run-shell") + 2].replace("##", "#")
+        values = {
+            "hook_pane": "%2", cockpit.ATTACHMENT_ID_OPTION: "old-id",
+            "pane_pid": "123", cockpit.ATTACHMENT_TARGET_OPTION: "local:old",
+            cockpit.ATTACHMENT_AGENT_OPTION: "", cockpit.ATTACHMENT_SWITCH_OPTION: "switch-1",
+            "pane_dead_status": "", "pane_dead_signal": "TERM",
+            cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION: "", cockpit.ATTACHMENT_RUN_OPTION: "old-run",
+        }
+        marker_guard = (
+            "#{?#{&&:"
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}}},"
+            f"#{{{cockpit.ATTACHMENT_TARGET_OPTION}}}}},"
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION}}},#{{pane_pid}}}}"
+            f"}},#{{q:{cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION}}},}}"
+        )
+        self.assertIn(marker_guard + "''", callback)
+        callback = callback.replace(marker_guard, "")
+        # Match tmux format_quote_shell without running a host tmux server.
+        for field, value in values.items():
+            quoted = "".join("\\" + char if char in "|&;<>()$`\\\"'*?[# =%" else char for char in value)
+            callback = callback.replace(f"#{{q:{field}}}", quoted)
+        args = shlex.split(callback)
+        self.assertEqual(args[1], f"LETEE_DEBUG_LOG={path}")
+        start = args.index("attachment-exited")
+        self.assertEqual(args[start + 1:], [
+            "--parent-run-id", "old-run", "--",
+            "%2", "old-id", "123", "local:old", "", "switch-1", "", "TERM", "",
+        ])
+
+    def test_callback_expected_death_requires_matching_target_and_generation(self):
+        with patch.object(cockpit.tmux, "tmux") as command:
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+        tokens = shlex.split(command.call_args.args[-1])
+        callback = tokens[tokens.index("run-shell") + 2]
+        target_match = (
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}}},"
+            f"#{{{cockpit.ATTACHMENT_TARGET_OPTION}}}}}"
+        )
+        generation_match = (
+            f"#{{==:#{{{cockpit.EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION}}},#{{pane_pid}}}}"
+        )
+        guard = f"#{{&&:{target_match},{generation_match}}}"
+        marker = f"#{{q:{cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION}}}"
+        self.assertIn(f"#{{?{guard},{marker},}}''", callback)
+        for target, generation, value, expected in (
+            ("local:old", "123", "pending", "pending"),
+            ("local:earlier", "123", "pending", ""),
+            ("local:old", "100", "pending", ""),
+            ("local:old", "123", "", ""),
+        ):
+            with self.subTest(target=target, generation=generation, marker=value):
+                # Expand the asserted tmux comparisons and conditional, then
+                # check that the shell retains even an empty final argument.
+                expanded = callback.replace(target_match, str(int(target == "local:old")))
+                expanded = expanded.replace(generation_match, str(int(generation == "123")))
+                expanded = expanded.replace("#{&&:1,1}", "1")
+                expanded = expanded.replace("#{&&:0,1}", "0").replace("#{&&:1,0}", "0")
+                expanded = expanded.replace(f"#{{?1,{marker},}}", value)
+                expanded = expanded.replace(f"#{{?0,{marker},}}", "")
+                self.assertEqual(shlex.split(expanded)[-1], expected)
+
+    def test_disabled_attachment_diagnostics_preserve_original_commands(self):
+        with (
+            patch.dict(os.environ, {"LETEE_DEBUG_LOG": ""}),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out") as query,
+            patch.object(cockpit.tmux, "tmux") as command,
+            patch.object(cockpit, "uuid") as identity,
+        ):
+            cockpit.switch(Target("local", "work"), "attach work")
+        identity.uuid4.assert_not_called()
+        query.assert_not_called()
+        self.assertEqual(command.call_args_list, [
+            call("if-shell", "-F", "1", "set-option -t letee @letee_current_target local:work"),
+            call("set-option", "-u", "-t", "letee", cockpit.CURRENT_AGENT_OPTION),
+            call("set-option", "-u", "-t", "letee", cockpit.BELL_TARGET_OPTION),
+            call("respawn-pane", "-k", "-t", "%2", "attach work"),
+            call("select-pane", "-t", "%2"),
+        ])
+
+    def test_diagnostic_identity_failure_does_not_prevent_focus(self):
+        def execute(*args, **kwargs):
+            if args[0] == "if-shell" and cockpit.ATTACHMENT_ID_OPTION in args[-1]:
+                raise SystemExit("diagnostic option failed")
+            return subprocess.CompletedProcess(args, 0, stdout="letee-respawn-succeeded\n123\n")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", side_effect=OSError("probe failed")),
+            patch.object(cockpit.tmux, "tmux", side_effect=execute) as command,
+        ):
+            cockpit.switch(Target("local", "work"), "attach work")
+        command.assert_any_call("select-pane", "-t", "%2")
+        self.assertTrue(any(r["event"] == "switch_completed" for r in self.records()))
+
+    def test_failed_respawn_does_not_complete_replacement(self):
+        def execute(*args, **kwargs):
+            if args[0] == "respawn-pane":
+                raise OSError("respawn failed")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value="old\t100\tlocal:old\t\t\t\t100"),
+            patch.object(cockpit.tmux, "tmux", side_effect=execute),
+            self.assertRaises(OSError),
+        ):
+            cockpit.switch(Target("local", "new"), "attach new")
+        events = [r["event"] for r in self.records()]
+        self.assertIn("attachment_replacement_requested", events)
+        self.assertNotIn("attachment_replaced", events)
+        self.assertNotIn("attachment_started", events)
+
+    def test_native_exit_hook_guards_metadata_for_placeholders_and_stale_generations(self):
+        with patch.object(cockpit.tmux, "tmux") as command:
+            cockpit._install_right_pane_reset("%1", "%2", "C-x")
+        hook = command.call_args.args[-1]
+        self.assertIn(f"#{{&&:#{{pane_dead}},#{{==:#{{{cockpit.ATTACHMENT_GENERATION_OPTION}}},#{{pane_pid}}}}}}", hook)
+        tokens = shlex.split(hook)
+        callbacks = [tokens[i + 2] for i, token in enumerate(tokens) if token == "run-shell"]
+        self.assertEqual(len(callbacks), 2)
+        matching, unknown = callbacks
+        for field in (cockpit.ATTACHMENT_ID_OPTION, cockpit.ATTACHMENT_TARGET_OPTION,
+                      cockpit.ATTACHMENT_AGENT_OPTION, cockpit.ATTACHMENT_SWITCH_OPTION,
+                      cockpit.ATTACHMENT_RUN_OPTION, cockpit.EXPECTED_RIGHT_PANE_DEATH_OPTION):
+            self.assertIn(f"#{{q:{field}}}", matching)
+            self.assertNotIn(f"#{{q:{field}}}", unknown)
+        self.assertIn("#{?pane_dead,#{q:pane_pid},}", unknown)
+        self.assertIn("#{q:pane_dead_status}", unknown)
+
+    def test_replacement_probe_rejects_stale_identity(self):
+        with patch.object(cockpit.tmux, "out", return_value="old\t200\tlocal:old\t\t\t\t100"):
+            self.assertIsNone(cockpit._record_attachment_replacement("%2", reason="missing"))
+        self.assertFalse(any(r["event"].startswith("attachment_replacement") for r in self.records()))
+
+    def test_placeholder_switch_does_not_create_attachment(self):
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as command,
+            patch.object(cockpit, "uuid") as identity,
+        ):
+            cockpit.switch_reconnecting(Target("local", "work"))
+        identity.uuid4.assert_not_called()
+        self.assertFalse(any(r["event"] in ("attachment_started", "attachment_requested") for r in self.records()))
+        self.assertFalse(any(cockpit.ATTACHMENT_ID_OPTION in str(c) for c in command.call_args_list))
+
+    def test_placeholder_respawns_do_not_write_identity_and_complete_only_after_success(self):
+        for show in (cockpit.show_missing, cockpit.show_reconnecting, cockpit.show_unavailable):
+            with self.subTest(show=show.__name__):
+                with (
+                    patch.object(cockpit, "_require_right_pane", return_value="%2"),
+                    patch.object(cockpit.tmux, "out", return_value="old\t100\tlocal:old\t\t\t\t100"),
+                    patch.object(cockpit.tmux, "tmux", side_effect=OSError("respawn failed")),
+                    self.assertRaises(OSError),
+                ):
+                    show(Target("local", "work"))
+        self.assertFalse(any(r["event"] == "attachment_replaced" for r in self.records()))
+
+    def test_native_respawn_queue_preserves_success_when_diagnostic_query_fails(self):
+        failure = subprocess.CalledProcessError(1, "tmux", output="letee-respawn-succeeded\n")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as command,
+        ):
+            def execute(*args, **kwargs):
+                if args[0] == "respawn-pane":
+                    self.assertEqual(args[5:], (
+                        ";", "display-message", "-p", cockpit._RESPAWN_SUCCEEDED, ";",
+                        "display-message", "-p", "-t", "%2", "#{pane_pid}",
+                    ))
+                    raise failure
+            command.side_effect = execute
+            cockpit.switch(Target("local", "work"), "attach work")
+        command.assert_any_call("select-pane", "-t", "%2")
+        self.assertFalse(any(cockpit.ATTACHMENT_ID_OPTION in str(c) for c in command.call_args_list))
+
+    def test_generation_query_timeout_preserves_confirmed_respawn(self):
+        def timeout_after_respawn(*args, **kwargs):
+            try:
+                raise subprocess.TimeoutExpired("tmux", 1, output=b"letee-respawn-succeeded\n")
+            except subprocess.TimeoutExpired:
+                raise SystemExit("tmux timed out") from None
+        with patch.object(cockpit.tmux, "tmux", side_effect=timeout_after_respawn):
+            self.assertEqual(cockpit._respawn_attachment("%2", "attach work"), "")
+        self.assert_handled("attachment_generation", "SystemExit", "ignored")
+
+    def test_operations_record_failures_without_changing_exception(self):
+        error = OSError("private detail")
+        with (
+            patch.object(cockpit, "load_prefix", side_effect=error),
+            self.assertRaises(OSError) as raised,
+        ):
+            cockpit.ensure_cockpit()
+        self.assertIs(raised.exception, error)
+        ends = [r for r in self.records() if r["event"] == "operation_end"]
+        self.assertTrue(any(r["name"] == "cockpit.ensure" and r["outcome"] == "failed" for r in ends))
+        self.assertNotIn("private detail", self.log_path.read_text())
 
     def test_switch_records_each_stage_without_attach_command(self):
         target = Target("local", "work")
@@ -1715,6 +2191,73 @@ class CockpitDiagnosticsTest(unittest.TestCase):
         self.assertTrue(all(record["target"] == target.format() for record in records if record["event"].startswith("switch_")))
         self.assertTrue(all(record["right_pane"] == "%2" for record in records if record["event"].startswith("switch_")))
         self.assertNotIn("attach work", self.log_path.read_text())
+
+    def test_attachment_lifecycle_uses_unique_identity_and_omits_shell_command(self):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux", return_value=subprocess.CompletedProcess([], 0, stdout="letee-respawn-succeeded\n123\n")) as tmux_call,
+        ):
+            cockpit.switch(target, "secret shell command", "agent-1")
+            cockpit.switch(target, "secret shell command", "agent-1")
+        records = self.records()
+        started = [record for record in records if record["event"] == "attachment_started"]
+        self.assertEqual(len(started), 2)
+        self.assertNotEqual(started[0]["attachment_id"], started[1]["attachment_id"])
+        for record in started:
+            self.assertEqual(record["target"], "ssh:dev:work")
+            self.assertEqual(record["agent_id"], "agent-1")
+            self.assertEqual(record["right_pane"], "%2")
+            identity_writes = [c for c in tmux_call.call_args_list if c.args[0] == "if-shell" and cockpit.ATTACHMENT_ID_OPTION in c.args[-1]]
+            self.assertTrue(any(record["attachment_id"] in c.args[-1] for c in identity_writes))
+            for write in identity_writes:
+                self.assertEqual(write.args[2:5], ("-t", "%2", "#{==:#{pane_pid},123}"))
+                self.assertTrue(write.args[-1].startswith(f"set-option -p -t %2 {cockpit.ATTACHMENT_GENERATION_OPTION} '' ; "))
+                self.assertTrue(write.args[-1].endswith(f"{cockpit.ATTACHMENT_GENERATION_OPTION} 123"))
+        self.assertNotIn("secret shell command", self.log_path.read_text())
+
+    def test_replacement_captures_old_identity_before_respawn(self):
+        calls = []
+        old = "old-attachment\t100\tlocal:old\told-agent\told-switch\told-run\t100"
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=old,
+                         side_effect=lambda *a, **k: calls.append(("query", a)) or old),
+            patch.object(cockpit.tmux, "tmux", side_effect=lambda *a, **k: calls.append(("command", a))),
+        ):
+            cockpit.switch(Target("local", "new"), lambda: "attach new")
+        replaced = [r for r in self.records() if r["event"] == "attachment_replaced"]
+        self.assertEqual(replaced[0]["attachment_id"], "old-attachment")
+        self.assertEqual(replaced[0]["parent_run_id"], "old-run")
+        self.assertEqual(replaced[0]["generation"], 100)
+        self.assertTrue(replaced[0]["intentional"])
+        query = next(i for i, call in enumerate(calls) if call[0] == "query")
+        respawn = next(i for i, call in enumerate(calls) if call[1][0] == "respawn-pane")
+        self.assertLess(query, respawn)
+
+    def test_switch_respawn_and_focus_failures_do_not_report_completion(self):
+        for command, stage in (("respawn-pane", "right_pane_respawn"), ("select-pane", "right_pane_focus")):
+            error = OSError("private detail")
+
+            def execute(*args, **kwargs):
+                if args[0] == command:
+                    raise error
+
+            with (
+                self.subTest(command=command),
+                patch.object(cockpit, "right_pane", return_value="%2"),
+                patch.object(cockpit.tmux, "out", return_value=""),
+                patch.object(cockpit.tmux, "tmux", side_effect=execute),
+                self.assertRaises(OSError) as raised,
+            ):
+                cockpit.switch(Target("local", "work"), "private command")
+            self.assertIs(raised.exception, error)
+            self.assert_handled(stage, "OSError", "propagated")
+            records = self.records()
+            self.assertTrue(any(r["event"] == "switch_error" and r["stage"] == stage for r in records))
+            self.assertFalse(any(r["event"] == "switch_completed" for r in records))
+        self.assertNotIn("private command", self.log_path.read_text())
+        self.assertNotIn("private detail", self.log_path.read_text())
 
     def test_switch_failure_records_failed_stage(self):
         target = Target("local", "work")

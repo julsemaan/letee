@@ -8,8 +8,10 @@ import subprocess
 import textwrap
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
@@ -196,7 +198,8 @@ def _key_name(key: int) -> str:
         return "KEY_MOUSE"
     try:
         name = curses.keyname(key)
-    except (AttributeError, curses.error, TypeError, ValueError):
+    except (AttributeError, curses.error, TypeError, ValueError) as error:
+        diagnostics.error(error, operation="key_name")
         name = None
     if isinstance(name, bytes):
         name = name.decode(errors="replace")
@@ -228,7 +231,8 @@ def _mouse_button_flags(mouse_state: int) -> dict[str, bool]:
 def _tmux_query(*args: str) -> str | None:
     try:
         value = cockpit.tmux.out(*args, check=False)
-    except (OSError, SystemExit, subprocess.SubprocessError):
+    except (OSError, SystemExit, subprocess.SubprocessError) as error:
+        diagnostics.error(error, operation="tmux_query")
         return None
     return value if isinstance(value, str) and value else None
 
@@ -238,13 +242,15 @@ def _mouse_diagnostics(
 ) -> dict[str, object]:
     try:
         has_mouse = bool(curses.has_mouse())
-    except (AttributeError, curses.error, TypeError, ValueError):
+    except (AttributeError, curses.error, TypeError, ValueError) as error:
+        diagnostics.error(error, operation="mouse_capability")
         has_mouse = None
     capabilities: dict[str, str | None] = {}
     for name in ("kmous", "XM"):
         try:
             value = curses.tigetstr(name)
-        except (AttributeError, curses.error, TypeError, ValueError):
+        except (AttributeError, curses.error, TypeError, ValueError) as error:
+            diagnostics.error(error, operation="terminal_capability", capability=name)
             value = None
         if isinstance(value, bytes):
             capabilities[name] = value.hex()
@@ -265,7 +271,22 @@ def _mouse_diagnostics(
         name: option(name)
         for name in ("mouse", "focus-follows-mouse", "focus-events")
     }
-    binding = _tmux_query("list-keys", "-T", "root", "MouseDown1Pane")
+    bindings = {}
+    for field_name, key in (
+        ("tmux_mouse_down1_pane_binding", "MouseDown1Pane"),
+        ("tmux_mouse_drag1_pane_binding", "MouseDrag1Pane"),
+        ("tmux_mouse_drag_end1_pane_binding", "MouseDragEnd1Pane"),
+        ("tmux_mouse_up1_pane_binding", "MouseUp1Pane"),
+    ):
+        binding = _tmux_query("list-keys", "-T", "root", key)
+        bindings[field_name] = {
+            "present": bool(binding),
+            "selects_pane": bool(binding and "select-pane" in binding),
+            "forwards_mouse": bool(
+                binding and ("send-keys -M" in binding or "send -M" in binding)
+            ),
+            "sends_f2_marker": bool(binding and "F2" in binding.split()),
+        }
     result: dict[str, object] = {
         "curses_has_mouse": has_mouse,
         "terminfo_kmous": capabilities["kmous"],
@@ -287,13 +308,7 @@ def _mouse_diagnostics(
         "tmux_client_termname": _tmux_query(
             "display-message", "-p", "#{client_termname}"
         ),
-        "tmux_mouse_down1_pane_binding": {
-            "present": bool(binding),
-            "selects_pane": bool(binding and "select-pane" in binding),
-            "forwards_mouse": bool(
-                binding and ("send-keys -M" in binding or "send -M" in binding)
-            ),
-        },
+        **bindings,
     }
     if mouse_mask is not None:
         result["requested_mouse_mask"] = mouse_mask[0]
@@ -364,12 +379,29 @@ class RestorationRetry:
     delay: float = 0
     deadline: float = 0
     overlay: str | None = None
+    _diagnostic_deferral: tuple[object, ...] | None = field(default=None, compare=False, repr=False)
+    _diagnostic_deferred_at: float = field(default=0, compare=False, repr=False)
 
     def reset(self) -> None:
+        if self.target is not None:
+            diagnostics.log("restoration_reset", target=_trace_target(self.target),
+                            delay=self.delay, deadline=self.deadline, overlay=self.overlay)
         self.target = None
         self.delay = 0
         self.deadline = 0
         self.overlay = None
+        self._diagnostic_deferral = None
+        self._diagnostic_deferred_at = 0
+
+    def deferred(self, reason: str, now: float, **fields: object) -> None:
+        if not diagnostics.get_diagnostics().enabled:
+            return
+        state = (self.target, reason, self.deadline)
+        if state != self._diagnostic_deferral or now - self._diagnostic_deferred_at >= 5:
+            diagnostics.log("restoration_deferred", reason=reason, target=_trace_target(self.target),
+                            delay=self.delay, deadline=self.deadline, overlay=self.overlay, **fields)
+            self._diagnostic_deferral = state
+            self._diagnostic_deferred_at = now
 
     def failed(self, target: Target, now: float) -> None:
         timing = load_timing()
@@ -381,6 +413,10 @@ class RestorationRetry:
             timing.retry_max_delay,
         )
         self.deadline = now + self.delay
+        diagnostics.log(
+            "restoration_backoff", target=_trace_target(target),
+            delay=self.delay, deadline=self.deadline, overlay=self.overlay,
+        )
 
 
 def _sync_active_session(
@@ -396,13 +432,22 @@ def _sync_active_session(
         if retry.target != target:
             retry.reset()
         elif (time.monotonic() if now is None else now) < retry.deadline:
+            retry.deferred("backoff", time.monotonic() if now is None else now)
             return interrupted if interrupted == target else None
     if target is None:
         return None
 
     def run(effect: Effect) -> bool:
+        diagnostics.log("restoration_requested", **_trace_effect(effect), status=_target_status(target, snapshot))
         if submit is not None:
-            return bool(submit(effect))
+            accepted = bool(submit(effect))
+            if not accepted:
+                if retry is not None:
+                    retry.deferred("runner_rejected", time.monotonic() if now is None else now,
+                                   effect=effect.kind, automatic=effect.automatic)
+                else:
+                    diagnostics.log("restoration_deferred", reason="runner_rejected", **_trace_effect(effect))
+            return accepted
         result = _perform_effect(effect, ())
         if result.error:
             raise SystemExit(result.error)
@@ -438,17 +483,28 @@ def _reconcile_active_session_effect(
     now: float | None = None,
 ) -> Target | None:
     if result.stale_navigation:
+        diagnostics.log(
+            "restoration_result", outcome="stale_navigation", **_trace_effect(result.effect),
+            action_id=result.action_id, input_id=result.input_id,
+        )
         return unavailable_target_shown
     target = result.effect.target
     if isinstance(target, PaneTarget):
         target = target.target
     navigation = result.effect.kind in ("switch", "add_switch", "switch_pane")
+    if result.effect.automatic:
+        diagnostics.log(
+            "restoration_result", **_trace_effect(result.effect),
+            action_id=result.action_id, input_id=result.input_id,
+            outcome="failed" if result.error else "attachment_launched" if navigation else "overlay_launched",
+        )
     if retry is not None and isinstance(target, Target):
         if result.error and result.effect.automatic and result.effect.kind in (
             "switch", "show_reconnecting", "show_missing", "show_unavailable"
         ):
             completed = result.completed_at if now is None else now
-            retry.failed(target, time.monotonic() if completed is None else completed)
+            with diagnostics.get_diagnostics().context(action_id=result.action_id, input_id=result.input_id):
+                retry.failed(target, time.monotonic() if completed is None else completed)
         elif not result.error and navigation:
             retry.reset()
         if result.restoration_overlay is not None:
@@ -520,7 +576,8 @@ def _available_locations(snapshot: SessionSnapshot) -> list[tuple[str, str]]:
 def _valid_session_name(name: str) -> bool:
     try:
         validate_name(name, "session")
-    except SystemExit:
+    except SystemExit as error:
+        diagnostics.error(error, handling="validation", operation="validate_session_name")
         return False
     return True
 
@@ -656,7 +713,8 @@ def _reset_add(state: SidebarState) -> None:
 def _numeric_tmux_id(value: str | None) -> tuple[int, int | str]:
     try:
         return (0, int(value[1:]))
-    except (AttributeError, TypeError, ValueError):
+    except (AttributeError, TypeError, ValueError) as error:
+        diagnostics.error(error, operation="numeric_tmux_id")
         return (1, value or "")
 
 
@@ -1015,6 +1073,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 try:
                     attach_command = sessions.attach_command(effect.target)
                 except (SystemExit, subprocess.TimeoutExpired) as error:
+                    diagnostics.error(error, handling="propagate", operation="restoration_attach", **_trace_effect(effect))
                     timeout = error if isinstance(error, subprocess.TimeoutExpired) else error.__cause__
                     if (
                         effect.target.kind == "ssh"
@@ -1054,7 +1113,8 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                 cockpit.set_expected_right_pane_death(effect.target)
             try:
                 sessions.kill(effect.target)
-            except (SystemExit, OSError, subprocess.SubprocessError):
+            except (SystemExit, OSError, subprocess.SubprocessError) as error:
+                diagnostics.error(error, handling="reraise", operation="kill_session", **_trace_effect(effect))
                 if active:
                     cockpit.resolve_expected_right_pane_death(effect.target, False)
                 raise
@@ -1081,6 +1141,7 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
             if isinstance(effect.target, Target) and _current_target() == effect.target:
                 cockpit.reset_to_help(effect.target)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
+        diagnostics.error(error, handling="status", operation="perform_effect", **_trace_effect(effect))
         diagnostics.log(
             "effect_error",
             **_trace_effect(effect),
@@ -1103,15 +1164,13 @@ def _effect_state_trace(state: SidebarState) -> dict[str, object]:
         "selected_target": _trace_target(state.selected_target),
         "selected_agent": state.selected_agent_key[1] if state.selected_agent_key else None,
         "add_view": state.add_view,
-        "status": state.status,
+        "status_present": bool(state.status),
         "status_region": state.status_region,
     }
 
 
 def _log_effect_applied(result: EffectResult, state: SidebarState) -> None:
     state_trace = _effect_state_trace(state)
-    if result.error:
-        state_trace["status"] = "<error>"
     diagnostics.log(
         "effect_applied",
         **_trace_effect(result.effect),
@@ -1284,9 +1343,11 @@ class EffectRunner:
         action_id: str | None,
         input_id: str | None,
     ) -> None:
-        self._future = self._executor.submit(
-            self._run_effect, effect, favorites, action_id, input_id
-        )
+        with diagnostics.get_diagnostics().context(action_id=action_id, input_id=input_id):
+            with diagnostics.operation("effect_submit", **_trace_effect(effect)):
+                self._future = self._executor.submit(
+                    copy_context().run, self._run_effect, effect, favorites, action_id, input_id
+                )
 
     @staticmethod
     def _run_effect(
@@ -1307,6 +1368,7 @@ class EffectRunner:
             try:
                 result = _perform_effect(effect, favorites)
             except BaseException as error:
+                diagnostics.error(error, handling="reraise", operation="effect_worker", **_trace_effect(effect))
                 duration_ms = (time.monotonic_ns() - started) / 1_000_000
                 debug.emit(
                     "effect_worker_error",
@@ -1428,6 +1490,7 @@ class EffectRunner:
         try:
             result = self._future.result()
         except BaseException as error:
+            diagnostics.error(error, handling="reraise", operation="effect_collect", action_id=action_id, input_id=input_id)
             debug.emit(
                 "effect_result",
                 **(_trace_effect(active_effect) if active_effect else {}),
@@ -1484,7 +1547,8 @@ class EffectRunner:
         return stale_result
 
     def close(self) -> None:
-        self._executor.shutdown(wait=True, cancel_futures=True)
+        with diagnostics.operation("effect_shutdown"):
+            self._executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _current_target() -> Target | None:
@@ -1597,6 +1661,11 @@ def _agent_prompt_row(
     return max(0, min(h - 1, separator + 2))
 
 
+def _refresh_screen(stdscr: curses.window) -> None:
+    with diagnostics.operation("sidebar_refresh"):
+        stdscr.refresh()
+
+
 def _read_key(
     stdscr: curses.window,
     prompt: str,
@@ -1614,7 +1683,7 @@ def _read_key(
     try:
         stdscr.addnstr(row, 0, " " * width, width)
         stdscr.addnstr(row, 0, _truncate_cells(prompt, width), width, attr)
-        stdscr.refresh()
+        _refresh_screen(stdscr)
         key = input_reader() if input_reader is not None else stdscr.getch()
         if isinstance(key, InputEvent):
             key = key.key_code
@@ -1623,7 +1692,7 @@ def _read_key(
         return key
     finally:
         stdscr.addnstr(row, 0, " " * width, width)
-        stdscr.refresh()
+        _refresh_screen(stdscr)
         stdscr.timeout(UI_POLL_INTERVAL_MS)
 
 
@@ -1743,17 +1812,16 @@ def _mouse_mask(motion: bool = False) -> tuple[int, int | None]:
         getattr(curses, "BUTTON3_PRESSED", 0),
         getattr(curses, "BUTTON4_PRESSED", 0),
         getattr(curses, "BUTTON5_PRESSED", 0),
+        getattr(curses, "REPORT_MOUSE_POSITION", 0),
     ]
-    if motion:
-        events.append(getattr(curses, "REPORT_MOUSE_POSITION", 0))
 
     def set_motion_mode() -> None:
         try:
             import sys
 
             os.write(sys.stdout.fileno(), b"\033[?1003h" if motion else b"\033[?1003l")
-        except Exception:
-            pass
+        except Exception as error:
+            diagnostics.error(error, handling="ignore", operation="mouse_motion_mode")
 
     if not motion:
         set_motion_mode()
@@ -1768,8 +1836,14 @@ def _mouse_mask(motion: bool = False) -> tuple[int, int | None]:
             supported = result[0]
         elif isinstance(result, int):
             supported = result
-    except curses.error:
-        pass
+    except curses.error as error:
+        diagnostics.error(error, handling="ignore", operation="mouse_mask")
+    try:
+        # ncurses otherwise holds reports for mouseinterval and drops the older
+        # of two clicks that share a batch, and delays every click by ~166ms.
+        curses.mouseinterval(0)
+    except (AttributeError, curses.error) as error:
+        diagnostics.error(error, handling="ignore", operation="mouse_interval")
     if motion:
         set_motion_mode()
     return mask, supported
@@ -1780,8 +1854,8 @@ def _mouse_cleanup() -> None:
         import sys
 
         os.write(sys.stdout.fileno(), b"\033[?1003l")
-    except Exception:
-        pass
+    except Exception as error:
+        diagnostics.error(error, handling="ignore", operation="mouse_cleanup")
 
 
 def _back_label(selected: bool = False) -> str:
@@ -2049,6 +2123,10 @@ def _draw_entries(
             destination_line = (prompt + rule * max(0, w - len(prompt)))[:w]
             place_after = move_source_entry is not None and move_source_entry < idx
             lines = [lines[0], destination_line] if place_after else [destination_line, lines[0]]
+        if diagnostics.get_diagnostics().enabled:
+            diagnostics.log("sidebar_entry_draw", **_trace_entry(entry, idx), status=entry.status,
+                            row=row, row_count=len(lines), viewport_top=top, viewport_bottom=h - 1,
+                            dimmed=dimmed, compact=False)
         base_attr = _entry_attr(entry, active_entry or active_agent, dimmed, move_source=is_move_source, move_target=is_move_target)
         slot_badge = ""
         slot_width = 0
@@ -2165,7 +2243,7 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     if width > 1:
         stdscr.chgat(h - 1, width - 1, 1, _fade(attr) if dimmed else attr)
     stdscr.move(3, min(width - 1, _cell_width(prefix + visible)))
-    stdscr.refresh()
+    _refresh_screen(stdscr)
     return back_col
 
 
@@ -2222,8 +2300,9 @@ def _draw_compact(
     def write_row(row: int, line: str, attr: int) -> None:
         try:
             stdscr.addnstr(row, 0, line, len(line), attr)
-        except curses.error:
+        except curses.error as error:
             # ncurses reports an error after writing the bottom-right cell.
+            diagnostics.error(error, handling="ignore" if row == height - 1 else "reraise", operation="compact_write_row", row=row)
             if row != height - 1:
                 raise
 
@@ -2243,10 +2322,14 @@ def _draw_compact(
             )
             attr = _entry_attr(entry, active)
             line = _compact_line(entry, numbers[index], bell_targets, current_target, agent_alerts, spinner_frame)
+            if diagnostics.get_diagnostics().enabled:
+                diagnostics.log("sidebar_entry_draw", **_trace_entry(entry, index), status=entry.status,
+                                row=row, row_count=1, viewport_top=start, viewport_bottom=end,
+                                compact=True)
             write_row(row, line, attr)
             if kind == "agent":
                 stdscr.chgat(row, 0, 1, _status_attr(entry.status or "unknown"))
-    stdscr.refresh()
+    _refresh_screen(stdscr)
     return 0, None
 
 
@@ -2319,7 +2402,7 @@ def _draw(
         )
         if name_input:
             stdscr.move(*cursor)
-        stdscr.refresh()
+        _refresh_screen(stdscr)
         return footer_height, add_col
     agents = agent_entries
     has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
@@ -2328,7 +2411,7 @@ def _draw(
     )
     if footer_top - session_top < 2 + minimum_agent_rows:
         stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
-        stdscr.refresh()
+        _refresh_screen(stdscr)
         return footer_height, add_col
     _draw_entries(
         stdscr, entries, selected, separator + 1, w, bell_targets or set(), current_target,
@@ -2364,7 +2447,7 @@ def _draw(
         )
     if name_input:
         stdscr.move(*cursor)
-    stdscr.refresh()
+    _refresh_screen(stdscr)
     return footer_height, add_col
 
 
@@ -2373,6 +2456,7 @@ def run(stdscr: curses.window) -> None:
     _init_colors()
     curses.curs_set(0)
     mouse_mask_result = _mouse_mask()
+    mouse_snapshot = _mouse_diagnostics(mouse_mask_result) if debug.enabled else None
     status_timeout = load_status_timeout()
     agent_panel_resize_step = load_agent_panel_resize_step()
     sidebar_keys = load_sidebar_keybindings()
@@ -2384,7 +2468,8 @@ def run(stdscr: curses.window) -> None:
         tmux_version: str | None
         try:
             tmux_version = cockpit.tmux.out("-V", check=False) or None
-        except (OSError, SystemExit, subprocess.SubprocessError):
+        except (OSError, SystemExit, subprocess.SubprocessError) as error:
+            diagnostics.error(error, operation="tmux_version")
             tmux_version = None
         requested_mask = mouse_mask_result[0] if isinstance(mouse_mask_result, tuple) else None
         supported_mask = mouse_mask_result[1] if isinstance(mouse_mask_result, tuple) else None
@@ -2398,16 +2483,38 @@ def run(stdscr: curses.window) -> None:
             ),
             tmux_version=tmux_version,
             term=os.environ.get("TERM"),
+            term_program=os.environ.get("TERM_PROGRAM"),
+            term_program_version=os.environ.get("TERM_PROGRAM_VERSION"),
             tmux_pane=os.environ.get("TMUX_PANE"),
             screen_height=height,
             screen_width=width,
             requested_mouse_mask=requested_mask,
             supported_mouse_mask=supported_mask,
-            mouse_debug=_mouse_diagnostics(mouse_mask_result),
+            mouse_debug=mouse_snapshot,
             current_target=_trace_target(initial_target),
             pane_active=poller.pane_active,
         )
     entries = _entries(poller.snapshot, state.favorites)
+    entry_id: str | None = None
+    entry_snapshot_trace: dict[str, object] = {}
+
+    def trace_entries() -> None:
+        nonlocal entry_id, entry_snapshot_trace
+        if not debug.enabled:
+            return
+        entry_id = debug.new_id("entry")
+        trace = getattr(poller, "snapshot_trace", {})
+        entry_snapshot_trace = dict(trace) if isinstance(trace, dict) else {}
+        debug.emit(
+            "entries_built", **entry_snapshot_trace, entry_id=entry_id,
+            session_count=sum(entry.kind == "session" for entry in entries),
+            agent_count=sum(entry.kind == "agent" for entry in agent_entries),
+            sessions=[{**_trace_entry(entry, index), "status": entry.status}
+                      for index, entry in enumerate(entries)],
+            agents=[{**_trace_entry(entry, index), "status": entry.status}
+                    for index, entry in enumerate(agent_entries)],
+        )
+
     _update_agent_alerts(
         state, poller.snapshot, state.selected_target, hidden_agents=state.hidden_agents
     )
@@ -2420,6 +2527,7 @@ def run(stdscr: curses.window) -> None:
         hidden_agents=state.hidden_agents,
     )
     _reset_selection(state, entries)
+    trace_entries()
     cockpit_bell_target: Target | None = None
     active_agent_id: str | None = None
     unavailable_target_shown: Target | None = None
@@ -2442,10 +2550,35 @@ def run(stdscr: curses.window) -> None:
     last_event_outcome = "ignored"
     last_event_marked = False
     failed_mouse: tuple[str | None, int, bool] | None = None
+    pending_mouse_click_at = float("-inf")
     last_current_target = initial_target
     last_pane_active = poller.pane_active
     last_focused_region = state.focused_region
+    last_heartbeat = float("-inf")
+    last_idle_state: tuple[object, ...] | None = None
+    last_render_outcome: str | None = None
+    last_render_log = float("-inf")
+    last_drawn_render_id: str | None = None
     stdscr.timeout(UI_POLL_INTERVAL_MS)
+
+    def view_trace() -> dict[str, object]:
+        height, width = stdscr.getmaxyx()
+        return {
+            "mode": "compact" if compact else state.add_view or "normal",
+            "session_count": sum(entry.kind == "session" for entry in entries),
+            "agent_count": sum(entry.kind == "agent" for entry in agent_entries),
+            "session_statuses": dict(Counter(entry.status or "available" for entry in entries if entry.kind == "session")),
+            "agent_statuses": dict(Counter(entry.status or "unknown" for entry in agent_entries if entry.kind == "agent")),
+            "status_present": bool(state.status),
+            "filter_length": len(state.filter_text),
+            "session_scroll_offset": state.scroll_offset,
+            "agent_scroll_offset": state.agent_scroll_offset,
+            "viewport": {
+                "height": height, "width": width, "footer_height": footer_height,
+                "session_selected": state.selected_index, "agent_selected": state.agent_selected_index,
+                "agent_percentage": state.agent_percentage,
+            },
+        }
 
     def trace_input(key: object) -> str | None:
         if key == -1 or not isinstance(key, int) or key is getattr(stdscr, "_letee_test_stop", None):
@@ -2468,8 +2601,10 @@ def run(stdscr: curses.window) -> None:
     def read_input(timeout_ms: int) -> InputEvent | None:
         stdscr.timeout(timeout_ms)
         try:
-            key = stdscr.getch()
-        except KeyboardInterrupt:
+            with diagnostics.operation("sidebar_input_read", timeout_ms=timeout_ms):
+                key = stdscr.getch()
+        except KeyboardInterrupt as error:
+            diagnostics.error(error, handling="reraise" if state.add_view is None else "cancel", operation="read_input")
             if state.add_view is None:
                 raise
             key = 3
@@ -2489,6 +2624,7 @@ def run(stdscr: curses.window) -> None:
                 else None
             )
         except (curses.error, TypeError, ValueError) as error:
+            diagnostics.error(error, handling="ignore", operation="read_mouse", input_id=input_id)
             return InputEvent(key, input_id, mouse_error=type(error).__name__)
         return InputEvent(key, input_id, mouse_event, mouse_error)
 
@@ -2821,6 +2957,7 @@ def run(stdscr: curses.window) -> None:
         _sync_selection(state, entries)
         _sync_agent_selection(state, agent_entries)
         state.scroll_offset = None
+        trace_entries()
 
     def navigation_context(current_target: Target | None) -> tuple[Target | None, str | None, PaneTarget | None]:
         if pending_navigation is not None:
@@ -3045,6 +3182,7 @@ def run(stdscr: curses.window) -> None:
         force: bool = False,
     ) -> None:
         nonlocal active_agent_id, add_col, cockpit_bell_target, footer_height, layout_dirty, layout_dirty_kind, rendered, notified_status
+        nonlocal last_render_outcome, last_render_log, last_drawn_render_id
         status = (state.status, state.status_deadline) if state.status else None
         if compact and status is not None and status != notified_status:
             cockpit.tmux.tmux("display-message", "-t", cockpit.TARGET, state.status, check=False)
@@ -3091,33 +3229,54 @@ def run(stdscr: curses.window) -> None:
             state.agent_ordering,
             state.add_button_selected, state.move_source, state.move_target, compact,
         )
+        render_id = debug.new_id("render")
+        render_trace = {
+            **entry_snapshot_trace, "entry_id": entry_id, "render_id": render_id,
+            "forced": force, "compact": compact,
+            "screen_height": stdscr.getmaxyx()[0], "screen_width": stdscr.getmaxyx()[1],
+            **(view_trace() if debug.enabled else {}),
+        }
         if force or render_state != rendered:
+            debug.emit("sidebar_render", **render_trace, outcome="cache_miss")
             try:
-                if state.add_view == "name":
-                    add_col = _draw_name(stdscr, state, False)
-                    footer_height = 1
-                else:
-                    move_src_entry = _tracked_session_index(entries, state.move_source)
-                    move_tgt_entry = _tracked_session_index(entries, state.move_target)
-                    footer_height, add_col = _draw(
-                        stdscr, entries, state.selected_index, state.status, state.filter_text,
-                        state.add_view == "search", bell_targets, display_target, False,
-                        state.creation_host, state.add_view is not None, state.scroll_offset,
-                        agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_percentage,
-                        active_agent_id, agent_alerts=state.agent_alerts,
-                        spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
-                        add_button_selected=state.add_button_selected,
-                        move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
-                        pane_active=poller.pane_active, status_region=state.status_region,
-                        agent_scroll_offset=state.agent_scroll_offset, compact=compact,
-                        active_agent_pane=active_agent_pane,
-                    )
-            except curses.error:
+                with diagnostics.operation("sidebar_draw", **render_trace):
+                    if state.add_view == "name":
+                        add_col = _draw_name(stdscr, state, False)
+                        footer_height = 1
+                    else:
+                        move_src_entry = _tracked_session_index(entries, state.move_source)
+                        move_tgt_entry = _tracked_session_index(entries, state.move_target)
+                        footer_height, add_col = _draw(
+                            stdscr, entries, state.selected_index, state.status, state.filter_text,
+                            state.add_view == "search", bell_targets, display_target, False,
+                            state.creation_host, state.add_view is not None, state.scroll_offset,
+                            agent_entries if state.add_view is None else None, state.agent_selected_index, state.focused_region, state.agent_percentage,
+                            active_agent_id, agent_alerts=state.agent_alerts,
+                            spinner_frame=spinner_frame, agent_ordering=state.agent_ordering,
+                            add_button_selected=state.add_button_selected,
+                            move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
+                            pane_active=poller.pane_active, status_region=state.status_region,
+                            agent_scroll_offset=state.agent_scroll_offset, compact=compact,
+                            active_agent_pane=active_agent_pane,
+                        )
+            except curses.error as error:
                 # A resize can invalidate the window midway through drawing.
+                diagnostics.error(error, handling="retry", operation="sidebar_draw", **render_trace)
+                debug.emit("sidebar_render", **render_trace, outcome="draw_failed")
+                last_render_outcome = "draw_failed"
+                last_render_log = now
                 rendered = None
                 mark_layout_dirty()
                 return
             rendered = render_state
+            debug.emit("sidebar_render", **render_trace, outcome="drawn")
+            last_drawn_render_id = render_id
+            last_render_outcome = "drawn"
+            last_render_log = now
+        elif last_render_outcome != "cache_hit" or now - last_render_log >= 5:
+            debug.emit("sidebar_render", **render_trace, outcome="cache_hit", drawn_render_id=last_drawn_render_id)
+            last_render_outcome = "cache_hit"
+            last_render_log = now
         layout_dirty = False
         layout_dirty_kind = "state"
 
@@ -3196,6 +3355,32 @@ def run(stdscr: curses.window) -> None:
                 poller.observe_effect(result)
                 rebuild()
             current_target = poller.current_target
+            if debug.enabled:
+                idle_state = (
+                    actions.busy, bool(burst_count), queued_input,
+                    getattr(poller, "refresh_pending", False) is True,
+                    awaiting_navigation_sample, layout_dirty, current_target, poller.pane_active,
+                )
+                if idle_state != last_idle_state or now - last_heartbeat >= 5:
+                    debug.emit(
+                        "sidebar_heartbeat", reason="state_changed" if idle_state != last_idle_state else "idle",
+                        action_busy=actions.busy, input_burst=burst_count, queued_input=queued_input,
+                        refresh_pending=idle_state[3], awaiting_navigation_sample=awaiting_navigation_sample,
+                        layout_dirty=layout_dirty, current_target=_trace_target(current_target),
+                        pane_active=poller.pane_active, entry_id=entry_id, **entry_snapshot_trace,
+                        render_id=last_drawn_render_id, **view_trace(),
+                        latest_snapshot_id=(getattr(poller, "snapshot_trace", {}).get("snapshot_id")
+                                            if isinstance(getattr(poller, "snapshot_trace", None), dict) else None),
+                        restoration_defer_reason=(
+                            "input_burst" if burst_count else "queued_input" if queued_input else
+                            "action_busy" if actions.busy else "refresh_pending" if idle_state[3] else
+                            "awaiting_navigation_sample" if awaiting_navigation_sample else
+                            "backoff" if now < restoration_retry.deadline else None
+                        ),
+                        restoration_deadline=restoration_retry.deadline,
+                    )
+                    last_idle_state = idle_state
+                    last_heartbeat = now
             if (
                 not burst_count
                 and state.move_source is not None
@@ -3263,6 +3448,7 @@ def run(stdscr: curses.window) -> None:
                         now=now,
                     )
                 except SystemExit as error:
+                    diagnostics.error(error, handling="status", operation="sync_active_session")
                     show_status(str(error))
             if not burst_count:
                 render_sidebar(now, current_target, agent_alert, force=force_render)
@@ -3284,6 +3470,14 @@ def run(stdscr: curses.window) -> None:
                 return
             if key != curses.KEY_MOUSE:
                 clear_mouse_failure()
+            # The tmux MouseDown1Pane binding sends F2 before forwarding the report.
+            # Consume this evidence on the next input, even if decoding fails.
+            click_forwarded = now - pending_mouse_click_at <= MOUSE_RECOVERY_WINDOW
+            pending_mouse_click_at = float("-inf")
+            if key == curses.KEY_F2:
+                pending_mouse_click_at = now
+                mark_input(True, "mouse_click_signal")
+                continue
             if key == getattr(curses, "KEY_RESIZE", -999):
                 compact = cockpit.sidebar_compact()
                 rendered = None
@@ -3345,6 +3539,7 @@ def run(stdscr: curses.window) -> None:
                             raise ValueError("mouse event unavailable")
                         _, mouse_col, row, _, mouse_state = mouse_event
                     except (curses.error, TypeError, ValueError) as error:
+                        diagnostics.error(error, handling="ignore", operation="name_mouse", input_id=input_id)
                         remember_mouse_failure(input_id)
                         raw = event.mouse
                         row = raw[2] if raw is not None and len(raw) > 2 else None
@@ -3363,7 +3558,7 @@ def run(stdscr: curses.window) -> None:
                             row=row,
                             decoded_button_flags={},
                             decode_error=decode_error,
-                            mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
+                            mouse_debug=mouse_snapshot,
                             mode="name",
                         )
                         trace_mouse_decision(
@@ -3429,6 +3624,7 @@ def run(stdscr: curses.window) -> None:
                     try:
                         effect = _rename_key(state, key, poller.snapshot.sessions)
                     except SystemExit as error:
+                        diagnostics.error(error, handling="status", operation="rename_key", input_id=input_id)
                         show_status(str(error))
                     else:
                         if effect:
@@ -3460,6 +3656,7 @@ def run(stdscr: curses.window) -> None:
                         raise ValueError("mouse event unavailable")
                     _, mouse_col, row, _, mouse_state = mouse_event
                 except (curses.error, TypeError, ValueError) as error:
+                    diagnostics.error(error, handling="ignore", operation="sidebar_mouse", input_id=mouse_input_id)
                     remember_mouse_failure(mouse_input_id)
                     raw = event.mouse
                     row = raw[2] if raw is not None and len(raw) > 2 else None
@@ -3478,7 +3675,7 @@ def run(stdscr: curses.window) -> None:
                         row=row,
                         decoded_button_flags={},
                         decode_error=decode_error,
-                        mouse_debug=_mouse_diagnostics(mouse_mask_result) if debug.enabled else None,
+                        mouse_debug=mouse_snapshot,
                     )
                     trace_mouse_decision(
                         mouse_input_id, "malformed_event", row, mouse_col, reason=reason
@@ -3567,7 +3764,7 @@ def run(stdscr: curses.window) -> None:
                     )
                     recovered_mouse = trace_mouse_recovery_candidate(
                         mouse_input_id, region_hint, row, mouse_col, mouse_state
-                    )
+                    ) or click_forwarded
                 else:
                     clear_mouse_failure()
                 if recovered_mouse and state.add_view is None and state.move_source is None:
@@ -3587,11 +3784,19 @@ def run(stdscr: curses.window) -> None:
                     elif region_hint == "agents":
                         mouse_state |= activation_bits
                 if state.move_source is None and mouse_state & motion and not mouse_state & button_bits:
-                    trace_mouse_decision(
-                        mouse_input_id, "ignored_motion", row, mouse_col, reason="not_moving"
-                    )
-                    mark_input(False, "ignored_motion")
-                    continue
+                    # Motion alone is not click evidence. Recover only the report
+                    # paired with tmux's explicit click signal, never a move handle.
+                    if (
+                        click_forwarded and state.add_view is None
+                        and not _move_handle_hit(mouse_col, stdscr.getmaxyx()[1])
+                    ):
+                        mouse_state |= getattr(curses, "BUTTON1_PRESSED", 0) or 0
+                    else:
+                        trace_mouse_decision(
+                            mouse_input_id, "ignored_motion", row, mouse_col, reason="not_moving"
+                        )
+                        mark_input(False, "ignored_motion")
+                        continue
                 if state.move_source is not None:
                     start, end = _viewport(
                         entries, state.selected_index, separator - session_top + 2,
@@ -4220,6 +4425,7 @@ def _maintain_sidebar(stop: threading.Event, pane: str) -> None:
         try:
             cockpit.repair_layout(pane)
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
+            diagnostics.error(error, handling="ignore", operation="layout_repair", pane=pane)
             diagnostics.log(
                 "layout_repair_error",
                 pane=pane,
@@ -4227,6 +4433,7 @@ def _maintain_sidebar(stop: threading.Event, pane: str) -> None:
                 error_type=type(error).__name__,
             )
         except BaseException as error:
+            diagnostics.error(error, handling="reraise", operation="layout_repair", pane=pane)
             diagnostics.log(
                 "layout_repair_error",
                 pane=pane,
@@ -4251,8 +4458,8 @@ def main() -> int:
             try:
                 curses.wrapper(run)
                 return 0
-            except KeyboardInterrupt:
-                pass
+            except KeyboardInterrupt as error:
+                diagnostics.error(error, handling="retry", operation="sidebar_wrapper")
     finally:
         stop.set()
         diagnostics.close()

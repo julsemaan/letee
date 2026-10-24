@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 import re
 from typing import Literal
 
+from . import diagnostics
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 SESSION_ID_RE = re.compile(r"^\$\d+$")
 WINDOW_ID_RE = re.compile(r"^@\d+$")
@@ -16,6 +18,7 @@ SOCKET_GENERATION_SEPARATOR = "@"
 
 def validate_name(value: str, label: str = "name") -> str:
     if not NAME_RE.fullmatch(value):
+        diagnostics.error(handling="exit", reason="invalid_name")
         raise SystemExit(f"Invalid {label}: {value!r}. Must match [A-Za-z0-9_.-]{{1,64}}")
     return value
 
@@ -23,6 +26,7 @@ def validate_name(value: str, label: str = "name") -> str:
 def validate_host(value: str) -> str:
     validate_name(value, "host")
     if value.startswith("-"):
+        diagnostics.error(handling="exit", reason="host_option_prefix")
         raise SystemExit(f"Invalid host: {value!r}. Must not start with '-'")
     return value
 
@@ -30,6 +34,7 @@ def validate_host(value: str) -> str:
 def validate_server(value: str) -> str:
     validate_name(value, "server")
     if value.startswith("-"):
+        diagnostics.error(handling="exit", reason="server_option_prefix")
         raise SystemExit(f"Invalid server: {value!r}. Must not start with '-'")
     return value
 
@@ -57,12 +62,15 @@ class Target:
 
     def __post_init__(self) -> None:
         if self.kind not in ("local", "ssh"):
+            diagnostics.error(handling="exit", reason="invalid_target_kind")
             raise SystemExit(f"Invalid target kind: {self.kind!r}")
         validate_name(self.session, "session")
         if self.kind == "local":
             if self.host is not None:
+                diagnostics.error(handling="exit", reason="local_target_host")
                 raise SystemExit("Local target must not have host")
         elif self.host is None:
+            diagnostics.error(handling="exit", reason="missing_target_host")
             raise SystemExit("Invalid host: None")
         else:
             validate_host(self.host)
@@ -88,12 +96,16 @@ class PaneTarget:
 
     def __post_init__(self) -> None:
         if not isinstance(self.target, Target):
+            diagnostics.error(handling="exit", reason="invalid_pane_target")
             raise SystemExit(f"Invalid target: {self.target!r}")
         if not WINDOW_ID_RE.fullmatch(self.window_id):
+            diagnostics.error(handling="exit", reason="invalid_window_id")
             raise SystemExit(f"Invalid window ID: {self.window_id!r}")
         if not PANE_ID_RE.fullmatch(self.pane_id):
+            diagnostics.error(handling="exit", reason="invalid_pane_id")
             raise SystemExit(f"Invalid pane ID: {self.pane_id!r}")
         if not self.socket_path:
+            diagnostics.error(handling="exit", reason="empty_socket_path")
             raise SystemExit("Invalid socket path: must not be empty")
 
 
@@ -121,4 +133,5 @@ def parse_target(text: str) -> Target:
         return Target("local", validate_name(parts[1], "session"))
     if len(parts) == 3 and parts[0] == "ssh":
         return Target("ssh", validate_name(parts[2], "session"), validate_host(parts[1]))
+    diagnostics.error(handling="exit", reason="invalid_target_format")
     raise SystemExit("Invalid target. Use local:<session> or ssh:<host>:<session>")

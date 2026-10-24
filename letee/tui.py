@@ -8,6 +8,7 @@ import os
 import unicodedata
 from collections.abc import Callable
 
+from . import diagnostics
 from .workspace import ATTENTION_STATES
 
 
@@ -88,7 +89,8 @@ def init_colors() -> None:
             curses.init_pair(pair, fg, bg)
             _COLOR[name] = curses.color_pair(pair) | attr
         _COLOR["section"] = _COLOR["create"] | curses.A_BOLD
-    except curses.error:
+    except curses.error as error:
+        diagnostics.error(error, operation="init_colors")
         _COLOR.clear()
 
 

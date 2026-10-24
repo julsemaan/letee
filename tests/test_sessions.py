@@ -1,4 +1,7 @@
 from pathlib import Path
+from contextlib import redirect_stdout, redirect_stderr
+import io
+import json
 import os
 import tomllib
 import re
@@ -83,8 +86,10 @@ class SessionOperationsTest(unittest.TestCase):
             patch("subprocess.run", side_effect=[Mock(stdout="123\t/dev/null"), Mock(stdout="456")]) as run,
             patch("os.getpgid", return_value=123),
             patch("os.killpg") as killpg,
+            redirect_stdout(io.StringIO()) as metadata,
         ):
             exec(sessions._KILL_AGENT_HELPER, {})
+        self.assertEqual(metadata.getvalue(), "LETEE_DIAG kill_agent done success 2 1\n")
         self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [0.25, 0.25])
         killpg.assert_called_once_with(456, signal.SIGTERM)
 
@@ -438,6 +443,460 @@ class SessionOperationsTest(unittest.TestCase):
                 create(Target("ssh", "work", "dev"))
 
 
+class SessionDiagnosticsTest(unittest.TestCase):
+    def test_agent_directory_failure_returns_without_starting_agent(self):
+        failure = PermissionError("SECRET_DIRECTORY")
+        with (
+            patch.dict(sessions.os.environ, {}, clear=True),
+            patch.object(Path, "mkdir", side_effect=failure),
+            patch.object(sessions.subprocess, "run") as run,
+            patch.object(sessions.diagnostics, "error") as error,
+        ):
+            self.assertIsNone(sessions.ensure_ssh_agent())
+        run.assert_not_called()
+        error.assert_called_once_with(failure, handling="fallback", stage="agent_directory")
+        self.assertNotIn("SECRET", repr(error.call_args.kwargs))
+
+    def test_unknown_inherited_agent_and_failed_fallback_leave_environment_unchanged(self):
+        for fallback_status, reason in ((3, "probe_failed"), (2, "wait_failed")):
+            with tempfile.TemporaryDirectory() as directory:
+                with (
+                    self.subTest(reason=reason),
+                    patch.dict(sessions.os.environ, {"SSH_AUTH_SOCK": "/SECRET_INHERITED"}, clear=True),
+                    patch.object(sessions, "FALLBACK_AGENT_SOCKET", Path(directory) / "agent.sock"),
+                    patch.object(sessions.subprocess, "run", side_effect=[
+                        Mock(returncode=3), Mock(returncode=fallback_status), Mock(returncode=0),
+                    ]) as run,
+                    patch.object(sessions, "_wait_for_agent", return_value=False) as wait,
+                    patch.object(sessions.diagnostics, "log") as log,
+                ):
+                    self.assertIsNone(sessions.ensure_ssh_agent())
+                    self.assertEqual(os.environ["SSH_AUTH_SOCK"], "/SECRET_INHERITED")
+                self.assertEqual(run.call_count, 2 if fallback_status == 3 else 3)
+                self.assertEqual(wait.call_count, 0 if fallback_status == 3 else 1)
+                self.assertEqual(log.call_args.args, ("sessions.agent_setup.result",))
+                self.assertEqual(log.call_args.kwargs, {"outcome": "unavailable", "reason": reason})
+                self.assertNotIn("SECRET", repr(log.call_args_list))
+
+    def test_overlay_read_failure_closes_diagnostic_operations_without_running_ssh(self):
+        for failure in (OSError("SECRET_OVERLAY"), UnicodeError("SECRET_OVERLAY")):
+            with tempfile.TemporaryDirectory() as directory:
+                logger = sessions.diagnostics.Diagnostics(Path(directory) / "debug.jsonl")
+                try:
+                    with (
+                        self.subTest(error=type(failure).__name__),
+                        patch("letee.diagnostics.get_diagnostics", return_value=logger),
+                        patch.object(sessions, "ssh_command", return_value=("ssh",)),
+                        patch.object(Path, "read_text", side_effect=failure),
+                        patch.object(sessions.subprocess, "run") as run,
+                        self.assertRaises(type(failure)) as raised,
+                    ):
+                        attach_command(Target("ssh", "work", "dev"), overlay=True)
+                    self.assertIs(raised.exception, failure)
+                    run.assert_not_called()
+                    logger.flush()
+                    contents = logger.path.read_text()
+                finally:
+                    logger.close()
+            self.assertNotIn("SECRET", contents)
+            records = [json.loads(line) for line in contents.splitlines()]
+            for name in ("sessions.attach_command", "sessions.overlay_install"):
+                self.assertTrue(any(record.get("name") == name and record.get("outcome") == "failed"
+                                    for record in records), name)
+
+    def test_diagnostic_records_preserve_privacy_and_command_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logger = sessions.diagnostics.Diagnostics(Path(directory) / "debug.jsonl")
+            try:
+                with (
+                    patch("letee.diagnostics.get_diagnostics", return_value=logger),
+                    patch("letee.sessions.subprocess.run", side_effect=subprocess.CalledProcessError(
+                        7, ["SECRET_COMMAND"], output="SECRET_OUTPUT", stderr="SECRET_STDERR",
+                    )),
+                    self.assertRaises(SystemExit),
+                ):
+                    kill(Target("local", "work"))
+                logger.flush()
+                contents = logger.path.read_text()
+            finally:
+                logger.close()
+        records = [json.loads(line) for line in contents.splitlines()]
+        self.assertGreaterEqual(contents.count("sessions.command"), 2)
+        self.assertTrue(any(record.get("handling") == "raise" for record in records))
+        for secret in ("SECRET_COMMAND", "SECRET_OUTPUT", "SECRET_STDERR"):
+            self.assertNotIn(secret, contents)
+
+    def test_parallel_authentication_retains_action_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logger = sessions.diagnostics.Diagnostics(Path(directory) / "debug.jsonl")
+            try:
+                with (
+                    patch("letee.diagnostics.get_diagnostics", return_value=logger),
+                    patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0)),
+                    logger.context(action_id="test-action"),
+                ):
+                    self.assertEqual(sessions.probe_hosts(["dev", "prod"]), [True, True])
+                logger.flush()
+                records = [json.loads(line) for line in logger.path.read_text().splitlines()]
+            finally:
+                logger.close()
+        worker_records = [record for record in records if record["thread"].startswith("ThreadPoolExecutor")]
+        self.assertTrue(worker_records)
+        self.assertTrue(all(record.get("action_id") == "test-action" for record in worker_records))
+        authentication = [record for record in worker_records if record.get("name") == "sessions.authentication"]
+        self.assertEqual({record.get("host") for record in authentication}, {"dev", "prod"})
+        settings = [record for record in worker_records if record["event"] == "sessions.ssh_settings"]
+        self.assertEqual(len(settings), 2)
+        self.assertEqual({record.get("host") for record in settings}, {"dev", "prod"})
+        self.assertTrue(all(record["control_path"] == "disabled" for record in settings))
+
+    def test_target_context_and_keyword_api_exclude_socket_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logger = sessions.diagnostics.Diagnostics(Path(directory) / "debug.jsonl")
+            try:
+                with (
+                    patch("letee.diagnostics.get_diagnostics", return_value=logger),
+                    patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0, stdout="")),
+                ):
+                    target = Target("ssh", "work", "dev")
+                    pane = PaneTarget(target, "@3", "%7", "/SECRET_SOCKET")
+                    attach_command(target=target, overlay=False)
+                    pane_attach_command(pane_target=pane, overlay=False)
+                    create(target=target, overlay=False)
+                    kill(target=target)
+                    rename(target=target, new_name="renamed")
+                    kill_agent(pane_target=pane)
+                    sessions._ssh_config(host="dev")
+                logger.flush()
+                contents = logger.path.read_text()
+            finally:
+                logger.close()
+        records = [json.loads(line) for line in contents.splitlines()]
+        starts = [record for record in records if record["event"] == "operation_start"]
+        for record in starts:
+            self.assertEqual(record.get("host"), "dev")
+            if record["name"] != "sessions.ssh_config":
+                self.assertEqual(record.get("target"), "ssh:dev:work")
+        pane_starts = [record for record in starts if record["name"] in (
+            "sessions.pane_attach_command", "sessions.kill_agent")]
+        self.assertTrue(all(record.get("pane_id") == "%7" for record in pane_starts))
+        self.assertNotIn("SECRET_SOCKET", contents)
+
+    def test_remote_metadata_is_allowlisted_bounded_and_read_from_both_streams(self):
+        target = Target("ssh", "work", "dev")
+        valid = "LETEE_DIAG kill_agent signal OSError 2 1"
+        with patch("letee.sessions.diagnostics.log") as log:
+            sessions._remote_metadata("kill agent", target, Mock(
+                stdout="SECRET\n" + valid, stderr=valid + "\nSECRET", returncode=1))
+        log.assert_called_once_with("sessions.kill_agent.remote", stage="signal", category="OSError",
+                                    query_count=2, signal_count=1)
+        for invalid in (
+            "LETEE_DIAG kill_agent SECRET OSError 2 1",
+            "LETEE_DIAG kill_agent signal SECRET 2 1",
+            "LETEE_DIAG kill_agent signal OSError 999999 1",
+            valid + "x" * 4096,
+            valid + "\nSECRET" * 17,
+        ):
+            with self.subTest(invalid=invalid[:60]), patch("letee.sessions.diagnostics.log") as log:
+                sessions._remote_metadata("kill agent", target, Mock(stdout=invalid, stderr="", returncode=1))
+                log.assert_called_once_with("sessions.kill_agent.remote", category="metadata_unavailable")
+
+    def test_remote_helper_failures_preserve_messages_and_emit_safe_stage_counts(self):
+        cases = (
+            ([subprocess.CalledProcessError(1, ["SECRET"], stderr="SECRET")], None, None,
+             "pane_lookup", "CalledProcessError", 1, 0),
+            ([Mock(stdout="SECRET")], None, None, "pane_lookup", "ValueError", 1, 0),
+            ([Mock(stdout="123\t/dev/null"), subprocess.TimeoutExpired(["SECRET"], 2)], None, None,
+             "foreground_lookup", "TimeoutExpired", 2, 0),
+            ([Mock(stdout="123\t/dev/null"), Mock(stdout="456")], OSError("SECRET"), None,
+             "pane_group", "OSError", 2, 0),
+            ([Mock(stdout="123\t/dev/null"), Mock(stdout="123")], None, None,
+             "foreground_validate", "RuntimeError", 2, 0),
+            ([Mock(stdout="123\t/dev/null"), Mock(stdout="456")], None, OSError("SECRET"),
+             "signal", "OSError", 2, 1),
+        )
+        for results, group_error, signal_error, stage, category, queries, signals in cases:
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                self.subTest(stage=stage, category=category),
+                patch.object(sys, "argv", ["-c", "--", "/SECRET_SOCKET", "%7", "2"]),
+                patch("subprocess.run", side_effect=results),
+                patch("os.getpgid", return_value=123, side_effect=group_error),
+                patch("os.killpg", side_effect=signal_error),
+                redirect_stdout(stdout), redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                exec(sessions._KILL_AGENT_HELPER, {})
+            self.assertEqual(raised.exception.code, 1)
+            self.assertEqual(stdout.getvalue(), f"LETEE_DIAG kill_agent {stage} {category} {queries} {signals}\n")
+            self.assertNotIn("Traceback", stderr.getvalue())
+            if category in ("CalledProcessError", "OSError"):
+                self.assertEqual(stderr.getvalue(), "SECRET\n")
+
+    def test_remote_failures_log_metadata_without_sensitive_error_text(self):
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@3", "%7", "/SECRET_SOCKET")
+        with tempfile.TemporaryDirectory() as directory:
+            logger = sessions.diagnostics.Diagnostics(Path(directory) / "debug.jsonl")
+            try:
+                for code, output in ((127, ""), (1, "LETEE_DIAG kill_agent pane_lookup CalledProcessError 1 0\n")):
+                    failure = subprocess.CalledProcessError(code, ["SECRET_COMMAND"], output=output, stderr="SECRET_STDERR")
+                    with (
+                        patch("letee.diagnostics.get_diagnostics", return_value=logger),
+                        patch("letee.sessions.subprocess.run", side_effect=failure),
+                        self.assertRaisesRegex(SystemExit, "SECRET_STDERR"),
+                    ):
+                        kill_agent(pane)
+                logger.flush()
+                contents = logger.path.read_text()
+            finally:
+                logger.close()
+        self.assertNotIn("SECRET", contents)
+        metadata = [json.loads(line) for line in contents.splitlines()
+                    if json.loads(line)["event"] == "sessions.kill_agent.remote"]
+        self.assertEqual([record["category"] for record in metadata], ["python_unavailable", "CalledProcessError"])
+        self.assertTrue(all(record["host"] == "dev" for record in metadata))
+
+    def test_remote_overlay_reports_ignored_failure_and_preserves_create_status(self):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch.object(sessions, "_install_overlay"),
+            patch.object(sessions, "_run") as run,
+        ):
+            create(target, overlay=True)
+        command = run.call_args.args[2][-1]
+        with tempfile.TemporaryDirectory() as directory:
+            tmux = Path(directory) / "tmux"
+            tmux.write_text('#!/bin/sh\ncase "$3" in\nnew-session) exit "$CREATE_STATUS";;\nsource-file) echo SECRET >&2; exit 9;;\nesac\n')
+            tmux.chmod(0o700)
+            for create_status in (0, 6):
+                with self.subTest(create_status=create_status):
+                    result = subprocess.run(
+                        ("/bin/sh", "-c", command), check=False, capture_output=True, text=True,
+                        env={**os.environ, "PATH": directory, "CREATE_STATUS": str(create_status)},
+                    )
+                    self.assertEqual(result.returncode, create_status)
+                    self.assertEqual(result.stdout, "LETEE_DIAG overlay 9\n" if create_status == 0 else "")
+                    with patch("letee.sessions.diagnostics.log") as log:
+                        sessions._remote_metadata("create", target, result)
+                    if create_status == 0:
+                        log.assert_called_once_with("sessions.overlay_source.remote", returncode=9, outcome="ignored")
+                    else:
+                        log.assert_not_called()
+
+    def test_socket_probe_decisions_are_observable(self):
+        for failure, decision, stale in (
+            (ConnectionRefusedError("SECRET"), "stale", True),
+            (FileNotFoundError("SECRET"), "stale", True),
+            (PermissionError("SECRET"), "preserve", False),
+            (OSError("SECRET unexpected socket error"), "preserve", False),
+        ):
+            with (
+                self.subTest(decision=decision, error=type(failure).__name__),
+                patch.object(sessions, "_is_unix_socket", return_value=True),
+                patch("letee.sessions.socket.socket") as socket,
+                patch("letee.sessions.diagnostics.error") as capture,
+            ):
+                socket.return_value.connect.side_effect = failure
+                self.assertEqual(sessions._is_stale_unix_socket(Path("/SECRET")), stale)
+                socket.return_value.close.assert_called_once()
+            capture.assert_called_once_with(failure, handling="fallback", stage="agent_socket_probe", decision=decision)
+
+    def test_agent_socket_remove_failure_is_observable(self):
+        failure = PermissionError("SECRET")
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.dict(sessions.os.environ, {}, clear=True),
+                patch.object(sessions, "FALLBACK_AGENT_SOCKET", Path(directory) / "agent.sock"),
+                patch.object(sessions, "_agent_reachable", return_value=False),
+                patch.object(sessions, "_is_stale_unix_socket", return_value=True),
+                patch("letee.sessions.os.path.lexists", return_value=True),
+                patch.object(Path, "unlink", side_effect=failure),
+                patch("letee.sessions.diagnostics.error") as capture,
+            ):
+                self.assertIsNone(sessions.ensure_ssh_agent())
+        capture.assert_called_once_with(failure, handling="fallback", stage="agent_socket_remove")
+
+    def test_agent_wait_stopping_decisions_are_observable(self):
+        for reachable, exists, is_socket, reason in (
+            (None, False, False, "probe_failed"),
+            (False, True, False, "non_socket"),
+            (False, True, True, "attempts_exhausted"),
+        ):
+            with (
+                self.subTest(reason=reason),
+                patch.object(sessions, "_AGENT_START_ATTEMPTS", 1),
+                patch.object(sessions, "_agent_reachable", return_value=reachable),
+                patch("letee.sessions.os.path.lexists", return_value=exists),
+                patch.object(sessions, "_is_unix_socket", return_value=is_socket),
+                patch("letee.sessions.diagnostics.log") as log,
+            ):
+                self.assertFalse(sessions._wait_for_agent(Path("/SECRET")))
+            stopped = [call for call in log.call_args_list if call.args[0] == "sessions.agent_wait.stopped"]
+            self.assertEqual(len(stopped), 1)
+            self.assertEqual(stopped[0].kwargs["reason"], reason)
+
+    def test_unlock_failure_preserves_error_and_closes_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logger = sessions.diagnostics.Diagnostics(Path(directory) / "debug.jsonl")
+            lock = Mock()
+            failure = OSError("SECRET")
+            try:
+                with (
+                    patch("letee.diagnostics.get_diagnostics", return_value=logger),
+                    patch.object(Path, "open", return_value=lock),
+                    patch("letee.sessions.fcntl.flock", side_effect=[None, failure]),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    with sessions._fallback_agent_lock(Path("/SECRET")):
+                        pass
+                self.assertIs(raised.exception, failure)
+                lock.close.assert_called_once()
+                logger.flush()
+                contents = logger.path.read_text()
+            finally:
+                logger.close()
+        self.assertNotIn("SECRET", contents)
+        records = [json.loads(line) for line in contents.splitlines()]
+        self.assertTrue(any(record.get("name") == "sessions.agent_unlock" and record.get("outcome") == "failed"
+                            for record in records))
+
+    def test_remaining_local_handlers_capture_only_safe_error_metadata(self):
+        failure = OSError("SECRET")
+        pane = PaneTarget(Target("local", "work"), "@3", "%7", "/SECRET_SOCKET")
+        cases = (
+            ("agent_socket_stat", lambda: sessions._is_unix_socket(Path("/SECRET")),
+             patch("letee.sessions.os.lstat", side_effect=failure)),
+            ("pane_process_group", lambda: sessions._kill_agent_local(pane),
+             patch("letee.sessions.os.getpgid", side_effect=failure)),
+            ("agent_signal", lambda: sessions._kill_agent_local(pane),
+             patch("letee.sessions.os.killpg", side_effect=failure)),
+        )
+        for stage, action, failure_patch in cases:
+            with (
+                self.subTest(stage=stage), failure_patch,
+                patch.object(sessions, "_pane_process_info", return_value=(123, "/SECRET")),
+                patch.object(sessions, "_foreground_pgid", return_value=456),
+                patch("letee.sessions.os.getpgid", return_value=123) if stage != "pane_process_group" else patch(
+                    "letee.sessions.os.killpg"),
+                patch("letee.sessions.diagnostics.error") as capture,
+            ):
+                if stage == "agent_socket_stat":
+                    self.assertFalse(action())
+                else:
+                    with self.assertRaises(SystemExit):
+                        action()
+            capture.assert_any_call(failure, handling="fallback" if stage == "agent_socket_stat" else "raise", stage=stage)
+
+    def test_pane_parse_failures_are_observable(self):
+        pane = PaneTarget(Target("local", "work"), "@3", "%7", "/SECRET_SOCKET")
+        for output, stage, action in (
+            ("SECRET\t/dev/null", "pane_pid_parse", lambda: sessions._pane_process_info(pane)),
+            ("SECRET", "foreground_pgid_parse", lambda: sessions._foreground_pgid(pane.target, 123)),
+        ):
+            with (
+                self.subTest(stage=stage),
+                patch("letee.sessions.subprocess.run", return_value=Mock(stdout=output)),
+                patch("letee.sessions.diagnostics.error") as capture,
+                self.assertRaises(SystemExit),
+            ):
+                action()
+            self.assertEqual(capture.call_args.kwargs, {"handling": "raise", "stage": stage})
+            self.assertIsInstance(capture.call_args.args[0], ValueError)
+
+    def test_agent_directory_and_lock_failures_capture_fallback(self):
+        failure = PermissionError("private-path")
+        with (
+            patch.dict(sessions.os.environ, {}, clear=True),
+            patch.object(Path, "mkdir", side_effect=failure),
+            patch("letee.sessions.diagnostics.error") as capture,
+        ):
+            self.assertIsNone(sessions.ensure_ssh_agent())
+        capture.assert_called_once_with(failure, handling="fallback", stage="agent_directory")
+        with (
+            patch.object(Path, "open", side_effect=failure),
+            patch("letee.sessions.diagnostics.error") as capture,
+        ):
+            with sessions._fallback_agent_lock(Path("/private/socket")):
+                pass
+        capture.assert_called_once_with(
+            failure, handling="fallback", stage="agent_lock", decision="continue_unlocked",
+        )
+
+    def test_lock_acquisition_failure_closes_open_file_and_keeps_fallback_observable(self):
+        failure = PermissionError("SECRET lock")
+        lock = Mock()
+        with (
+            patch.object(Path, "open", return_value=lock),
+            patch.object(sessions.fcntl, "flock", side_effect=failure),
+            patch.object(sessions.diagnostics, "error") as capture,
+        ):
+            with sessions._fallback_agent_lock(Path("/SECRET/socket")):
+                pass
+        lock.close.assert_called_once_with()
+        capture.assert_called_once_with(failure, handling="fallback", stage="agent_lock", decision="continue_unlocked")
+        self.assertNotIn("SECRET", repr(capture.call_args.kwargs))
+
+    def test_agent_start_failure_still_probes_for_concurrent_agent(self):
+        failure = OSError("private-path")
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.dict(sessions.os.environ, {}, clear=True),
+                patch.object(sessions, "FALLBACK_AGENT_SOCKET", Path(directory) / "agent.sock"),
+                patch.object(sessions, "_agent_reachable", return_value=False),
+                patch("letee.sessions.subprocess.run", side_effect=failure),
+                patch.object(sessions, "_wait_for_agent", return_value=True) as wait,
+                patch("letee.sessions.diagnostics.error") as capture,
+            ):
+                self.assertIsNotNone(sessions.ensure_ssh_agent())
+        wait.assert_called_once()
+        capture.assert_called_once_with(
+            failure, handling="retry", stage="agent_start", decision="probe_after_start",
+        )
+
+    def test_command_failure_captures_safe_error_and_preserves_exit(self):
+        for failure in (
+            subprocess.CalledProcessError(7, ["private-command"], stderr="private-output"),
+            subprocess.TimeoutExpired(["private-command"], 2, output="private-output"),
+            OSError("private-output"),
+        ):
+            with (
+                self.subTest(error=type(failure).__name__),
+                patch("letee.sessions.subprocess.run", side_effect=failure),
+                patch("letee.sessions.diagnostics.error") as capture,
+                self.assertRaises(SystemExit),
+            ):
+                kill(Target("local", "work"))
+            capture.assert_any_call(
+                failure, handling="raise", stage="command", operation="kill", target_kind="local",
+            )
+
+    def test_overlay_failure_is_captured_without_failing_create(self):
+        for failure in (subprocess.TimeoutExpired(["private-command"], 2, output="private-output"),
+                        OSError("private-output")):
+            with (
+                self.subTest(error=type(failure).__name__),
+                patch("letee.sessions.subprocess.run", side_effect=[Mock(stdout=""), failure]),
+                patch("letee.sessions.diagnostics.error") as capture,
+            ):
+                create(Target("local", "work"), overlay=True)
+            capture.assert_any_call(failure, handling="ignore", stage="overlay_source", target_kind="local")
+
+    def test_authentication_and_config_failures_capture_fallback(self):
+        failure = OSError("private-path")
+        for action, stage in (
+            (lambda: sessions.prepare_host("dev"), "authentication"),
+            (lambda: sessions._ssh_config("dev"), "ssh_config"),
+            (lambda: sessions._agent_reachable("/private/socket"), "agent_probe"),
+        ):
+            with (
+                self.subTest(stage=stage),
+                patch("letee.sessions.subprocess.run", side_effect=failure),
+                patch("letee.sessions.diagnostics.error") as capture,
+            ):
+                self.assertFalse(action())
+                capture.assert_any_call(failure, handling="fallback", stage=stage)
+
+
 class SSHAgentTest(unittest.TestCase):
     def test_reuses_inherited_agent_with_loaded_keys(self):
         with (
@@ -775,7 +1234,8 @@ class TmuxOverlayTest(unittest.TestCase):
             ),
         )
         self.assertEqual(install.kwargs["input"], sessions.OVERLAY_FILE.read_text())
-        self.assertTrue(create_call.args[0][-1].endswith("tmux -L letee.inner new-session -d -s work && { tmux -L letee.inner source-file ~/.config/letee/tmux-overlay.conf || true; }"))
+        self.assertTrue(create_call.args[0][-1].startswith("tmux -L letee.inner new-session -d -s work && { tmux -L letee.inner source-file ~/.config/letee/tmux-overlay.conf; "))
+        self.assertTrue(create_call.args[0][-1].endswith("letee_overlay_rc=$?; printf 'LETEE_DIAG overlay %s\\n' \"$letee_overlay_rc\"; true; }"))
         self.assertIn("-t dev 'tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file ~/.config/letee/tmux-overlay.conf'", attach)
         self.assertIn("source-file ~/.config/letee/tmux-overlay.conf \\; select-window -t work:@3", pane)
         self.assertLess(pane.index("source-file ~/.config/letee/tmux-overlay.conf"), pane.index("select-window -t work:@3"))

@@ -20,13 +20,19 @@ class FinderEntrypointsTest(unittest.TestCase):
             patch.object(cockpit, "ensure_cockpit") as ensure,
             patch.object(cockpit, "expand_sidebar") as expand,
             patch.object(cockpit, "ensure_config") as ensure_config,
+            patch.object(tmux, "out", return_value="100 30") as dimensions,
             patch("letee.tmux.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
         ):
             self.assertEqual(cockpit.find_work(), 0)
 
+        dimensions.assert_called_once_with(
+            "display-message", "-p",
+            "#{?#{e|>:#{client_width},125},100,#{e|/:#{e|*:#{client_width},80},100}} "
+            "#{?#{e|>:#{client_height},37},30,#{e|/:#{e|*:#{client_height},80},100}}",
+        )
         run.assert_called_once_with(
             ["tmux", "-L", server_socket("work"), "display-popup", "-E",
-             "-w", "80%", "-h", "80%", "-x", "C", "-y", "C",
+             "-w", "100", "-h", "30", "-x", "C", "-y", "C",
              shlex.join([sys.executable, "-m", "letee", "-L", "work", "finder"])],
             text=True, capture_output=False, check=True, timeout=None,
         )

@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import os
+import signal
 import stat
 import subprocess
 import sys
 
-from . import __version__, config, cockpit, sessions, tmux
+from . import __version__, config, cockpit, diagnostics, sessions, tmux
 from .config import ensure_config, load_sessions, save_sessions
 from .discovery import discover
 from .names import (
@@ -31,6 +32,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
     sub.add_parser("finder", help=argparse.SUPPRESS)
     sub.add_parser("find-work", help="find a session, window, pane, or agent")
+    attachment_exit = sub.add_parser("attachment-exited", help=argparse.SUPPRESS)
+    for field in (
+        "right_pane", "attachment_id", "generation", "target", "agent_id",
+        "switch_id", "exit_status", "exit_signal", "expected_death",
+    ):
+        attachment_exit.add_argument(field)
+    attachment_exit.add_argument("--parent-run-id")
     sub.add_parser("toggle-sidebar", help="collapse/expand cockpit sidebar")
     focus_sidebar = sub.add_parser("focus-sidebar", help="focus/open cockpit sidebar")
     focus_sidebar.add_argument(
@@ -73,31 +81,42 @@ def _tmux_socket_dir() -> Path:
 
 
 def _run_server_tmux(server: str, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [tmux.tmux_executable(), "-L", server_socket(server), *args],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=config.load_timing().local_command_timeout,
-    )
+    timeout = config.load_timing().local_command_timeout
+    with diagnostics.operation("cli.server_tmux", server=server, timeout=timeout) as operation:
+        result = subprocess.run(
+            [tmux.tmux_executable(), "-L", server_socket(server), *args],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+        operation.fields["returncode"] = result.returncode
+        operation.outcome = "completed" if result.returncode == 0 else "nonzero_exit"
+        return result
 
 
 def _run_legacy_tmux(socket_name: str, *args: str) -> subprocess.CompletedProcess[str]:
     # Legacy servers were created by the tmux found on PATH.
-    return subprocess.run(
-        ["tmux", "-L", socket_name, *args],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=config.load_timing().local_command_timeout,
-    )
+    timeout = config.load_timing().local_command_timeout
+    with diagnostics.operation("cli.legacy_tmux", timeout=timeout) as operation:
+        result = subprocess.run(
+            ["tmux", "-L", socket_name, *args],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+        operation.fields["returncode"] = result.returncode
+        operation.outcome = "completed" if result.returncode == 0 else "nonzero_exit"
+        return result
 
 
 def _legacy_socket_present(server: str) -> bool:
     path = _tmux_socket_dir() / legacy_server_socket(server)
     try:
         mode = os.lstat(path).st_mode
-    except OSError:
+    except OSError as error:
+        diagnostics.error(error, operation="legacy_socket_probe")
         return False
     return stat.S_ISSOCK(mode)
 
@@ -108,22 +127,35 @@ def _cleanup_legacy_server(server: str) -> None:
     socket_name = legacy_server_socket(server)
     try:
         marker = _run_legacy_tmux(socket_name, "show-options", "-v", "-t", tmux.SESSION, "@letee_cockpit")
-        if marker.returncode != 0 or (marker.stdout or "").strip() != "1":
+        if marker.returncode != 0:
+            diagnostics.error(handling="fallback", operation="legacy_marker_probe", returncode=marker.returncode, server=server)
             return
-        _run_legacy_tmux(socket_name, "kill-server")
-    except (OSError, subprocess.SubprocessError):
+        if (marker.stdout or "").strip() != "1":
+            diagnostics.log("legacy_server_unverified", server=server)
+            return
+        result = _run_legacy_tmux(socket_name, "kill-server")
+        if result.returncode != 0:
+            diagnostics.error(handling="ignored", operation="legacy_server_kill", returncode=result.returncode, server=server)
+    except (OSError, subprocess.SubprocessError) as error:
+        diagnostics.error(error, operation="legacy_server_cleanup")
         return
 
 
 def _server_attached(server: str) -> bool | None:
     try:
         marker = _run_server_tmux(server, "show-options", "-v", "-t", tmux.SESSION, "@letee_cockpit")
-        if marker.returncode != 0 or (marker.stdout or "").strip() != "1":
+        if marker.returncode != 0:
+            diagnostics.error(handling="fallback", operation="server_marker_probe", returncode=marker.returncode, server=server)
+            return None
+        if (marker.stdout or "").strip() != "1":
+            diagnostics.log("server_unverified", server=server)
             return None
         clients = _run_server_tmux(server, "list-clients", "-t", tmux.SESSION, "-F", "#{client_name}")
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as error:
+        diagnostics.error(error, operation="server_attached_probe")
         return None
     if clients.returncode != 0:
+        diagnostics.error(handling="fallback", operation="server_clients_probe", returncode=clients.returncode, server=server)
         return None
     return bool(clients.stdout.strip())
 
@@ -131,7 +163,8 @@ def _server_attached(server: str) -> bool | None:
 def list_servers() -> list[tuple[str, bool]]:
     try:
         paths = sorted(_tmux_socket_dir().iterdir(), key=lambda path: path.name)
-    except OSError:
+    except OSError as error:
+        diagnostics.error(error, operation="list_server_sockets")
         return []
     servers: list[tuple[str, bool]] = []
     current_socket = server_socket(DEFAULT_SERVER)
@@ -142,7 +175,8 @@ def list_servers() -> list[tuple[str, bool]]:
         elif path.name.startswith(f"{current_socket}-"):
             try:
                 server = validate_server(path.name.removeprefix(f"{current_socket}-"))
-            except SystemExit:
+            except SystemExit as error:
+                diagnostics.error(error, handling="ignored", operation="server_name_parse")
                 continue
             if server == DEFAULT_SERVER:
                 continue
@@ -152,7 +186,8 @@ def list_servers() -> list[tuple[str, bool]]:
             elif path.name.startswith(f"{legacy_socket}-"):
                 try:
                     legacy_server = validate_server(path.name.removeprefix(f"{legacy_socket}-"))
-                except SystemExit:
+                except SystemExit as error:
+                    diagnostics.error(error, handling="ignored", operation="legacy_server_name_parse")
                     continue
                 if legacy_server != DEFAULT_SERVER:
                     _cleanup_legacy_server(legacy_server)
@@ -175,6 +210,21 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     _configure_server(args.server)
+    if args.command == "attachment-exited":
+        diagnostics.log(
+            "attachment_exited", right_pane=args.right_pane,
+            attachment_id=args.attachment_id or None, generation=int(args.generation) if args.generation else None,
+            target=args.target or None, agent_id=args.agent_id or None, switch_id=args.switch_id or None,
+            exit_status=int(args.exit_status) if args.exit_status else None,
+            exit_signal=(
+                int(args.exit_signal) if args.exit_signal.isdecimal()
+                else int(getattr(signal, "SIG" + args.exit_signal.removeprefix("SIG"), 0)) or None
+            ),
+            expected_death=args.expected_death,
+            parent_run_id=args.parent_run_id or None,
+            intentional=args.expected_death in ("1", "consumed", "succeeded"),
+        )
+        return 0
     if args.command == "sidebar":
         from .sidebar import main as sidebar_main
         return sidebar_main()
@@ -267,17 +317,29 @@ def run_cli(argv: list[str] | None = None) -> int:
     try:
         return main(argv)
     except subprocess.CalledProcessError as error:
+        diagnostics.error(error, handling="reported", operation="cli")
         command = Path(str(error.cmd[0] if isinstance(error.cmd, (list, tuple)) else error.cmd)).name
         reason = (error.stderr or error.stdout or "").strip() or f"exit status {error.returncode}"
         print(f"letee: {command} failed: {reason}", file=sys.stderr)
     except OSError as error:
+        diagnostics.error(error, handling="reported", operation="cli")
         reason = error.strerror or str(error)
         detail = f"{error.filename}: {reason}" if error.filename else reason
         print(f"letee: {detail}", file=sys.stderr)
     except UnicodeError as error:
+        diagnostics.error(error, handling="reported", operation="cli")
         print(f"letee: text decoding failed: {error}", file=sys.stderr)
     except subprocess.SubprocessError as error:
+        diagnostics.error(error, handling="reported", operation="cli")
         print(f"letee: subprocess failed: {error}", file=sys.stderr)
+    except BaseException as error:
+        if isinstance(error, SystemExit) and error.code in (None, 0):
+            diagnostics.log("cli_exit", outcome="completed", exit_code=0)
+        else:
+            diagnostics.error(error, handling="cancel" if isinstance(error, KeyboardInterrupt) else "propagate", operation="cli")
+        raise
+    finally:
+        diagnostics.flush()
     return 1
 
 
