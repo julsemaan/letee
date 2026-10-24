@@ -1,7 +1,9 @@
 import importlib
 import json
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -180,12 +182,22 @@ class WorkspaceTransportTests(unittest.TestCase):
         self.assertEqual(transport.read(), workspace("latest"))
         self.assertIsNone(transport.read())
 
-    def test_default_transport_uses_outer_named_tmux_option_only(self):
+    def test_oversized_workspace_round_trip_uses_private_file_and_small_commands(self):
         calls = []
+        option = [""]
+        large = Workspace(tuple(
+            Session(Target("local", f"work-{index}"), f"${index}", "/tmp/socket")
+            for index in range(200)
+        ))
+        self.assertGreater(len(workspace_to_json(large).encode()), 16384)
 
         def run(command, **kwargs):
             calls.append(command)
-            return subprocess.CompletedProcess(command, 0, workspace_to_json(workspace()), "")
+            if sum(len(arg.encode()) + 1 for arg in command) >= 16384:
+                raise subprocess.CalledProcessError(1, command, stderr="command too long")
+            if "set-option" in command:
+                option[0] = command[-1]
+            return subprocess.CompletedProcess(command, 0, option[0], "")
 
         with patch.object(tmux, "SERVER", "named"), patch.object(tmux, "SOCKET", "letee-named"), patch.object(
             tmux, "tmux_executable", return_value="tmux"
@@ -193,20 +205,49 @@ class WorkspaceTransportTests(unittest.TestCase):
             publisher = runtime.WorkspacePublisher()
             reader = runtime.WorkspaceReader()
             try:
-                publisher.publish(workspace())
-                wait_for(lambda: any("set-option" in call for call in calls))
-                wait_for(lambda: reader.current == workspace())
+                publisher.publish(large)
+                wait_for(lambda: reader.current == large)
+                path = Path(option[0])
+                self.assertEqual(path.read_text(encoding="utf-8"), workspace_to_json(large))
+                self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertIn("letee-named", path.parent.name)
+                for invalid in ("{", ""):
+                    path.write_text(invalid, encoding="utf-8")
+                    time.sleep(0.15)
+                    self.assertEqual(reader.current, large)
+                path.unlink()
+                time.sleep(0.15)
+                self.assertEqual(reader.current, large)
+                publisher.publish(workspace("new"))
+                wait_for(lambda: reader.current == workspace("new"))
+                self.assertEqual(option[0], str(path))
             finally:
                 publisher.close()
                 reader.close()
                 publisher._thread.join(1)
                 reader._thread.join(1)
+        self.assertFalse(path.parent.exists())
+        self.assertTrue(all(sum(len(arg.encode()) + 1 for arg in call) < 1024 for call in calls))
         self.assertEqual(runtime.WORKSPACE_OPTION, "@letee_workspace")
         for call in calls:
             self.assertEqual(call[:3], ["tmux", "-L", "letee-named"])
             self.assertIn(runtime.WORKSPACE_OPTION, call)
             self.assertIn(tmux.SESSION, call)
             self.assertIn(call[3], ("show-options", "set-option"))
+
+    def test_failed_atomic_replacement_keeps_previous_file(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(tmux, "tmux") as command:
+            path = Path(directory) / "workspace.json"
+            previous = workspace_to_json(workspace())
+            runtime._write_workspace(previous, path)
+            command.reset_mock()
+            with patch.object(Path, "replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    runtime._write_workspace(workspace_to_json(workspace("new")), path)
+            self.assertEqual(path.read_text(encoding="utf-8"), previous)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+            command.assert_not_called()
 
     def test_runtime_does_not_import_sidebar(self):
         result = subprocess.run(

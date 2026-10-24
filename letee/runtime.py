@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -335,19 +337,28 @@ class StatusPoller:
             self._poller.close()
 
 
-def _write_workspace(payload: str) -> None:
-    tmux.tmux("set-option", "-t", tmux.SESSION, WORKSPACE_OPTION, payload, capture=True)
+def _write_workspace(payload: str, path: Path) -> None:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as output:
+        temporary = Path(output.name)
+        try:
+            output.write(payload)
+            output.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    tmux.tmux("set-option", "-t", tmux.SESSION, WORKSPACE_OPTION, str(path), capture=True)
 
 
 def _read_workspace() -> str:
-    return tmux.out("show-options", "-qv", "-t", tmux.SESSION, WORKSPACE_OPTION)
+    path = tmux.out("show-options", "-qv", "-t", tmux.SESSION, WORKSPACE_OPTION)
+    return Path(path).read_text(encoding="utf-8")
 
 
 class WorkspacePublisher:
     """Keep only the latest pending snapshot, with one independent writer."""
 
     def __init__(self, writer: Callable[[str], None] | None = None) -> None:
-        self._writer = writer or _write_workspace
+        self._writer = writer
         self._condition = threading.Condition()
         self._stopped = threading.Event()
         self._pending: Workspace | None = None
@@ -363,6 +374,16 @@ class WorkspacePublisher:
             self._condition.notify()
 
     def _run(self) -> None:
+        if self._writer is not None:
+            self._publish_pending()
+        else:
+            # Each publisher owns a private file, advertised only on its outer server.
+            with tempfile.TemporaryDirectory(prefix=f"letee-workspace-{tmux.SOCKET}-") as directory:
+                path = Path(directory) / "workspace.json"
+                self._writer = lambda payload: _write_workspace(payload, path)
+                self._publish_pending()
+
+    def _publish_pending(self) -> None:
         while not self._stopped.is_set():
             with self._condition:
                 self._condition.wait_for(lambda: self._pending is not None or self._stopped.is_set())
@@ -390,7 +411,7 @@ class WorkspacePublisher:
 
 
 class WorkspaceReader:
-    """Read the outer tmux option in the background, retaining the latest good value."""
+    """Read the advertised snapshot file in the background, retaining the latest good value."""
 
     def __init__(self, reader: Callable[[], str] | None = None) -> None:
         self._reader = reader or _read_workspace
