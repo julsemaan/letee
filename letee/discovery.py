@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import os
@@ -13,11 +13,13 @@ import tempfile
 import time
 
 from .config import load_hosts, load_persistent_ssh, load_timing
-from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
+from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, validate_host
 from .sessions import ssh_command
 
 
-PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}\t#{window_name}"
+# After the legacy colon header: TAB session_id:window_index:pane_index TAB
+# window_name. The final name is unescaped and may contain tabs and colons.
+PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}\t#{session_id}:#{window_index}:#{pane_index}\t#{window_name}"
 PANES_COMMAND = f'tmux -L {shlex.quote(INNER_SERVER_SOCKET)} list-panes -a -F "{PANES_FORMAT}"'
 REMOTE_SEPARATOR = "__LETEE_AGENT_STATUS__"
 _REMOTE_READER = """import glob,json,os,pathlib
@@ -62,6 +64,15 @@ class SourceSnapshot:
     panes: tuple[PaneTarget, ...] = ()
     agents: tuple[AgentEntry, ...] = ()
     focused_panes: frozenset[PaneTarget] = frozenset()
+    _pane_metadata: tuple = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Pane identity remains stable for alert keys; discovery still notices UI changes.
+        object.__setattr__(self, "_pane_metadata", tuple(
+            (pane.window_name, pane.session_id, pane.window_index, pane.pane_index,
+             pane.window_active, pane.pane_active)
+            for pane in self.panes
+        ))
 
 
 @dataclass(frozen=True)
@@ -76,6 +87,15 @@ class SessionSnapshot:
             for snapshot in self.remotes.values()
             if snapshot and snapshot.available
             for target in snapshot.sessions
+        )
+
+    @property
+    def panes(self) -> tuple[PaneTarget, ...]:
+        return tuple(
+            pane
+            for source in (self.local, *self.remotes.values())
+            if source and source.available
+            for pane in source.panes
         )
 
     @property
@@ -131,10 +151,21 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None) -> 
             name, window_id, pane_id, bell_flag, window_flags, socket_path = parts
             pane_active = window_active = "0"
         socket_path, _, window_name = socket_path.partition("\t")
+        session_id = ""
+        window_index = pane_index = 0
         try:
+            metadata, separator, final_name = window_name.partition("\t")
+            if separator and metadata.startswith("$"):
+                session_id, window_index_text, pane_index_text = metadata.split(":")
+                if not SESSION_ID_RE.fullmatch(session_id):
+                    continue
+                window_index, pane_index = int(window_index_text), int(pane_index_text)
+                window_name = final_name
             target = Target("local", name) if kind == "local" else Target("ssh", name, host)
-            pane = PaneTarget(target, window_id, pane_id, socket_path, window_name)
-        except SystemExit:
+            pane = PaneTarget(target, window_id, pane_id, socket_path, window_name,
+                              session_id, window_index, pane_index,
+                              window_active == "1", pane_active == "1")
+        except (SystemExit, ValueError):
             continue
         if target not in sessions:
             sessions.append(target)

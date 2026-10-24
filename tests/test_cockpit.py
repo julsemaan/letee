@@ -715,6 +715,7 @@ class CockpitLayoutTest(unittest.TestCase):
                 ("bind-key", "C-x", "send-prefix"),
                 ("bind-key", "d", "detach-client"),
                 ("bind-key", "h", "run-shell", cockpit._letee_command("toggle-sidebar")),
+                ("bind-key", "f", "run-shell", "-b", cockpit._letee_command("find-work")),
                 ("bind-key", "q", "kill-session", "-t", "letee"),
                 ("bind-key", "a", "run-shell", f"{cockpit.FOCUS_SIDEBAR} agents"),
                 ("bind-key", "s", "run-shell", f"{cockpit.FOCUS_SIDEBAR} sessions"),
@@ -757,9 +758,9 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit, "_option", return_value=""), patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)):
             cockpit._install_bindings("C-x", "%1", "%2")
 
-        self.assertEqual(calls[6], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
+        self.assertEqual(calls[7], ("bind-key", "a", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar agents"))
         self.assertIn(("bind-key", "h", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work toggle-sidebar"), calls)
-        self.assertEqual(calls[18], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
+        self.assertEqual(calls[19], ("bind-key", "1", "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work switch-session 1"))
         for key, action in (("Left", "previous_agent"), ("Right", "next_agent"), ("Up", "previous_session"), ("Down", "next_session")):
             self.assertIn(("bind-key", key, "run-shell", f"{cockpit.shlex.quote(cockpit.sys.executable)} -m letee -L work focus-sidebar {action}"), calls)
 

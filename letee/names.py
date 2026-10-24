@@ -5,6 +5,7 @@ import re
 from typing import Literal
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+SESSION_ID_RE = re.compile(r"^\$\d+$")
 WINDOW_ID_RE = re.compile(r"^@\d+$")
 PANE_ID_RE = re.compile(r"^%\d+$")
 DEFAULT_SERVER = "default"
@@ -79,6 +80,11 @@ class PaneTarget:
     pane_id: str
     socket_path: str
     window_name: str = field(default="", compare=False, hash=False)
+    session_id: str = field(default="", compare=False, hash=False)
+    window_index: int = field(default=0, compare=False, hash=False)
+    pane_index: int = field(default=0, compare=False, hash=False)
+    window_active: bool = field(default=False, compare=False, hash=False)
+    pane_active: bool = field(default=False, compare=False, hash=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.target, Target):
@@ -87,6 +93,24 @@ class PaneTarget:
             raise SystemExit(f"Invalid window ID: {self.window_id!r}")
         if not PANE_ID_RE.fullmatch(self.pane_id):
             raise SystemExit(f"Invalid pane ID: {self.pane_id!r}")
+        if not self.socket_path:
+            raise SystemExit("Invalid socket path: must not be empty")
+
+
+@dataclass(frozen=True)
+class WindowTarget:
+    target: Target
+    session_id: str
+    window_id: str
+    socket_path: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.target, Target):
+            raise SystemExit(f"Invalid target: {self.target!r}")
+        if not SESSION_ID_RE.fullmatch(self.session_id):
+            raise SystemExit(f"Invalid session ID: {self.session_id!r}")
+        if not WINDOW_ID_RE.fullmatch(self.window_id):
+            raise SystemExit(f"Invalid window ID: {self.window_id!r}")
         if not self.socket_path:
             raise SystemExit("Invalid socket path: must not be empty")
 

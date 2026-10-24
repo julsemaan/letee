@@ -49,6 +49,7 @@ The default prefix for these examples is `C-s`. `-L <name>` selects a named oute
 | `letee version` | Print the letee version. |
 | `letee init` | Create missing `config.toml` and `wrapper.tmux.conf` files. |
 | `letee list` | List discovered local and remote targets. |
+| `letee find-work` | Open Find in an existing cockpit. |
 | `letee list-servers` | List running verified letee outer servers. |
 | `letee focus-sidebar [region]` | Focus or reopen the sidebar and inject a sidebar action. With no region, focus Sessions. |
 | `letee switch <target>` | Switch the right pane to a target. |
@@ -85,6 +86,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s s` | Show the sidebar and select the active session in Sessions without switching. Recreate it if it was quit. |
 | `C-s +` | Show the sidebar and open the Add session menu. Recreate it if it was quit. |
 | `C-s a` | Show the sidebar and select the active agent in Agents without switching. Recreate it if it was quit. |
+| `C-s f` | Open Find without changing the sidebar layout. |
 | `C-s Left` / `C-s Right` | Jump to the previous or next agent in displayed order across tracked sessions, wrapping at both ends. |
 | `C-s Up` / `C-s Down` | Switch to the previous or next tracked session in persisted manual order, wrapping at both ends. |
 | `C-s r` | Remove the active right-pane session from letee without killing its tmux session. |
@@ -124,6 +126,25 @@ The focus commands reveal the selected row even after scrolling. Without a match
 These controls stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F3` through `F12`, and session slots `1` through `9`. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
 
 The cockpit sends internal `F6` then `F3` for previous session and `F6` then `F4` for next session. Agent cycling uses `F7` then `F12` or `F5`. These sequences are independent of custom outer bindings.
+
+## Find work
+
+Press `C-s f`, click Find in the sidebar, or run `letee find-work` to open the finder popup. For a named cockpit, use `letee -L work find-work`. Find requires an existing cockpit and leaves an expanded, compact, or hidden sidebar unchanged. Canceling restores the original focus; opening a destination focuses the right pane.
+
+The tree groups sessions, their windows, and agents. Type to filter by name or full path, including the host and parent session. Matching ignores case and matches letters in order within each space-separated term. Terms can appear in either order: `letee fix/123` and `fix/123 letee` find the same destinations. Exact and contiguous matches rank ahead of scattered letters.
+
+| Control | Action |
+| --- | --- |
+| `Up` / `Down` | Select a row. |
+| `Tab` | Expand or collapse the selected branch. |
+| `Ctrl-T` | Cycle All, Sessions, Windows, and Agents scopes. |
+| `Enter` | Open the selected destination. |
+| `Left` / `Right`, `Home` / `End` | Move the query cursor. |
+| `Backspace` / `Delete` | Edit the query. |
+| `Ctrl-U` | Clear the query. |
+| `Esc` / `Ctrl-C` | Cancel. |
+
+Missing destinations are unavailable in Find and cannot be opened there. The Sessions sidebar retains its existing missing-session recovery: select a missing session and press `Enter` to recreate it.
 
 ## Tracked sessions and ordering
 

@@ -67,6 +67,10 @@ For keyboard enthusiasts, these are the default keys.
 
 `C-s a` focuses Agents. Use `j` and `k` to move, then press `Enter` to open the selected agent's pane.
 
+### Find work
+
+`C-s f` or the sidebar's Find button opens a searchable tree of sessions, windows, and agents. Type to filter, use arrow keys to select, and press `Enter` to open. `Esc` cancels without changing your sidebar layout or focus.
+
 ### Add session
 
 `C-s +` opens the Add session screen. With one location available it opens the session search directly, otherwise pick a location first. Typing searches every discovered session on that host, including tracked sessions. Press `Enter` on a tracked match to switch to it, an untracked match to track and open it, or the `＋` row to create and track a new session.

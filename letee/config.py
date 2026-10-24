@@ -39,6 +39,7 @@ CONFIG_TEXT += "\n[timing]\n" + "".join(f"{key} = {value}\n" for key, value in a
 DEFAULT_KEYBINDINGS: dict[str, str] = {
     "focus_agents": "prefix+a",
     "focus_sessions": "prefix+s",
+    "find_work": "prefix+f",
     "add_session": "prefix++",
     "remove_active": "prefix+r",
     "kill_active": "prefix+x",

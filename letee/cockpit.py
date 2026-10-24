@@ -24,7 +24,7 @@ from .config import (
     load_sidebar_keybindings,
     load_sidebar_width,
 )
-from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, parse_target
+from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, WindowTarget, parse_target
 from . import diagnostics, sessions, tmux
 
 
@@ -62,13 +62,14 @@ def help_command(prefix: str, keybindings: dict[str, str] | None = None, sidebar
             keybindings = DEFAULT_KEYBINDINGS
     if sidebar_keybindings is None:
         sidebar_keybindings = load_sidebar_keybindings()
-    kb = keybindings
+    kb = DEFAULT_KEYBINDINGS | keybindings
     skb = sidebar_keybindings
     text = f"""letee
 
 Navigation
   {_display_key(prefix, kb["focus_agents"])}  focus/open Agents
   {_display_key(prefix, kb["focus_sessions"])}  focus/open Sessions
+  {_display_key(prefix, kb["find_work"])}  find work
   {_display_key(prefix, kb["add_session"])}  add session
   {_display_key(prefix, kb["remove_active"])}  remove active session
   {_display_key(prefix, kb["kill_active"])}  kill and remove active session (confirm)
@@ -346,6 +347,7 @@ def _install_bindings(
 ) -> None:
     if keybindings is None:
         keybindings = load_keybindings()
+    keybindings = DEFAULT_KEYBINDINGS | keybindings
     help_cmd = help_command(prefix, keybindings)
     try:
         old_raw = _option(ROOT_KEYS_OPTION)
@@ -364,6 +366,7 @@ def _install_bindings(
     tmux.tmux("bind-key", prefix, "send-prefix")
     _bind_key(keybindings["detach"], "detach-client")
     _bind_key(keybindings["toggle_sidebar"], "run-shell", _letee_command("toggle-sidebar"))
+    _bind_key(keybindings["find_work"], "run-shell", "-b", _letee_command("find-work"))
     _bind_key(keybindings["quit"], "kill-session", "-t", tmux.SESSION)
     _bind_key(keybindings["focus_agents"], "run-shell", _focus_sidebar_command("agents"))
     _bind_key(keybindings["focus_sessions"], "run-shell", _focus_sidebar_command("sessions"))
@@ -691,6 +694,16 @@ def expand_sidebar(*, focus_right: bool = False) -> None:
         tmux.tmux("select-pane", "-t", right)
 
 
+def find_work() -> int:
+    """Open Find without changing the sidebar layout or underlying pane focus."""
+    if not _valid():
+        raise SystemExit(NO_COCKPIT)
+    return tmux.tmux(
+        "display-popup", "-E", "-w", "80%", "-h", "80%", "-x", "C", "-y", "C",
+        _letee_command("finder"), timeout=None,
+    ).returncode
+
+
 def toggle_sidebar() -> int:
     if not _valid():
         raise SystemExit(NO_COCKPIT)
@@ -873,6 +886,23 @@ def switch(
         **_switch_fields(target, pane, switch_id, action_id, input_id),
         agent_id=agent_id,
     )
+
+
+def open_session(target: Target, attach_command: str | Callable[[], str] | None = None) -> None:
+    """Open a session, deferring attachment preparation unless already supplied."""
+    switch(target, attach_command if attach_command is not None else lambda: sessions.attach_command(target))
+
+
+def open_window(window: WindowTarget, attach_command: str | Callable[[], str] | None = None) -> None:
+    """Open an existing window without selecting an agent or a different pane."""
+    switch(window.target, attach_command if attach_command is not None else lambda: sessions.window_attach_command(window))
+
+
+def open_agent(
+    pane_target: PaneTarget, agent_id: str, attach_command: str | Callable[[], str] | None = None,
+) -> None:
+    """Open an agent's exact pane using the existing switch behavior."""
+    switch(pane_target.target, attach_command if attach_command is not None else lambda: sessions.pane_attach_command(pane_target), agent_id)
 
 
 def set_expected_right_pane_death(target: Target | None) -> None:

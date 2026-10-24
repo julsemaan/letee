@@ -19,16 +19,21 @@ from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
 
 _overlay_patch = None
+_publisher_patch = None
 
 
 def setUpModule():
     # Exact-command assertions assume the overlay is off; overlay tests enable it locally.
-    global _overlay_patch
+    global _overlay_patch, _publisher_patch
     _overlay_patch = patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=False)
     _overlay_patch.start()
+    # Sidebar loop tests must never publish to a host tmux server.
+    _publisher_patch = patch.object(sidebar.runtime, "WorkspacePublisher")
+    _publisher_patch.start()
 
 
 def tearDownModule():
+    _publisher_patch.stop()
     _overlay_patch.stop()
 
 
