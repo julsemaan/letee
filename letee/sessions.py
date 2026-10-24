@@ -18,7 +18,7 @@ import time
 
 from . import diagnostics
 from .config import load_persistent_ssh, load_timing, load_tmux_config_overlay
-from .names import INNER_SERVER_SOCKET, PaneTarget, Target, validate_host
+from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, WindowTarget, validate_host
 
 
 OVERLAY_FILE = Path(__file__).with_name("tmux-overlay.conf")
@@ -498,6 +498,70 @@ def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None)
     if target.kind == "local":
         return f"env -u TMUX {command}"
     return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
+
+
+def _existing_attach_command(
+    target: Target, session_id: str, socket_path: str, *,
+    window_id: str = "", pane_id: str = "", overlay: bool | None = None,
+) -> str:
+    if not SESSION_ID_RE.fullmatch(session_id):
+        raise SystemExit(f"Invalid session ID: {session_id!r}")
+    if not socket_path:
+        raise SystemExit("Invalid socket path: must not be empty")
+    query = ("tmux", "-S", socket_path, "list-panes", "-a", "-F",
+             "#{session_id}\t#{window_id}\t#{pane_id}")
+    output = _run(
+        "find", target,
+        ssh_command(target.host or "", shlex.join(query)) if target.kind == "ssh" else query,
+        **({"env": _inner_server_env()} if target.kind == "local" else {}),
+    )
+    expected = (session_id, window_id, pane_id) if pane_id else (session_id, window_id) if window_id else (session_id,)
+    if not any(len(fields := line.split("\t")) == 3 and tuple(fields[:len(expected)]) == expected
+               for line in output.splitlines()):
+        raise SystemExit(f"find {target.format()} failed: target no longer exists")
+
+    overlay = load_tmux_config_overlay() if overlay is None else overlay
+    if overlay and target.kind == "ssh":
+        _install_overlay(target)
+    prefix = f"tmux -S {shlex.quote(socket_path)}"
+    if target.kind == "local":
+        prefix = f"env -u TMUX {prefix}"
+    parts = []
+    if overlay:
+        parts.append(f"source-file {_overlay_source(target)}")
+    if window_id:
+        parts.append(f"select-window -t {shlex.quote(session_id + ':' + window_id)}")
+    if pane_id:
+        parts.append(f"select-pane -t {shlex.quote(session_id + ':' + window_id + '.' + pane_id)}")
+    parts.append(f"attach-session -t {shlex.quote(session_id)}")
+    # Separate tmux invocations stop on failed selection, unlike tmux command queues.
+    command = " && ".join(f"{prefix} {part}" for part in parts)
+    if target.kind == "local":
+        return command
+    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
+
+
+def existing_attach_command(
+    target: Target, session_id: str, socket_path: str, *, overlay: bool | None = None,
+) -> str:
+    """Prepare attachment to an existing stable session ID without creating it."""
+    return _existing_attach_command(target, session_id, socket_path, overlay=overlay)
+
+
+def window_attach_command(window: WindowTarget, *, overlay: bool | None = None) -> str:
+    """Prepare an exact window selection without changing its selected pane."""
+    return _existing_attach_command(
+        window.target, window.session_id, window.socket_path,
+        window_id=window.window_id, overlay=overlay,
+    )
+
+
+def existing_pane_attach_command(pane: PaneTarget, *, overlay: bool | None = None) -> str:
+    """Prepare attachment only if the pane still belongs to this session and window."""
+    return _existing_attach_command(
+        pane.target, pane.session_id, pane.socket_path,
+        window_id=pane.window_id, pane_id=pane.pane_id, overlay=overlay,
+    )
 
 
 def _remote_metadata(operation: str, target: Target, result) -> None:

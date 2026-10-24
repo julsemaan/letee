@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import curses
-import locale
 import os
 import platform
+import shlex
 import subprocess
 import textwrap
 import threading
 import time
-import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -17,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
 
-from . import __version__, cockpit, diagnostics, sessions
+from . import __version__, cockpit, diagnostics, runtime, sessions, tui, workspace
 from .discovery import DiscoveryPoller, SessionSnapshot
 from .config import (
     load_agent_panel_resize_step,
@@ -29,6 +28,12 @@ from .config import (
     save_sessions,
 )
 from .names import PaneTarget, Target, validate_name
+from .workspace import AgentActivity, visible_agents
+from .runtime import (
+    StatusResult as StatusResult,
+    StatusPollState as StatusPollState,
+    _focused_agent_id as _focused_agent_id,
+)
 
 
 UI_POLL_INTERVAL_MS = 50
@@ -38,18 +43,12 @@ MOVE_SCROLL_INTERVAL = 0.2
 MOVE_HANDLE_WIDTH = 3
 MOUSE_RECOVERY_WINDOW = 1.0
 LAYOUT_REPAIR_INTERVAL = 0.5
-STATUS_POLL_INTERVAL = 0.1
-UNICODE_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-ASCII_SPINNER = "|/-\\"
-_ATTENTION_STATES = {"input-required", "auth-required", "failed", "rejected"}
-UNICODE_STATUS_ICONS = {
-    "submitted": "◷", "idle": "○", "completed": "✓", "input-required": "?",
-    "auth-required": "⚿", "failed": "✕", "rejected": "⊘", "canceled": "−", "unknown": "?",
-}
-ASCII_STATUS_ICONS = {
-    "submitted": ".", "idle": "o", "completed": "+", "input-required": "?",
-    "auth-required": "@", "failed": "x", "rejected": "!", "canceled": "-", "unknown": "?",
-}
+STATUS_POLL_INTERVAL = runtime.STATUS_POLL_INTERVAL
+UNICODE_SPINNER = tui.UNICODE_SPINNER
+ASCII_SPINNER = tui.ASCII_SPINNER
+_ATTENTION_STATES = tui.ATTENTION_STATES
+UNICODE_STATUS_ICONS = tui.UNICODE_STATUS_ICONS
+ASCII_STATUS_ICONS = tui.ASCII_STATUS_ICONS
 _PREFIX_ACTION_KEYS = {
     "add": curses.KEY_F11,
     "remove": curses.KEY_F8,
@@ -159,29 +158,6 @@ class EffectResult:
     reset_matched: bool = False
     completed_at: float | None = field(default=None, compare=False)
     restoration_overlay: str | None = None
-
-
-@dataclass(frozen=True)
-class StatusResult:
-    snapshot: SessionSnapshot
-    current_target: Target | None
-    bell_target: Target | None
-    current_agent: str | None
-    pane_active: bool
-    generation: int
-    refreshed: bool = False
-    suppression_expired: bool = False
-    sampled: bool = False
-
-
-@dataclass(frozen=True)
-class StatusPollState:
-    snapshot: SessionSnapshot
-    current_target: Target | None
-    bell_target: Target | None
-    current_agent: str | None
-    pane_active: bool
-    suppressed_target: Target | None
 
 
 def _trace_target(value: Target | PaneTarget | None) -> str | None:
@@ -357,84 +333,32 @@ def _visible_entry_trace(
     ]
 
 
-_COLOR: dict[str, int] = {}
-
-
-def _ascii() -> bool:
-    enc = locale.getpreferredencoding(False).lower()
-    return os.environ.get("LETEE_ASCII") == "1" or "utf" not in enc
+# Preserve sidebar-local patch points while sharing terminal implementations.
+_COLOR = tui._COLOR
+_ascii = tui.ascii_mode
+_fade = tui.fade
 
 
 def _icons() -> dict[str, str]:
-    if _ascii():
-        return {"local": "*", "remote": "*", "create": "+", "unavailable": "!", "selected": ">", "enter": "<-"}
-    return {"local": "●", "remote": "◆", "create": "＋", "unavailable": "⚠", "selected": "›", "enter": "↵"}
+    return tui.icons(ascii=_ascii())
 
 
 def _spinner_frame(now: float) -> str:
-    frames = ASCII_SPINNER if _ascii() else UNICODE_SPINNER
-    return frames[int(now * 10) % len(frames)]
+    return tui.spinner_frame(now, ascii=_ascii())
 
 
 def _status_icon(status: str, now: float) -> str:
-    if status == "working":
-        return _spinner_frame(now)
-    icons = ASCII_STATUS_ICONS if _ascii() else UNICODE_STATUS_ICONS
-    return icons.get(status, icons["unknown"])
+    return tui.status_icon(status, now, ascii=_ascii())
 
 
 def _init_colors() -> None:
     global _COLOR
-    _COLOR = {}
-    try:
-        if not curses.has_colors():
-            return
-        curses.start_color()
-        curses.use_default_colors()
-        if getattr(curses, "COLORS", 0) >= 256:
-            charcoal, teal, green, mint, orange, red = 233, 30, 36, 79, 214, 167
-        else:
-            charcoal, teal, green, mint, orange, red = (
-                curses.COLOR_BLACK, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_CYAN,
-                curses.COLOR_YELLOW, curses.COLOR_RED
-            )
-        pairs = {
-            "title": (1, mint, charcoal, curses.A_BOLD),
-            "active": (2, orange, -1, curses.A_BOLD),
-            "local": (3, green, -1, curses.A_BOLD),
-            "remote": (4, teal, -1, curses.A_BOLD),
-            "create": (5, mint, -1, 0),
-            "unavailable": (6, curses.COLOR_YELLOW, -1, curses.A_DIM),
-            "danger": (7, curses.COLOR_RED, -1, 0),
-            "hints": (8, teal, -1, curses.A_DIM),
-            "add_entry": (9, charcoal, mint, curses.A_BOLD),
-            "slot": (10, mint, -1, curses.A_BOLD | curses.A_REVERSE),
-            "slot_active": (11, orange, -1, curses.A_BOLD | curses.A_REVERSE),
-            "agent_working": (12, green, -1, 0),
-            "agent_submitted": (13, teal, -1, 0),
-            "agent_input_required": (14, red, -1, curses.A_BOLD),
-            "agent_auth_required": (15, curses.COLOR_MAGENTA, -1, curses.A_BOLD),
-            "agent_failed": (16, curses.COLOR_RED, -1, curses.A_BOLD),
-            "agent_rejected": (17, curses.COLOR_RED, -1, curses.A_BOLD),
-            "agent_completed": (18, mint, -1, 0),
-            "agent_unknown": (19, curses.COLOR_YELLOW, -1, 0),
-            "move": (20, teal, -1, curses.A_BOLD),
-        }
-        for name, (pair, fg, bg, attr) in pairs.items():
-            curses.init_pair(pair, fg, bg)
-            _COLOR[name] = curses.color_pair(pair) | attr
-        _COLOR["section"] = _COLOR["create"] | curses.A_BOLD
-    except curses.error as error:
-        diagnostics.error(error, operation="init_colors")
-        _COLOR = {}
+    tui.init_colors()
+    _COLOR = tui._COLOR
 
 
 def _color(name: str) -> int:
-    return _COLOR.get(name, 0)
-
-
-def _fade(attr: int) -> int:
-    return attr | curses.A_DIM
+    return tui.color(name, palette=_COLOR)
 
 
 def _pane_active() -> bool:
@@ -442,18 +366,7 @@ def _pane_active() -> bool:
 
 
 def _target_status(target: Target, snapshot: SessionSnapshot) -> str | None:
-    if target in snapshot.sessions:
-        return None
-    if target.kind == "local":
-        return "missing" if snapshot.local.available else "unavailable"
-    if target.host not in snapshot.remotes:
-        return "unavailable"
-    source = snapshot.remotes[target.host]
-    if source is None:
-        return "connecting…"
-    if not source.available:
-        return "reconnecting…"
-    return "missing"
+    return workspace.target_status(target, snapshot)
 
 
 def _should_show_unavailable(target: Target, snapshot: SessionSnapshot) -> bool:
@@ -858,8 +771,6 @@ def _agent_entries(
 ) -> list[Entry]:
     if transition_at is None:
         transition_at = idle_since
-    tracked = set(favorites)
-    hidden_agents = hidden_agents or set()
     entries = [
         Entry(
             agent.agent_name,
@@ -872,9 +783,7 @@ def _agent_entries(
             runtime_updated_at=agent.runtime_updated_at,
             task_status_timestamp=agent.task_status_timestamp,
         )
-        for agent in snapshot.agents
-        if agent.pane_target.target in tracked
-        and (agent.pane_target, agent.agent_id) not in hidden_agents
+        for agent in visible_agents(snapshot, favorites, hidden_agents)
     ]
     entries.sort(
         key=lambda entry: _agent_sort_key(
@@ -884,13 +793,6 @@ def _agent_entries(
     return entries
 
 
-def _focused_agent_id(snapshot: SessionSnapshot, current_target: Target | None, fallback: str | None) -> str | None:
-    focused = {pane for pane in snapshot.focused_panes if pane.target == current_target}
-    if not focused:
-        return fallback
-    return next((agent.agent_id for agent in snapshot.agents if agent.pane_target in focused), None)
-
-
 def _update_agent_alerts(
     state: SidebarState,
     snapshot: SessionSnapshot,
@@ -898,38 +800,12 @@ def _update_agent_alerts(
     now: float | None = None,
     hidden_agents: set[tuple[PaneTarget, str]] | None = None,
 ) -> bool:
-    attention_states = {"idle", "completed", "input-required", "auth-required", "failed", "rejected", "canceled"}
-    tracked = set(state.favorites)
-    hidden_agents = hidden_agents or set()
-    agents = {
-        (agent.pane_target, agent.agent_id): agent.task_state or "idle"
-        for agent in snapshot.agents
-        if agent.pane_target.target in tracked
-        and (agent.pane_target, agent.agent_id) not in hidden_agents
-    }
-    now_value = now
-    for key, status in agents.items():
-        if key in state.agent_states and state.agent_states[key] != status:
-            if now_value is None:
-                now_value = time.monotonic()
-            state.agent_transition_at[key] = now_value
-    state.agent_transition_at = {
-        key: ts for key, ts in state.agent_transition_at.items() if key in agents
-    }
-    active = {
-        key
-        for key in agents
-        if key[0] in snapshot.focused_panes and key[0].target == current_target
-    }
-    new_alerts = {
-        key for key, status in agents.items()
-        if state.agent_states.get(key) == "working" and status in attention_states and key not in active
-    }
-    state.agent_alerts.intersection_update(agents)
-    state.agent_alerts.difference_update(active)
-    state.agent_alerts.update(new_alerts)
-    state.agent_states = agents
-    return bool(new_alerts)
+    activity = AgentActivity(state.agent_states, state.agent_transition_at, state.agent_alerts)
+    changed = activity.update(snapshot, state.favorites, current_target, now, hidden_agents)
+    state.agent_states = activity.states
+    state.agent_transition_at = activity.transition_at
+    state.agent_alerts = activity.alerts
+    return changed
 
 
 def _selectable(entries: list[Entry]) -> list[int]:
@@ -1211,18 +1087,18 @@ def _perform_effect(effect: Effect, favorites: tuple[Target, ...]) -> EffectResu
                     raise
                 if _current_target() != effect.target:
                     return EffectResult(effect, planned, stale_navigation=True)
-                cockpit.switch(effect.target, attach_command)
+                cockpit.open_session(effect.target, attach_command)
             else:
-                cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
+                cockpit.open_session(effect.target)
         elif effect.kind == "switch_pane" and isinstance(effect.target, PaneTarget):
-            cockpit.switch(effect.target.target, lambda: sessions.pane_attach_command(effect.target), effect.message)
+            cockpit.open_agent(effect.target, effect.message)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
             sessions.kill_agent(effect.target)
         elif effect.kind == "create" and isinstance(effect.target, Target):
             sessions.create(effect.target)
             if planned != favorites:
                 save_sessions(list(planned))
-            cockpit.switch(effect.target, lambda: sessions.attach_command(effect.target))
+            cockpit.open_session(effect.target)
         elif effect.kind == "rename" and isinstance(effect.target, Target):
             renamed = _renamed_target(effect)
             if renamed is None:
@@ -1679,276 +1555,25 @@ def _current_target() -> Target | None:
     return cockpit.current_target()
 
 
-class AsyncStatusPoller:
-    def __init__(self, poller: DiscoveryPoller, current_target: Target | None) -> None:
-        self._poller = poller
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="letee-status")
-        self._future: Future[StatusResult] | None = None
-        self._commands: list[tuple[str, Target | None]] = []
-        self._next_poll = 0.0
-        self.status_sampled = False
-        self.snapshot = poller.snapshot
-        self.current_target = current_target
-        self.bell_target: Target | None = None
-        self.current_agent: str | None = None
-        self.pane_active = True
-        self._generation = 0
-        self._refresh_pending = False
-        self._refresh_target: Target | None = None
-        self._pending_agent: tuple[PaneTarget, str] | None = None
-        self._suppressed_target: Target | None = None
-        debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
-        # Diagnostic identity must not participate in snapshot equality.
-        self.snapshot_trace: dict[str, object] = {"snapshot_id": debug.new_id("snapshot")}
-        self._future_trace: dict[str, object] = {}
-
-    @property
-    def pending_agent(self) -> tuple[PaneTarget, str] | None:
-        return self._pending_agent
-
-    def _poll_state(self) -> StatusPollState:
-        return StatusPollState(
-            self.snapshot,
-            self.current_target,
-            self.bell_target,
-            self.current_agent,
-            self.pane_active,
-            self._suppressed_target,
-        )
-
-    def _sample(
-        self,
-        commands: tuple[tuple[str, Target | None], ...],
-        generation: int,
-        state: StatusPollState | None = None,
-    ) -> StatusResult:
-        state = state or self._poll_state()
-        snapshot = state.snapshot
-        current_target = state.current_target
-        bell_target = state.bell_target
-        stored_agent = state.current_agent
-        pane_active = state.pane_active
-        suppression_expired = False
-        sampled = False
-        try:
-            for command, target in commands:
-                if command == "discard" and target is not None:
-                    self._poller.discard(target)
-                elif command == "refresh":
-                    self._poller.refresh()
-            status = cockpit.status_snapshot()
-            if status is None:
-                raise SystemExit("invalid cockpit status snapshot")
-            sampled = True
-            suppressed_target = state.suppressed_target
-            suppression_expired = (
-                suppressed_target is not None
-                and status.current_target != suppressed_target
-            )
-            if suppression_expired:
-                suppressed_target = None
-            current_target = status.current_target if status.current_target is not None else state.current_target
-            if current_target == suppressed_target:
-                current_target = None
-            active_host = current_target.host if current_target and current_target.kind == "ssh" else None
-            self._poller.tick(active_host)
-            snapshot = self._poller.snapshot
-            bell_target = status.bell_target
-            stored_agent = status.current_agent
-            pane_active = status.pane_active
-        except (OSError, SystemExit, subprocess.SubprocessError) as error:
-            diagnostics.error(error, handling="fallback", operation="status_sample", generation=generation)
-        current_agent = _focused_agent_id(snapshot, current_target, stored_agent)
-        return StatusResult(
-            snapshot,
-            current_target,
-            bell_target,
-            current_agent,
-            pane_active,
-            generation,
-            any(command == "refresh" for command, _ in commands),
-            suppression_expired,
-            sampled,
-        )
-
-    def _run_sample(
-        self,
-        commands: tuple[tuple[str, Target | None], ...],
-        generation: int,
-        state: StatusPollState,
-        trace: dict[str, object],
-    ) -> StatusResult:
-        with diagnostics.get_diagnostics().context(**trace):
-            diagnostics.log("status_worker_started", generation=generation)
-            with diagnostics.operation("status_sample", generation=generation):
-                result = self._sample(commands, generation, state)
-            diagnostics.log(
-                "status_worker_completed", generation=generation,
-                sampled=result.sampled, refreshed=result.refreshed,
-                session_count=len(result.snapshot.sessions), agent_count=len(result.snapshot.agents),
-                local_available=result.snapshot.local.available,
-                remote_states={host: "pending" if source is None else "available" if source.available else "unavailable"
-                               for host, source in result.snapshot.remotes.items()},
-                discovery_requests={"local": result.snapshot.local.request_id,
-                                    **{host: source.request_id if source else None
-                                       for host, source in result.snapshot.remotes.items()}},
-            )
-            return result
-
-    def tick(self, now: float) -> bool:
-        debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
-        changed = False
-        self.status_sampled = False
-        if self._future is not None and self._future.done():
-            with debug.context(**self._future_trace):
-                try:
-                    with diagnostics.operation("status_collect"):
-                        result = self._future.result()
-                except BaseException:
-                    # status_collect records the exception before this result boundary.
-                    debug.emit("status_result", accepted=False, reason="worker_failed", generation=self._generation)
-                    raise
-            self._future = None
-            accepted = result.generation == self._generation
-            debug.emit(
-                "status_result", **self._future_trace, accepted=accepted,
-                reason="current_generation" if accepted else "generation_changed",
-                generation=result.generation, current_generation=self._generation,
-                sampled=result.sampled, refreshed=result.refreshed,
-                discovery_requests={"local": result.snapshot.local.request_id,
-                                    **{host: source.request_id if source else None
-                                       for host, source in result.snapshot.remotes.items()}},
-            )
-            if accepted:
-                self.snapshot_trace = dict(self._future_trace)
-                changed = (
-                    result.snapshot != self.snapshot
-                    or result.current_target != self.current_target
-                )
-                self.status_sampled = result.sampled
-                self.snapshot = result.snapshot
-                if result.refreshed is True:
-                    self._refresh_pending = any(
-                        command == "refresh" for command, _ in self._commands
-                    )
-                if self._refresh_target is not None:
-                    target = self._refresh_target
-                    source = self.snapshot.remotes.get(target.host) if target.kind == "ssh" else None
-                    if (
-                        target in self.snapshot.sessions
-                        or (result.refreshed is True and target.kind == "local")
-                        or (source is not None and not source.available)
-                    ):
-                        self._refresh_target = None
-                if result.suppression_expired:
-                    self._suppressed_target = None
-                self.current_target = result.current_target
-                self.bell_target = result.bell_target
-                if self._pending_agent is None:
-                    self.current_agent = result.current_agent
-                elif self._pending_agent[0] in result.snapshot.focused_panes:
-                    self._pending_agent = None
-                    self.current_agent = result.current_agent
-                else:
-                    self.current_agent = self._pending_agent[1]
-                self.pane_active = result.pane_active
-        if self._future is None and now >= self._next_poll:
-            commands, self._commands = tuple(self._commands), []
-            self._future_trace = {
-                "request_id": debug.new_id("request"),
-                "sample_id": debug.new_id("sample"),
-                "snapshot_id": debug.new_id("snapshot"),
-                **debug.context_values(),
-            }
-            debug.emit(
-                "status_requested", **self._future_trace, generation=self._generation,
-                commands=[command for command, _ in commands],
-            )
-            with debug.context(**self._future_trace):
-                with diagnostics.operation("status_submit", generation=self._generation):
-                    self._future = self._executor.submit(
-                        copy_context().run, self._run_sample, commands, self._generation, self._poll_state(),
-                        dict(self._future_trace),
-                    )
-            self._next_poll = now + STATUS_POLL_INTERVAL
-        return changed
-
+class AsyncStatusPoller(runtime.StatusPoller):
     def observe_effect(self, result: EffectResult) -> None:
-        if result.stale_navigation:
-            return
-        if result.error:
-            if (
-                not result.partial_success
-                and result.effect.kind in ("switch", "add_switch", "switch_pane")
-            ):
-                self._generation += 1
-            if not result.partial_success:
-                return
-        target = result.effect.target
-        if result.effect.kind in ("switch", "add_switch", "create") and isinstance(target, Target):
-            self._suppressed_target = None
-            self.current_target = target
-            self.current_agent = None
-            self._pending_agent = None
-            self._generation += 1
-        elif result.effect.kind == "switch_pane" and isinstance(target, PaneTarget):
-            self._suppressed_target = None
-            self.current_target = target.target
-            self.current_agent = result.effect.message or None
-            self._pending_agent = (
-                (target, result.effect.message) if result.effect.message else None
-            )
-            self._generation += 1
-        elif (
-            result.effect.kind == "show_reconnecting"
-            and not result.effect.automatic
-            and isinstance(target, Target)
-        ):
-            self._suppressed_target = None
-            self.current_target = target
-            self.current_agent = None
-            self._pending_agent = None
-            self._generation += 1
-        elif result.effect.kind == "rename" and isinstance(target, Target):
-            renamed = _renamed_target(result.effect)
-            if renamed is None:
-                return
-            if self.current_target == target:
-                self.current_target = renamed
-                self._refresh_target = renamed
-            if self.bell_target == target:
-                self.bell_target = renamed
-            self._generation += 1
-        elif result.effect.kind == "kill" and isinstance(target, Target):
-            if result.reset_matched or self.current_target == target:
-                self._suppressed_target = target
-                self.current_target = None
-                self._generation += 1
-        elif result.effect.kind == "save_favorites" and isinstance(target, Target):
-            if target not in result.favorites and self.current_target == target:
-                self.current_target = None
-                self._generation += 1
-
-    @property
-    def refresh_pending(self) -> bool:
-        return self._refresh_pending or self._refresh_target is not None
-
-    def refresh(self) -> bool:
-        diagnostics.log("status_refresh_requested", generation=self._generation, **self.snapshot_trace)
-        self._commands.append(("refresh", None))
-        self._refresh_pending = True
-        self._next_poll = 0.0
-        return False
-
-    def discard(self, target: Target) -> None:
-        diagnostics.log("status_discard_requested", target=_trace_target(target), generation=self._generation)
-        self._commands.append(("discard", target))
-        self._next_poll = 0.0
-
-    def close(self) -> None:
-        with diagnostics.operation("status_shutdown"):
-            self._executor.shutdown(wait=True, cancel_futures=True)
-            self._poller.close()
+        effect = result.effect
+        self.observe(runtime.RuntimeUpdate(
+            kind=effect.kind,
+            target=effect.target,
+            agent_id=effect.message,
+            renamed=(
+                _renamed_target(effect)
+                if effect.kind == "rename" and not result.stale_navigation
+                and (not result.error or result.partial_success) else None
+            ),
+            removed=effect.target not in result.favorites,
+            reset_matched=result.reset_matched,
+            failed=bool(result.error),
+            partial_success=result.partial_success,
+            stale=result.stale_navigation,
+            automatic=effect.automatic,
+        ))
 
 
 def _search_key(
@@ -2263,6 +1888,15 @@ def _draw_back_title(
     return action_col
 
 
+def _find_bounds(width: int, add_col: int | None) -> tuple[int, int] | None:
+    if add_col is None:
+        return None
+    start = add_col - 6
+    if start < 12 or add_col >= width:
+        return None
+    return start, start + 4
+
+
 def _draw_title(
     stdscr: curses.window,
     w: int,
@@ -2286,8 +1920,13 @@ def _draw_title(
     if not adding:
         label = f"{_icons()['selected']} add" if add_button_selected else "＋ add"
         add_col = width - _cell_width(label)
-        main_width = max(0, add_col)
-        stdscr.addnstr(0, 0, left[:main_width].ljust(main_width), main_width, _fade(attr) if dimmed else attr)
+        find_bounds = _find_bounds(width, add_col)
+        main_width = find_bounds[0] if find_bounds else max(0, add_col)
+        title_attr = _fade(attr) if dimmed else attr
+        stdscr.addnstr(0, 0, left[:main_width].ljust(main_width), main_width, title_attr)
+        if find_bounds:
+            stdscr.addnstr(0, find_bounds[0], "Find", 4, title_attr)
+            stdscr.addnstr(0, find_bounds[1], "  ", 2, title_attr)
         if add_col > 0:
             button_attr = _color("active") if add_button_selected and not dimmed else attr
             stdscr.addnstr(0, add_col, label, _cell_width(label), _fade(button_attr) if dimmed else button_attr)
@@ -2307,37 +1946,15 @@ def _draw_name_input(stdscr: curses.window, w: int, filter_text: str, dimmed: bo
 
 
 def _truncate(text: str, width: int) -> str:
-    if len(text) <= width:
-        return text
-    ellipsis = "..." if _ascii() else "…"
-    return ellipsis[:width] if width <= len(ellipsis) else text[: width - len(ellipsis)] + ellipsis
+    return tui.truncate(text, width, ascii=_ascii())
 
 
-def _cell_width(text: str) -> int:
-    return sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+_cell_width = tui.cell_width
+_format_duration = tui.format_duration
 
 
 def _truncate_cells(text: str, width: int) -> str:
-    if _cell_width(text) <= width:
-        return text
-    ellipsis = "..." if _ascii() else "…"
-    kept = ""
-    for char in text:
-        if _cell_width(kept + char + ellipsis) > width:
-            break
-        kept += char
-    return kept + ellipsis if kept else _truncate(ellipsis, width)
-
-
-def _format_duration(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}s"
-    if seconds < 60 * 60:
-        return f"{seconds // 60}m"
-    if seconds < 24 * 60 * 60:
-        return f"{seconds // (60 * 60)}h"
-    return f"{seconds // (24 * 60 * 60)}d"
+    return tui.truncate_cells(text, width, ascii=_ascii())
 
 
 def _entry_lines(
@@ -2421,17 +2038,7 @@ def _entry_lines(
 
 
 def _status_attr(status: str) -> int:
-    if status == "working":
-        return _color("agent_working") or 0
-    if status == "submitted":
-        return _color("agent_submitted") or 0
-    if status in _ATTENTION_STATES:
-        return (_color("agent_" + status.replace("-", "_")) or 0) | curses.A_BOLD
-    if status == "completed":
-        return _color("agent_completed") or 0
-    if status in ("idle", "canceled"):
-        return curses.A_DIM
-    return _color("agent_unknown") or 0
+    return tui.status_attr(status, color_lookup=_color)
 
 
 def _entry_attr(entry: Entry, active: bool, dimmed: bool = False, *, move_source: bool = False, move_target: bool = False) -> int:
@@ -3547,6 +3154,27 @@ def run(stdscr: curses.window) -> None:
         cancel_move()
         rebuild()
 
+    publisher = runtime.WorkspacePublisher()
+    published_workspace: workspace.Workspace | None = None
+    published_state: tuple[object, ...] | None = None
+    finder_process: subprocess.Popen | None = None
+
+    def publish_workspace(current_target: Target | None, current_agent: str | None) -> None:
+        nonlocal published_workspace, published_state
+        semantic_state = (
+            poller.snapshot, tuple(state.favorites), current_target, current_agent,
+            frozenset(state.hidden_agents), frozenset(state.agent_alerts), frozenset(state.rang_bells),
+        )
+        if semantic_state == published_state:
+            return
+        published_workspace = workspace.build_workspace(
+            poller.snapshot, state.favorites, current_target, current_agent,
+            hidden=state.hidden_agents, alerts=state.agent_alerts,
+            bells=state.rang_bells, previous=published_workspace,
+        )
+        publisher.publish(published_workspace)
+        published_state = semantic_state
+
     def render_sidebar(
         now: float,
         current_target: Target | None,
@@ -3578,6 +3206,7 @@ def run(stdscr: curses.window) -> None:
         if visible_bells - state.rang_bells or agent_alert:
             curses.beep()
         state.rang_bells = bell_targets
+        publish_workspace(display_target, active_agent_id)
         working_agents = any(entry.status == "working" for entry in agent_entries)
         spinner_frame = _spinner_frame(now) if working_agents else None
         if state.agent_scroll_offset is not None and not compact:
@@ -3652,7 +3281,10 @@ def run(stdscr: curses.window) -> None:
         layout_dirty_kind = "state"
 
     try:
+        publish_workspace(poller.current_target, poller.current_agent)
         while True:
+            if finder_process is not None and finder_process.poll() is not None:
+                finder_process = None
             if last_event is not None:
                 safe_event = event_burst_safe(last_event)
                 if safe_event:
@@ -4326,6 +3958,30 @@ def run(stdscr: curses.window) -> None:
                     trace_mouse_decision(mouse_input_id, "collapse_sidebar", row, mouse_col)
                     mark_input(True, "collapse_sidebar")
                     continue
+                find_bounds = _find_bounds(stdscr.getmaxyx()[1], add_col)
+                if (
+                    not compact
+                    and state.add_view is None
+                    and state.move_source is None
+                    and row == 0
+                    and find_bounds is not None
+                    and isinstance(mouse_col, int)
+                    and find_bounds[0] <= mouse_col < find_bounds[1]
+                ):
+                    if _mouse_activates(mouse_state):
+                        if finder_process is None:
+                            try:
+                                finder_process = subprocess.Popen(
+                                    shlex.split(cockpit._letee_command("find-work")),
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                )
+                            except OSError as error:
+                                show_status(f"Could not open Find: {error}")
+                        trace_mouse_decision(mouse_input_id, "find_work", row, mouse_col)
+                        mark_input(True, "find_work")
+                    continue
                 right_click = mouse_state & (getattr(curses, "BUTTON3_PRESSED", 0) or 0)
                 if right_click:
                     cancel_move()
@@ -4755,6 +4411,10 @@ def run(stdscr: curses.window) -> None:
         cancel_move()
         actions.close()
         poller.close()
+        publisher.close()
+        if finder_process is not None:
+            # Reap a finished launcher without closing an active popup.
+            finder_process.poll()
         _mouse_cleanup()
         debug.flush()
 

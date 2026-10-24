@@ -30,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("cockpit", help="launch or attach cockpit")
     sub.add_parser("version", help="show letee version")
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
+    sub.add_parser("finder", help=argparse.SUPPRESS)
+    sub.add_parser("find-work", help="find a session, window, pane, or agent")
     attachment_exit = sub.add_parser("attachment-exited", help=argparse.SUPPRESS)
     for field in (
         "right_pane", "attachment_id", "generation", "target", "agent_id",
@@ -226,6 +228,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sidebar":
         from .sidebar import main as sidebar_main
         return sidebar_main()
+    if args.command == "finder":
+        from .finder_ui import main as finder_main
+        return finder_main()
+    if args.command == "find-work":
+        return cockpit.find_work()
     if args.command in (None, "cockpit"):
         _cleanup_legacy_server(tmux.SERVER)
         return cockpit.cockpit()
@@ -272,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "switch":
         target = parse_target(args.target)
         cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        cockpit.open_session(target)
         return 0
     if args.command == "switch-session":
         favorites = load_sessions()
@@ -280,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"No session in slot {args.slot}")
         target = favorites[args.slot - 1]
         cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        cockpit.open_session(target)
         return 0
     if args.command == "kill":
         target = parse_target(args.target)
@@ -302,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         target = Target("local", args.session) if args.create_kind == "local" else Target("ssh", args.session, args.host)
         sessions.create(target)
         cockpit.require_cockpit()
-        cockpit.switch(target, lambda: sessions.attach_command(target))
+        cockpit.open_session(target)
         return 0
 
 
