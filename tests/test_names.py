@@ -1,4 +1,7 @@
 import unittest
+from unittest.mock import patch
+
+from letee import diagnostics, names
 
 from letee.names import (
     INNER_SERVER_SOCKET,
@@ -9,6 +12,36 @@ from letee.names import (
     server_socket,
     validate_server,
 )
+
+
+class NameDiagnosticsTest(unittest.TestCase):
+    def test_rejections_report_only_safe_reason_codes(self):
+        target = Target("local", "work")
+        cases = (
+            lambda: names.validate_name("secret name", "secret label"),
+            lambda: names.validate_host("-secret"),
+            lambda: names.validate_server("-secret"),
+            lambda: Target("secret", "work"),
+            lambda: Target("local", "work", "secret"),
+            lambda: Target("ssh", "work"),
+            lambda: PaneTarget("secret", "@1", "%2", "secret"),
+            lambda: PaneTarget(target, "secret", "%2", "secret"),
+            lambda: PaneTarget(target, "@1", "secret", "secret"),
+            lambda: PaneTarget(target, "@1", "%2", ""),
+            lambda: names.parse_target("secret"),
+        )
+        reasons = (
+            "invalid_name", "host_option_prefix", "server_option_prefix", "invalid_target_kind",
+            "local_target_host", "missing_target_host", "invalid_pane_target", "invalid_window_id",
+            "invalid_pane_id", "empty_socket_path", "invalid_target_format",
+        )
+        for reason, reject in zip(reasons, cases, strict=True):
+            with self.subTest(reason=reason), patch.object(diagnostics, "error", create=True) as error:
+                with self.assertRaises(SystemExit):
+                    reject()
+                error.assert_called_once()
+                self.assertEqual(error.call_args.kwargs, {"handling": "exit", "reason": reason})
+                self.assertNotIn("secret", repr(error.call_args))
 
 
 class ServerNameTest(unittest.TestCase):

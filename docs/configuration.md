@@ -88,6 +88,7 @@ The `[keybindings]` table customizes the outer prefix layer. The `[sidebar_keybi
 [keybindings]
 focus_agents = "prefix+a"
 focus_sessions = "prefix+s"
+find_work = "prefix+f"
 previous_agent = "prefix+Left"
 next_agent = "prefix+Right"
 previous_session = "prefix+Up"
@@ -115,6 +116,10 @@ resize_dec = "]"
 ```
 
 Outer values are tmux key tokens such as `a`, `+`, `C-a`, `M-x`, `Left`, `Right`, `Up`, `Down`, `M-Left`, `C-Up`, or `F1`. Prefix a value with `prefix+` to require the outer prefix. For example, `prefix+a` means `C-s` then `a` when `prefix = "C-s"`, while `prefix+C-a` means the outer prefix followed by `C-a`. A value without `prefix+`, such as `C-a`, binds globally without `C-s` using tmux `bind-key -n`.
+
+| Action | Default | Description |
+| --- | --- | --- |
+| `find_work` | `"prefix+f"` | Open Find without expanding or restarting the sidebar. |
 
 `previous_session` and `next_session` cycle through tracked sessions in persisted manual order, wrapping at either end. `previous_agent` and `next_agent` cycle through displayed agents across tracked sessions. `focus_agents` and `focus_sessions` select the active entry without switching targets, falling back to the top row when no active entry matches.
 

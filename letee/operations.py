@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from . import cockpit, config, sessions
+from . import cockpit, config, diagnostics, sessions
 from .names import PaneTarget, Target
 
 
@@ -141,6 +141,7 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
             fallback = favorites
             return _perform_unlocked(effect, favorites, _state(), raise_errors=raise_errors)
     except (OSError, SystemExit, subprocess.SubprocessError) as error:
+        diagnostics.error(error, handling="reraise" if raise_errors else "status", operation="perform_effect", effect=effect.kind)
         if raise_errors:
             raise
         return EffectResult(effect, fallback, effect_error(effect, error), launch_id=launch_identity())
@@ -214,7 +215,8 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 cockpit.set_expected_right_pane_death(target)
             try:
                 sessions.kill(target)
-            except (SystemExit, OSError, subprocess.SubprocessError):
+            except (SystemExit, OSError, subprocess.SubprocessError) as error:
+                diagnostics.error(error, handling="reraise", operation="kill_session")
                 if active:
                     cockpit.resolve_expected_right_pane_death(target, False)
                 raise
@@ -253,6 +255,8 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             if deadline is not None:
                 cockpit.clear_startup(target, deadline)
     except (SystemExit, OSError, subprocess.SubprocessError) as error:
+        diagnostics.error(error, handling="reraise" if raise_errors else "status", operation="perform_effect", effect=effect.kind)
+        diagnostics.log("effect_error", effect=effect.kind, error_type=type(error).__name__)
         if raise_errors:
             raise
         if effect.kind == "save_favorites" and not partial:

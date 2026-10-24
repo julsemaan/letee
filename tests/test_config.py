@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from letee import config
+from letee import config, diagnostics
 
 
 class ConfigTest(unittest.TestCase):
@@ -21,6 +21,111 @@ class ConfigTest(unittest.TestCase):
         path = Path(self.tempdir.name) / "config.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+
+    def test_invalid_config_reports_safe_exit_decision(self):
+        cases = (
+            ('prefix = "secret value"', config.load_prefix),
+            ('hosts = ["secret value"]', config.load_hosts),
+            ('[timing]\nsecret = 1', config.load_timing),
+            ('[keybindings]\nsecret = "secret"', config.load_keybindings),
+            ('secret = [', config.load_prefix),
+        )
+        for text, load in cases:
+            with self.subTest(text=text), patch.object(diagnostics, "error", create=True) as error:
+                self.write_config(text)
+                with self.assertRaises(SystemExit):
+                    load()
+                self.assertTrue(error.called)
+                self.assertEqual(error.call_args.kwargs["handling"], "exit")
+                self.assertNotIn("secret", repr(error.call_args.kwargs))
+
+    def test_validation_branches_report_specific_safe_exit_reasons(self):
+        cases = (
+            ({"timing": []}, config.load_timing, "invalid_timing_table"),
+            ({"timing": {"private": 1}}, config.load_timing, "unknown_timing_key"),
+            ({"timing": {"local_command_timeout": 0}}, config.load_timing, "invalid_timing_value"),
+            ({"timing": {"retry_initial_delay": 9}}, config.load_timing, "invalid_retry_delay_range"),
+            ({"keybindings": []}, config.load_keybindings, "invalid_keybindings_table"),
+            ({"keybindings": {"private": "z"}}, config.load_keybindings, "unknown_keybinding_action"),
+            ({"keybindings": {"agents": "z", "focus_agents": "x"}}, config.load_keybindings, "duplicate_keybinding_action"),
+            ({"keybindings": {"focus_agents": 1}}, config.load_keybindings, "invalid_keybinding_type"),
+            ({"sidebar_keybindings": {"rename": "private"}}, config.load_sidebar_keybindings, "invalid_sidebar_key"),
+            ({"sidebar_keybindings": {"rename": "1"}}, config.load_sidebar_keybindings, "reserved_sidebar_key"),
+            ({"keybindings": {"focus_agents": "prefix+"}}, config.load_keybindings, "empty_keybinding_token"),
+            ({"keybindings": {"focus_agents": "private"}}, config.load_keybindings, "invalid_keybinding_token"),
+            ({"keybindings": {"focus_agents": "1"}}, config.load_keybindings, "reserved_tmux_key"),
+            ({"keybindings": {"focus_agents": "C-s"}}, config.load_keybindings, "keybinding_prefix_conflict"),
+            ({"keybindings": {"focus_agents": "z", "focus_sessions": "z"}}, config.load_keybindings, "duplicate_keybinding"),
+            ({"prefix": "a"}, config.load_keybindings, "default_keybinding_prefix_conflict"),
+            ({"prefix": "private value"}, config.load_keybindings, "invalid_prefix"),
+            ({"prefix": "private value"}, config.load_sidebar_keybindings, "invalid_prefix"),
+            ({"sidebar_width": 0}, config.load_sidebar_width, "invalid_sidebar_width"),
+            ({"sidebar_width": 1}, config.load_sidebar_width, "compact_sidebar_too_narrow"),
+            ({"sidebar_collapse_mode": "private"}, config.load_sidebar_collapse_mode, "invalid_sidebar_collapse_mode"),
+            ({"status_timeout": 0}, config.load_status_timeout, "invalid_status_timeout"),
+            ({"agent_panel_resize_step": 0}, config.load_agent_panel_resize_step, "invalid_agent_panel_resize_step"),
+            ({"persistent_ssh": "private"}, config.load_persistent_ssh, "invalid_persistent_ssh"),
+            ({"tmux_config_overlay": "private"}, config.load_tmux_config_overlay, "invalid_tmux_config_overlay"),
+            ({"hosts": "private"}, config.load_hosts, "invalid_hosts_list"),
+            ({"hosts": ["private value"]}, config.load_hosts, "invalid_config_host"),
+        )
+        for data, load, reason in cases:
+            with (
+                self.subTest(reason=reason, loader=load.__name__),
+                patch.object(config, "_load_config", return_value=(Path("/private/config"), data)),
+                patch.object(diagnostics, "error") as error,
+            ):
+                config.load_timing.cache_clear()
+                with self.assertRaises(SystemExit):
+                    load()
+                self.assertEqual(error.call_args.kwargs, {"handling": "exit", "reason": reason})
+                self.assertNotIn("private", repr(error.call_args.kwargs))
+
+    def test_timing_numeric_overflow_logs_safe_fallback_and_exit(self):
+        for key in ("local_command_timeout", "ssh_connect_timeout"):
+            with self.subTest(key=key), patch.object(diagnostics, "error") as error:
+                config.load_timing.cache_clear()
+                self.write_config(f"[timing]\n{key} = {10**400}\n")
+                with self.assertRaisesRegex(SystemExit, "Invalid config.*timing"):
+                    config.load_timing()
+                self.assertEqual(error.call_count, 2)
+                overflow, invalid = error.call_args_list
+                self.assertIsInstance(overflow.args[0], OverflowError)
+                self.assertEqual(overflow.kwargs, {"handling": "fallback", "reason": "timing_value_overflow"})
+                self.assertEqual(invalid.kwargs, {"handling": "exit", "reason": "invalid_timing_value"})
+                self.assertNotIn(str(10**400), repr(error.call_args_list))
+                self.assertNotIn(self.tempdir.name, repr(error.call_args_list))
+
+    def test_filesystem_failures_are_logged_and_reraised_unchanged(self):
+        self.write_config("hosts = []")
+        config.save_sessions([])
+        cases = (
+            ("mkdir", config.ensure_config),
+            ("read_text", config.load_prefix),
+            ("read_text", config.load_sessions),
+            ("write_text", lambda: config.save_sessions([])),
+        )
+        for operation, run in cases:
+            failure = PermissionError("secret")
+            with (
+                self.subTest(operation=operation, run=run),
+                patch.object(Path, operation, side_effect=failure),
+                patch.object(diagnostics, "error", create=True) as error,
+            ):
+                with self.assertRaises(PermissionError) as raised:
+                    run()
+                self.assertIs(raised.exception, failure)
+                self.assertIs(error.call_args.args[0], failure)
+                self.assertEqual(error.call_args.kwargs["handling"], "raise")
+                self.assertNotIn("secret", repr(error.call_args.kwargs))
+
+    def test_invalid_favorite_reports_safe_line_number(self):
+        (Path(self.tempdir.name) / "sessions").write_text("\nsecret\n")
+        with patch.object(diagnostics, "error", create=True) as error:
+            with self.assertRaises(SystemExit):
+                config.load_sessions()
+        self.assertEqual(error.call_args.kwargs["line_number"], 2)
+        self.assertNotIn("secret", repr(error.call_args.kwargs))
 
     def test_fresh_config_contains_default_prefix(self):
         cfg, wrapper = config.ensure_config()

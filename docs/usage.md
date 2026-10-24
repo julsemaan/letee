@@ -49,6 +49,7 @@ The default prefix for these examples is `C-s`. `-L <name>` selects a named oute
 | `letee version` | Print the letee version. |
 | `letee init` | Create missing `config.toml` and `wrapper.tmux.conf` files. |
 | `letee list` | List discovered local and remote targets. |
+| `letee find-work` | Open Find in an existing cockpit. |
 | `letee list-servers` | List running verified letee outer servers. |
 | `letee focus-sidebar [region]` | Focus or reopen the sidebar and inject a sidebar action. With no region, focus Sessions. |
 | `letee switch <target>` | Switch the right pane to a target. |
@@ -85,6 +86,7 @@ The keys below are the defaults. They use the default outer prefix, `C-s`.
 | `C-s s` | Show the sidebar and select the active session in Sessions without switching. Recreate it if it was quit. |
 | `C-s +` | Show the sidebar and open the Add session menu. Recreate it if it was quit. |
 | `C-s a` | Show the sidebar and select the active agent in Agents without switching. Recreate it if it was quit. |
+| `C-s f` | Open Find without changing the sidebar layout. |
 | `C-s Left` / `C-s Right` | Jump to the previous or next agent in displayed order across tracked sessions, wrapping at both ends. |
 | `C-s Up` / `C-s Down` | Switch to the previous or next tracked session in persisted manual order, wrapping at both ends. |
 | `C-s r` | Remove the active right-pane session from letee without killing its tmux session. |
@@ -124,6 +126,25 @@ The focus commands reveal the selected row even after scrolling. Without a match
 These controls stay fixed and cannot be remapped: `Enter`, `Esc`, `Ctrl-C`, arrow keys, `Backspace`, mouse events, confirmation `y/N` prompts, internal function keys `F3` through `F12`, and session slots `1` through `9`. See [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md) for keybinding changes.
 
 The cockpit sends internal `F6` then `F3` for previous session and `F6` then `F4` for next session. Agent cycling uses `F7` then `F12` or `F5`. These sequences are independent of custom outer bindings.
+
+## Find work
+
+Press `C-s f`, click Find in the sidebar, or run `letee find-work` to open the finder popup. For a named cockpit, use `letee -L work find-work`. Find requires an existing cockpit and leaves an expanded, compact, or hidden sidebar unchanged. Canceling restores the original focus; opening a destination focuses the right pane.
+
+The tree groups sessions, their windows, and agents. Type to filter by name or full path, including the host and parent session. Matching ignores case and matches letters in order within each space-separated term. Terms can appear in either order: `letee fix/123` and `fix/123 letee` find the same destinations. Exact and contiguous matches rank ahead of scattered letters.
+
+| Control | Action |
+| --- | --- |
+| `Up` / `Down` | Select a row. |
+| `Tab` | Expand or collapse the selected branch. |
+| `Ctrl-T` | Cycle All, Sessions, Windows, and Agents scopes. |
+| `Enter` | Open the selected destination. |
+| `Left` / `Right`, `Home` / `End` | Move the query cursor. |
+| `Backspace` / `Delete` | Edit the query. |
+| `Ctrl-U` | Clear the query. |
+| `Esc` / `Ctrl-C` | Cancel. |
+
+Missing destinations are unavailable in Find and cannot be opened there. The Sessions sidebar retains its existing missing-session recovery: select a missing session and press `Enter` to recreate it.
 
 ## Tracked sessions and ordering
 
@@ -168,18 +189,35 @@ Set `LETEE_ASCII=1` for text-only labels, icons, spinner frames, cursors, and el
 
 ## Debug logging
 
-Set `LETEE_DEBUG_LOG` to a file path to write opt-in JSONL diagnostics. Logging is off when the variable is unset.
+Set `LETEE_DEBUG_LOG` to an absolute file path to enable opt-in JSONL diagnostics. Logging is off when unset. For a fresh default or named cockpit:
 
 ```sh
-letee kill-server
-LETEE_DEBUG_LOG="$HOME/.local/state/letee/click-debug.jsonl" letee
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/debug.jsonl" letee
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-debug.jsonl" letee -L work
 ```
 
-For a named server:
+An existing tmux server keeps its environment and running sidebar. Setting the variable on an attach command alone does not enable that sidebar. The simplest option is to recreate only the outer cockpit:
 
 ```sh
 letee -L work kill-server
-LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-click-debug.jsonl" letee -L work
+LETEE_DEBUG_LOG="$HOME/.local/state/letee/work-debug.jsonl" letee -L work
 ```
 
-The startup record and any ncurses mouse decode failure include the relevant tmux and terminal mouse state. A `mouse_recovery_candidate` record links a failed mouse decode to a later button release. Eligible candidates are replayed as left-button activations for sidebar rows. After reproducing the missed click, stop or detach letee and preserve the log.
+Omit `-L work` for the default cockpit. Inner sessions and tracked-session files survive. To keep the existing outer cockpit instead, use the same tmux executable as the cockpit, set its environment, then restart its sidebar:
+
+```sh
+socket=letee@v1-work                  # use letee@v1 for the default cockpit
+log="$HOME/.local/state/letee/work-debug.jsonl"
+tmux -L "$socket" set-environment -g LETEE_DEBUG_LOG "$log"
+left=$(tmux -L "$socket" show-options -qv -t letee @letee_sidebar_pane)
+tmux -L "$socket" respawn-pane -k -t "$left"
+LETEE_DEBUG_LOG="$log" letee -L work  # reattach and install the diagnostic exit hook
+```
+
+Restarting the sidebar resets its transient UI state. Reattaching updates the native pane-death hook; restarting the sidebar alone does not. New CLI commands also need `LETEE_DEBUG_LOG` in their own environment. To disable collection, unset it in both environments, restart the sidebar and reattach without it, or recreate the outer cockpit without it.
+
+Reproduce the problem, note the time, cockpit name, target and action, then preserve the log with the letee version and relevant timing settings. Detaching does not stop collection. Logs append across runs, so use a new path per reproduction. Include events before and after the failure, not just `error` records. Input, effects, discovery, status samples, rendering and attachments carry correlation IDs. Status results map each source's discovery request to the accepted snapshot; `sidebar_entry_draw` identifies visible entries. Error IDs link observations and exception chains. `attachment_started` means tmux accepted the respawn, not that SSH connected successfully. Mouse startup state and `mouse_recovery_candidate` events help diagnose missed clicks. An unpaired release inside the sidebar is recovered as a click, so it appears as an `activate` decision without a preceding press.
+
+Logs contain host/session names, agent IDs, sidebar keystrokes, mouse coordinates and terminal metadata. They omit raw subprocess output, attachment shell commands, agent-status payloads, exception messages and locals. Error records retain exception types and source coordinates. Review logs before sharing; they are not anonymous. Files are owner-readable/writable, but parent-directory permissions are not tightened.
+
+The asynchronous logger queues at most 4096 items and drops excess records rather than blocking the application. Later records report the cumulative `dropped_records` count. Flush and shutdown each wait at most one second. Capacity, timeout and sink failures share one warning per logger; records may be lost, including on abrupt termination. Logs have no rotation or file-size limit, so stop collection after reproducing. See [Development guide](../DEVELOPMENT.md#diagnostic-coverage) for event coverage and limits.

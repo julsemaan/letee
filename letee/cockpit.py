@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeVar
@@ -26,7 +27,7 @@ from .config import (
     load_sidebar_width,
     load_timing,
 )
-from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, parse_target
+from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, WindowTarget, parse_target
 from . import diagnostics, sessions, tmux
 
 
@@ -60,17 +61,19 @@ def help_command(prefix: str, keybindings: dict[str, str] | None = None, sidebar
     if keybindings is None:
         try:
             keybindings = load_keybindings()
-        except SystemExit:
+        except SystemExit as error:
+            diagnostics.error(error, operation="help_keybindings")
             keybindings = DEFAULT_KEYBINDINGS
     if sidebar_keybindings is None:
         sidebar_keybindings = load_sidebar_keybindings()
-    kb = keybindings
+    kb = DEFAULT_KEYBINDINGS | keybindings
     skb = sidebar_keybindings
     text = f"""letee
 
 Navigation
   {_display_key(prefix, kb["focus_agents"])}  focus/open Agents
   {_display_key(prefix, kb["focus_sessions"])}  focus/open Sessions
+  {_display_key(prefix, kb["find_work"])}  find work
   {_display_key(prefix, kb["add_session"])}  add session
   {_display_key(prefix, kb["remove_active"])}  remove active session
   {_display_key(prefix, kb["kill_active"])}  kill and remove active session (confirm)
@@ -143,6 +146,12 @@ _EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED = "succeeded"
 CURRENT_AGENT_OPTION = "@letee_current_agent"
 BELL_TARGET_OPTION = "@letee_bell_target"
 ROOT_KEYS_OPTION = "@letee_root_keys"
+ATTACHMENT_ID_OPTION = "@letee_attachment_id"
+ATTACHMENT_GENERATION_OPTION = "@letee_attachment_generation"
+ATTACHMENT_TARGET_OPTION = "@letee_attachment_target"
+ATTACHMENT_AGENT_OPTION = "@letee_attachment_agent"
+ATTACHMENT_SWITCH_OPTION = "@letee_attachment_switch"
+ATTACHMENT_RUN_OPTION = "@letee_attachment_run"
 NO_COCKPIT = "No valid letee. Run: letee"
 
 
@@ -212,6 +221,7 @@ def _ensure_client_size() -> bool | tuple[str, os.terminal_size]:
             check=False,
         )
     except Exception as error:
+        diagnostics.error(error, operation="layout_client_query")
         diagnostics.log("layout_client_query_error", error_type=type(error).__name__)
         return True
     if not raw:
@@ -238,21 +248,24 @@ def _ensure_client_size() -> bool | tuple[str, os.terminal_size]:
             cached_w = int(w_s)
             cached_h = int(h_s)
             pid = int(pid_s)
-        except ValueError:
+        except ValueError as error:
+            diagnostics.error(error, handling="ignored", operation="layout_client_parse")
             continue
         try:
             fd = os.open(tty, os.O_RDONLY | os.O_NOCTTY)
-        except OSError:
+        except OSError as error:
+            diagnostics.error(error, handling="ignored", operation="layout_tty_open")
             continue
         try:
             size = os.get_terminal_size(fd)
-        except OSError:
+        except OSError as error:
+            diagnostics.error(error, handling="ignored", operation="layout_tty_size")
             continue
         finally:
             try:
                 os.close(fd)
-            except OSError:
-                pass
+            except OSError as error:
+                diagnostics.error(error, handling="ignored", operation="layout_tty_close")
         stale = size.columns != cached_w or size.lines != cached_h
         diagnostics.log(
             "layout_client_probe",
@@ -268,6 +281,7 @@ def _ensure_client_size() -> bool | tuple[str, os.terminal_size]:
             try:
                 os.kill(pid, signal.SIGWINCH)
             except (ProcessLookupError, PermissionError, OSError) as error:
+                diagnostics.error(error, operation="layout_client_signal")
                 diagnostics.log(
                     "layout_client_signal",
                     client_pid=pid,
@@ -288,6 +302,7 @@ def _ensure_client_size() -> bool | tuple[str, os.terminal_size]:
     return True
 
 
+@diagnostics.operation("cockpit.repair_layout")
 def repair_layout(left: str) -> None:
     client = _ensure_client_size()
     if client is False:
@@ -350,10 +365,12 @@ def _install_bindings(
 ) -> None:
     if keybindings is None:
         keybindings = load_keybindings()
+    keybindings = DEFAULT_KEYBINDINGS | keybindings
     help_cmd = help_command(prefix, keybindings)
     try:
         old_raw = _option(ROOT_KEYS_OPTION)
-    except Exception:
+    except Exception as error:
+        diagnostics.error(error, operation="root_keybindings")
         old_raw = ""
     old_keys = shlex.split(old_raw) if old_raw else []
     for key in old_keys:
@@ -362,12 +379,13 @@ def _install_bindings(
     tmux.tmux(
         "bind-key", "-n", "MouseDown1Pane",
         f"if-shell -F -t = '#{{==:#{{pane_id}},{sidebar_pane}}}' "
-        "{ send-keys -M -t = ; select-pane -t = } "
+        "{ send-keys -t = F2 ; send-keys -M -t = ; select-pane -t = } "
         "{ select-pane -t = ; send-keys -M }",
     )
     tmux.tmux("bind-key", prefix, "send-prefix")
     _bind_key(keybindings["detach"], "detach-client")
     _bind_key(keybindings["toggle_sidebar"], "run-shell", _letee_command("toggle-sidebar"))
+    _bind_key(keybindings["find_work"], "run-shell", "-b", _letee_command("find-work"))
     _bind_key(keybindings["quit"], "kill-session", "-t", tmux.SESSION)
     _bind_key(keybindings["focus_agents"], "run-shell", _focus_sidebar_command("agents"))
     _bind_key(keybindings["focus_sessions"], "run-shell", _focus_sidebar_command("sessions"))
@@ -489,6 +507,10 @@ def _right_pane_death_action(
     )
 
 
+def _missing_command(target: Target) -> str:
+    return _animated_command(target, "Session missing", "Waiting for session")
+
+
 def _reconnecting_command(target: Target) -> str:
     return _animated_command(target, "Connection interrupted", "Reconnecting")
 
@@ -520,10 +542,54 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
         f"{{ if-shell -F '{target_match}' {{ {expected_generation} }} {{ {stale_target} }} }} "
         f"{{ {fallback} }}"
     )
-    command = f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' {{ {expected_death} }}"
+    callback_action = ""
+    debug = diagnostics.get_diagnostics(server=tmux.SERVER)
+    if debug.enabled:
+        # tmux expands these before recovery. q escapes for the callback shell,
+        # with '' preserving empty arguments. Quoting formats would escape twice.
+        fields = (
+            "hook_pane", ATTACHMENT_ID_OPTION, "pane_pid", ATTACHMENT_TARGET_OPTION,
+            ATTACHMENT_AGENT_OPTION, ATTACHMENT_SWITCH_OPTION, "pane_dead_status",
+            "pane_dead_signal", EXPECTED_RIGHT_PANE_DEATH_OPTION,
+        )
+        callback = (
+            (f"env LETEE_DEBUG_LOG={shlex.quote(str(debug.path.resolve()))} "
+             + _letee_command("attachment-exited")).replace("#", "##")
+            + f" --parent-run-id #{{q:{ATTACHMENT_RUN_OPTION}}}'' -- "
+            + " ".join(f"#{{q:{field}}}''" for field in fields)
+        )
+        # Only matching generations may carry identity. Placeholder processes and
+        # exits before identity installation deliberately report unknown metadata.
+        unknown_fields = {ATTACHMENT_ID_OPTION, ATTACHMENT_TARGET_OPTION,
+                          ATTACHMENT_AGENT_OPTION, ATTACHMENT_SWITCH_OPTION,
+                          ATTACHMENT_RUN_OPTION, EXPECTED_RIGHT_PANE_DEATH_OPTION}
+        unknown_callback = callback
+        for field in unknown_fields:
+            unknown_callback = unknown_callback.replace(f"#{{q:{field}}}", "")
+        marker_target_match = _option_equals(
+            EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION, f"#{{{ATTACHMENT_TARGET_OPTION}}}"
+        )
+        marker_generation_match = _option_equals(EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION, "#{pane_pid}")
+        marker_match = f"#{{&&:{marker_target_match},{marker_generation_match}}}"
+        marker = f"#{{q:{EXPECTED_RIGHT_PANE_DEATH_OPTION}}}"
+        callback = callback.replace(marker, f"#{{?{marker_match},{marker},}}")
+        generation_match = _option_equals(ATTACHMENT_GENERATION_OPTION, "#{pane_pid}")
+        match = f"#{{&&:#{{pane_dead}},{generation_match}}}"
+        # A delayed hook may already see a live successor. Its PID is not an
+        # exited generation, so do not report it even as an unknown attachment.
+        unknown_callback = unknown_callback.replace("#{q:pane_pid}", "#{?pane_dead,#{q:pane_pid},}")
+        callback_action = (
+            f"if-shell -F '{match}' {{ run-shell -b {shlex.quote(callback)} }} "
+            f"{{ run-shell -b {shlex.quote(unknown_callback)} }} ; "
+        )
+    command = (
+        f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' "
+        f"{{ {callback_action}{expected_death} }}"
+    )
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
+@diagnostics.operation("cockpit.configure")
 def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -> None:
     _set_markers(left, right)
     _fix_layout(left, sidebar_width)
@@ -539,6 +605,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     _install_bindings(prefix, left, right)
 
 
+@diagnostics.operation("cockpit.build")
 def _build(prefix: str, sidebar_width: int) -> None:
     _, wrapper = ensure_config()
     help_cmd = help_command(prefix, load_keybindings())
@@ -554,6 +621,7 @@ def _build(prefix: str, sidebar_width: int) -> None:
     _configure_cockpit(left, right, prefix, sidebar_width)
 
 
+@diagnostics.operation("cockpit.ensure")
 def ensure_cockpit(*, restart_sidebar: bool = False) -> None:
     prefix = load_prefix()
     sidebar_width = load_sidebar_width()
@@ -575,34 +643,44 @@ def ensure_cockpit(*, restart_sidebar: bool = False) -> None:
     _build(prefix, sidebar_width)
 
 
+@diagnostics.operation("cockpit.attach")
 def _attach() -> int:
     executable = tmux.tmux_executable()
     attach_cmd = shlex.join((executable, "-L", tmux.SOCKET, "attach", "-d", "-t", TARGET))
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        diagnostics.log("cockpit_attach", outcome="non_tty")
         print(f"Cockpit ready. Attach from a real terminal: {attach_cmd}")
         return 0
     try:
         tty = os.ttyname(0)
-    except OSError:
+    except OSError as error:
+        diagnostics.error(error, operation="attach_tty")
         tty = ""
     if tty == "/dev/tty":
+        diagnostics.log("cockpit_attach", outcome="dev_tty")
         print(f"Cockpit ready. Current fd is /dev/tty; tmux refuses it. Run: {attach_cmd}")
         return 0
     cmd = [executable, "-L", tmux.SOCKET, "attach-session", "-d", "-t", TARGET]
+    diagnostics.log("cockpit_attach", outcome="exec", right_pane=TARGET)
+    diagnostics.flush()
     os.execvp(executable, cmd)
     return 0
 
 
+@diagnostics.operation("cockpit.prepare_remote_hosts", origin="startup", active=False)
 def _prepare_remote_hosts(hosts: list[str]) -> None:
     if not hosts:
+        diagnostics.log("ssh_preparation", outcome="skipped", reason="no_hosts")
         return
     interactive = sys.stdin.isatty()
+    diagnostics.log("ssh_preparation", outcome="started", interactive=interactive, host_count=len(hosts))
     if interactive:
         print("Preparing SSH access before opening letee.", flush=True)
         print("Enter key passphrase if OpenSSH asks. If an SSH agent is available, successfully used keys will be saved in it.", flush=True)
         print("Press Ctrl-C to cancel.", flush=True)
     agent_ready = sessions.ensure_ssh_agent()
     if not interactive:
+        diagnostics.log("ssh_preparation", outcome="skipped", reason="non_tty", host_count=len(hosts))
         print("Skipping interactive SSH checks: non-TTY startup (not attached to a TTY).", flush=True)
         return
     if agent_ready:
@@ -618,16 +696,20 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
     for group in groups:
         for host in group:
             if host in results:
+                diagnostics.log("ssh_preparation_host", host=host, outcome="skipped", reason="already_checked")
                 continue
-            host_ready = sessions.prepare_host(host)
+            with diagnostics.get_diagnostics().context(host=host, origin="startup_interactive"):
+                host_ready = sessions.prepare_host(host)
             results[host] = host_ready
             if host_ready:
+                diagnostics.log("ssh_preparation_group", host=host, outcome="ready", host_count=len(group))
                 break
 
     probe_hosts = [host for host in hosts if host not in results]
     probe_host_set = set(probe_hosts)
     if probe_hosts:
-        probe_results = sessions.probe_hosts(probe_hosts)
+        with diagnostics.get_diagnostics().context(origin="startup_batch"):
+            probe_results = sessions.probe_hosts(probe_hosts)
         results.update(zip(probe_hosts, probe_results))
 
     ready = 0
@@ -636,14 +718,18 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
         host_ready = results.get(host, False)
         if host in probe_host_set and not host_ready:
             print(f"[{index}/{len(hosts)}] {host} — retrying interactively...", flush=True)
-            host_ready = sessions.prepare_host(host)
+            diagnostics.log("ssh_preparation_host", host=host, outcome="retrying", reason="batch_failed")
+            with diagnostics.get_diagnostics().context(host=host, origin="startup_retry"):
+                host_ready = sessions.prepare_host(host)
             results[host] = host_ready
+        diagnostics.log("ssh_preparation_host", host=host, outcome="ready" if host_ready else "failed")
         if host_ready:
             ready += 1
             print(f"[{index}/{len(hosts)}] {host} — ready", flush=True)
         else:
             failed.append(host)
             print(f"[{index}/{len(hosts)}] {host} — failed", flush=True)
+    diagnostics.log("ssh_preparation", outcome="completed", ready_count=ready, failed_count=len(failed))
     print(f"SSH check complete: {ready} ready, {len(failed)} failed.", flush=True)
     if failed:
         print(f"Failed hosts remain unavailable. Run `ssh {failed[0]}` to diagnose.", flush=True)
@@ -651,22 +737,26 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
 
 
 def cockpit() -> int:
-    ensure_config()
-    width = shutil.get_terminal_size((80, 24)).columns
-    if width < 90:
-        print("Terminal too narrow for letee: need at least 90 columns.", file=sys.stderr)
-        return 2
-    if _valid():
-        ensure_cockpit()
+    with diagnostics.operation("cockpit.launch") as operation:
+        ensure_config()
+        width = shutil.get_terminal_size((80, 24)).columns
+        if width < 90:
+            operation.outcome = "rejected"
+            print("Terminal too narrow for letee: need at least 90 columns.", file=sys.stderr)
+            return 2
+        if _valid():
+            ensure_cockpit()
+            return _attach()
+        hosts = load_hosts()
+        try:
+            _prepare_remote_hosts(hosts)
+        except KeyboardInterrupt as error:
+            operation.outcome = "cancelled"
+            diagnostics.error(error, handling="cancelled", operation="ssh_preparation")
+            print("\nSSH preparation canceled.", file=sys.stderr, flush=True)
+            return 130
+        ensure_cockpit(restart_sidebar=True)
         return _attach()
-    hosts = load_hosts()
-    try:
-        _prepare_remote_hosts(hosts)
-    except KeyboardInterrupt:
-        print("\nSSH preparation canceled.", file=sys.stderr, flush=True)
-        return 130
-    ensure_cockpit(restart_sidebar=True)
-    return _attach()
 
 
 def sidebar_compact() -> bool:
@@ -677,6 +767,7 @@ def _sidebar_hidden() -> bool:
     return tmux.out("display-message", "-p", "-t", TARGET, "#{window_zoomed_flag}", check=False) == "1"
 
 
+@diagnostics.operation("cockpit.expand_sidebar")
 def expand_sidebar(*, focus_right: bool = False) -> None:
     left = _option(SIDEBAR_PANE_OPTION)
     right = _option(RIGHT_PANE_OPTION)
@@ -693,6 +784,23 @@ def expand_sidebar(*, focus_right: bool = False) -> None:
         tmux.tmux("select-pane", "-t", right)
 
 
+def find_work() -> int:
+    """Open Find without changing the sidebar layout or underlying pane focus."""
+    if not _valid():
+        raise SystemExit(NO_COCKPIT)
+    # Expand before display-popup for tmux 3.3; avoid strftime percent markers.
+    width, height = tmux.out(
+        "display-message", "-p",
+        "#{?#{e|>:#{client_width},125},100,#{e|/:#{e|*:#{client_width},80},100}} "
+        "#{?#{e|>:#{client_height},37},30,#{e|/:#{e|*:#{client_height},80},100}}",
+    ).split()
+    return tmux.tmux(
+        "display-popup", "-E", "-w", width, "-h", height, "-x", "C", "-y", "C",
+        _letee_command("finder"), timeout=None,
+    ).returncode
+
+
+@diagnostics.operation("cockpit.toggle_sidebar")
 def toggle_sidebar() -> int:
     if not _valid():
         raise SystemExit(NO_COCKPIT)
@@ -712,6 +820,7 @@ def toggle_sidebar() -> int:
     return 0
 
 
+@diagnostics.operation("cockpit.focus_sidebar")
 def focus_sidebar(region: str = "sessions") -> int:
     ensure_config()
     background_action = region in ("alert", "previous_agent", "next_agent", "previous_session", "next_session")
@@ -772,9 +881,82 @@ def _switch_fields(
     }
 
 
+def _record_attachment_replacement(pane: str, *, reason: str, switch_id: str | None = None) -> dict[str, object] | None:
+    if not diagnostics.get_diagnostics().enabled:
+        return
+    fields = (ATTACHMENT_ID_OPTION, "pane_pid", ATTACHMENT_TARGET_OPTION,
+              ATTACHMENT_AGENT_OPTION, ATTACHMENT_SWITCH_OPTION, ATTACHMENT_RUN_OPTION,
+              ATTACHMENT_GENERATION_OPTION)
+    try:
+        raw = tmux.out("display-message", "-p", "-t", pane,
+                       "\t".join(f"#{{{field}}}" for field in fields), check=False)
+    except (Exception, SystemExit) as error:
+        diagnostics.error(error, handling="ignored", operation="attachment_replacement_probe")
+        return
+    values = raw.split("\t")
+    if len(values) != 7 or not values[0] or not values[1].isdecimal() or values[1] != values[6]:
+        return
+    attachment_id, generation, target, agent_id, old_switch_id, parent_run_id, _ = values
+    fields = dict(
+        right_pane=pane, attachment_id=attachment_id, generation=int(generation),
+        target=target, agent_id=agent_id or None, switch_id=old_switch_id or None,
+        parent_run_id=parent_run_id or None, replacement_switch_id=switch_id,
+        intentional=True, reason=reason,
+    )
+    diagnostics.log("attachment_replacement_requested", **fields)
+    return fields
+
+
+def _install_attachment_identity(pane: str, generation: str, fields: dict[str, str]) -> None:
+    # One native queue checks the process and writes metadata. A delayed Python
+    # writer cannot label a newer process. Commit generation last, so partial
+    # option failures leave metadata unusable by the exit hook.
+    if not generation.isdecimal():
+        return
+    commands = [f"set-option -p -t {pane} {ATTACHMENT_GENERATION_OPTION} ''"]
+    commands.extend(f"set-option -p -t {pane} {option} {shlex.quote(value)}"
+                    for option, value in fields.items())
+    commands.append(f"set-option -p -t {pane} {ATTACHMENT_GENERATION_OPTION} {generation}")
+    try:
+        tmux.tmux("if-shell", "-F", "-t", pane, f"#{{==:#{{pane_pid}},{generation}}}",
+                  " ; ".join(commands))
+    except (Exception, SystemExit) as error:
+        diagnostics.error(error, handling="ignored", operation="attachment_identity")
+
+
+_RESPAWN_SUCCEEDED = "letee-respawn-succeeded"
+
+
+def _respawn_attachment(pane: str, command: str) -> str:
+    # These commands share one native queue. Record success before the diagnostic
+    # PID query, so even a query failure cannot turn a successful respawn into an
+    # application failure. A respawn error aborts the queue before the marker.
+    try:
+        result = tmux.tmux(
+            "respawn-pane", "-k", "-t", pane, command, ";",
+            "display-message", "-p", _RESPAWN_SUCCEEDED, ";",
+            "display-message", "-p", "-t", pane, "#{pane_pid}", capture=True,
+        )
+        output = result.stdout if isinstance(getattr(result, "stdout", None), str) else ""
+    except (subprocess.CalledProcessError, SystemExit) as error:
+        # tmux wraps timeouts in SystemExit but retains the timeout as context.
+        failure = error.__context__ if isinstance(error, SystemExit) else error
+        if not isinstance(failure, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            raise
+        output = failure.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        if _RESPAWN_SUCCEEDED not in output.splitlines():
+            raise
+        diagnostics.error(error, handling="ignored", operation="attachment_generation")
+    lines = output.splitlines()
+    return lines[1] if len(lines) == 2 and lines[0] == _RESPAWN_SUCCEEDED and lines[1].isdecimal() else ""
+
+
 _Result = TypeVar("_Result")
 
 
+@diagnostics.operation("cockpit.switch")
 def switch(
     target: Target,
     attach_command: str | Callable[[], str],
@@ -785,13 +967,16 @@ def switch(
     launch_id: str | None = None,
 ) -> None:
     debug = diagnostics.get_diagnostics(server=tmux.SERVER)
-    context = debug.context_values()
-    action_id = action_id or context.get("action_id")
-    input_id = input_id or context.get("input_id")
-    switch_id = action_id or debug.new_id("switch")
+    switch_id = None
+    if debug.enabled:
+        context = debug.context_values()
+        action_id = action_id or context.get("action_id")
+        input_id = input_id or context.get("input_id")
+        switch_id = action_id or debug.new_id("switch")
     try:
         pane = right_pane()
     except BaseException as error:
+        diagnostics.error(error, handling="propagated", operation="switch_right_pane_lookup")
         debug.emit(
             "switch_requested",
             **_switch_fields(target, None, switch_id, action_id, input_id),
@@ -810,6 +995,7 @@ def switch(
     )
     if not pane:
         error = SystemExit(NO_COCKPIT)
+        diagnostics.error(error, handling="propagated", operation="switch_right_pane_lookup")
         debug.emit(
             "switch_error",
             **_switch_fields(target, pane, switch_id, action_id, input_id),
@@ -822,8 +1008,10 @@ def switch(
         fields = _switch_fields(target, pane, switch_id, action_id, input_id)
         debug.emit(f"switch_{kind}", **fields, stage=name, status="started")
         try:
-            result = operation()
+            with diagnostics.operation(f"cockpit.{name}", **fields):
+                result = operation()
         except BaseException as error:
+            diagnostics.error(error, handling="propagated", operation=name, **fields)
             debug.emit(f"switch_{kind}", **fields, stage=name, status="error", error_type=type(error).__name__)
             debug.emit(
                 "switch_error",
@@ -851,6 +1039,14 @@ def switch(
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, BELL_TARGET_OPTION)
         return deadline
 
+    replacement = _record_attachment_replacement(pane, reason="switch", switch_id=switch_id) if debug.enabled else None
+
+    def replaced() -> None:
+        nonlocal replacement
+        if replacement:
+            diagnostics.log("attachment_replaced", **replacement)
+            replacement = None
+
     deadline = stage("marker_update", "current_target_marker", update_markers)
     if callable(attach_command):
         stage(
@@ -858,6 +1054,7 @@ def switch(
             "switch_progress",
             lambda: tmux.tmux("respawn-pane", "-k", "-t", pane, _switching_command(target)),
         )
+        replaced()
         try:
             attach_command = stage("prepare", "attach_command_preparation", attach_command)
         except BaseException as error:
@@ -869,16 +1066,39 @@ def switch(
                 timed_out = isinstance(error, subprocess.TimeoutExpired) or isinstance(error.__cause__, subprocess.TimeoutExpired)
                 command = _reconnecting_command(target) if target.kind == "ssh" and timed_out else _unavailable_command(target)
                 tmux.tmux("respawn-pane", "-k", "-t", pane, command)
-            except BaseException:
-                pass
+            except BaseException as recovery_error:
+                diagnostics.error(recovery_error, handling="ignored", operation="switch_error_recovery")
             raise
         deadline = float(time.monotonic() + startup_timeout(target))
         tmux.tmux("set-option", "-t", tmux.SESSION, STARTUP_OPTION, f"{target.format()}\t{deadline}")
-    stage(
+    attachment_id = None
+    if debug.enabled and attach_command != _reconnecting_command(target):
+        attachment_id = uuid.uuid4().hex
+    if attachment_id:
+        diagnostics.log(
+            "attachment_requested", attachment_id=attachment_id,
+            **_switch_fields(target, pane, switch_id, action_id, input_id), agent_id=agent_id,
+        )
+    generation = stage(
         "respawn",
         "right_pane_respawn",
-        lambda: tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command),
+        lambda: _respawn_attachment(pane, attach_command)
+        if attachment_id else tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command),
     )
+    replaced()
+    if attachment_id:
+        _install_attachment_identity(pane, generation, {
+            ATTACHMENT_ID_OPTION: attachment_id,
+            ATTACHMENT_TARGET_OPTION: target.format(),
+            ATTACHMENT_AGENT_OPTION: agent_id or "",
+            ATTACHMENT_SWITCH_OPTION: switch_id or "",
+            ATTACHMENT_RUN_OPTION: debug.run_id,
+        })
+        diagnostics.log(
+            "attachment_started", attachment_id=attachment_id,
+            generation=int(generation) if generation.isdecimal() else None,
+            **_switch_fields(target, pane, switch_id, action_id, input_id), agent_id=agent_id,
+        )
     stage(
         "focus",
         "right_pane_focus",
@@ -891,6 +1111,24 @@ def switch(
     )
 
 
+def open_session(target: Target, attach_command: str | Callable[[], str] | None = None) -> None:
+    """Open a session, deferring attachment preparation unless already supplied."""
+    switch(target, attach_command if attach_command is not None else lambda: sessions.attach_command(target))
+
+
+def open_window(window: WindowTarget, attach_command: str | Callable[[], str] | None = None) -> None:
+    """Open an existing window without selecting an agent or a different pane."""
+    switch(window.target, attach_command if attach_command is not None else lambda: sessions.window_attach_command(window))
+
+
+def open_agent(
+    pane_target: PaneTarget, agent_id: str, attach_command: str | Callable[[], str] | None = None,
+) -> None:
+    """Open an agent's exact pane using the existing switch behavior."""
+    switch(pane_target.target, attach_command if attach_command is not None else lambda: sessions.pane_attach_command(pane_target), agent_id)
+
+
+@diagnostics.operation("cockpit.set_expected_right_pane_death")
 def set_expected_right_pane_death(target: Target | None) -> None:
     if target is None:
         tmux.tmux("set-option", "-u", "-t", tmux.SESSION, EXPECTED_RIGHT_PANE_DEATH_OPTION)
@@ -908,6 +1146,7 @@ def set_expected_right_pane_death(target: Target | None) -> None:
         tmux.tmux("if-shell", "-F", _option_equals(CURRENT_TARGET_OPTION, target.format()), marker)
 
 
+@diagnostics.operation("cockpit.resolve_expected_right_pane_death")
 def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
     left = _option(SIDEBAR_PANE_OPTION)
     right = _option(RIGHT_PANE_OPTION)
@@ -935,12 +1174,15 @@ def resolve_expected_right_pane_death(target: Target, succeeded: bool) -> None:
     tmux.tmux("if-shell", "-F", "1", _guard_expected_right_pane_death(target, resolution))
 
 
+@diagnostics.operation("cockpit.reset_to_help")
 def reset_to_help(target: Target) -> bool:
     left = _option(SIDEBAR_PANE_OPTION)
     right = _option(RIGHT_PANE_OPTION)
     if not left or not right:
         return False
     matched = _option(CURRENT_TARGET_OPTION) == target.format()
+    if matched:
+        _record_attachment_replacement(right, reason="reset_to_help")
     action = _right_pane_death_action(left, right, load_prefix(), succeeded=True)
     tmux.tmux("if-shell", "-F", _option_equals(CURRENT_TARGET_OPTION, target.format()), action)
     return matched
@@ -977,10 +1219,12 @@ def clear_startup(target: Target, deadline: float, launch_id: str | None = None)
     )
 
 
+@diagnostics.operation("cockpit.set_current_target")
 def set_current_target(target: Target) -> None:
     tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, target.format())
 
 
+@diagnostics.operation("cockpit.rename_target")
 def rename_target(old: Target, new: Target) -> None:
     if current_target() == old:
         # The attached pane keeps its original start command after a rename.
@@ -997,6 +1241,7 @@ def _tmux_supports_menu_mouse() -> bool:
     return bool(match and (int(match.group(1)), int(match.group(2))) >= (3, 5))
 
 
+@diagnostics.operation("cockpit.show_session_menu")
 def show_session_menu(target: Target, x: int, y: int, sidebar_keybindings: dict[str, str] | None = None) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
     title = f"{target.session}@{target.host or 'localhost'}"
@@ -1004,7 +1249,8 @@ def show_session_menu(target: Target, x: int, y: int, sidebar_keybindings: dict[
     if sidebar_keybindings is None:
         try:
             skb = load_sidebar_keybindings()
-        except SystemExit:
+        except SystemExit as error:
+            diagnostics.error(error, operation="session_menu_keybindings")
             skb = DEFAULT_SIDEBAR_KEYBINDINGS
     else:
         skb = sidebar_keybindings
@@ -1017,6 +1263,7 @@ def show_session_menu(target: Target, x: int, y: int, sidebar_keybindings: dict[
     )
 
 
+@diagnostics.operation("cockpit.show_agent_menu")
 def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int, sidebar_keybindings: dict[str, str] | None = None) -> None:
     pane = _option(SIDEBAR_PANE_OPTION)
     title = f"{agent_name}@{pane_target.target.session}@{pane_target.target.host or 'localhost'}"
@@ -1024,7 +1271,8 @@ def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int, si
     if sidebar_keybindings is None:
         try:
             skb = load_sidebar_keybindings()
-        except SystemExit:
+        except SystemExit as error:
+            diagnostics.error(error, operation="agent_menu_keybindings")
             skb = DEFAULT_SIDEBAR_KEYBINDINGS
     else:
         skb = sidebar_keybindings
@@ -1035,12 +1283,31 @@ def show_agent_menu(agent_name: str, pane_target: PaneTarget, x: int, y: int, si
     )
 
 
+@diagnostics.operation("cockpit.show_unavailable")
 def show_unavailable(target: Target) -> None:
-    tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _unavailable_command(target))
+    pane = _require_right_pane()
+    replacement = _record_attachment_replacement(pane, reason="unavailable")
+    tmux.tmux("respawn-pane", "-k", "-t", pane, _unavailable_command(target))
+    if replacement:
+        diagnostics.log("attachment_replaced", **replacement)
 
 
+@diagnostics.operation("cockpit.show_missing")
+def show_missing(target: Target) -> None:
+    pane = _require_right_pane()
+    replacement = _record_attachment_replacement(pane, reason="missing")
+    tmux.tmux("respawn-pane", "-k", "-t", pane, _missing_command(target))
+    if replacement:
+        diagnostics.log("attachment_replaced", **replacement)
+
+
+@diagnostics.operation("cockpit.show_reconnecting")
 def show_reconnecting(target: Target) -> None:
-    tmux.tmux("respawn-pane", "-k", "-t", _require_right_pane(), _reconnecting_command(target))
+    pane = _require_right_pane()
+    replacement = _record_attachment_replacement(pane, reason="reconnecting")
+    tmux.tmux("respawn-pane", "-k", "-t", pane, _reconnecting_command(target))
+    if replacement:
+        diagnostics.log("attachment_replaced", **replacement)
 
 
 def switch_reconnecting(target: Target, *, launch_id: str | None = None) -> None:
@@ -1052,7 +1319,8 @@ def _parse_target_option(text: str) -> Target | None:
         return None
     try:
         return parse_target(text)
-    except SystemExit:
+    except SystemExit as error:
+        diagnostics.error(error, handling="ignored", operation="target_option_parse")
         return None
 
 
@@ -1127,8 +1395,8 @@ def current_target(*, repair: bool = False) -> Target | None:
                 return None
             return target
         return parsed_target
-    except SystemExit:
-        pass
+    except SystemExit as error:
+        diagnostics.error(error, handling="ignored", operation="current_target_parse")
     return None
 
 
