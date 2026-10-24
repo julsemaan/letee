@@ -11,10 +11,12 @@ from threading import Thread
 import time
 import unicodedata
 
-from . import cockpit, runtime, sessions, tui
+from . import cockpit, runtime, sessions, tmux, tui
 from .finder import SCOPES, Finder, Row
 from .names import WindowTarget
 from .workspace import Identity, Workspace
+
+FINDER_SCOPE_OPTION = "@letee_finder_scope"
 
 
 def _safe(text: str) -> str:
@@ -245,7 +247,10 @@ def run(
     destination is still available. Cancellation abandons preparation without
     invoking its commit.
     """
+    scope = tmux.out("show-options", "-qv", "-t", tmux.SESSION, FINDER_SCOPE_OPTION)
     popup = _Popup(stdscr, workspace)
+    if scope in SCOPES:
+        popup.finder.set_scope(scope)
     tui.init_colors()
     stdscr.keypad(True)
     stdscr.timeout(50)
@@ -311,6 +316,7 @@ def run(
                 curses.mousemask(old_mouse)
         except curses.error:
             pass
+        tmux.tmux("set-option", "-t", tmux.SESSION, FINDER_SCOPE_OPTION, popup.finder.scope, capture=True)
 
 
 def _window_target(row: Row) -> WindowTarget:

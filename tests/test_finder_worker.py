@@ -1,9 +1,10 @@
 from dataclasses import replace
+import curses
 import unittest
 from unittest.mock import Mock, patch
 
 from finder_fixtures import sample_workspace
-from letee import finder_ui
+from letee import finder_ui, tmux
 from letee.finder import Finder
 from letee.names import WindowTarget
 from letee.workspace import Workspace
@@ -61,6 +62,32 @@ class FinderWorkerTest(unittest.TestCase):
             commit = finder_ui._prepare_destination(row, lambda: latest)
             commit()
         navigate.assert_called_once_with(renamed.target, "stable-id-command")
+
+    def test_worker_restores_and_saves_scope_when_interrupted(self):
+        workspace = sample_workspace()
+        reader = Mock(current=workspace, read=Mock(return_value=None))
+        screen = Mock()
+        screen.get_wch.side_effect = KeyboardInterrupt
+        popup = Mock(finder=Finder(workspace))
+
+        def wrapper(run, workspace, **kwargs):
+            return run(screen, workspace, **kwargs)
+
+        with patch.object(finder_ui.runtime, "WorkspaceReader", return_value=reader), \
+                patch.object(finder_ui.locale, "setlocale"), \
+                patch.object(finder_ui.curses, "wrapper", side_effect=wrapper), \
+                patch.multiple(curses, get_escdelay=Mock(return_value=1000), set_escdelay=Mock(),
+                               curs_set=Mock(return_value=1), mousemask=Mock(return_value=(0, 0))), \
+                patch.object(finder_ui.tui, "init_colors"), \
+                patch.object(finder_ui, "_Popup", return_value=popup), \
+                patch.object(tmux, "out", return_value="Agents") as read, \
+                patch.object(tmux, "tmux") as save:
+            self.assertEqual(finder_ui.main(), 0)
+            self.assertEqual(popup.finder.scope, "Agents")
+            read.assert_called_once_with("show-options", "-qv", "-t", tmux.SESSION, "@letee_finder_scope")
+            save.assert_called_once_with(
+                "set-option", "-t", tmux.SESSION, "@letee_finder_scope", "Agents", capture=True)
+            reader.close.assert_called_once()
 
     def test_worker_uses_only_snapshot_reader_and_always_closes_it(self):
         workspace = sample_workspace()
