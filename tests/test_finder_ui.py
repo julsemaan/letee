@@ -97,23 +97,22 @@ class FinderUITest(unittest.TestCase):
         for stored in ("", "invalid", "windows"):
             with self.subTest(stored=stored):
                 self.stored_scope = stored
-                _, window = self.run_ui(["\x1b"])
+                _, window = self.run_ui(["\x03"])
                 self.assertTrue(any(text == "[All] " and attr & curses.A_REVERSE
                                     for _, _, text, attr in window.frames[0][0]))
                 self.assertEqual(self.stored_scope, "All")
 
     def test_reopening_remembers_keyboard_and_mouse_scope_on_cancel(self):
         for key, expected in (("\x14", "Sessions"), (curses.KEY_MOUSE, "Windows")):
-            for cancel in ("\x1b", "\x03"):
-                with self.subTest(key=key, cancel=cancel):
-                    self.stored_scope = ""
-                    with patch.object(curses, "getmouse", return_value=(0, 20, 1, 0, curses.BUTTON1_CLICKED)):
-                        self.run_ui([key, "e", "\t", curses.KEY_DOWN, cancel])
-                    self.assertEqual(self.stored_scope, expected)
-                    _, window = self.run_ui(["\x1b"])
-                    self.assertTrue(any(text == f"[{expected}] " and attr & curses.A_REVERSE
-                                        for _, _, text, attr in window.frames[0][0]))
-                    self.assertEqual(window.frames[0][1], (0, 2))
+            with self.subTest(key=key):
+                self.stored_scope = ""
+                with patch.object(curses, "getmouse", return_value=(0, 20, 1, 0, curses.BUTTON1_CLICKED)):
+                    self.run_ui([key, "e", "\t", curses.KEY_DOWN, "\x03"])
+                self.assertEqual(self.stored_scope, expected)
+                _, window = self.run_ui(["\x03"])
+                self.assertTrue(any(text == f"[{expected}] " and attr & curses.A_REVERSE
+                                    for _, _, text, attr in window.frames[0][0]))
+                self.assertEqual(window.frames[0][1], (0, 2))
 
     def test_scope_io_is_outside_input_loop(self):
         def check_io():
@@ -121,7 +120,7 @@ class FinderUITest(unittest.TestCase):
             for option in ("@letee_finder_scope", "@letee_finder_filters"):
                 self.tmux_out.assert_any_call("show-options", "-qv", "-t", tmux.SESSION, option)
             self.tmux_tmux.assert_not_called()
-            return "\x1b"
+            return "\x03"
 
         self.run_ui(["\x14", check_io])
         self.assertEqual(self.tmux_tmux.call_count, 2)
@@ -132,7 +131,7 @@ class FinderUITest(unittest.TestCase):
         window = FakeWindow(["\x14", "\x14", "\n"] + [-1] * 1000)
         self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
         self.assertEqual(self.stored_scope, "Windows")
-        _, reopened = self.run_ui(["\x1b"])
+        _, reopened = self.run_ui(["\x03"])
         self.assertTrue(any(text == "[Windows] " and attr & curses.A_REVERSE
                             for _, _, text, attr in reopened.frames[0][0]))
 
@@ -151,8 +150,93 @@ class FinderUITest(unittest.TestCase):
         self.assertTrue(any(y == 3 and "Needs attention, Running" in text
                             for y, _, text, _ in popup.screen.writes))
         popup.key("\x06", lambda row: self.fail())
-        self.assertTrue(popup.key("\x1b", lambda row: self.fail()))
+        self.assertTrue(popup.key("\n", lambda row: self.fail()))
         self.assertFalse(popup.key("\x03", lambda row: self.fail()))
+
+    def test_escape_is_ignored_and_ctrl_c_cancels_in_both_views(self):
+        for filters_open in (False, True):
+            with self.subTest(filters_open=filters_open):
+                popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+                popup.key("e", lambda row: self.fail())
+                popup.filters_open = filters_open
+                selected = popup.finder.selected
+                self.assertTrue(popup.key("\x1b", lambda row: self.fail()))
+                self.assertEqual(popup.filters_open, filters_open)
+                self.assertEqual(popup.finder.query, "e")
+                self.assertEqual(popup.finder.selected, selected)
+                self.assertFalse(popup.key("\x03", lambda row: self.fail()))
+
+    def test_only_enter_returns_from_filters_without_changing_state(self):
+        for enter in ("\n", "\r", curses.KEY_ENTER):
+            with self.subTest(enter=enter):
+                popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+                for key in ("e", "\x14", "\x06", " "):
+                    popup.key(key, lambda row: self.fail())
+                selected = popup.finder.selected
+                for key in ("\x1b", "\x06"):
+                    self.assertTrue(popup.key(key, lambda row: self.fail()))
+                    self.assertTrue(popup.filters_open)
+                self.assertTrue(popup.key(enter, lambda row: self.fail()))
+                self.assertFalse(popup.filters_open)
+                self.assertEqual(popup.finder.query, "e")
+                self.assertEqual(popup.cursor, 1)
+                self.assertEqual(popup.finder.scope, "Sessions")
+                self.assertEqual(popup.finder.selected, selected)
+                self.assertEqual(popup.finder.categories, frozenset({finder_ui.FILTER_CATEGORIES[0]}))
+
+    def test_enter_on_clear_filters_clears_and_returns_to_results(self):
+        for enter in ("\n", "\r", curses.KEY_ENTER):
+            with self.subTest(enter=enter):
+                popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+                for key in ("e", "\x14", "\x06", " "):
+                    popup.key(key, lambda row: self.fail())
+                self.assertTrue(popup.finder.categories)
+                popup.filter_index = len(finder_ui.FILTER_CATEGORIES)
+                self.assertTrue(popup.key(enter, lambda row: self.fail()))
+                self.assertFalse(popup.filters_open)
+                self.assertFalse(popup.finder.categories)
+                self.assertEqual(popup.finder.query, "e")
+                self.assertEqual(popup.finder.scope, "Sessions")
+                self.assertEqual(popup.cursor, 1)
+
+    def test_clear_filters_has_distinct_style_and_selection_highlight(self):
+        for color in (0, 256):
+            with self.subTest(color=color), patch.object(tui, "color", return_value=color):
+                popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+                popup.filters_open = True
+                for selected in (False, True):
+                    popup.filter_index = len(finder_ui.FILTER_CATEGORIES) if selected else 0
+                    popup.render()
+                    writes = {text: attr for _, _, text, attr in popup.screen.writes}
+                    expected = color | curses.A_BOLD | (curses.A_REVERSE if selected else 0)
+                    self.assertEqual(writes["Clear filters"], expected)
+                    self.assertTrue(all(not attr & curses.A_BOLD
+                                        for text, attr in writes.items() if text.startswith("[ ] ")))
+
+    def test_hint_wording_styles_and_narrow_clipping(self):
+        views = (
+            (False, "Ctrl-T scope  Ctrl-F filters  Tab expand  Enter open  Ctrl-C cancel"),
+            (True, "Up/Down select  Space toggle  Enter back  Ctrl-C cancel"),
+        )
+        for colored in (False, True):
+            palette = {"create": 256, "hints": 512} if colored else {}
+            with patch.object(tui, "color", side_effect=lambda name: palette.get(name, 0)):
+                for filters_open, expected in views:
+                    with self.subTest(colored=colored, filters_open=filters_open):
+                        screen = FakeWindow([], (14, 100))
+                        popup = finder_ui._Popup(screen, self.workspace)
+                        popup.filters_open = filters_open
+                        popup.render()
+                        writes = [(x, text, attr) for y, x, text, attr in screen.writes if y == 2]
+                        self.assertEqual("".join(text for _, text, _ in writes).rstrip(), expected)
+                        for _, text, attr in writes:
+                            if text.strip() in ("Ctrl-T", "Ctrl-F", "Tab", "Enter", "Ctrl-C", "Up/Down", "Space"):
+                                self.assertEqual(attr, palette.get("create", 0) | curses.A_BOLD)
+                            else:
+                                self.assertEqual(attr, palette.get("hints", 0) | curses.A_DIM)
+                        for width in range(1, len(expected) + 2):
+                            screen.size = (14, width)
+                            popup.render()  # FakeWindow asserts every write fits.
 
     def test_category_checklist_counts_refresh_with_query_and_workspace(self):
         popup = finder_ui._Popup(FakeWindow([]), self.workspace)
@@ -196,7 +280,7 @@ class FinderUITest(unittest.TestCase):
                        json.dumps(valid)):
             with self.subTest(stored=stored):
                 self.stored_filters = stored
-                _, window = self.run_ui(["\x1b"])
+                _, window = self.run_ui(["\x03"])
                 expected = sorted(valid["categories"]) if stored == json.dumps(valid) else []
                 self.assertEqual(json.loads(self.stored_filters), {"categories": expected})
                 self.assertIn("Filters:", frame_text(window.frames[0]))
@@ -205,7 +289,7 @@ class FinderUITest(unittest.TestCase):
         self.run_ui(["\x06", " ", curses.KEY_DOWN, " ", "\x03"])
         saved = json.loads(self.stored_filters)
         self.assertEqual(saved, {"categories": sorted(finder_ui.FILTER_CATEGORIES[:2])})
-        _, window = self.run_ui(["\x1b"])
+        _, window = self.run_ui(["\x03"])
         self.assertIn("Needs attention, Running", frame_text(window.frames[0]))
 
     def test_filter_checklist_mouse_scroll_clear_and_resize(self):
@@ -242,7 +326,7 @@ class FinderUITest(unittest.TestCase):
             popup.key(curses.KEY_RESIZE, lambda row: self.fail())
             popup.render()
         self.assertIn("Clear filters", frame_text(screen.frames[-1]))
-        popup.key("\x1b", lambda row: self.fail())
+        popup.key("\n", lambda row: self.fail())
         self.assertFalse(popup.filters_open)
 
     def test_filters_apply_in_every_scope_and_ignore_query_edits_in_checklist(self):
@@ -274,7 +358,7 @@ class FinderUITest(unittest.TestCase):
     def test_edit_cursor_clear_and_scope(self):
         result, window = self.run_ui([
             "a", "c", curses.KEY_LEFT, "b", curses.KEY_DC,
-            curses.KEY_BACKSPACE, "\x15", "界", "\x14", "\x1b",
+            curses.KEY_BACKSPACE, "\x15", "界", "\x14", "\x03",
         ])
         self.assertFalse(result)
         text = [frame_text(frame) for frame in window.frames]
@@ -289,20 +373,18 @@ class FinderUITest(unittest.TestCase):
         self.assertEqual(opened[0].key, self.workspace.sessions[0].key)
 
     def test_ready_result_does_not_commit_before_queued_cancellation(self):
-        for cancel in ("\x1b", "\x03"):
-            with self.subTest(cancel=cancel):
-                opened = []
-                window = FakeWindow([cancel])
-                popup = finder_ui._Popup(window, self.workspace)
-                popup.opening = self.workspace.sessions[0].key
-                popup.results.put((lambda: opened.append(True), None))
-                with patch.object(finder_ui, "_Popup", return_value=popup):
-                    self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: self.fail()))
-                self.assertFalse(opened)
-                self.assertIn(0, window.timeouts)
+        opened = []
+        window = FakeWindow(["\x03"])
+        popup = finder_ui._Popup(window, self.workspace)
+        popup.opening = self.workspace.sessions[0].key
+        popup.results.put((lambda: opened.append(True), None))
+        with patch.object(finder_ui, "_Popup", return_value=popup):
+            self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: self.fail()))
+        self.assertFalse(opened)
+        self.assertIn(0, window.timeouts)
 
     def test_instant_preparation_drains_edits_and_updates_before_cancellation(self):
-        for keys in (["\n", "\x1b"], ["\n", "\x03"], ["\n", "x", "\x1b"], ["\n", "x", "\x03"]):
+        for keys in (["\n", "\x03"], ["\n", "x", "\x03"]):
             with self.subTest(keys=keys):
                 opened, updates = [], []
                 updated = replace(self.workspace, loading=True)
@@ -363,7 +445,7 @@ class FinderUITest(unittest.TestCase):
 
         def cancel_after_start():
             self.assertTrue(started.wait(1))
-            return "\x1b"
+            return "\x03"
 
         try:
             window = FakeWindow(["\n", cancel_after_start])
@@ -444,7 +526,7 @@ class FinderUITest(unittest.TestCase):
             release.set()
             return -1
 
-        window = FakeWindow(["\n", type_while_preparing, finish] + [-1] * 100 + ["\x1b"])
+        window = FakeWindow(["\n", type_while_preparing, finish] + [-1] * 100 + ["\x03"])
         seen = []
 
         def read_workspace():
@@ -488,7 +570,7 @@ class FinderUITest(unittest.TestCase):
                     release.set()
                     return -1
 
-                window = FakeWindow(["\n", remove_original, finish] + [-1] * 100 + ["\x1b"])
+                window = FakeWindow(["\n", remove_original, finish] + [-1] * 100 + ["\x03"])
                 try:
                     self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=prepare,
                                                   read_workspace=lambda: updates.pop() if updates else None))
@@ -522,14 +604,14 @@ class FinderUITest(unittest.TestCase):
         self.assertEqual(opened, [self.workspace.sessions[0].key])
 
     def test_enter_without_selection_reports_unavailable(self):
-        result, window = self.run_ui(list("zzzz") + ["\n", "\x1b"])
+        result, window = self.run_ui(list("zzzz") + ["\n", "\x03"])
         self.assertFalse(result)
         self.assertIn("Unavailable", frame_text(window.frames[-1]))
 
     def test_update_vanished_selection_keeps_path_and_blocks_open(self):
         updates = iter([None, Workspace()])
         opened = []
-        window = FakeWindow([-1, "\n", "\x1b"])
+        window = FakeWindow([-1, "\n", "\x03"])
         self.assertFalse(finder_ui.run(window, self.workspace,
                                      read_workspace=lambda: next(updates, None),
                                      prepare_open=lambda row: lambda: opened.append(row)))
@@ -543,12 +625,12 @@ class FinderUITest(unittest.TestCase):
                                    (replace(self.workspace, sessions=tuple(
                                        replace(s, available=False) for s in self.workspace.sessions)), "Unavailable")):
             with self.subTest(message=message):
-                window = FakeWindow(["\x1b"])
+                window = FakeWindow(["\x03"])
                 self.assertFalse(finder_ui.run(window, workspace, prepare_open=lambda row: self.fail()))
                 self.assertIn(message, frame_text(window.frames[-1]))
 
     def test_query_viewport_tracks_cursor_and_resize(self):
-        window = FakeWindow(list("abcdefghijk界") + [curses.KEY_LEFT, "\x1b"], (8, 12))
+        window = FakeWindow(list("abcdefghijk界") + [curses.KEY_LEFT, "\x03"], (8, 12))
         finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None)
         writes, cursor = window.frames[-1]
         self.assertEqual(cursor, (0, 8))
@@ -563,7 +645,7 @@ class FinderUITest(unittest.TestCase):
 
     def test_mouse_scope_changes_without_opening(self):
         with patch.object(curses, "getmouse", return_value=(0, 20, 1, 0, curses.BUTTON1_CLICKED)):
-            result, window = self.run_ui([curses.KEY_MOUSE, "\x1b"])
+            result, window = self.run_ui([curses.KEY_MOUSE, "\x03"])
         self.assertFalse(result)
         self.assertTrue(any(text == "[Windows] " and attr & curses.A_REVERSE
                             for _, _, text, attr in window.frames[-1][0]))
@@ -576,7 +658,7 @@ class FinderUITest(unittest.TestCase):
                         window.size = (3, 5)
                         return curses.KEY_RESIZE
 
-                    window = FakeWindow(list("界e\u0301" * 20) + [curses.KEY_LEFT, resize, "\x1b"], size)
+                    window = FakeWindow(list("界e\u0301" * 20) + [curses.KEY_LEFT, resize, "\x03"], size)
                     self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
 
     def test_tab_expands_tree_and_down_selects_window(self):
@@ -607,7 +689,7 @@ class FinderUITest(unittest.TestCase):
         session = self.workspace.sessions[0]
         session = replace(session, windows=(replace(session.windows[0], name="q\u0301"),))
         workspace = replace(self.workspace, sessions=(session,))
-        window = FakeWindow(["\x14", "\x14", "q", "\x1b"])
+        window = FakeWindow(["\x14", "\x14", "q", "\x03"])
         finder_ui.run(window, workspace, prepare_open=lambda row: lambda: None)
         writes = window.frames[-1][0]
         self.assertTrue(any("q\u0301" in text and attr & curses.A_UNDERLINE for _, _, text, attr in writes))
@@ -622,14 +704,14 @@ class FinderUITest(unittest.TestCase):
         for ascii_mode, indicator in ((True, " BELL"), (False, " 🔔")):
             with self.subTest(ascii=ascii_mode), patch.object(tui, "ascii_mode", return_value=ascii_mode), \
                     patch.object(tui, "color", side_effect=lambda name: curses.A_BLINK if name == "danger" else 0):
-                screen = FakeWindow(["\t", curses.KEY_DOWN, "\t", "\x1b"])
+                screen = FakeWindow(["\t", curses.KEY_DOWN, "\t", "\x03"])
                 finder_ui.run(screen, workspace, prepare_open=lambda row: lambda: None)
                 indicators = [(y, attr) for y, _, text, attr in screen.frames[-1][0] if text == indicator]
                 self.assertEqual([y for y, _ in indicators], [4, 6])
                 self.assertTrue(all(attr & curses.A_BLINK for _, attr in indicators))
 
     def test_render_highlights_and_current_are_distinct(self):
-        window = FakeWindow(["\t", "\t", "\x14", "\x14", "\x14", "C", "\x1b"])
+        window = FakeWindow(["\t", "\t", "\x14", "\x14", "\x14", "C", "\x03"])
         finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None)
         writes = [write for frame, _ in window.frames for write in frame]
         self.assertTrue(any(attr & curses.A_UNDERLINE for _, _, _, attr in writes))

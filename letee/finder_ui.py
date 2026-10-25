@@ -106,9 +106,14 @@ class _Popup:
             self.put(1, x, label, curses.A_REVERSE if scope == self.finder.scope else tui.color("hints"))
             self.tabs.append((x, min(end, self.width - 1), scope))
             x = end
-        hints = ("Up/Down select  Space toggle  Enter/Esc close  Ctrl-C cancel" if self.filters_open
-                 else "Ctrl-T scope  Ctrl-F filters  Tab expand  Enter open  Esc cancel")
-        self.put(2, 0, hints, tui.color("hints"))
+        hints = ([("Up/Down", "select"), ("Space", "toggle"), ("Enter", "back")] if self.filters_open
+                 else [("Ctrl-T", "scope"), ("Ctrl-F", "filters"), ("Tab", "expand"), ("Enter", "open")])
+        x = 0
+        for key, action in hints + [("Ctrl-C", "cancel")]:
+            self.put(2, x, key, tui.color("create") | curses.A_BOLD)
+            x += tui.cell_width(key)
+            self.put(2, x, f" {action}  ", tui.color("hints") | curses.A_DIM)
+            x += tui.cell_width(action) + 3
         filters = [category for category in FILTER_CATEGORIES if category in self.finder.categories]
         self.put(3, 0, "Filters: " + (", ".join(filters) or "none"),
                  curses.A_REVERSE if self.filters_open else tui.color("hints"))
@@ -120,8 +125,10 @@ class _Popup:
             for index in range(self.filter_scroll, min(len(labels), self.filter_scroll + self.capacity)):
                 label, checked = labels[index]
                 prefix = "" if checked is None else ("[x] " if checked else "[ ] ")
-                self.put(4 + index - self.filter_scroll, 0, prefix + label,
-                         curses.A_REVERSE if index == self.filter_index else 0)
+                attr = curses.A_REVERSE if index == self.filter_index else 0
+                if checked is None:
+                    attr |= tui.color("create") | curses.A_BOLD
+                self.put(4 + index - self.filter_scroll, 0, prefix + label, attr)
         now = time.time()
         self.disclosures = {}
         visible_rows = [] if self.filters_open else rows[self.scroll:self.scroll + self.capacity]
@@ -253,7 +260,9 @@ class _Popup:
         if key == "\x03":
             return False
         if self.filters_open:
-            if key in ("\n", "\r", curses.KEY_ENTER, "\x1b", "\x06"):
+            if key in ("\n", "\r", curses.KEY_ENTER):
+                if self.filter_index == len(FILTER_CATEGORIES):
+                    self.toggle_filter()
                 self.filters_open = False
                 self.follow_selection = True
             elif key in (curses.KEY_UP, curses.KEY_DOWN):
@@ -269,8 +278,6 @@ class _Popup:
                 self.capacity = max(0, self.height - 6)
                 self.follow_filter()
             return True
-        if key == "\x1b":
-            return False
         if key == "\x06":
             self.filters_open = True
             self.follow_filter()

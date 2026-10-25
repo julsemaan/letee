@@ -143,9 +143,10 @@ The tree groups sessions, their windows, and agents. Type to filter by name or f
 | `Left` / `Right`, `Home` / `End` | Move the query cursor. |
 | `Backspace` / `Delete` | Edit the query. |
 | `Ctrl-U` | Clear the query. |
-| `Esc` / `Ctrl-C` | Cancel. |
+| `Ctrl-C` | Cancel from results or filters. |
+| `Esc` | No action. |
 
-The filter summary always shows the active categories, or `none`. In the checklist, use `Up` / `Down` and `Space`, or click checkboxes, to select Needs attention, Running, Finished, or Idle/unknown. Scroll to reach more choices or Clear filters. Changes apply immediately. `Enter` or `Esc` returns to results without changing the query; `Ctrl-C` cancels Find.
+The filter summary always shows the active categories, or `none`. In the checklist, use `Up` / `Down` and `Space`, or click checkboxes, to select Needs attention, Running, Finished, or Idle/unknown. Scroll to reach more choices or Clear filters. Changes apply immediately. Only `Enter` returns to results, preserving the query, scope, and selections. On Clear filters, `Enter` also clears all categories. `Ctrl-F` leaves the checklist open, `Esc` does nothing, and `Ctrl-C` cancels Find.
 
 Needs attention matches the agents eligible for `prefix+j`: stored agent alerts, or agents awaiting input or authentication, failed, or rejected. Session bells alone do not qualify. Running matches working or submitted agents; Finished matches completed or canceled agents. Idle/unknown matches idle or unknown agents. Categories can overlap because of stored alerts. Selected categories match any of those categories; selecting none shows all destinations. Sessions and windows qualify through matching agents, but unrelated branches stay hidden.
 
