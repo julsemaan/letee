@@ -1530,6 +1530,21 @@ class CockpitLayoutTest(unittest.TestCase):
             f"set-option -u -t {cockpit.tmux.SESSION} {cockpit.STARTUP_OPTION}",
         )])
 
+    def test_failed_preparation_marks_only_its_target_and_launch(self):
+        target = Target("local", "work")
+        failure = OSError("preparation failed")
+        with patch.object(cockpit, "right_pane", return_value="%2"), \
+             patch.object(cockpit.tmux, "tmux") as command, \
+             self.assertRaises(OSError) as raised:
+            cockpit.switch(target, unittest.mock.Mock(side_effect=failure), launch_id="old")
+
+        self.assertIs(raised.exception, failure)
+        guard = f"#{{&&:{cockpit._option_equals(cockpit.CURRENT_TARGET_OPTION, target.format())},{cockpit._option_equals(cockpit.STARTUP_LAUNCH_OPTION, 'old')}}}"
+        command.assert_any_call(
+            "if-shell", "-F", guard,
+            f"set-option -t letee {cockpit.ATTACHMENT_FAILURE_OPTION} local:work:old",
+        )
+
     def test_failed_preparation_preserves_original_exception_when_cleanup_fails(self):
         target = Target("ssh", "work", "dev")
         error = RuntimeError("preparation failed")

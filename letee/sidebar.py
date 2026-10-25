@@ -16,7 +16,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
 
-from . import __version__, cockpit, config, diagnostics, operations, runtime, sessions, tui, workspace
+from . import __version__, cockpit, config, diagnostics, operations, runtime, tui, workspace
+from . import sessions as sessions
 from .operations import (
     Effect, EffectResult, perform as _perform_effect,
     renamed_target as _renamed_target,
@@ -1589,9 +1590,9 @@ class AsyncStatusPoller(runtime.StatusPoller):
                     self._poller.discard(target)
                 elif command == "refresh":
                     self._poller.refresh()
-            launch_id, status, synchronized_target, startup_deadline = operations.sample_target(synchronize=synchronize)
-            if synchronize:
-                current_target = synchronized_target
+            launch_id, status, current_target, startup_deadline = operations.sample_target(
+                synchronize=synchronize, cached_target=state.current_target,
+            )
             if status is None:
                 raise SystemExit("invalid cockpit status snapshot")
             sampled = True
@@ -1602,9 +1603,7 @@ class AsyncStatusPoller(runtime.StatusPoller):
             )
             if suppression_expired:
                 suppressed_target = None
-            if not synchronize:
-                current_target = status.current_target if status.current_target is not None else state.current_target
-            else:
+            if synchronize:
                 suppressed_target = state.current_target if current_target is None else None
                 suppression_expired = False
             if current_target == suppressed_target:
@@ -1619,8 +1618,6 @@ class AsyncStatusPoller(runtime.StatusPoller):
             synchronized = synchronize
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
             diagnostics.error(error, handling="fallback", operation="status_sample", generation=generation)
-            if synchronize:
-                current_target = state.current_target
         current_agent = _focused_agent_id(snapshot, current_target, stored_agent)
         return StatusResult(
             snapshot,

@@ -1058,6 +1058,15 @@ def switch(
         try:
             attach_command = stage("prepare", "attach_command_preparation", attach_command)
         except BaseException as error:
+            if launch_id is not None:
+                try:
+                    guard = f"#{{&&:{_option_equals(CURRENT_TARGET_OPTION, target.format())},{_option_equals(STARTUP_LAUNCH_OPTION, launch_id)}}}"
+                    tmux.tmux(
+                        "if-shell", "-F", guard,
+                        f"set-option -t {tmux.SESSION} {ATTACHMENT_FAILURE_OPTION} {shlex.quote(f'{target.format()}:{launch_id}')}",
+                    )
+                except BaseException as marker_error:
+                    diagnostics.error(marker_error, handling="ignored", operation="switch_failure_marker")
             try:
                 clear_startup(target, deadline, launch_id)
             except BaseException:

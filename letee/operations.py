@@ -206,7 +206,7 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 finally:
                     cockpit.rename_target(target, renamed)
                 if active:
-                    cockpit.switch(renamed, sessions.attach_command(renamed, attach_only=True), launch_id=state["launch"])
+                    cockpit.switch(renamed, lambda: sessions.attach_command(renamed, attach_only=True), launch_id=state["launch"])
             finally:
                 config.save_sessions(list(planned))
         elif effect.kind == "kill" and isinstance(target, Target):
@@ -297,17 +297,22 @@ def synchronize_target() -> Target | None:
         return cockpit.current_target(repair=True)
 
 
-def sample_target(*, synchronize: bool = False):
+def sample_target(*, synchronize: bool = False, cached_target: Target | None = None):
     """Read markers and their identity together, outside any launch's preparation window."""
     with config.sessions_lock():
-        launch_id = launch_identity()
+        state = _state()
+        launch_id = state["launch"]
         current = cockpit.current_target(repair=True) if synchronize else None
         status = cockpit.status_snapshot()
-        target = current if synchronize else status.current_target if status else None
+        target = current if synchronize else (status.current_target if status else None)
+        if not synchronize and target is None:
+            target = cached_target
+        if target is not None and target.format() in state["invalidated"]:
+            target = None
         deadline = cockpit.startup_deadline(target) if target else None
         if status is not None and target is not None:
             status = replace(status, attachment_failed=cockpit.attachment_failed(target, launch_id))
-        return launch_id, status, current, deadline
+        return launch_id, status, target, deadline
 
 
 def clear_startup(target: Target, deadline: float, launch_id: str | None = None) -> bool:

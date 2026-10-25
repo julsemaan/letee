@@ -66,6 +66,55 @@ def _assert_deferred_switch(testcase, switch, target, *extra):
 
 
 class RevisionTargetSynchronizationTest(OperationTestCase):
+    def test_invalidated_cached_target_cannot_starve_reachable_favorite(self):
+        old = Target("ssh", "old", "offline")
+        favorite = Target("local", "work")
+        config.save_sessions([favorite])
+        with config.sessions_lock():
+            config.save_operations({"launch": "removed", "invalidated": [old.format()]})
+        data = snapshot(remotes={"offline": source("ssh", host="offline", available=False)})
+        discovery = unittest.mock.Mock(snapshot=data)
+        poller = sidebar.AsyncStatusPoller(discovery, old)
+        self.addCleanup(poller.close)
+        poller._synchronize_pending = False
+        reconciler = sidebar.SessionReconciler()
+        submit = unittest.mock.Mock(return_value=True)
+        for marker in (old, None):
+            for synchronize in (True, False, False):
+                with self.subTest(marker=marker, synchronize=synchronize), \
+                     patch.object(sidebar.cockpit, "current_target", return_value=old), \
+                     patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(marker, None, None, True)), \
+                     patch.object(sidebar.cockpit, "startup_deadline", return_value=None), \
+                     patch.object(sidebar.cockpit, "attachment_failed", return_value=False):
+                    result = poller._sample((), 0, synchronize=synchronize)
+                self.assertIsNone(result.current_target)
+                discovery.tick.assert_called_with(None)
+                reconciler.reconcile((favorite,), result.current_target, result.snapshot, submit, 0)
+        self.assertEqual(submit.call_args.args[0].target, favorite)
+        self.assertEqual(submit.call_args.args[0].kind, "ensure_created")
+
+    def test_invalid_snapshot_does_not_restore_rejected_cached_target(self):
+        target = Target("local", "removed")
+        with config.sessions_lock():
+            config.save_operations({"launch": "removed", "invalidated": [target.format()]})
+        poller = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), target)
+        self.addCleanup(poller.close)
+        with patch.object(sidebar.cockpit, "current_target", return_value=target), \
+             patch.object(sidebar.cockpit, "status_snapshot", return_value=None):
+            result = poller._sample((), 0, synchronize=True)
+        self.assertIsNone(result.current_target)
+        self.assertFalse(result.sampled)
+
+    def test_ordinary_sample_keeps_valid_cached_target_when_marker_is_missing(self):
+        target = Target("local", "work")
+        poller = sidebar.AsyncStatusPoller(unittest.mock.Mock(snapshot=snapshot()), target)
+        self.addCleanup(poller.close)
+        poller._synchronize_pending = False
+        with patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(None, None, None, True)), \
+             patch.object(sidebar.cockpit, "startup_deadline", return_value=None), \
+             patch.object(sidebar.cockpit, "attachment_failed", return_value=False):
+            self.assertEqual(poller._sample((), 0).current_target, target)
+
     def test_blocked_query_leaves_tick_available_while_holding_sessions_lock(self):
         old = Target("local", "old")
         entered, release = threading.Event(), threading.Event()
@@ -1051,10 +1100,9 @@ class ReconciliationLoopTest(OperationTestCase):
                             sidebar.run(FakeScreen([-1] * 12 + [STOP], size=(16, 60)))
                         ensure.assert_not_called()
                         if command == "rename" and active == old:
-                            switch.assert_called_once_with(
-                                renamed, sidebar.sessions.attach_command(renamed, attach_only=True),
-                                launch_id=config.load_operations()["launch"],
-                            )
+                            _assert_deferred_switch(self, switch, renamed)
+                            self.assertEqual(switch.call_args.kwargs["launch_id"], config.load_operations()["launch"])
+                            self.assertEqual(switch.call_args.args[1](), sidebar.sessions.attach_command(renamed, attach_only=True))
                         else:
                             switch.assert_not_called()
                         self.assertNotIn(old, config.load_sessions())
@@ -5045,6 +5093,7 @@ class AsyncSidebarWorkTest(OperationTestCase):
             with (
                 self.subTest(launch_id=launch_id),
                 patch.object(sidebar.operations, "launch_identity", return_value="old") as identity,
+                patch.object(sidebar.operations, "_state", side_effect=lambda: {"launch": identity.return_value, "invalidated": []}),
                 patch.object(sidebar.cockpit, "current_target", return_value=None) as current,
                 patch.object(sidebar.cockpit, "status_snapshot", return_value=(
                     sidebar.cockpit.StatusSnapshot(target, None, None, True)

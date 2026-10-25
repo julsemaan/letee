@@ -1,6 +1,5 @@
 import curses
 import subprocess
-import unittest
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 

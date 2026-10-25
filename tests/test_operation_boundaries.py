@@ -205,7 +205,7 @@ class OperationBoundariesTest(unittest.TestCase):
                 status.tick(0)
                 first = status._future.result(timeout=2)
                 status.tick(0)
-                sample.assert_called_once_with(synchronize=True)
+                sample.assert_called_once_with(synchronize=True, cached_target=None)
                 self.assertTrue(first.synchronized)
                 self.assertFalse(marker)
                 self.assertIsNone(status.current_target)
@@ -277,6 +277,36 @@ class OperationBoundariesTest(unittest.TestCase):
                     self.assertEqual(config.load_sessions(), [self.work])
                     retry = operations.perform(operations.Effect("switch", self.work, automatic=True))
                     self.assertTrue(retry.stale_navigation)
+
+    def test_cleanup_failure_samples_exclude_destroyed_target_until_explicit_navigation(self):
+        for kind in ("kill", "save_favorites"):
+            with self.subTest(kind=kind):
+                config.save_sessions([self.work])
+                with config.sessions_lock():
+                    config.save_operations({"launch": "initial", "invalidated": []})
+                with patch.object(cockpit, "current_target", return_value=self.work), \
+                     patch.object(cockpit, "set_expected_right_pane_death"), \
+                     patch.object(cockpit, "resolve_expected_right_pane_death", side_effect=OSError("cleanup failed")), \
+                     patch.object(cockpit, "reset_to_help", side_effect=OSError("cleanup failed")), \
+                     patch.object(operations.sessions, "kill"):
+                    result = operations.perform(operations.Effect(kind, self.work))
+                self.assertEqual(result.error, "cleanup failed")
+                self.assertTrue(result.partial_success)
+                self.assertEqual(config.load_sessions(), [])
+                for synchronize in (True, False, False):
+                    with patch.object(cockpit, "current_target", return_value=self.work), \
+                         patch.object(cockpit, "status_snapshot", return_value=cockpit.StatusSnapshot(self.work, None, None, True)), \
+                         patch.object(cockpit, "startup_deadline") as deadline:
+                        _, _, target, startup = operations.sample_target(synchronize=synchronize)
+                    self.assertIsNone(target)
+                    self.assertIsNone(startup)
+                    deadline.assert_not_called()
+                with patch.object(cockpit, "switch"):
+                    self.assertFalse(operations.perform(operations.Effect("switch", self.work)).error)
+                with patch.object(cockpit, "status_snapshot", return_value=cockpit.StatusSnapshot(self.work, None, None, True)), \
+                     patch.object(cockpit, "startup_deadline", return_value=None), \
+                     patch.object(cockpit, "attachment_failed", return_value=False):
+                    self.assertEqual(operations.sample_target()[2], self.work)
 
     def test_failed_operations_publication_leaves_state_unchanged(self):
         state = {"launch": "initial", "revisions": {self.work.format(): "revision"},

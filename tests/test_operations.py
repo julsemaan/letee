@@ -265,7 +265,7 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
 
         with patch.object(cockpit, "current_target", return_value=target), \
              patch.object(cockpit, "startup_deadline", return_value=None), \
-             patch.object(cockpit, "switch", side_effect=lambda target, command, **kwargs: launched.append((target, command, kwargs["launch_id"]))), \
+             patch.object(cockpit, "switch", side_effect=lambda target, command, **kwargs: launched.append((target, command() if callable(command) else command, kwargs["launch_id"]))), \
              patch.object(cockpit, "rename_target"), \
              patch.object(operations.sessions, "load_tmux_config_overlay", return_value=False), \
              patch.object(operations.sessions, "_run", side_effect=run):
@@ -291,6 +291,56 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
         self.assertEqual(remote_sessions, {"other"})
         self.assertEqual(ensured, [target])
         self.assertIn(target.format(), config.load_operations()["invalidated"])
+
+    def test_rename_preparation_failure_retries_even_when_renamed_session_is_present(self):
+        from letee.discovery import SessionSnapshot, SourceSnapshot
+        from letee.sidebar import SessionReconciler
+        from unittest.mock import Mock
+
+        renamed = Target("local", "other")
+        calls = []
+        failure = OSError("preparation failed")
+
+        def prepare(target, **kwargs):
+            self.assertEqual(target, renamed)
+            self.assertIn(("set-option", "-t", "letee", cockpit.STARTUP_LAUNCH_OPTION,
+                           operations.launch_identity()), calls)
+            raise failure
+
+        with patch.object(cockpit, "current_target", return_value=self.work), \
+             patch.object(cockpit, "right_pane", return_value="%2"), \
+             patch.object(cockpit.tmux, "tmux", side_effect=lambda *args, **kwargs: calls.append(args)), \
+             patch.object(cockpit, "rename_target"), \
+             patch.object(operations.sessions, "rename"), \
+             patch.object(operations.sessions, "attach_command", side_effect=prepare):
+            result = operations.perform(operations.Effect("rename", self.work, message="other"))
+
+        self.assertEqual(result.error, "preparation failed")
+        self.assertTrue(result.partial_success)
+        self.assertEqual(config.load_sessions(), [renamed])
+        self.assertIn(self.work.format(), config.load_operations()["invalidated"])
+        marker = f"{renamed.format()}:{result.launch_id}"
+        self.assertTrue(any(cockpit.ATTACHMENT_FAILURE_OPTION in str(call) and marker in str(call)
+                            for call in calls))
+        with patch.object(cockpit, "_option", return_value=marker), \
+             patch.object(cockpit, "status_snapshot", return_value=cockpit.StatusSnapshot(renamed, None, None, True)), \
+             patch.object(cockpit, "startup_deadline", return_value=None):
+            launch, status, active, deadline = operations.sample_target()
+        submit = Mock(return_value=True)
+        data = SessionSnapshot(SourceSnapshot(True, (renamed,), frozenset()), {})
+        reconciler = SessionReconciler()
+        for now in (100, 200):
+            reconciler.reconcile((renamed,), active or status.current_target, data, submit,
+                                 now, deadline, launch, attachment_failed=status.attachment_failed)
+        self.assertEqual(submit.call_args.args[0].kind, "switch")
+        with patch.object(cockpit, "current_target", return_value=renamed), \
+             patch.object(cockpit, "startup_deadline", return_value=None), \
+             patch.object(operations.sessions, "ensure_created"), \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch") as switch:
+            retry = operations.perform(submit.call_args.args[0])
+        self.assertFalse(retry.error)
+        switch.assert_called_once()
 
     def test_rename_probe_failure_prevents_mutation(self):
         state = config.load_operations()
