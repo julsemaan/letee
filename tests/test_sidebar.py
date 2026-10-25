@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,7 +54,7 @@ def snapshot(local=(), remotes=None, local_bells=(), local_available=True, local
 def _assert_deferred_switch(testcase, switch, target, *extra):
     switch.assert_called_once()
     testcase.assertEqual(switch.call_args.args[0], target)
-    testcase.assertTrue(callable(switch.call_args.args[1]))
+    testcase.assertIsInstance(switch.call_args.args[1], str)
     testcase.assertEqual(switch.call_args.args[2:], extra)
 
 
@@ -422,59 +423,22 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
-    def test_preparation_timeout_retries_without_replacing_reconnecting_screen(self):
+    def test_normal_remote_switch_does_not_wait_for_overlay_ssh(self):
         target = Target("ssh", "work", "dev")
-        healthy = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
-        retry = sidebar.RestorationRetry()
-        timeout = subprocess.TimeoutExpired(["ssh"], 3)
-        submitted = []
         with (
-            patch.object(sidebar.cockpit, "current_target", return_value=target),
             patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
             patch.object(sidebar.cockpit.tmux, "tmux") as tmux_call,
             patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=True),
             patch.object(sidebar.sessions, "load_persistent_ssh", return_value=True),
-            patch.object(sidebar.sessions.subprocess, "run", side_effect=[
-                timeout, timeout, subprocess.CompletedProcess(["ssh"], 0, stdout=""),
-            ]) as run,
+            patch.object(sidebar.sessions.subprocess, "run", side_effect=AssertionError("blocking SSH")) as run,
         ):
             result = sidebar._perform_effect(sidebar.Effect("switch", target), ())
-            self.assertEqual(result.error, "overlay ssh:dev:work timed out")
-            marker = sidebar._reconcile_active_session_effect(None, result, retry=retry, now=10)
-            self.assertEqual(marker, target)
-            respawns = [item.args for item in tmux_call.call_args_list if item.args[0] == "respawn-pane"]
-            self.assertEqual(len(respawns), 2)
-            self.assertIn("Preparing%s", respawns[0][4])
-            self.assertIn("Reconnecting%s", respawns[1][4])
-            calls_before_retry = list(tmux_call.call_args_list)
-
-            sidebar._sync_active_session(
-                target, healthy, marker, lambda effect: submitted.append(effect) or True,
-                retry=retry, now=10,
-            )
-            self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
-            result = sidebar._perform_effect(submitted.pop(), ())
-            self.assertEqual(result.error, "overlay ssh:dev:work timed out")
-            marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=11)
-            self.assertEqual(marker, target)
-            self.assertEqual(tmux_call.call_args_list, calls_before_retry)
-
-            sidebar._sync_active_session(
-                target, healthy, marker, lambda effect: submitted.append(effect) or True,
-                retry=retry, now=retry.deadline - 0.01,
-            )
-            self.assertEqual(submitted, [])
-            sidebar._sync_active_session(
-                target, healthy, marker, lambda effect: submitted.append(effect) or True,
-                retry=retry, now=retry.deadline,
-            )
-            self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
-            result = sidebar._perform_effect(submitted.pop(), ())
-            self.assertFalse(result.error)
-            self.assertIsNone(sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=12))
-            self.assertIsNone(retry.target)
-            self.assertEqual(run.call_count, 3)
-            self.assertEqual(tmux_call.call_args.args, ("select-pane", "-t", "%2"))
+        self.assertFalse(result.error)
+        run.assert_not_called()
+        respawns = [item.args for item in tmux_call.call_args_list if item.args[0] == "respawn-pane"]
+        self.assertEqual(len(respawns), 1)
+        self.assertEqual(shlex.split(respawns[0][4])[:6], [sys.executable, "-m", "letee.attachment", target.format(), "--", "ssh"])
+        self.assertEqual(tmux_call.call_args.args, ("select-pane", "-t", "%2"))
 
     def test_missing_overlay_transitions_once_on_remote_preparation_timeout(self):
         target = Target("ssh", "work", "dev")
@@ -1420,7 +1384,7 @@ class AgentSidebarTest(unittest.TestCase):
 
         _assert_deferred_switch(self, switch, pane.target, "id")
         self.assertEqual(
-            switch.call_args.args[1](),
+            switch.call_args.args[1],
             "env -u TMUX tmux -S /tmp/tmux select-window -t work:@1 \\; select-pane -t %2 \\; attach-session -t work",
         )
         self.assertEqual(state.status, "")
@@ -1436,7 +1400,7 @@ class AgentSidebarTest(unittest.TestCase):
         ):
             _execute(Effect("switch", target), SidebarState(), unittest.mock.Mock(), 5)
             _execute(Effect("switch_pane", pane, message="id"), SidebarState(), unittest.mock.Mock(), 5)
-            attach, pane_attach = (call.args[1]() for call in switch.call_args_list)
+            attach, pane_attach = (call.args[1] for call in switch.call_args_list)
 
         self.assertIn(f"tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file {source}", attach)
         self.assertIn(f"tmux -S /tmp/tmux source-file {source} \\; select-window -t work:@1", pane_attach)
@@ -2177,9 +2141,9 @@ class AddRunLoopTest(unittest.TestCase):
                 [curses.KEY_F11, *map(ord, "existing"), curses.KEY_ENTER, STOP],
                 snapshot(local=("existing",)),
             )
-            attach_command.assert_not_called()
+            attach_command.assert_called_once_with(Target("local", "existing"))
             _assert_deferred_switch(self, switch, Target("local", "existing"))
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            self.assertEqual(switch.call_args.args[1], "attach")
 
         create.assert_not_called()
         save.assert_called_once_with([Target("local", "existing")])
@@ -2198,9 +2162,9 @@ class AddRunLoopTest(unittest.TestCase):
                 snapshot(local=("existing",)),
                 favorites=[target],
             )
-            attach_command.assert_not_called()
+            attach_command.assert_called_once_with(target)
             _assert_deferred_switch(self, switch, target)
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            self.assertEqual(switch.call_args.args[1], "attach")
 
         create.assert_not_called()
         save.assert_not_called()
@@ -2225,9 +2189,9 @@ class AddRunLoopTest(unittest.TestCase):
                 ],
                 data,
             )
-            attach_command.assert_not_called()
+            attach_command.assert_called_once_with(Target("ssh", "notes", "dev"))
             _assert_deferred_switch(self, switch, Target("ssh", "notes", "dev"))
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            self.assertEqual(switch.call_args.args[1], "attach")
 
         create.assert_not_called()
         # The second Enter must act on the dev search list rebuilt right after
@@ -2730,9 +2694,9 @@ class SidebarStateTest(unittest.TestCase):
             patch("letee.sidebar.cockpit.switch") as switch,
         ):
             self.assertFalse(_execute(Effect("create", target=target), state, poller, 5))
-            attach_command.assert_not_called()
+            attach_command.assert_called_once_with(target)
             _assert_deferred_switch(self, switch, target)
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            self.assertEqual(switch.call_args.args[1], "attach")
 
         create.assert_called_once_with(target)
         attach_command.assert_called_once_with(target)
@@ -2920,9 +2884,9 @@ class SidebarStateTest(unittest.TestCase):
             patch("letee.sidebar.cockpit.switch") as switch,
         ):
             _execute(Effect("add_switch", target=target), state, poller, 5)
-            attach_command.assert_not_called()
+            attach_command.assert_called_once_with(target)
             _assert_deferred_switch(self, switch, target)
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            self.assertEqual(switch.call_args.args[1], "attach")
 
         self.assertEqual(state.favorites, [target])
         save.assert_called_once_with([target])
@@ -4951,7 +4915,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
 
         _assert_deferred_switch(self, switch, target, "second")
-        self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(second))
+        self.assertEqual(switch.call_args.args[1], sidebar.sessions.pane_attach_command(second))
 
     def test_body_press_activates_and_incidental_motion_does_not_start_move(self):
         target = Target("local", "one")
@@ -5432,7 +5396,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         _assert_deferred_switch(self, switch, target)
         self.assertEqual(
-            switch.call_args.args[1](),
+            switch.call_args.args[1],
             "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one",
         )
 
@@ -5462,7 +5426,7 @@ class SidebarDrawTest(unittest.TestCase):
 
         _assert_deferred_switch(self, switch, target)
         self.assertEqual(
-            switch.call_args.args[1](),
+            switch.call_args.args[1],
             "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s one",
         )
 
@@ -5513,7 +5477,7 @@ class SidebarDrawTest(unittest.TestCase):
         target = Target("local", "two")
         _assert_deferred_switch(self, switch, target)
         self.assertEqual(
-            switch.call_args.args[1](),
+            switch.call_args.args[1],
             "env -u TMUX tmux -L letee.inner -T clipboard new-session -A -s two",
         )
 
@@ -5747,7 +5711,7 @@ class SidebarDrawTest(unittest.TestCase):
             run(screen)
             # Selection stays at index 2 ("two") after wheel, Enter switches to "two".
             target_two = Target("local", "two")
-            attach_command.assert_not_called()
+            attach_command.assert_called_once_with(target_two)
             _assert_deferred_switch(self, switch, target_two)
 
     def test_malformed_mouse_event_is_ignored(self):
@@ -6987,7 +6951,7 @@ class SidebarScrollOffsetTest(unittest.TestCase):
             run(screen)
 
         _assert_deferred_switch(self, switch, target, "agent-2")
-        self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(second))
+        self.assertEqual(switch.call_args.args[1], sidebar.sessions.pane_attach_command(second))
 
     def test_right_click_maps_scrolled_agent_row_to_visible_agent(self):
         target, data = self._agent_data(4)
@@ -8086,7 +8050,7 @@ class PrefixActionTest(unittest.TestCase):
             self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
 
         _assert_deferred_switch(self, switch, target, "first")
-        self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(first_pane))
+        self.assertEqual(switch.call_args.args[1], sidebar.sessions.pane_attach_command(first_pane))
 
     def test_alert_prefix_jumps_to_attention_states_without_bells(self):
         target = Target("local", "work")
@@ -8101,7 +8065,7 @@ class PrefixActionTest(unittest.TestCase):
                 self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data)
 
                 _assert_deferred_switch(self, switch, target, "agent")
-                self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(pane))
+                self.assertEqual(switch.call_args.args[1], sidebar.sessions.pane_attach_command(pane))
 
     def test_alert_prefix_mixed_bell_and_state_candidates_follow_current_order(self):
         target = Target("local", "work")
@@ -8124,7 +8088,7 @@ class PrefixActionTest(unittest.TestCase):
                 self._run([curses.KEY_F7, curses.KEY_F10, STOP], [target], None, data, seed_alerts=seed_alerts)
 
                 _assert_deferred_switch(self, switch, target, "first")
-                self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(first_pane))
+                self.assertEqual(switch.call_args.args[1], sidebar.sessions.pane_attach_command(first_pane))
 
     def test_alert_prefix_other_states_without_bells_do_not_navigate(self):
         target = Target("local", "work")

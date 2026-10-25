@@ -259,10 +259,7 @@ class MainTest(unittest.TestCase):
         ):
             main(["switch-session", "2"])
 
-            attach_command.assert_not_called()
-            switch.assert_called_once()
-            self.assertTrue(callable(switch.call_args.args[1]))
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            switch.assert_called_once_with(target, "attach")
 
         attach_command.assert_called_once_with(target)
 
@@ -283,7 +280,7 @@ class MainTest(unittest.TestCase):
                     main(["switch-session", slot])
                 switch.assert_not_called()
 
-    def test_switch_defers_attach_command_until_cockpit_switches(self):
+    def test_switch_builds_attach_command_before_cockpit_switches(self):
         target = Target("ssh", "work", "dev")
         with (
             patch("letee.cockpit.right_pane", return_value="pane"),
@@ -292,11 +289,8 @@ class MainTest(unittest.TestCase):
         ):
             main(["switch", target.format()])
 
-            attach_command.assert_not_called()
-            switch.assert_called_once()
-            self.assertEqual(switch.call_args.args[0], target)
-            self.assertTrue(callable(switch.call_args.args[1]))
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            attach_command.assert_called_once_with(target)
+            switch.assert_called_once_with(target, "attach")
 
         attach_command.assert_called_once_with(target)
 
@@ -394,10 +388,7 @@ class MainTest(unittest.TestCase):
         ):
             main(["create", "local", "--", "-V"])
 
-            attach_command.assert_not_called()
-            switch.assert_called_once()
-            self.assertTrue(callable(switch.call_args.args[1]))
-            self.assertEqual(switch.call_args.args[1](), "attach")
+            switch.assert_called_once_with(target, "attach")
 
         create.assert_called_once_with(target)
         attach_command.assert_called_once_with(target)
@@ -599,9 +590,9 @@ class MainTest(unittest.TestCase):
             patch("letee.cockpit.switch") as switch,
         ):
             main(["create", "local", "work"])
-            attach_command = switch.call_args.args[1]
-            self.assertTrue(callable(attach_command))
-            command = attach_command()
+            switch.assert_called_once()
+            self.assertEqual(switch.call_args.args[0], Target("local", "work"))
+            command = switch.call_args.args[1]
 
         overlay.assert_called_with()
         self.assertEqual(run.call_args.args[0], ("tmux", "-L", "letee.inner", "new-session", "-d", "-s", "work"))
@@ -615,7 +606,9 @@ class MainTest(unittest.TestCase):
             patch("letee.cockpit.switch") as switch,
         ):
             main(["create", "local", "work"])
-            command = switch.call_args.args[1]()
+            switch.assert_called_once()
+            self.assertEqual(switch.call_args.args[0], Target("local", "work"))
+            command = switch.call_args.args[1]
 
         self.assertEqual(run.call_args_list[0].args[0], ("tmux", "-L", "letee.inner", "new-session", "-d", "-s", "work"))
         self.assertEqual(run.call_args_list[1].args[0], ("tmux", "-L", "letee.inner", "source-file", str(sessions.OVERLAY_FILE)))

@@ -26,7 +26,7 @@ from .config import (
     load_sidebar_width,
 )
 from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, WindowTarget, parse_target
-from . import diagnostics, sessions, tmux
+from . import attachment, diagnostics, sessions, tmux
 
 
 def _truecolor_enabled() -> bool:
@@ -432,20 +432,9 @@ def _unavailable_command(target: Target | None = None) -> str:
 
 
 def _animated_command(target: Target, title: str, progress: str) -> str:
-    reset, cyan, dim = "\033[0m", "\033[38;5;81m", "\033[2m"
-    ascii_mode = os.environ.get("LETEE_ASCII") == "1" or "utf" not in locale.getpreferredencoding(False).lower()
-    if ascii_mode:
-        banner = f"+-- {title} --+"
-        underline = f"+{'-' * (len(banner) - 2)}+"
-    else:
-        banner = f"╭─ {title} ─╮"
-        underline = f"╰{'─' * (len(banner) - 2)}╯"
+    text, animation_states = attachment.animation_data(target, title)
     indent = "    "
-    text = f"\n{indent}{cyan}{banner}\n{indent}{underline}{reset}\n\n{indent}{dim}Session{reset}  {target.session}\n{indent}{dim}Host{reset}     {target.host or 'local'}\n\n"
-    frames = ("|", "/", "-", "\\") if ascii_mode else ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-    dots = (".  ", ".. ", "...") if ascii_mode else ("·  ", "·· ", "···", " ··", "  ·")
-    colors = (45, 51, 87, 123, 159, 123, 87, 51)
-    states = " ".join(shlex.quote(f"{color}:{frame}:{dots[index % len(dots)]}") for index, (color, frame) in enumerate(zip(colors, frames)))
+    states = " ".join(shlex.quote(f"{color}:{frame}:{dots}") for color, frame, dots in animation_states)
     save_cursor = shlex.quote("\0337")
     spinner = shlex.quote(f"\0338\033[2K{indent}\033[38;5;%sm%s\033[0m {progress}%s")
     animate = 'color=${state%%:*}; rest=${state#*:}; frame=${rest%%:*}; dots=${rest#*:}'
@@ -1051,6 +1040,9 @@ def switch(
             except BaseException as recovery_error:
                 diagnostics.error(recovery_error, handling="ignored", operation="switch_error_recovery")
             raise
+    parts = shlex.split(attach_command)
+    if target.kind == "ssh" and parts and parts[0] == "ssh":
+        attach_command = attachment.command(target, attach_command)
     attachment_id = None
     if debug.enabled and attach_command != _reconnecting_command(target):
         attachment_id = uuid.uuid4().hex
@@ -1092,8 +1084,8 @@ def switch(
 
 
 def open_session(target: Target, attach_command: str | Callable[[], str] | None = None) -> None:
-    """Open a session, deferring attachment preparation unless already supplied."""
-    switch(target, attach_command if attach_command is not None else lambda: sessions.attach_command(target))
+    """Open a session with an eagerly built attachment command."""
+    switch(target, attach_command if attach_command is not None else sessions.attach_command(target))
 
 
 def open_window(window: WindowTarget, attach_command: str | Callable[[], str] | None = None) -> None:
@@ -1105,7 +1097,7 @@ def open_agent(
     pane_target: PaneTarget, agent_id: str, attach_command: str | Callable[[], str] | None = None,
 ) -> None:
     """Open an agent's exact pane using the existing switch behavior."""
-    switch(pane_target.target, attach_command if attach_command is not None else lambda: sessions.pane_attach_command(pane_target), agent_id)
+    switch(pane_target.target, attach_command if attach_command is not None else sessions.pane_attach_command(pane_target), agent_id)
 
 
 @diagnostics.operation("cockpit.set_expected_right_pane_death")
@@ -1307,7 +1299,10 @@ def current_target() -> Target | None:
         parts = shlex.split(command)
         parsed_command = command
         parsed_target = None
-        if parts and parts[0] == "ssh":
+        if len(parts) >= 7 and parts[:3] == [sys.executable, "-m", "letee.attachment"] and parts[4:6] == ["--", "ssh"]:
+            parsed_target = parse_target(parts[3])
+            parsed_command = ""
+        elif parts and parts[0] == "ssh":
             index = 1
             while index < len(parts):
                 if parts[index] == "-o":

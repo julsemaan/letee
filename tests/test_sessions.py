@@ -17,7 +17,7 @@ from unittest.mock import Mock, patch
 
 import letee.sessions as sessions
 from letee.config import Timing
-from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
+from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target, WindowTarget
 from letee.sessions import attach_command, create, kill, kill_agent, pane_attach_command, rename, ssh_command
 
 
@@ -1223,7 +1223,7 @@ class TmuxOverlayTest(unittest.TestCase):
             create(target)
 
         install, create_call = run.call_args_list[0], run.call_args_list[-1]
-        self.assertEqual(run.call_count, 4)  # attach, pane attach, and create each install; create then runs
+        self.assertEqual(run.call_count, 2)  # Only create uploads synchronously.
         self.assertEqual(
             install.args[0],
             (
@@ -1236,10 +1236,95 @@ class TmuxOverlayTest(unittest.TestCase):
         self.assertEqual(install.kwargs["input"], sessions.OVERLAY_FILE.read_text())
         self.assertTrue(create_call.args[0][-1].startswith("tmux -L letee.inner new-session -d -s work && { tmux -L letee.inner source-file ~/.config/letee/tmux-overlay.conf; "))
         self.assertTrue(create_call.args[0][-1].endswith("letee_overlay_rc=$?; printf 'LETEE_DIAG overlay %s\\n' \"$letee_overlay_rc\"; true; }"))
-        self.assertIn("-t dev 'tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file ~/.config/letee/tmux-overlay.conf'", attach)
+        self.assertTrue(shlex.split(attach)[-1].endswith(
+            " && tmux -L letee.inner -T clipboard new-session -A -s work \\; source-file ~/.config/letee/tmux-overlay.conf"
+        ))
         self.assertIn("source-file ~/.config/letee/tmux-overlay.conf \\; select-window -t work:@3", pane)
         self.assertLess(pane.index("source-file ~/.config/letee/tmux-overlay.conf"), pane.index("select-window -t work:@3"))
         self.assertIn("/tmp/tmux socket", pane)
+
+    def test_remote_attachment_preparation_defers_overlay_install(self):
+        target = Target("ssh", "work", "dev")
+        pane = PaneTarget(target, "@3", "%7", "/tmp/tmux socket", session_id="$1")
+        window = WindowTarget(target, "$1", "@3", "/tmp/tmux socket")
+        actions = (
+            lambda: attach_command(target, overlay=True),
+            lambda: pane_attach_command(pane, overlay=True),
+            lambda: sessions.existing_attach_command(target, "$1", pane.socket_path, overlay=True),
+            lambda: sessions.window_attach_command(window, overlay=True),
+            lambda: sessions.existing_pane_attach_command(pane, overlay=True),
+        )
+        for index, action in enumerate(actions):
+            with (
+                self.subTest(attachment=index),
+                patch.object(sessions.subprocess, "run", return_value=Mock(stdout="$1\t@3\t%7\n")) as run,
+            ):
+                command = shlex.split(action())[-1]
+            self.assertEqual(run.call_count, 0 if index < 2 else 1)
+            if index >= 2:
+                self.assertIn("list-panes", run.call_args.args[0][-1])
+            self.assertIn(sessions._SSH_INSTALL_OVERLAY, command)
+            self.assertIn("printf %s ", command)
+            self.assertIn(" && tmux ", command)
+
+    def test_existing_remote_attachment_validates_before_preparing_overlay(self):
+        target = Target("ssh", "work", "dev")
+        for session_id, socket_path, output, message in (
+            ("invalid", "/tmp/tmux", "", "Invalid session ID"),
+            ("$1", "", "", "Invalid socket path"),
+            ("$1", "/tmp/tmux", "$2\t@3\t%7\n", "target no longer exists"),
+        ):
+            with (
+                self.subTest(session_id=session_id, socket_path=socket_path),
+                patch.object(sessions.subprocess, "run", return_value=Mock(stdout=output)) as run,
+                patch.object(sessions, "OVERLAY_FILE") as overlay,
+                self.assertRaisesRegex(SystemExit, message),
+            ):
+                sessions.existing_attach_command(target, session_id, socket_path, overlay=True)
+            overlay.read_text.assert_not_called()
+            self.assertEqual(run.call_count, 1 if output else 0)
+
+    def test_remote_attach_installs_quoted_overlay_without_consuming_attach_stdin(self):
+        overlay = "# 'quoted' $HOME $(touch injected) `touch injected` %s \\\nset -g mouse on\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tmux = root / "tmux"
+            tmux.write_text('#!/bin/sh\ncat > "$HOME/attach-input"\n')
+            tmux.chmod(0o700)
+            with (
+                patch.object(sessions, "OVERLAY_FILE", Mock(read_text=Mock(return_value=overlay))),
+                patch.object(sessions.subprocess, "run", return_value=Mock(stdout="")),
+            ):
+                command = shlex.split(attach_command(Target("ssh", "work", "dev"), overlay=True))[-1]
+            result = subprocess.run(
+                ("/bin/sh", "-c", command), input="keyboard input\n", capture_output=True, text=True,
+                env={**os.environ, "HOME": directory, "PATH": f"{directory}:{os.environ['PATH']}"},
+                cwd=directory,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed = root / ".config/letee/tmux-overlay.conf"
+            self.assertEqual(installed.read_text(), overlay)
+            self.assertEqual(installed.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(installed.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(list(installed.parent.glob(".tmux-overlay.conf.*")), [])
+            self.assertEqual((root / "attach-input").read_text(), "keyboard input\n")
+            self.assertFalse((root / "injected").exists())
+
+    def test_remote_attach_does_not_run_tmux_after_install_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".config").write_text("not a directory")
+            tmux = root / "tmux"
+            tmux.write_text('#!/bin/sh\ntouch "$HOME/attached"\n')
+            tmux.chmod(0o700)
+            with patch.object(sessions.subprocess, "run", return_value=Mock(stdout="")):
+                command = shlex.split(attach_command(Target("ssh", "work", "dev"), overlay=True))[-1]
+            result = subprocess.run(
+                ("/bin/sh", "-c", command), capture_output=True, text=True,
+                env={**os.environ, "HOME": directory, "PATH": f"{directory}:{os.environ['PATH']}"},
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / "attached").exists())
 
     def test_remote_overlay_install_is_atomic_and_private(self):
         command = sessions._SSH_INSTALL_OVERLAY
@@ -1263,7 +1348,7 @@ class TmuxOverlayTest(unittest.TestCase):
             patch("letee.sessions.subprocess.run", side_effect=timeout),
             self.assertRaisesRegex(SystemExit, r"^overlay ssh:dev:work timed out$") as raised,
         ):
-            attach_command(Target("ssh", "work", "dev"), overlay=True)
+            create(Target("ssh", "work", "dev"), overlay=True)
 
         self.assertIs(raised.exception.__cause__, timeout)
 
@@ -1275,7 +1360,7 @@ class TmuxOverlayTest(unittest.TestCase):
             patch("letee.sessions.subprocess.run", side_effect=error),
         ):
             with self.assertRaisesRegex(SystemExit, r"^overlay ssh:dev:work failed: connection refused$"):
-                attach_command(Target("ssh", "work", "dev"))
+                create(Target("ssh", "work", "dev"))
 
     def test_no_command_uses_config_file_flag(self):
         local = PaneTarget(Target("local", "work"), "@3", "%7", "/tmp/tmux socket")
@@ -1297,7 +1382,9 @@ class TmuxOverlayTest(unittest.TestCase):
                     commands.extend(call.args[0] for call in run.call_args_list)
                     run.reset_mock()
                     for command in commands:
-                        tokens = command.split() if isinstance(command, str) else command
+                        tokens = shlex.split(command) if isinstance(command, str) else command
+                        if tokens[0] == "ssh":
+                            tokens = shlex.split(tokens[-1])
                         self.assertNotIn("-f", tokens, command)
 
 

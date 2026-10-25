@@ -152,6 +152,26 @@ class FinderAttachmentTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "gone"):
                 self.prepare(self.pane(), "window")
 
+    def test_remote_prepared_navigation_uses_attachment_runner_once(self):
+        pane = self.pane("ssh")
+        window = names.WindowTarget(pane.target, "$3", "@1", pane.socket_path)
+        child = "ssh -t dev 'tmux -S /tmp/custom attach-session -t $3'"
+        for kind in ("session", "window", "agent"):
+            with (
+                self.subTest(kind=kind),
+                patch.object(cockpit, "right_pane", return_value="%2"),
+                patch.object(cockpit.tmux, "tmux") as command,
+            ):
+                if kind == "session":
+                    cockpit.open_session(pane.target, child)
+                elif kind == "window":
+                    cockpit.open_window(window, child)
+                else:
+                    cockpit.open_agent(pane, "exact-agent", child)
+            respawns = [item.args[4] for item in command.call_args_list if item.args[0] == "respawn-pane"]
+            self.assertEqual(len(respawns), 1)
+            self.assertEqual(shlex.split(respawns[0]), [cockpit.sys.executable, "-m", "letee.attachment", pane.target.format(), "--", *shlex.split(child)])
+
     def test_navigation_preserves_agent_identity_and_accepts_prepared_commands(self):
         pane = self.pane()
         window = names.WindowTarget(pane.target, "$3", "@1", pane.socket_path)

@@ -1304,6 +1304,28 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_normal_session_and_agent_opens_respawn_once(self):
+        for remote in (False, True):
+            target = Target("ssh", "work", "dev") if remote else Target("local", "work")
+            child = "ssh -t dev 'tmux -L letee.inner attach-session -t work'" if remote else "tmux -L letee.inner attach-session -t work"
+            pane = PaneTarget(target, "@3", "%7", "/tmp/custom socket")
+            for agent in (False, True):
+                with (
+                    self.subTest(remote=remote, agent=agent),
+                    patch.object(cockpit, "right_pane", return_value="%2"),
+                    patch.object(cockpit.sessions, "attach_command", return_value=child),
+                    patch.object(cockpit.sessions, "pane_attach_command", return_value=child),
+                    patch.object(cockpit.tmux, "tmux") as command,
+                ):
+                    if agent:
+                        cockpit.open_agent(pane, "agent-1")
+                    else:
+                        cockpit.open_session(target)
+                respawns = [item.args for item in command.call_args_list if item.args[0] == "respawn-pane"]
+                self.assertEqual(len(respawns), 1)
+                expected = ([cockpit.sys.executable, "-m", "letee.attachment", target.format(), "--"] if remote else []) + shlex.split(child)
+                self.assertEqual(shlex.split(respawns[0][4]), expected)
+
     def test_agent_switch_persists_exact_agent_and_getter_recovers_it(self):
         calls = []
         target = cockpit.Target("local", "work")
@@ -1317,6 +1339,27 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.object(cockpit, "_option", side_effect=["agent-1", ""]):
             self.assertEqual(cockpit.current_agent(), "agent-1")
             self.assertIsNone(cockpit.current_agent())
+
+    def test_switch_wraps_supplied_and_deferred_ssh_but_not_placeholders(self):
+        target = Target("ssh", "work", "dev")
+        child = "ssh -t dev 'tmux -S /tmp/custom attach-session -t work'"
+        for deferred in (False, True):
+            with (
+                self.subTest(deferred=deferred),
+                patch.object(cockpit, "right_pane", return_value="%2"),
+                patch.object(cockpit.tmux, "tmux") as command,
+            ):
+                cockpit.switch(target, (lambda: child) if deferred else child)
+            respawns = [item.args[4] for item in command.call_args_list if item.args[0] == "respawn-pane"]
+            self.assertEqual(shlex.split(respawns[-1]), [cockpit.sys.executable, "-m", "letee.attachment", target.format(), "--", *shlex.split(child)])
+            self.assertEqual(len(respawns), 2 if deferred else 1)
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as command,
+        ):
+            cockpit.switch_reconnecting(target)
+        respawn = next(item.args[4] for item in command.call_args_list if item.args[0] == "respawn-pane")
+        self.assertEqual(respawn, cockpit._reconnecting_command(target))
 
     def test_deferred_switch_shows_spinner_before_preparing_and_attaches(self):
         target = Target("ssh", "work", "dev")
@@ -1343,7 +1386,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Preparing%s", events[0][1])
         self.assertEqual(events[2], ("respawn", "attach work"))
 
-    def test_remote_overlay_timeout_replaces_preparing_with_reconnecting(self):
+    def test_deferred_remote_overlay_timeout_replaces_preparing_with_reconnecting(self):
         target = Target("ssh", "work", "dev")
         timeout = subprocess.TimeoutExpired(["ssh"], 3)
         with (
@@ -1353,7 +1396,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit.sessions.subprocess, "run", side_effect=timeout) as run,
             self.assertRaisesRegex(SystemExit, r"^overlay ssh:dev:work timed out$") as raised,
         ):
-            cockpit.switch(target, lambda: cockpit.sessions.attach_command(target, overlay=True))
+            cockpit.switch(target, lambda: cockpit.sessions._install_overlay(target))
 
         self.assertIs(raised.exception.__cause__, timeout)
         run.assert_called_once()
@@ -1508,6 +1551,20 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
         self.assertIn("Session ssh:dev:work is unavailable.", command[4])
         self.assertIn("Select another session", command[4])
+
+    def test_current_target_recovers_wrapped_arbitrary_socket_attachment(self):
+        target = Target("ssh", "work", "dev")
+        command = shlex.join([cockpit.sys.executable, "-m", "letee.attachment", target.format(), "--", "ssh", "-t", "dev", "tmux -S '/tmp/custom socket' attach-session -t work"])
+        for marker in ("", target.format(), "ssh:dev:other"):
+            with (
+                self.subTest(marker=marker),
+                patch.object(cockpit, "_option", return_value=marker),
+                patch.object(cockpit, "right_pane", return_value="%2"),
+                patch.object(cockpit.tmux, "out", return_value=command),
+                patch.object(cockpit.tmux, "tmux") as tmux_call,
+            ):
+                self.assertEqual(cockpit.current_target(), None if marker.endswith(":other") else target)
+                self.assertEqual(tmux_call.call_count, int(marker.endswith(":other")))
 
     def test_current_target_recovers_from_right_pane_command(self):
         with (
