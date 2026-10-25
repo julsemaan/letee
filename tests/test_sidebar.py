@@ -10138,7 +10138,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
                     result = sidebar._perform_effect(sidebar.Effect("switch", target), (target,))
                 self.assertTrue(result.error)
         with (
-            patch.object(sidebar, "_current_target", return_value=None),
+            patch.object(sidebar.cockpit, "current_target", return_value=None),
             patch.object(sidebar.sessions, "kill"),
             patch.object(sidebar.cockpit, "reset_to_help", side_effect=OSError("PRIVATE")),
             patch.object(config, "save_sessions"),
@@ -10466,7 +10466,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
             with self.subTest(error=type(error).__name__):
                 start = len(self.records()) if self.log_path.exists() else 0
                 with (
-                    patch.object(sidebar, "_current_target", return_value=None),
+                    patch.object(sidebar.cockpit, "current_target", return_value=None),
                     patch.object(sidebar.sessions, "kill", side_effect=error),
                 ):
                     result = sidebar._perform_effect(sidebar.Effect("kill", target), (target,))
