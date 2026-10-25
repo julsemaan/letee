@@ -92,7 +92,7 @@ class FinderWorkerTest(unittest.TestCase):
                 "set-option", "-t", tmux.SESSION, "@letee_finder_scope", "Agents", capture=True)
             save.assert_any_call(
                 "set-option", "-t", tmux.SESSION, "@letee_finder_filters",
-                '{"states": [], "has_bell": false}', capture=True)
+                '{"categories": []}', capture=True)
             reader.close.assert_called_once()
 
     def test_worker_uses_only_snapshot_reader_and_always_closes_it(self):

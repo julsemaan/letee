@@ -13,7 +13,7 @@ import time
 import unicodedata
 
 from . import cockpit, runtime, sessions, tmux, tui
-from .finder import FILTER_STATES, SCOPES, Finder, Row
+from .finder import FILTER_CATEGORIES, SCOPES, Finder, Row
 from .names import WindowTarget
 from .workspace import Identity, Workspace
 
@@ -21,16 +21,16 @@ FINDER_SCOPE_OPTION = "@letee_finder_scope"
 FINDER_FILTERS_OPTION = "@letee_finder_filters"
 
 
-def _load_filters(value: str) -> tuple[frozenset[str], bool]:
+def _load_filters(value: str) -> frozenset[str]:
     try:
         data = json.loads(value)
     except (ValueError, TypeError):
-        return frozenset(), False
-    if (not isinstance(data, dict) or not isinstance(data.get("states"), list)
-            or not isinstance(data.get("has_bell"), bool)
-            or any(not isinstance(state, str) or state not in FILTER_STATES for state in data["states"])):
-        return frozenset(), False
-    return frozenset(data["states"]), data["has_bell"]
+        return frozenset()
+    if (not isinstance(data, dict) or not isinstance(data.get("categories"), list)
+            or any(not isinstance(category, str) or category not in FILTER_CATEGORIES
+                   for category in data["categories"])):
+        return frozenset()
+    return frozenset(data["categories"])
 
 
 def _safe(text: str) -> str:
@@ -56,17 +56,12 @@ class _Popup:
         self.filter_scroll = 0
 
     def toggle_filter(self) -> None:
-        states = set(self.finder.states)
-        has_bell = self.finder.has_bell
-        if self.filter_index == 0:
-            has_bell = not has_bell
-        elif self.filter_index == len(FILTER_STATES) + 1:
-            states.clear()
-            has_bell = False
+        categories = set(self.finder.categories)
+        if self.filter_index == len(FILTER_CATEGORIES):
+            categories.clear()
         else:
-            state = FILTER_STATES[self.filter_index - 1]
-            states.symmetric_difference_update({state})
-        self.finder.set_filters(states, has_bell)
+            categories.symmetric_difference_update({FILTER_CATEGORIES[self.filter_index]})
+        self.finder.set_filters(categories)
         self.follow_selection = True
 
     def follow_filter(self) -> None:
@@ -114,13 +109,12 @@ class _Popup:
         hints = ("Up/Down select  Space toggle  Enter/Esc close  Ctrl-C cancel" if self.filters_open
                  else "Ctrl-T scope  Ctrl-F filters  Tab expand  Enter open  Esc cancel")
         self.put(2, 0, hints, tui.color("hints"))
-        filters = (["Has bell"] if self.finder.has_bell else [])
-        filters += [state for state in FILTER_STATES if state in self.finder.states]
+        filters = [category for category in FILTER_CATEGORIES if category in self.finder.categories]
         self.put(3, 0, "Filters: " + (", ".join(filters) or "none"),
                  curses.A_REVERSE if self.filters_open else tui.color("hints"))
         if self.filters_open:
-            labels = [("Has bell", self.finder.has_bell)]
-            labels += [(state, state in self.finder.states) for state in FILTER_STATES]
+            labels = [(f"{category} · {self.finder.category_counts[category]}",
+                       category in self.finder.categories) for category in FILTER_CATEGORIES]
             labels += [("Clear filters", None)]
             self.filter_scroll = max(0, min(self.filter_scroll, max(0, len(labels) - self.capacity)))
             for index in range(self.filter_scroll, min(len(labels), self.filter_scroll + self.capacity)):
@@ -225,7 +219,7 @@ class _Popup:
             elif buttons & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
                 if 4 <= y < 4 + self.capacity and 0 <= x < self.width - 1:
                     index = self.filter_scroll + y - 4
-                    if index < len(FILTER_STATES) + 2:
+                    if index < len(FILTER_CATEGORIES) + 1:
                         self.filter_index = index
                         self.toggle_filter()
             return
@@ -263,7 +257,7 @@ class _Popup:
                 self.filters_open = False
                 self.follow_selection = True
             elif key in (curses.KEY_UP, curses.KEY_DOWN):
-                self.filter_index = max(0, min(len(FILTER_STATES) + 1,
+                self.filter_index = max(0, min(len(FILTER_CATEGORIES),
                                              self.filter_index + (-1 if key == curses.KEY_UP else 1)))
                 self.follow_filter()
             elif key == " ":
@@ -339,7 +333,7 @@ def run(
     scope = tmux.out("show-options", "-qv", "-t", tmux.SESSION, FINDER_SCOPE_OPTION)
     filters = tmux.out("show-options", "-qv", "-t", tmux.SESSION, FINDER_FILTERS_OPTION)
     popup = _Popup(stdscr, workspace)
-    popup.finder.set_filters(*_load_filters(filters))
+    popup.finder.set_filters(_load_filters(filters))
     if scope in SCOPES:
         popup.finder.set_scope(scope)
     tui.init_colors()
@@ -408,7 +402,7 @@ def run(
         except curses.error:
             pass
         tmux.tmux("set-option", "-t", tmux.SESSION, FINDER_SCOPE_OPTION, popup.finder.scope, capture=True)
-        filters = json.dumps({"states": sorted(popup.finder.states), "has_bell": popup.finder.has_bell})
+        filters = json.dumps({"categories": sorted(popup.finder.categories)})
         tmux.tmux("set-option", "-t", tmux.SESSION, FINDER_FILTERS_OPTION, filters, capture=True)
 
 

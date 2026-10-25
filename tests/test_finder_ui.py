@@ -146,38 +146,67 @@ class FinderUITest(unittest.TestCase):
         self.assertEqual(popup.finder.query, "e")
         self.assertEqual(popup.cursor, 1)
         self.assertEqual(popup.finder.scope, "Sessions")
-        self.assertTrue(popup.finder.has_bell)
-        self.assertEqual(popup.finder.states, frozenset({finder_ui.FILTER_STATES[0]}))
+        self.assertEqual(popup.finder.categories, frozenset(finder_ui.FILTER_CATEGORIES[:2]))
         popup.render()
-        self.assertTrue(any(y == 3 and "Has bell" in text for y, _, text, _ in popup.screen.writes))
+        self.assertTrue(any(y == 3 and "Needs attention, Running" in text
+                            for y, _, text, _ in popup.screen.writes))
         popup.key("\x06", lambda row: self.fail())
         self.assertTrue(popup.key("\x1b", lambda row: self.fail()))
         self.assertFalse(popup.key("\x03", lambda row: self.fail()))
 
+    def test_category_checklist_counts_refresh_with_query_and_workspace(self):
+        popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+        popup.key("\x06", lambda row: self.fail())
+
+        def assert_labels():
+            popup.render()
+            labels = [text for y, _, text, _ in popup.screen.writes if y >= 4]
+            for category in finder_ui.FILTER_CATEGORIES:
+                checked = "x" if category in popup.finder.categories else " "
+                self.assertIn(f"[{checked}] {category} · {popup.finder.category_counts[category]}", labels)
+
+        assert_labels()
+        counts = dict(popup.finder.category_counts)
+        popup.key(" ", lambda row: self.fail())
+        self.assertEqual(popup.finder.category_counts, counts)
+        assert_labels()
+        popup.key("\n", lambda row: self.fail())
+        popup.key("\x14", lambda row: self.fail())
+        self.assertEqual(popup.finder.category_counts, counts)
+        for key in "zzzz":
+            popup.key(key, lambda row: self.fail())
+        popup.key("\x06", lambda row: self.fail())
+        self.assertTrue(all(count == 0 for count in popup.finder.category_counts.values()))
+        assert_labels()
+        popup.finder.set_query("")
+        self.assertEqual(popup.finder.category_counts, counts)
+        popup.finder.update(Workspace())
+        assert_labels()
+        self.assertTrue(all(count == 0 for count in popup.finder.category_counts.values()))
+
     def test_filter_persistence_and_malformed_values(self):
-        valid = {"states": ["working", "idle"], "has_bell": True}
+        valid = {"categories": ["Running", "Needs attention"]}
         for stored in ("", "{", "null", "[]", "true", "{}",
-                       '{"states":["working"],"has_bell":1}',
-                       '{"states":["bogus"],"has_bell":true}',
-                       '{"states":"working","has_bell":true}',
-                       '{"states":[[]],"has_bell":true}',
+                       '{"states":["working"],"has_bell":true}',
+                       '{"categories":["bogus"]}',
+                       '{"categories":"Running"}',
+                       '{"categories":[[]]}',
+                       '{"categories":[1]}',
+                       '{"categories":["Running","bogus"]}',
                        json.dumps(valid)):
             with self.subTest(stored=stored):
                 self.stored_filters = stored
                 _, window = self.run_ui(["\x1b"])
-                expected = valid if stored == json.dumps(valid) else {"states": [], "has_bell": False}
-                saved = json.loads(self.stored_filters)
-                self.assertEqual(set(saved["states"]), set(expected["states"]))
-                self.assertEqual(saved["has_bell"], expected["has_bell"])
+                expected = sorted(valid["categories"]) if stored == json.dumps(valid) else []
+                self.assertEqual(json.loads(self.stored_filters), {"categories": expected})
                 self.assertIn("Filters:", frame_text(window.frames[0]))
 
     def test_filter_keyboard_changes_saved_and_reopened_on_cancel(self):
         self.run_ui(["\x06", " ", curses.KEY_DOWN, " ", "\x03"])
         saved = json.loads(self.stored_filters)
-        self.assertTrue(saved["has_bell"])
-        self.assertEqual(saved["states"], [finder_ui.FILTER_STATES[0]])
+        self.assertEqual(saved, {"categories": sorted(finder_ui.FILTER_CATEGORIES[:2])})
         _, window = self.run_ui(["\x1b"])
-        self.assertIn("Has bell", frame_text(window.frames[0]))
+        self.assertIn("Needs attention, Running", frame_text(window.frames[0]))
 
     def test_filter_checklist_mouse_scroll_clear_and_resize(self):
         screen = FakeWindow([], (9, 60))
@@ -191,24 +220,23 @@ class FinderUITest(unittest.TestCase):
         click(2, 3)
         self.assertTrue(popup.filters_open)
         click(2, 4)
-        self.assertTrue(popup.finder.has_bell)
+        self.assertEqual(popup.finder.categories, frozenset({finder_ui.FILTER_CATEGORIES[0]}))
         click(2, 5)
-        self.assertEqual(popup.finder.states, frozenset({finder_ui.FILTER_STATES[0]}))
+        self.assertEqual(popup.finder.categories, frozenset(finder_ui.FILTER_CATEGORIES[:2]))
         selected = popup.finder.selected
         click(2, 5, curses.BUTTON5_PRESSED)
         self.assertGreater(popup.filter_scroll, 0)
         self.assertEqual(popup.finder.selected, selected)
         click(2, 5, curses.BUTTON4_PRESSED)
         self.assertEqual(popup.filter_scroll, 0)
-        for _ in range(len(finder_ui.FILTER_STATES) + 2):
+        for _ in range(len(finder_ui.FILTER_CATEGORIES) + 1):
             popup.key(curses.KEY_DOWN, lambda row: self.fail())
         screen.size = (8, 12)
         popup.key(curses.KEY_RESIZE, lambda row: self.fail())
         popup.render()
         self.assertEqual(popup.filter_scroll, popup.filter_index - popup.capacity + 1)
         click(1, 5)
-        self.assertFalse(popup.finder.has_bell)
-        self.assertFalse(popup.finder.states)
+        self.assertFalse(popup.finder.categories)
         for size in ((1, 1), (4, 8), (6, 12), (14, 80)):
             screen.size = size
             popup.key(curses.KEY_RESIZE, lambda row: self.fail())
@@ -226,22 +254,22 @@ class FinderUITest(unittest.TestCase):
             popup.key("\x06", lambda row: self.fail())
             for key in ("z", "\x15", curses.KEY_BACKSPACE, "\x14", "\t"):
                 popup.key(key, lambda row: self.fail())
-            popup.filter_index = finder_ui.FILTER_STATES.index("working") + 1
+            popup.filter_index = finder_ui.FILTER_CATEGORIES.index("Running")
             popup.key(" ", lambda row: self.fail())
             self.assertEqual(popup.finder.query, "Claude")
             self.assertEqual(popup.finder.scope, scope)
             self.assertEqual(popup.cursor, 3)
-            self.assertEqual(popup.finder.states, frozenset({"working"}))
-            popup.filter_index = len(finder_ui.FILTER_STATES) + 1
+            self.assertEqual(popup.finder.categories, frozenset({"Running"}))
+            popup.filter_index = len(finder_ui.FILTER_CATEGORIES)
             popup.key(" ", lambda row: self.fail())
-            self.assertFalse(popup.finder.states)
+            self.assertFalse(popup.finder.categories)
             popup.key(curses.KEY_ENTER, lambda row: self.fail())
 
     def test_successful_navigation_saves_filters(self):
-        self.stored_filters = json.dumps({"states": ["input-required"], "has_bell": False})
+        self.stored_filters = json.dumps({"categories": ["Needs attention"]})
         window = FakeWindow(["\x14", "\x14", "\x14", "\n"] + [-1] * 1000)
         self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
-        self.assertEqual(json.loads(self.stored_filters), {"states": ["input-required"], "has_bell": False})
+        self.assertEqual(json.loads(self.stored_filters), {"categories": ["Needs attention"]})
 
     def test_edit_cursor_clear_and_scope(self):
         result, window = self.run_ui([

@@ -5,11 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from .discovery import SUPPORTED_TASK_STATES
-from .workspace import Agent, Identity, Session, Window, Workspace
+from .workspace import ATTENTION_STATES, Agent, Identity, Session, Window, Workspace
 
 SCOPES = ("All", "Sessions", "Windows", "Agents")
-FILTER_STATES = tuple(sorted(SUPPORTED_TASK_STATES | {"idle", "unknown"}))
+_CATEGORY_STATES = {
+    "Needs attention": ATTENTION_STATES,
+    "Running": {"working", "submitted"},
+    "Finished": {"completed", "canceled"},
+    "Idle/unknown": {"idle", "unknown"},
+}
+FILTER_CATEGORIES = tuple(_CATEGORY_STATES)
+
+
+def _categories(agent: Agent) -> set[str]:
+    return {category for category, states in _CATEGORY_STATES.items()
+            if agent.state in states or (category == "Needs attention" and agent.alert)}
 
 
 @dataclass(frozen=True)
@@ -62,8 +72,7 @@ class Finder:
         self.workspace = workspace
         self.query = ""
         self.scope = "All"
-        self.states: frozenset[str] = frozenset()
-        self.has_bell = False
+        self.categories: frozenset[str] = frozenset()
         self.selected: Identity | None = None
         self.rows: list[Row] = []
         self._selected_path = ""
@@ -105,12 +114,11 @@ class Finder:
                 self._expansions.pop(self._mode, None)
             self._rebuild(choose=True)
 
-    def set_filters(self, states: set[str] | frozenset[str], has_bell: bool) -> None:
-        states = frozenset(states)
-        if states == self.states and has_bell == self.has_bell:
+    def set_filters(self, categories: set[str] | frozenset[str]) -> None:
+        categories = frozenset(categories)
+        if categories == self.categories:
             return
-        self.states = states
-        self.has_bell = has_bell
+        self.categories = categories
         if self._mode != ("All", False):
             self._expansions.pop(self._mode, None)
         self._rebuild(choose=True)
@@ -160,7 +168,7 @@ class Finder:
 
     @property
     def _mode(self) -> tuple[str, bool]:
-        return self.scope, bool(self.query.split() or self.states or self.has_bell)
+        return self.scope, bool(self.query.split() or self.categories)
 
     def _cache_path(self) -> None:
         if self.selected in self._nodes:
@@ -202,18 +210,11 @@ class Finder:
                         f"{prefix}{agent.name} [{agent.state}]", session, window, agent, key,
                         ((agent.name, len(prefix)),))
         self._nodes = nodes
+        categories = {key: _categories(row.agent) for key, row in nodes.items() if row.agent is not None}
+        self.category_counts = dict.fromkeys(FILTER_CATEGORIES, 0)
         eligible = set(nodes)
-        if self.states or self.has_bell:
-            eligible = set()
-            for key, row in nodes.items():
-                # A session bell alone includes even branches without agents.
-                session_bell = self.has_bell and row.session.bell
-                if not self.states and session_bell:
-                    eligible.add(key)
-                elif (row.agent is not None
-                      and (not self.states or row.agent.state in self.states)
-                      and (not self.has_bell or session_bell or row.agent.alert)):
-                    eligible.add(key)
+        if self.categories:
+            eligible = {key for key, matches in categories.items() if self.categories & matches}
             for key in tuple(eligible):
                 parent = parents[key]
                 while parent is not None:
@@ -225,8 +226,6 @@ class Finder:
         highlights: dict[Identity, set[int]] = {}
         kind = {"Sessions": "session", "Windows": "window", "Agents": "agent"}.get(self.scope)
         for key, row in nodes.items():
-            if key not in eligible or (kind and row.kind != kind):
-                continue
             matches = []
             for term in terms:
                 choices = []
@@ -239,6 +238,10 @@ class Finder:
                     break
                 matches.append(min(choices, key=lambda choice: choice[0]))
             else:
+                for category in categories.get(key, ()):
+                    self.category_counts[category] += 1
+                if key not in eligible or (kind and row.kind != kind):
+                    continue
                 destinations.add(key)
                 scores[key] = (sum(rank[0] == 2 for rank, *_ in matches),
                                sum(rank[0] == 1 for rank, *_ in matches),
