@@ -93,6 +93,70 @@ class FinderUITest(unittest.TestCase):
         result = finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None, **kwargs)
         return result, window
 
+    def test_result_selection_overrides_theme_colors(self):
+        palette = {name: pair << 8 for pair, name in enumerate(
+            ("active", "unavailable", "danger", "agent_input_required", "hints", "create"), 1)}
+        palette["add_entry"] = (8 << 8) | curses.A_BOLD
+        session = self.workspace.sessions[0]
+        window = session.windows[1]
+        agent = replace(window.agents[0], alert=True)
+        session = replace(session, bell=True, windows=(replace(window, agents=(agent,)),))
+        for colored in (False, True):
+            colors = palette if colored else {}
+            selection = colors.get("add_entry", curses.A_REVERSE)
+            for available in (False, True):
+                workspace = replace(self.workspace, sessions=(replace(session, available=available),))
+                for scope, query in (("Sessions", "letee"), ("Windows", "fix"), ("Agents", "Claude")):
+                    with self.subTest(colored=colored, available=available, scope=scope), \
+                            patch.object(tui, "color", side_effect=lambda name: colors.get(name, 0)):
+                        popup = finder_ui._Popup(FakeWindow([]), workspace)
+                        popup.finder.set_scope(scope)
+                        popup.finder.set_query(query)
+                        popup.render()
+                        self.assertIsNotNone(popup.finder.selected_row)
+                        selected_y = 4 + popup.finder.rows.index(popup.finder.selected_row) - popup.scroll
+                        spans = [(text, attr) for y, _, text, attr in popup.screen.writes if y == selected_y]
+                        self.assertTrue(spans)
+                        for text, attr in spans:
+                            self.assertEqual(attr & curses.A_COLOR, selection & curses.A_COLOR, text)
+                            self.assertEqual(bool(attr & curses.A_REVERSE), not colored, text)
+                        self.assertTrue(any(attr & curses.A_UNDERLINE for _, attr in spans))
+                        self.assertTrue(any("*" in text for text, _ in spans))
+                        if scope != "Windows":
+                            self.assertTrue(any(text.strip() in ("BELL", "🔔") for text, _ in spans))
+                        if not available:
+                            self.assertTrue(any(tui.icons()["unavailable"] in text for text, _ in spans))
+
+    def test_selection_style_on_tabs_and_filter_controls(self):
+        palette = {"add_entry": (8 << 8) | curses.A_BOLD, "create": 2 << 8, "hints": 4 << 8}
+        for colored in (False, True):
+            colors = palette if colored else {}
+            selection = colors.get("add_entry", curses.A_REVERSE)
+            for checked in (False, True):
+                for index in range(len(finder_ui.FILTER_CATEGORIES) + 1):
+                    with self.subTest(colored=colored, checked=checked, index=index), \
+                            patch.object(tui, "color", side_effect=lambda name: colors.get(name, 0)):
+                        popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+                        popup.filters_open = True
+                        popup.filter_index = index
+                        if checked:
+                            popup.finder.set_filters(finder_ui.FILTER_CATEGORIES)
+                        popup.render()
+                        writes = popup.screen.writes
+                        selected = [attr for y, _, text, attr in writes
+                                    if (y == 1 and text == "[All] ") or y in (3, 4 + index)]
+                        self.assertEqual(len(selected), 3)
+                        for attr in selected:
+                            self.assertEqual(attr & curses.A_COLOR, selection & curses.A_COLOR)
+                            self.assertEqual(bool(attr & curses.A_REVERSE), not colored)
+                        if index < len(finder_ui.FILTER_CATEGORIES):
+                            self.assertTrue(any(y == 4 + index and text.startswith("[x] " if checked else "[ ] ")
+                                                for y, _, text, _ in writes))
+                            self.assertTrue(any(text == "Clear filters" and attr == colors.get("create", 0) | curses.A_BOLD
+                                                for _, _, text, attr in writes))
+                        self.assertTrue(any(text == "[Sessions] " and attr == colors.get("hints", 0)
+                                            for _, _, text, attr in writes))
+
     def test_missing_or_invalid_scope_defaults_to_all(self):
         for stored in ("", "invalid", "windows"):
             with self.subTest(stored=stored):
@@ -208,7 +272,7 @@ class FinderUITest(unittest.TestCase):
                     popup.filter_index = len(finder_ui.FILTER_CATEGORIES) if selected else 0
                     popup.render()
                     writes = {text: attr for _, _, text, attr in popup.screen.writes}
-                    expected = color | curses.A_BOLD | (curses.A_REVERSE if selected else 0)
+                    expected = (color or curses.A_REVERSE) if selected else color | curses.A_BOLD
                     self.assertEqual(writes["Clear filters"], expected)
                     self.assertTrue(all(not attr & curses.A_BOLD
                                         for text, attr in writes.items() if text.startswith("[ ] ")))

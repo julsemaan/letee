@@ -91,6 +91,7 @@ class _Popup:
         self.scroll = max(0, min(self.scroll, max(0, len(rows) - self.capacity)))
         self.follow_selection = False
         self.screen.erase()
+        selection_attr = tui.color("add_entry") or curses.A_REVERSE
         self.put(0, 0, "> ", tui.color("title"))
         query_width = max(0, self.width - 3)
         self.query_start = min(self.query_start, self.cursor)
@@ -103,7 +104,7 @@ class _Popup:
         for scope in SCOPES:
             label = f"[{scope}] "
             end = x + tui.cell_width(label)
-            self.put(1, x, label, curses.A_REVERSE if scope == self.finder.scope else tui.color("hints"))
+            self.put(1, x, label, selection_attr if scope == self.finder.scope else tui.color("hints"))
             self.tabs.append((x, min(end, self.width - 1), scope))
             x = end
         hints = ([("Up/Down", "select"), ("Space", "toggle"), ("Enter", "back")] if self.filters_open
@@ -116,7 +117,7 @@ class _Popup:
             x += tui.cell_width(action) + 3
         filters = [category for category in FILTER_CATEGORIES if category in self.finder.categories]
         self.put(3, 0, "Filters: " + (", ".join(filters) or "none"),
-                 curses.A_REVERSE if self.filters_open else tui.color("hints"))
+                 selection_attr if self.filters_open else tui.color("hints"))
         if self.filters_open:
             labels = [(f"{category} · {self.finder.category_counts[category]}",
                        category in self.finder.categories) for category in FILTER_CATEGORIES]
@@ -125,9 +126,9 @@ class _Popup:
             for index in range(self.filter_scroll, min(len(labels), self.filter_scroll + self.capacity)):
                 label, checked = labels[index]
                 prefix = "" if checked is None else ("[x] " if checked else "[ ] ")
-                attr = curses.A_REVERSE if index == self.filter_index else 0
-                if checked is None:
-                    attr |= tui.color("create") | curses.A_BOLD
+                attr = selection_attr if index == self.filter_index else 0
+                if checked is None and index != self.filter_index:
+                    attr = tui.color("create") | curses.A_BOLD
                 self.put(4 + index - self.filter_scroll, 0, prefix + label, attr)
         now = time.time()
         self.disclosures = {}
@@ -135,9 +136,9 @@ class _Popup:
         for index, row in enumerate(visible_rows, self.scroll):
             y = 4 + index - self.scroll
             selected = row.key == self.finder.selected
-            attr = curses.A_REVERSE if selected else 0
-            if not row.available:
-                attr |= tui.color("unavailable") | curses.A_DIM
+            attr = selection_attr if selected else 0
+            if not row.available and not selected:
+                attr = tui.color("unavailable") | curses.A_DIM
             prefix = "  " * row.depth
             arrow = ("v" if row.expanded else ">") if tui.ascii_mode() else ("▾" if row.expanded else "▸")
             self.put(y, 0, prefix + (arrow if row.has_children else " ") + " ", attr)
@@ -145,10 +146,10 @@ class _Popup:
             if row.has_children:
                 self.disclosures[y] = (arrow_x, index)
             x = arrow_x + 2
-            x += self.put(y, x, "* " if row.current else "  ", attr | tui.color("active"))
+            x += self.put(y, x, "* " if row.current else "  ", attr if selected else attr | tui.color("active"))
             if row.agent is not None:
                 x += self.put(y, x, tui.status_icon(row.agent.state, now) + " ",
-                              attr | tui.status_attr(row.agent.state))
+                              attr if selected else attr | tui.status_attr(row.agent.state))
             # Group adjacent characters so combining marks stay with their base.
             chunks: list[tuple[str, int]] = []
             for position, char in enumerate(row.label):
@@ -164,7 +165,7 @@ class _Popup:
                 elapsed = (datetime.now(timestamp.tzinfo) - timestamp).total_seconds()
                 x += self.put(y, x, " " + tui.format_duration(elapsed), attr | curses.A_DIM)
             if (row.kind == "session" and row.session.bell) or (row.agent is not None and row.agent.alert):
-                x += self.put(y, x, " BELL" if tui.ascii_mode() else " 🔔", attr | tui.color("danger"))
+                x += self.put(y, x, " BELL" if tui.ascii_mode() else " 🔔", attr if selected else attr | tui.color("danger"))
             if not row.available:
                 self.put(y, x, " " + tui.icons()["unavailable"], attr)
         if not self.filters_open and not rows and self.capacity:
