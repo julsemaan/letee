@@ -1,4 +1,5 @@
 import curses
+import json
 from dataclasses import replace
 from threading import Event
 import time
@@ -63,12 +64,18 @@ class FinderUITest(unittest.TestCase):
     def setUp(self):
         self.workspace = sample_workspace()
         self.stored_scope = ""
+        self.stored_filters = ""
 
-        def save_scope(*args, **kwargs):
-            self.stored_scope = args[-1]
+        def read_option(*args, **kwargs):
+            return self.stored_scope if args[-1] == finder_ui.FINDER_SCOPE_OPTION else self.stored_filters
 
-        for name, effect in (("out", lambda *args, **kwargs: self.stored_scope),
-                             ("tmux", save_scope)):
+        def save_option(*args, **kwargs):
+            if args[-2] == finder_ui.FINDER_SCOPE_OPTION:
+                self.stored_scope = args[-1]
+            else:
+                self.stored_filters = args[-1]
+
+        for name, effect in (("out", read_option), ("tmux", save_option)):
             patcher = patch.object(tmux, name, side_effect=effect)
             setattr(self, "tmux_" + name, patcher.start())
             self.addCleanup(patcher.stop)
@@ -110,13 +117,15 @@ class FinderUITest(unittest.TestCase):
 
     def test_scope_io_is_outside_input_loop(self):
         def check_io():
-            self.tmux_out.assert_called_once_with(
-                "show-options", "-qv", "-t", tmux.SESSION, "@letee_finder_scope")
+            self.assertEqual(self.tmux_out.call_count, 2)
+            for option in ("@letee_finder_scope", "@letee_finder_filters"):
+                self.tmux_out.assert_any_call("show-options", "-qv", "-t", tmux.SESSION, option)
             self.tmux_tmux.assert_not_called()
             return "\x1b"
 
         self.run_ui(["\x14", check_io])
-        self.tmux_tmux.assert_called_once_with(
+        self.assertEqual(self.tmux_tmux.call_count, 2)
+        self.tmux_tmux.assert_any_call(
             "set-option", "-t", tmux.SESSION, "@letee_finder_scope", "Sessions", capture=True)
 
     def test_successful_navigation_saves_scope_for_reopening(self):
@@ -126,6 +135,113 @@ class FinderUITest(unittest.TestCase):
         _, reopened = self.run_ui(["\x1b"])
         self.assertTrue(any(text == "[Windows] " and attr & curses.A_REVERSE
                             for _, _, text, attr in reopened.frames[0][0]))
+
+    def test_filter_summary_and_keyboard_preserve_query_and_scope(self):
+        popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+        popup.render()
+        self.assertEqual(popup.capacity, 8)
+        self.assertTrue(any(y == 3 and "Filters: none" in text for y, _, text, _ in popup.screen.writes))
+        for key in ("e", "\x14", "\x06", " ", curses.KEY_DOWN, " ", "\n"):
+            self.assertTrue(popup.key(key, lambda row: self.fail()))
+        self.assertEqual(popup.finder.query, "e")
+        self.assertEqual(popup.cursor, 1)
+        self.assertEqual(popup.finder.scope, "Sessions")
+        self.assertTrue(popup.finder.has_bell)
+        self.assertEqual(popup.finder.states, frozenset({finder_ui.FILTER_STATES[0]}))
+        popup.render()
+        self.assertTrue(any(y == 3 and "Has bell" in text for y, _, text, _ in popup.screen.writes))
+        popup.key("\x06", lambda row: self.fail())
+        self.assertTrue(popup.key("\x1b", lambda row: self.fail()))
+        self.assertFalse(popup.key("\x03", lambda row: self.fail()))
+
+    def test_filter_persistence_and_malformed_values(self):
+        valid = {"states": ["working", "idle"], "has_bell": True}
+        for stored in ("", "{", "null", "[]", "true", "{}",
+                       '{"states":["working"],"has_bell":1}',
+                       '{"states":["bogus"],"has_bell":true}',
+                       '{"states":"working","has_bell":true}',
+                       '{"states":[[]],"has_bell":true}',
+                       json.dumps(valid)):
+            with self.subTest(stored=stored):
+                self.stored_filters = stored
+                _, window = self.run_ui(["\x1b"])
+                expected = valid if stored == json.dumps(valid) else {"states": [], "has_bell": False}
+                saved = json.loads(self.stored_filters)
+                self.assertEqual(set(saved["states"]), set(expected["states"]))
+                self.assertEqual(saved["has_bell"], expected["has_bell"])
+                self.assertIn("Filters:", frame_text(window.frames[0]))
+
+    def test_filter_keyboard_changes_saved_and_reopened_on_cancel(self):
+        self.run_ui(["\x06", " ", curses.KEY_DOWN, " ", "\x03"])
+        saved = json.loads(self.stored_filters)
+        self.assertTrue(saved["has_bell"])
+        self.assertEqual(saved["states"], [finder_ui.FILTER_STATES[0]])
+        _, window = self.run_ui(["\x1b"])
+        self.assertIn("Has bell", frame_text(window.frames[0]))
+
+    def test_filter_checklist_mouse_scroll_clear_and_resize(self):
+        screen = FakeWindow([], (9, 60))
+        popup = finder_ui._Popup(screen, self.workspace)
+        popup.render()
+        def click(x, y, button=curses.BUTTON1_CLICKED):
+            with patch.object(curses, "getmouse", return_value=(0, x, y, 0, button)):
+                popup.key(curses.KEY_MOUSE, lambda row: self.fail("checklist must not open destinations"))
+            popup.render()
+
+        click(2, 3)
+        self.assertTrue(popup.filters_open)
+        click(2, 4)
+        self.assertTrue(popup.finder.has_bell)
+        click(2, 5)
+        self.assertEqual(popup.finder.states, frozenset({finder_ui.FILTER_STATES[0]}))
+        selected = popup.finder.selected
+        click(2, 5, curses.BUTTON5_PRESSED)
+        self.assertGreater(popup.filter_scroll, 0)
+        self.assertEqual(popup.finder.selected, selected)
+        click(2, 5, curses.BUTTON4_PRESSED)
+        self.assertEqual(popup.filter_scroll, 0)
+        for _ in range(len(finder_ui.FILTER_STATES) + 2):
+            popup.key(curses.KEY_DOWN, lambda row: self.fail())
+        screen.size = (8, 12)
+        popup.key(curses.KEY_RESIZE, lambda row: self.fail())
+        popup.render()
+        self.assertEqual(popup.filter_scroll, popup.filter_index - popup.capacity + 1)
+        click(1, 5)
+        self.assertFalse(popup.finder.has_bell)
+        self.assertFalse(popup.finder.states)
+        for size in ((1, 1), (4, 8), (6, 12), (14, 80)):
+            screen.size = size
+            popup.key(curses.KEY_RESIZE, lambda row: self.fail())
+            popup.render()
+        self.assertIn("Clear filters", frame_text(screen.frames[-1]))
+        popup.key("\x1b", lambda row: self.fail())
+        self.assertFalse(popup.filters_open)
+
+    def test_filters_apply_in_every_scope_and_ignore_query_edits_in_checklist(self):
+        popup = finder_ui._Popup(FakeWindow([]), self.workspace)
+        popup.finder.set_query("Claude")
+        popup.cursor = 3
+        for scope in finder_ui.SCOPES:
+            popup.finder.set_scope(scope)
+            popup.key("\x06", lambda row: self.fail())
+            for key in ("z", "\x15", curses.KEY_BACKSPACE, "\x14", "\t"):
+                popup.key(key, lambda row: self.fail())
+            popup.filter_index = finder_ui.FILTER_STATES.index("working") + 1
+            popup.key(" ", lambda row: self.fail())
+            self.assertEqual(popup.finder.query, "Claude")
+            self.assertEqual(popup.finder.scope, scope)
+            self.assertEqual(popup.cursor, 3)
+            self.assertEqual(popup.finder.states, frozenset({"working"}))
+            popup.filter_index = len(finder_ui.FILTER_STATES) + 1
+            popup.key(" ", lambda row: self.fail())
+            self.assertFalse(popup.finder.states)
+            popup.key(curses.KEY_ENTER, lambda row: self.fail())
+
+    def test_successful_navigation_saves_filters(self):
+        self.stored_filters = json.dumps({"states": ["input-required"], "has_bell": False})
+        window = FakeWindow(["\x14", "\x14", "\x14", "\n"] + [-1] * 1000)
+        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
+        self.assertEqual(json.loads(self.stored_filters), {"states": ["input-required"], "has_bell": False})
 
     def test_edit_cursor_clear_and_scope(self):
         result, window = self.run_ui([
@@ -444,8 +560,8 @@ class FinderUITest(unittest.TestCase):
 
     def test_mouse_scope_disclosure_and_destination(self):
         clicks = iter([(0, 0, 1, 0, curses.BUTTON1_CLICKED),
-                       (0, 0, 3, 0, curses.BUTTON1_CLICKED),
-                       (0, 10, 4, 0, curses.BUTTON1_CLICKED)])
+                       (0, 0, 4, 0, curses.BUTTON1_CLICKED),
+                       (0, 10, 5, 0, curses.BUTTON1_CLICKED)])
         opened = []
         with patch.object(curses, "getmouse", side_effect=lambda: next(clicks)):
             window = FakeWindow([curses.KEY_MOUSE] * 3 + [-1] * 1000)
@@ -481,7 +597,7 @@ class FinderUITest(unittest.TestCase):
                 screen = FakeWindow(["\t", curses.KEY_DOWN, "\t", "\x1b"])
                 finder_ui.run(screen, workspace, prepare_open=lambda row: lambda: None)
                 indicators = [(y, attr) for y, _, text, attr in screen.frames[-1][0] if text == indicator]
-                self.assertEqual([y for y, _ in indicators], [3, 5])
+                self.assertEqual([y for y, _ in indicators], [4, 6])
                 self.assertTrue(all(attr & curses.A_BLINK for _, attr in indicators))
 
     def test_render_highlights_and_current_are_distinct(self):

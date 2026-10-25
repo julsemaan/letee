@@ -84,9 +84,15 @@ class FinderWorkerTest(unittest.TestCase):
                 patch.object(tmux, "tmux") as save:
             self.assertEqual(finder_ui.main(), 0)
             self.assertEqual(popup.finder.scope, "Agents")
-            read.assert_called_once_with("show-options", "-qv", "-t", tmux.SESSION, "@letee_finder_scope")
-            save.assert_called_once_with(
+            self.assertEqual(read.call_count, 2)
+            for option in ("@letee_finder_scope", "@letee_finder_filters"):
+                read.assert_any_call("show-options", "-qv", "-t", tmux.SESSION, option)
+            self.assertEqual(save.call_count, 2)
+            save.assert_any_call(
                 "set-option", "-t", tmux.SESSION, "@letee_finder_scope", "Agents", capture=True)
+            save.assert_any_call(
+                "set-option", "-t", tmux.SESSION, "@letee_finder_filters",
+                '{"states": [], "has_bell": false}', capture=True)
             reader.close.assert_called_once()
 
     def test_worker_uses_only_snapshot_reader_and_always_closes_it(self):

@@ -12,6 +12,91 @@ class FinderTest(unittest.TestCase):
         self.workspace = sample_workspace()
         self.finder = Finder(self.workspace)
 
+    def test_state_filters_or_scopes_and_text(self):
+        for scope in SCOPES:
+            with self.subTest(scope=scope):
+                finder = Finder(self.workspace)
+                finder.set_scope(scope)
+                finder.set_filters({"input-required"}, False)
+                self.assertEqual({r.session.key for r in finder.rows}, {self.workspace.sessions[0].key})
+                self.assertFalse(any(r.window and r.window.name == "editor" for r in finder.rows))
+                finder.set_query("dev")
+                self.assertEqual(finder.rows, [])
+                finder.set_filters({"input-required", "working"}, False)
+                self.assertEqual({r.session.key for r in finder.rows}, {self.workspace.sessions[1].key})
+                finder.set_query("dev Codex")
+                self.assertEqual(bool(finder.rows), scope in ("All", "Agents"))
+
+    def test_bell_and_state_must_match_same_agent(self):
+        session = self.workspace.sessions[0]
+        window = session.windows[1]
+        agent = window.agents[0]
+        other = replace(agent, agent_id="other", state="working", alert=True)
+        session = replace(session, windows=(window, replace(window, window_id="@9", agents=(other,))))
+        finder = Finder(Workspace((session,)))
+        finder.set_filters({"input-required"}, True)
+        self.assertEqual(finder.rows, [])
+        finder.set_filters(set(), True)
+        self.assertEqual([r.agent.agent_id for r in finder.rows if r.agent], ["other"])
+        self.assertEqual([r.window.window_id for r in finder.rows if r.kind == "window"], ["@9"])
+        finder.set_filters({"working"}, True)
+        self.assertEqual([r.agent.agent_id for r in finder.rows if r.agent], ["other"])
+        finder.update(Workspace((replace(session, bell=True),)))
+        finder.set_filters({"input-required"}, True)
+        self.assertEqual([r.agent.agent_id for r in finder.rows if r.agent], [agent.agent_id])
+        self.assertFalse(any(r.window and r.window.window_id == "@9" for r in finder.rows))
+
+    def test_session_bell_without_state_includes_empty_windows_and_sessions(self):
+        session = replace(self.workspace.sessions[0], bell=True)
+        empty = Session(Target("local", "empty"), "$9", "/local", bell=True)
+        for scope in SCOPES:
+            finder = Finder(Workspace((session, empty)))
+            finder.set_scope(scope)
+            finder.set_filters(set(), True)
+            self.assertEqual(any(r.session == empty for r in finder.rows), scope in ("All", "Sessions"))
+            self.assertEqual(any(r.window and r.window.name == "editor" for r in finder.rows),
+                             scope in ("All", "Windows"))
+            finder.set_filters({"working"}, True)
+            self.assertEqual(finder.rows, [])
+
+    def test_filter_updates_pin_selection_until_explicit_change(self):
+        self.finder.set_scope("Agents")
+        self.finder.set_filters({"input-required"}, False)
+        selected = self.finder.selected
+        session = self.workspace.sessions[0]
+        window = session.windows[1]
+        changed = replace(session, windows=(replace(window, agents=(replace(window.agents[0], state="idle"),)),))
+        self.finder.update(Workspace((changed,)))
+        self.assertEqual(self.finder.selected, selected)
+        self.assertEqual(self.finder.selected_row.agent.state, "idle")
+        self.finder.set_filters({"working"}, False)
+        self.assertEqual(self.finder.rows, [])
+        self.finder.set_filters({"idle", "unknown"}, False)
+        self.assertEqual(self.finder.selected, selected)
+        self.finder.set_query("no match")
+        self.assertEqual(self.finder.rows, [])
+
+    def test_filter_expansion_reselection_and_clearing_restore_browsing(self):
+        self.finder.toggle()
+        browsing = [r.key for r in self.finder.rows]
+        self.finder.set_filters({"input-required"}, False)
+        self.assertIn(self.workspace.current, [r.key for r in self.finder.rows])
+        self.finder.toggle(self.workspace.sessions[0].key)
+        self.finder.set_filters({"input-required", "working"}, False)
+        self.assertIn(self.workspace.current, [r.key for r in self.finder.rows])
+        self.finder.set_filters(set(), False)
+        self.assertEqual([r.key for r in self.finder.rows], browsing)
+
+    def test_filter_live_updates_reveal_new_matching_branch(self):
+        self.finder.set_filters({"input-required"}, False)
+        selected = self.finder.selected
+        session = self.workspace.sessions[1]
+        window = session.windows[0]
+        changed = replace(session, windows=(replace(window, agents=(replace(window.agents[0], state="input-required"),)),))
+        self.finder.update(replace(self.workspace, sessions=(self.workspace.sessions[0], changed)))
+        self.assertEqual(self.finder.selected, selected)
+        self.assertTrue(any(r.agent and r.agent.name == "Codex" for r in self.finder.rows))
+
     def test_initial_tree_contract_and_current_session(self):
         rows = self.finder.rows
         self.assertEqual(SCOPES, ("All", "Sessions", "Windows", "Agents"))

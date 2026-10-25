@@ -138,11 +138,18 @@ The tree groups sessions, their windows, and agents. Type to filter by name or f
 | `Up` / `Down` | Select a row. |
 | `Tab` | Expand or collapse the selected branch. |
 | `Ctrl-T` | Cycle All, Sessions, Windows, and Agents scopes. |
+| `Ctrl-F` or click the filter summary | Open the filter checklist. |
 | `Enter` | Open the selected destination. |
 | `Left` / `Right`, `Home` / `End` | Move the query cursor. |
 | `Backspace` / `Delete` | Edit the query. |
 | `Ctrl-U` | Clear the query. |
 | `Esc` / `Ctrl-C` | Cancel. |
+
+The filter summary always shows the active filters, or `none`. In the checklist, use `Up` / `Down` and `Space`, or click checkboxes, to select agent states and toggle **Has bell**. Scroll to reach more choices or **Clear filters**. Changes apply immediately. `Enter` or `Esc` returns to results without changing the query; `Ctrl-C` cancels Find.
+
+Selected states match any of those states; no selected state means all states. Has bell matches a session bell or a stored agent alert. With both filters active, the same agent must match the state and have an alert, unless its session has a bell. Sessions and windows qualify through matching agents, but unrelated branches stay hidden. Without a state filter, a session bell includes its entire subtree. Filters combine with text search and every scope. Find remembers scope and filters per cockpit, even after cancellation.
+
+Live updates keep the selected destination visible even if it stops matching. Changing the query, scope, or filters chooses a fresh match. Clearing filters restores normal browsing expansion.
 
 Missing destinations are unavailable in Find and cannot be opened there. The Sessions sidebar retains its existing missing-session recovery: select a missing session and press `Enter` to recreate it.
 

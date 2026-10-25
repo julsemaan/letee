@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from .discovery import SUPPORTED_TASK_STATES
 from .workspace import Agent, Identity, Session, Window, Workspace
 
 SCOPES = ("All", "Sessions", "Windows", "Agents")
+FILTER_STATES = tuple(sorted(SUPPORTED_TASK_STATES | {"idle", "unknown"}))
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class Finder:
         self.workspace = workspace
         self.query = ""
         self.scope = "All"
+        self.states: frozenset[str] = frozenset()
+        self.has_bell = False
         self.selected: Identity | None = None
         self.rows: list[Row] = []
         self._selected_path = ""
@@ -100,6 +104,16 @@ class Finder:
             if self._mode != ("All", False):
                 self._expansions.pop(self._mode, None)
             self._rebuild(choose=True)
+
+    def set_filters(self, states: set[str] | frozenset[str], has_bell: bool) -> None:
+        states = frozenset(states)
+        if states == self.states and has_bell == self.has_bell:
+            return
+        self.states = states
+        self.has_bell = has_bell
+        if self._mode != ("All", False):
+            self._expansions.pop(self._mode, None)
+        self._rebuild(choose=True)
 
     def cycle_scope(self) -> None:
         self.set_scope(SCOPES[(SCOPES.index(self.scope) + 1) % len(SCOPES)])
@@ -146,7 +160,7 @@ class Finder:
 
     @property
     def _mode(self) -> tuple[str, bool]:
-        return self.scope, bool(self.query.split())
+        return self.scope, bool(self.query.split() or self.states or self.has_bell)
 
     def _cache_path(self) -> None:
         if self.selected in self._nodes:
@@ -188,13 +202,30 @@ class Finder:
                         f"{prefix}{agent.name} [{agent.state}]", session, window, agent, key,
                         ((agent.name, len(prefix)),))
         self._nodes = nodes
+        eligible = set(nodes)
+        if self.states or self.has_bell:
+            eligible = set()
+            for key, row in nodes.items():
+                # A session bell alone includes even branches without agents.
+                session_bell = self.has_bell and row.session.bell
+                if not self.states and session_bell:
+                    eligible.add(key)
+                elif (row.agent is not None
+                      and (not self.states or row.agent.state in self.states)
+                      and (not self.has_bell or session_bell or row.agent.alert)):
+                    eligible.add(key)
+            for key in tuple(eligible):
+                parent = parents[key]
+                while parent is not None:
+                    eligible.add(parent)
+                    parent = parents[parent]
         terms = self.query.casefold().split()
         destinations = set()
         scores = {}
         highlights: dict[Identity, set[int]] = {}
         kind = {"Sessions": "session", "Windows": "window", "Agents": "agent"}.get(self.scope)
         for key, row in nodes.items():
-            if kind and row.kind != kind:
+            if key not in eligible or (kind and row.kind != kind):
                 continue
             matches = []
             for term in terms:
@@ -216,7 +247,7 @@ class Finder:
                     highlights.setdefault(owner, set()).update(offset + i for i in positions)
 
         included = set(destinations)
-        # Keep a live selection openable if a rename stops matching the query.
+        # Keep a live selection openable if text or activity stops matching.
         if not choose and self.selected in nodes:
             included.add(self.selected)
             scores.setdefault(self.selected, (len(terms) + 1, 0, 0))
