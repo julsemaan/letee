@@ -393,17 +393,29 @@ class MainTest(unittest.TestCase):
     def test_kill_removes_target_from_persisted_sessions(self):
         target = Target("local", "work")
         other = Target("ssh", "other", "dev")
-        with (
-            patch("letee.operations.sessions.kill") as kill,
-            patch("letee.config.load_sessions", return_value=[target, other]),
-            patch("letee.config.save_sessions") as save,
-            patch("letee.__main__.cockpit.reset_to_help") as reset,
-        ):
-            main(["kill", target.format()])
+        for active in (False, True):
+            with (
+                self.subTest(active=active),
+                patch("letee.operations.sessions.kill") as kill,
+                patch("letee.config.load_sessions", return_value=[target, other]),
+                patch("letee.config.save_sessions") as save,
+                patch("letee.cockpit.current_target", return_value=target if active else other),
+                patch("letee.cockpit.set_expected_right_pane_death") as expect_death,
+                patch("letee.cockpit.resolve_expected_right_pane_death") as resolve_death,
+                patch("letee.cockpit.reset_to_help") as reset,
+            ):
+                self.assertEqual(main(["kill", target.format()]), 0)
 
-        kill.assert_called_once_with(target)
-        save.assert_called_once_with([other])
-        reset.assert_called_once_with(target)
+                kill.assert_called_once_with(target)
+                save.assert_called_once_with([other])
+                if active:
+                    expect_death.assert_called_once_with(target)
+                    resolve_death.assert_called_once_with(target, True)
+                    reset.assert_not_called()
+                else:
+                    expect_death.assert_not_called()
+                    resolve_death.assert_not_called()
+                    reset.assert_called_once_with(target)
 
     def test_kill_untracked_target_saves_unchanged_sessions(self):
         target = Target("local", "untracked")
@@ -412,6 +424,9 @@ class MainTest(unittest.TestCase):
             patch("letee.operations.sessions.kill") as kill,
             patch("letee.config.load_sessions", return_value=[other]),
             patch("letee.config.save_sessions") as save,
+            patch("letee.cockpit.current_target", return_value=other),
+            patch("letee.cockpit.set_expected_right_pane_death") as expect_death,
+            patch("letee.cockpit.resolve_expected_right_pane_death") as resolve_death,
             patch("letee.__main__.cockpit.reset_to_help") as reset,
         ):
             self.assertEqual(main(["kill", target.format()]), 0)
@@ -419,22 +434,34 @@ class MainTest(unittest.TestCase):
         kill.assert_called_once_with(target)
         save.assert_called_once_with([other])
         reset.assert_called_once_with(target)
+        expect_death.assert_not_called()
+        resolve_death.assert_not_called()
 
     def test_rename_tmux_then_replaces_tracked_target(self):
         target = Target("ssh", "old", "dev")
         renamed = Target("ssh", "new", "dev")
         other = Target("local", "other")
-        with (
-            patch("letee.config.load_sessions", return_value=[target, other]),
-            patch("letee.operations.sessions.rename", return_value=renamed) as rename,
-            patch("letee.config.save_sessions") as save,
-            patch("letee.__main__.cockpit.rename_target") as rename_target,
-        ):
-            self.assertEqual(main(["rename", target.format(), "new"]), 0)
+        for active in (False, True):
+            with (
+                self.subTest(active=active),
+                patch("letee.config.load_sessions", return_value=[target, other]),
+                patch("letee.operations.sessions.rename", return_value=renamed) as rename,
+                patch("letee.config.save_sessions") as save,
+                patch("letee.cockpit.current_target", return_value=target if active else other),
+                patch("letee.cockpit.rename_target") as rename_target,
+                patch("letee.cockpit.switch") as switch,
+            ):
+                self.assertEqual(main(["rename", target.format(), "new"]), 0)
 
-        rename.assert_called_once_with(target, "new")
-        save.assert_called_once_with([renamed, other])
-        rename_target.assert_called_once_with(target, renamed)
+                rename.assert_called_once_with(target, "new")
+                save.assert_called_once_with([renamed, other])
+                rename_target.assert_called_once_with(target, renamed)
+                if active:
+                    switch.assert_called_once()
+                    self.assertEqual(switch.call_args.args[0], renamed)
+                    self.assertTrue(callable(switch.call_args.args[1]))
+                else:
+                    switch.assert_not_called()
 
     def test_rename_rejects_untracked_target_without_touching_tmux(self):
         target = Target("local", "work")
@@ -465,6 +492,9 @@ class MainTest(unittest.TestCase):
         with (
             patch("letee.config.load_sessions", return_value=[target]),
             patch("letee.operations.sessions.rename", side_effect=SystemExit("rename failed")) as rename,
+            patch("letee.cockpit.current_target", return_value=target),
+            patch("letee.cockpit.rename_target") as rename_target,
+            patch("letee.cockpit.switch") as switch,
             patch("letee.config.save_sessions") as replace,
         ):
             with self.assertRaisesRegex(SystemExit, "^rename failed$"):
@@ -472,6 +502,8 @@ class MainTest(unittest.TestCase):
 
         rename.assert_called_once_with(target, "new")
         replace.assert_not_called()
+        rename_target.assert_not_called()
+        switch.assert_not_called()
 
     def test_create_ssh_rejects_option_like_hosts(self):
         for host in ("-V", "-F", "--help"):
