@@ -16,10 +16,13 @@ from letee.names import Target
 
 
 class AttachmentTests(unittest.TestCase):
-    def start(self, script, *, ascii_mode=False, runner_script=None):
+    def start(self, script, *, ascii_mode=False, runner_script=None, initial_input=b""):
         master, slave = pty.openpty()
         termios.tcsetwinsize(slave, (31, 97))
         original = termios.tcgetattr(slave)
+        if initial_input:
+            os.write(master, initial_input)
+            self.assertTrue(select.select([slave], [], [], 5)[0], "input was not queued")
         process = subprocess.Popen(
             [sys.executable, "-c", runner_script] if runner_script else
             [sys.executable, "-m", "letee.attachment", "ssh:dev:work", "--",
@@ -75,6 +78,15 @@ class AttachmentTests(unittest.TestCase):
         os.write(master, b"secret\n")
         tail = self.read_until(master, b"answer=secret")
         self.assertNotIn(b"Preparing", tail)
+        self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(termios.tcgetattr(slave), original)
+
+    def test_input_queued_before_startup_reaches_child(self):
+        process, master, slave, original = self.start(
+            "print('answer='+input(), flush=True)",
+            initial_input=b"typed-ahead\n",
+        )
+        self.read_until(master, b"answer=typed-ahead")
         self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual(termios.tcgetattr(slave), original)
 

@@ -83,7 +83,7 @@ def run(target: Target, argv: list[str]) -> int:
             except OSError as error:
                 print(error, file=sys.stderr, flush=True)
             os._exit(127)
-        tty.setraw(0)
+        tty.setraw(0, termios.TCSANOW)
         resize(None, None)
         os.set_blocking(master, False)
         pending = b""
