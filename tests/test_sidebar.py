@@ -2,6 +2,7 @@ import curses
 import inspect
 import json
 import os
+import re
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import shlex
@@ -164,6 +165,81 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                     self.assertEqual(submitted, [
                         sidebar.Effect("switch", target, automatic=True),
                     ] if failed else [])
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_renamed_attachment_failure_retries_only_for_current_generation(self, _timing):
+        cockpit = sidebar.cockpit
+        old, new = Target("ssh", "old", "dev"), Target("ssh", "new", "dev")
+        healthy = snapshot(remotes={"dev": source("ssh", ("new",), host="dev")})
+        for generation, attachment_target, renamed in (
+            ("123", old, True), ("122", old, False), ("123", Target("local", "other"), False),
+        ):
+            with self.subTest(generation=generation, attachment_target=attachment_target):
+                options = {
+                    cockpit.CURRENT_TARGET_OPTION: old.format(),
+                    cockpit.ATTACHMENT_TARGET_OPTION: attachment_target.format(),
+                    cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION: generation,
+                    "pane_pid": "123", "pane_dead": "0", "pane_dead_status": "1",
+                }
+
+                def expand(value):
+                    def replace(match):
+                        field = match[1]
+                        if ":" not in field:
+                            return options.get(field, "")
+                        operator, operands = field.split(":", 1)
+                        left, right = operands.split(",", 1)
+                        return str(int({
+                            "==": left == right, "!=": left != right,
+                            "&&": bool(left and left != "0" and right and right != "0"),
+                            "||": bool((left and left != "0") or (right and right != "0")),
+                        }[operator]))
+                    while "#{" in value:
+                        value = re.sub(r"#\{([^{}]*)\}", replace, value)
+                    return value
+
+                def execute(*args):
+                    if args[0] == "if-shell":
+                        end = args.index("}")
+                        if expand(args[2]) == "1":
+                            execute(*args[4:end])
+                        execute(*args[end + 2:])
+                    elif ";" in args:
+                        index = args.index(";")
+                        execute(*args[:index])
+                        execute(*args[index + 1:])
+                    elif args[0] == "set-option":
+                        options[args[-2]] = expand(args[-1])
+
+                # Execute only the rename queue's if-shell/set-option subset, never host tmux.
+                with (
+                    patch.object(cockpit, "current_target", return_value=old),
+                    patch.object(cockpit, "bell_target", return_value=None),
+                    patch.object(cockpit, "_option", return_value="%2"),
+                    patch.object(cockpit.tmux, "tmux", side_effect=lambda *args: (
+                        execute(*shlex.split(args[-1])) if expand(args[-2]) == "1" else None
+                    )),
+                ):
+                    cockpit.rename_target(old, new)
+                self.assertEqual(options[cockpit.CURRENT_TARGET_OPTION], new.format())
+                self.assertEqual(options[cockpit.ATTACHMENT_TARGET_OPTION],
+                                 new.format() if renamed else attachment_target.format())
+                with patch.object(cockpit.tmux, "tmux") as command:
+                    cockpit._install_right_pane_reset("%1", "%2", "C-x")
+                hook = command.call_args.args[-1]
+                condition = re.search(
+                    r"if-shell -F '([^']+)' \{ set-option -F -t %2 @letee_attachment_failure_target", hook,
+                )[1]
+                options["pane_dead"] = "1"
+                failure = (new, "123") if expand(condition) == "1" else None
+                retry = sidebar.RestorationRetry()
+                marker = sidebar._reconcile_attachment_failure(None, new, failure, retry, 10)
+                submitted = []
+                sidebar._sync_active_session(
+                    new, healthy, marker, lambda effect: submitted.append(effect) or True,
+                    retry=retry, now=100,
+                )
+                self.assertEqual(submitted, [sidebar.Effect("switch", new, automatic=True)] if renamed else [])
 
     def test_failure_is_not_consumed_again_after_explicit_navigation_or_for_other_target(self):
         target = Target("ssh", "work", "dev")

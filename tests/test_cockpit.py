@@ -1169,6 +1169,7 @@ class CockpitLayoutTest(unittest.TestCase):
         with (
             patch.object(cockpit, "current_target", return_value=old),
             patch.object(cockpit, "bell_target", return_value=old),
+            patch.object(cockpit, "_option", return_value="%2"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
         ):
             cockpit.rename_target(old, new)
@@ -1176,7 +1177,13 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             tmux_call.call_args_list,
             [
-                unittest.mock.call("set-option", "-t", "letee", cockpit.CURRENT_TARGET_OPTION, "local:new"),
+                unittest.mock.call(
+                    "if-shell", "-F", "-t", "%2", "#{==:#{@letee_current_target},local:old}",
+                    "if-shell -F '#{&&:#{==:#{@letee_attachment_target},local:old},"
+                    "#{==:#{@letee_attachment_launch_generation},#{pane_pid}}}' { "
+                    "set-option -p -t %2 @letee_attachment_target local:new } ; "
+                    "set-option -t letee @letee_current_target local:new",
+                ),
                 unittest.mock.call("set-option", "-t", "letee", cockpit.BELL_TARGET_OPTION, "local:new"),
             ],
         )

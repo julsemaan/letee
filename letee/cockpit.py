@@ -1194,7 +1194,18 @@ def set_current_target(target: Target) -> None:
 @diagnostics.operation("cockpit.rename_target")
 def rename_target(old: Target, new: Target) -> None:
     if current_target() == old:
-        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, new.format())
+        right = _option(RIGHT_PANE_OPTION)
+        action = f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(new.format())}"
+        if right:
+            target_match = _option_equals(ATTACHMENT_TARGET_OPTION, old.format())
+            generation_match = _option_equals(ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}")
+            action = (
+                f"if-shell -F '#{{&&:{target_match},{generation_match}}}' {{ "
+                f"set-option -p -t {right} {ATTACHMENT_TARGET_OPTION} {shlex.quote(new.format())} }} ; "
+                f"{action}"
+            )
+        tmux.tmux("if-shell", "-F", *(("-t", right) if right else ()),
+                  _option_equals(CURRENT_TARGET_OPTION, old.format()), action)
     if bell_target() == old:
         tmux.tmux("set-option", "-t", tmux.SESSION, BELL_TARGET_OPTION, new.format())
 
