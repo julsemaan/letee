@@ -26,7 +26,7 @@ from .config import (
     load_sidebar_width,
 )
 from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, WindowTarget, parse_target
-from . import diagnostics, sessions, tmux
+from . import attachment, diagnostics, sessions, tmux
 
 
 def _truecolor_enabled() -> bool:
@@ -143,6 +143,9 @@ _EXPECTED_RIGHT_PANE_DEATH_SUCCEEDED = "succeeded"
 CURRENT_AGENT_OPTION = "@letee_current_agent"
 BELL_TARGET_OPTION = "@letee_bell_target"
 ROOT_KEYS_OPTION = "@letee_root_keys"
+ATTACHMENT_LAUNCH_GENERATION_OPTION = "@letee_attachment_launch_generation"
+ATTACHMENT_FAILURE_TARGET_OPTION = "@letee_attachment_failure_target"
+ATTACHMENT_FAILURE_GENERATION_OPTION = "@letee_attachment_failure_generation"
 ATTACHMENT_ID_OPTION = "@letee_attachment_id"
 ATTACHMENT_GENERATION_OPTION = "@letee_attachment_generation"
 ATTACHMENT_TARGET_OPTION = "@letee_attachment_target"
@@ -158,6 +161,7 @@ class StatusSnapshot:
     bell_target: Target | None
     current_agent: str | None
     pane_active: bool
+    attachment_failure: tuple[Target, str] | None = None
 
 
 def _letee_command(*args: str) -> str:
@@ -432,20 +436,9 @@ def _unavailable_command(target: Target | None = None) -> str:
 
 
 def _animated_command(target: Target, title: str, progress: str) -> str:
-    reset, cyan, dim = "\033[0m", "\033[38;5;81m", "\033[2m"
-    ascii_mode = os.environ.get("LETEE_ASCII") == "1" or "utf" not in locale.getpreferredencoding(False).lower()
-    if ascii_mode:
-        banner = f"+-- {title} --+"
-        underline = f"+{'-' * (len(banner) - 2)}+"
-    else:
-        banner = f"╭─ {title} ─╮"
-        underline = f"╰{'─' * (len(banner) - 2)}╯"
+    text, animation_states = attachment.animation_data(target, title)
     indent = "    "
-    text = f"\n{indent}{cyan}{banner}\n{indent}{underline}{reset}\n\n{indent}{dim}Session{reset}  {target.session}\n{indent}{dim}Host{reset}     {target.host or 'local'}\n\n"
-    frames = ("|", "/", "-", "\\") if ascii_mode else ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-    dots = (".  ", ".. ", "...") if ascii_mode else ("·  ", "·· ", "···", " ··", "  ·")
-    colors = (45, 51, 87, 123, 159, 123, 87, 51)
-    states = " ".join(shlex.quote(f"{color}:{frame}:{dots[index % len(dots)]}") for index, (color, frame) in enumerate(zip(colors, frames)))
+    states = " ".join(shlex.quote(f"{color}:{frame}:{dots}") for color, frame, dots in animation_states)
     save_cursor = shlex.quote("\0337")
     spinner = shlex.quote(f"\0338\033[2K{indent}\033[38;5;%sm%s\033[0m {progress}%s")
     animate = 'color=${state%%:*}; rest=${state#*:}; frame=${rest%%:*}; dots=${rest#*:}'
@@ -517,7 +510,19 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-option", "-p", "-t", right, "remain-on-exit", "on")
     target_match = f"#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_TARGET_OPTION}}},#{{{CURRENT_TARGET_OPTION}}}}}"
     generation_match = _option_equals(EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION, "#{pane_pid}")
-    fallback = _right_pane_death_action(left, right, prefix="", succeeded=False)
+    attachment_match = (
+        f"#{{&&:#{{pane_dead}},{_option_equals(ATTACHMENT_LAUNCH_GENERATION_OPTION, '#{pane_pid}')}}}"
+    )
+    current_attachment = _option_equals(ATTACHMENT_TARGET_OPTION, f"#{{{CURRENT_TARGET_OPTION}}}")
+    unexpected = f"#{{!=:#{{{EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION}}},#{{pane_pid}}}}"
+    unsuccessful = "#{||:#{pane_dead_status},#{pane_dead_signal}}"
+    record_failure = (
+        f"if-shell -F '#{{&&:{unsuccessful},#{{&&:{attachment_match},#{{&&:{current_attachment},{unexpected}}}}}}}' {{ "
+        f"set-option -F -t {right} {ATTACHMENT_FAILURE_TARGET_OPTION} '#{{{ATTACHMENT_TARGET_OPTION}}}' ; "
+        f"set-option -F -t {right} {ATTACHMENT_FAILURE_GENERATION_OPTION} '#{{pane_pid}}' "
+        f"}} ; "
+    )
+    fallback = record_failure + _right_pane_death_action(left, right, prefix="", succeeded=False)
     state_action = (
         f"if-shell -F '#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_PENDING}}}' "
         f"{{ set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_CONSUMED} }} "
@@ -577,7 +582,7 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
             f"{{ run-shell -b {shlex.quote(unknown_callback)} }} ; "
         )
     command = (
-        f"if-shell -F '#{{==:#{{hook_pane}},{right}}}' "
+        f"if-shell -F '#{{&&:#{{==:#{{hook_pane}},{right}}},#{{pane_dead}}}}' "
         f"{{ {callback_action}{expected_death} }}"
     )
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
@@ -921,14 +926,18 @@ def _install_attachment_identity(pane: str, generation: str, fields: dict[str, s
 _RESPAWN_SUCCEEDED = "letee-respawn-succeeded"
 
 
-def _respawn_attachment(pane: str, command: str) -> str:
+def _respawn_attachment(pane: str, command: str, target: Target | None = None) -> str:
     # These commands share one native queue. Record success before the diagnostic
     # PID query, so even a query failure cannot turn a successful respawn into an
     # application failure. A respawn error aborts the queue before the marker.
+    metadata = () if target is None else (
+        "set-option", "-p", "-t", pane, ATTACHMENT_TARGET_OPTION, target.format(), ";",
+        "set-option", "-p", "-F", "-t", pane, ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}", ";",
+    )
     try:
         result = tmux.tmux(
             "respawn-pane", "-k", "-t", pane, command, ";",
-            "display-message", "-p", _RESPAWN_SUCCEEDED, ";",
+            "display-message", "-p", _RESPAWN_SUCCEEDED, ";", *metadata,
             "display-message", "-p", "-t", pane, "#{pane_pid}", capture=True,
         )
         output = result.stdout if isinstance(getattr(result, "stdout", None), str) else ""
@@ -1017,7 +1026,12 @@ def switch(
         return result
 
     def update_markers() -> None:
-        marker_update = f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())}"
+        marker_update = (
+            f"set-option -p -t {pane} {ATTACHMENT_LAUNCH_GENERATION_OPTION} '' ; "
+            f"set-option -u -t {tmux.SESSION} {ATTACHMENT_FAILURE_TARGET_OPTION} ; "
+            f"set-option -u -t {tmux.SESSION} {ATTACHMENT_FAILURE_GENERATION_OPTION} ; "
+            f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(target.format())}"
+        )
         tmux.tmux("if-shell", "-F", "1", marker_update)
         if agent_id:
             tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_AGENT_OPTION, agent_id)
@@ -1051,6 +1065,9 @@ def switch(
             except BaseException as recovery_error:
                 diagnostics.error(recovery_error, handling="ignored", operation="switch_error_recovery")
             raise
+    parts = shlex.split(attach_command)
+    if target.kind == "ssh" and parts and parts[0] == "ssh":
+        attach_command = attachment.command(target, attach_command)
     attachment_id = None
     if debug.enabled and attach_command != _reconnecting_command(target):
         attachment_id = uuid.uuid4().hex
@@ -1062,8 +1079,9 @@ def switch(
     generation = stage(
         "respawn",
         "right_pane_respawn",
-        lambda: _respawn_attachment(pane, attach_command)
-        if attachment_id else tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command),
+        lambda: _respawn_attachment(pane, attach_command, target)
+        if attach_command != _reconnecting_command(target)
+        else tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command),
     )
     replaced()
     if attachment_id:
@@ -1092,8 +1110,8 @@ def switch(
 
 
 def open_session(target: Target, attach_command: str | Callable[[], str] | None = None) -> None:
-    """Open a session, deferring attachment preparation unless already supplied."""
-    switch(target, attach_command if attach_command is not None else lambda: sessions.attach_command(target))
+    """Open a session with an eagerly built attachment command."""
+    switch(target, attach_command if attach_command is not None else sessions.attach_command(target))
 
 
 def open_window(window: WindowTarget, attach_command: str | Callable[[], str] | None = None) -> None:
@@ -1105,7 +1123,7 @@ def open_agent(
     pane_target: PaneTarget, agent_id: str, attach_command: str | Callable[[], str] | None = None,
 ) -> None:
     """Open an agent's exact pane using the existing switch behavior."""
-    switch(pane_target.target, attach_command if attach_command is not None else lambda: sessions.pane_attach_command(pane_target), agent_id)
+    switch(pane_target.target, attach_command if attach_command is not None else sessions.pane_attach_command(pane_target), agent_id)
 
 
 @diagnostics.operation("cockpit.set_expected_right_pane_death")
@@ -1176,7 +1194,29 @@ def set_current_target(target: Target) -> None:
 @diagnostics.operation("cockpit.rename_target")
 def rename_target(old: Target, new: Target) -> None:
     if current_target() == old:
-        tmux.tmux("set-option", "-t", tmux.SESSION, CURRENT_TARGET_OPTION, new.format())
+        right = _option(RIGHT_PANE_OPTION)
+        action = f"set-option -t {tmux.SESSION} {CURRENT_TARGET_OPTION} {shlex.quote(new.format())}"
+        if right:
+            target_match = _option_equals(ATTACHMENT_TARGET_OPTION, old.format())
+            generation_match = _option_equals(ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}")
+            failure_target_match = _option_equals(ATTACHMENT_FAILURE_TARGET_OPTION, old.format())
+            failure_generation_match = _option_equals(
+                ATTACHMENT_FAILURE_GENERATION_OPTION, f"#{{{ATTACHMENT_LAUNCH_GENERATION_OPTION}}}",
+            )
+            pending_failure = (
+                f"#{{&&:#{{&&:{target_match},{failure_target_match}}},"
+                f"#{{&&:#{{!=:#{{{ATTACHMENT_FAILURE_GENERATION_OPTION}}},}},{failure_generation_match}}}}}"
+            )
+            action = (
+                f"if-shell -F '{pending_failure}' {{ "
+                f"set-option -t {tmux.SESSION} {ATTACHMENT_FAILURE_TARGET_OPTION} {shlex.quote(new.format())} ; "
+                f"set-option -p -t {right} {ATTACHMENT_TARGET_OPTION} {shlex.quote(new.format())} }} ; "
+                f"if-shell -F '#{{&&:{target_match},{generation_match}}}' {{ "
+                f"set-option -p -t {right} {ATTACHMENT_TARGET_OPTION} {shlex.quote(new.format())} }} ; "
+                f"{action}"
+            )
+        tmux.tmux("if-shell", "-F", *(("-t", right) if right else ()),
+                  _option_equals(CURRENT_TARGET_OPTION, old.format()), action)
     if bell_target() == old:
         tmux.tmux("set-option", "-t", tmux.SESSION, BELL_TARGET_OPTION, new.format())
 
@@ -1275,21 +1315,28 @@ def _target_option(name: str) -> Target | None:
 
 def _parse_status_snapshot(text: str) -> StatusSnapshot | None:
     fields = text.split("\t")
-    if len(fields) != 6 or fields[5] != ".":
+    if len(fields) != 8 or fields[7] != ".":
         return None
-    active_pane, sidebar_pane, current_target, bell_target, current_agent, _ = fields
+    active_pane, sidebar_pane, current_target, bell_target, current_agent, failed_target, failed_generation, _ = fields
+    failure_target = _parse_target_option(failed_target)
+    failure = (
+        (failure_target, failed_generation)
+        if failure_target is not None and failed_target == current_target and failed_generation.isdecimal()
+        else None
+    )
     return StatusSnapshot(
         _parse_target_option(current_target),
         _parse_target_option(bell_target),
         current_agent or None,
         not sidebar_pane or active_pane == sidebar_pane,
+        failure,
     )
 
 
 def status_snapshot() -> StatusSnapshot | None:
     text = tmux.out(
         "display-message", "-p", "-t", TARGET,
-        f"#{{pane_id}}\t#{{{SIDEBAR_PANE_OPTION}}}\t#{{{CURRENT_TARGET_OPTION}}}\t#{{{BELL_TARGET_OPTION}}}\t#{{{CURRENT_AGENT_OPTION}}}\t.",
+        f"#{{pane_id}}\t#{{{SIDEBAR_PANE_OPTION}}}\t#{{{CURRENT_TARGET_OPTION}}}\t#{{{BELL_TARGET_OPTION}}}\t#{{{CURRENT_AGENT_OPTION}}}\t#{{{ATTACHMENT_FAILURE_TARGET_OPTION}}}\t#{{{ATTACHMENT_FAILURE_GENERATION_OPTION}}}\t.",
         check=False,
     )
     return _parse_status_snapshot(text)
@@ -1307,7 +1354,10 @@ def current_target() -> Target | None:
         parts = shlex.split(command)
         parsed_command = command
         parsed_target = None
-        if parts and parts[0] == "ssh":
+        if len(parts) >= 7 and parts[:3] == [sys.executable, "-m", "letee.attachment"] and parts[4:6] == ["--", "ssh"]:
+            parsed_target = parse_target(parts[3])
+            parsed_command = ""
+        elif parts and parts[0] == "ssh":
             index = 1
             while index < len(parts):
                 if parts[index] == "-o":

@@ -379,6 +379,7 @@ class RestorationRetry:
     delay: float = 0
     deadline: float = 0
     overlay: str | None = None
+    last_failure: tuple[Target, str] | None = None
     _diagnostic_deferral: tuple[object, ...] | None = field(default=None, compare=False, repr=False)
     _diagnostic_deferred_at: float = field(default=0, compare=False, repr=False)
 
@@ -390,6 +391,7 @@ class RestorationRetry:
         self.delay = 0
         self.deadline = 0
         self.overlay = None
+        # Navigation resets backoff, not consumption of an already sampled exit.
         self._diagnostic_deferral = None
         self._diagnostic_deferred_at = 0
 
@@ -417,6 +419,20 @@ class RestorationRetry:
             "restoration_backoff", target=_trace_target(target),
             delay=self.delay, deadline=self.deadline, overlay=self.overlay,
         )
+
+
+def _reconcile_attachment_failure(
+    interrupted: Target | None,
+    target: Target | None,
+    failure: tuple[Target, str] | None,
+    retry: RestorationRetry,
+    now: float,
+) -> Target | None:
+    if not isinstance(failure, tuple) or failure[0] != target or failure == retry.last_failure:
+        return interrupted
+    retry.failed(failure[0], now)
+    retry.last_failure = failure
+    return target
 
 
 def _sync_active_session(
@@ -505,7 +521,7 @@ def _reconcile_active_session_effect(
             completed = result.completed_at if now is None else now
             with diagnostics.get_diagnostics().context(action_id=result.action_id, input_id=result.input_id):
                 retry.failed(target, time.monotonic() if completed is None else completed)
-        elif not result.error and navigation:
+        elif not result.effect.automatic and (navigation or result.effect.kind == "show_reconnecting"):
             retry.reset()
         if result.restoration_overlay is not None:
             retry.target = target
@@ -3429,6 +3445,10 @@ def run(stdscr: curses.window) -> None:
                 restoration_retry.reset()
             if getattr(poller, "status_sampled", False) is True:
                 awaiting_navigation_sample = False
+                unavailable_target_shown = _reconcile_attachment_failure(
+                    unavailable_target_shown, current_target,
+                    getattr(poller, "attachment_failure", None), restoration_retry, now,
+                )
             if not burst_count:
                 trace_transitions(poller.current_target)
             if (

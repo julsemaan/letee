@@ -43,6 +43,29 @@ class StatusPollerTests(unittest.TestCase):
         self.assertFalse(result.sampled)
         discovery.tick.assert_not_called()
 
+    def test_failure_sampling_rejects_stale_generation_after_same_target_navigation(self):
+        target = Target("ssh", "work", "dev")
+        discovery = Mock(snapshot=SessionSnapshot(SourceSnapshot(True, (), frozenset()), {}))
+        poller = runtime.StatusPoller(discovery, target)
+        self.addCleanup(poller.close)
+        failure = (target, "123")
+        status = runtime.cockpit.StatusSnapshot(target, None, None, True, failure)
+        with patch.object(runtime.cockpit, "status_snapshot", return_value=status):
+            poller.tick(0)
+            wait_for(lambda: poller._future.done())
+            self.assertEqual(poller._future.result().attachment_failure, failure)
+            poller.observe(runtime.RuntimeUpdate("switch", Target("local", "other")))
+            poller.observe(runtime.RuntimeUpdate("switch", target))
+            poller.tick(0.01)
+            self.assertIsNone(poller.attachment_failure)
+            # A current sample carries the failure without a separate tmux poll.
+            poller.tick(0.2)
+            wait_for(lambda: poller._future.done())
+            poller.tick(0.21)
+            self.assertEqual(poller.attachment_failure, failure)
+            poller.observe(runtime.RuntimeUpdate("switch", target, automatic=True))
+            self.assertIsNone(poller.attachment_failure)
+
     def test_observe_uses_explicit_updates(self):
         discovery = Mock(snapshot=SessionSnapshot(SourceSnapshot(True, (), frozenset()), {}))
         target = Target("local", "work")
