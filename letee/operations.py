@@ -22,6 +22,7 @@ class Effect:
     message: str = ""
     automatic: bool = False
     agent_id: str = ""
+    attach_command: str | None = None
     favorite_move: tuple[Target, Target] | None = None
     previous_favorites: tuple[Target, ...] | None = None
     launch_id: str | None = field(default=None, compare=False)
@@ -178,7 +179,7 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 config.save_sessions(list(planned))
             # Ensure creation under the lock; delayed pane commands must not recreate renamed targets.
             # Automatic preparation must leave the current overlay in place on failure.
-            command = None
+            command = effect.attach_command
             if effect.automatic:
                 sessions.ensure_created(target)
                 command = sessions.attach_command(target, attach_only=True)
@@ -186,9 +187,10 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 return result(stale=True)
             _advance(state, explicit=None if effect.automatic else target)
             if isinstance(effect.target, PaneTarget):
-                cockpit.switch(target, lambda: sessions.pane_attach_command(effect.target), effect.message, launch_id=state["launch"])
+                cockpit.switch(target, command if command is not None else lambda: sessions.pane_attach_command(effect.target),
+                               effect.agent_id or effect.message, launch_id=state["launch"])
             else:
-                cockpit.switch(target, command if effect.automatic else lambda: sessions.attach_command(target), launch_id=state["launch"])
+                cockpit.switch(target, command if command is not None else lambda: sessions.attach_command(target), launch_id=state["launch"])
         elif effect.kind == "ensure_created" and isinstance(target, Target):
             sessions.ensure_created(target)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
@@ -265,7 +267,10 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
     return result()
 
 
-def navigate(target: Target | PaneTarget | None = None, *, slot: int | None = None) -> None:
+def navigate(
+    target: Target | PaneTarget | None = None, *, slot: int | None = None,
+    attach_command: str | None = None, agent_id: str = "",
+) -> None:
     with config.sessions_lock():
         if slot is not None:
             favorites = config.load_sessions()
@@ -273,7 +278,8 @@ def navigate(target: Target | PaneTarget | None = None, *, slot: int | None = No
                 raise SystemExit(f"No session in slot {slot}")
             target = favorites[slot - 1]
         cockpit.require_cockpit()
-        effect = Effect("switch_pane" if isinstance(target, PaneTarget) else "switch", target)
+        effect = Effect("switch_pane" if isinstance(target, PaneTarget) else "switch", target,
+                        attach_command=attach_command, agent_id=agent_id)
         _perform_unlocked(effect, tuple(config.load_sessions()), _state(), raise_errors=True)
 
 

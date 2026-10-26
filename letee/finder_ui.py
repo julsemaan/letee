@@ -11,7 +11,7 @@ from threading import Thread
 import time
 import unicodedata
 
-from . import cockpit, runtime, sessions, tmux, tui
+from . import operations, runtime, sessions, tmux, tui
 from .finder import SCOPES, Finder, Row
 from .names import WindowTarget
 from .workspace import Identity, Workspace
@@ -340,11 +340,9 @@ def _prepare_destination(row: Row, current_workspace: Callable[[], Workspace]) -
         if latest is None or not latest.available:
             raise SystemExit("Destination is unavailable")
         if latest.agent is not None:
-            cockpit.open_agent(latest.agent.pane_target, latest.agent.agent_id, command)
-        elif latest.window is not None:
-            cockpit.open_window(_window_target(latest), command)
+            operations.navigate(latest.agent.pane_target, attach_command=command, agent_id=latest.agent.agent_id)
         else:
-            cockpit.open_session(latest.session.target, command)
+            operations.navigate(latest.session.target, attach_command=command)
 
     return commit
 

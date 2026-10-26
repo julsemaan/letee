@@ -1,10 +1,12 @@
 from dataclasses import replace
 import curses
+import os
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 from finder_fixtures import sample_workspace
-from letee import finder_ui, tmux
+from letee import cockpit, config, finder_ui, operations, tmux
 from letee.finder import Finder
 from letee.names import WindowTarget
 from letee.workspace import Workspace
@@ -24,29 +26,90 @@ class FinderWorkerTest(unittest.TestCase):
             prepare = {"session": "existing_attach_command", "window": "window_attach_command",
                        "agent": "existing_pane_attach_command"}[kind]
             with self.subTest(kind=kind), patch.object(finder_ui.sessions, prepare, return_value="prepared") as attach, \
-                    patch.object(finder_ui.cockpit, "open_" + kind) as navigate:
+                    patch.object(operations, "navigate") as navigate:
                 commit = finder_ui._prepare_destination(row, lambda: workspace)
                 attach.assert_called_once()
                 navigate.assert_not_called()
                 commit()
                 if kind == "session":
                     attach.assert_called_once_with(row.session.target, row.session.session_id, row.session.socket_path)
-                    navigate.assert_called_once_with(row.session.target, "prepared")
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared")
                 elif kind == "window":
                     window = WindowTarget(row.session.target, row.session.session_id,
                                           row.window.window_id, row.session.socket_path)
                     attach.assert_called_once_with(window)
-                    navigate.assert_called_once_with(window, "prepared")
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared")
                 else:
                     attach.assert_called_once_with(row.agent.pane_target)
-                    navigate.assert_called_once_with(row.agent.pane_target, row.agent.agent_id, "prepared")
+                    navigate.assert_called_once_with(row.agent.pane_target, attach_command="prepared", agent_id=row.agent.agent_id)
+
+    def test_reopening_removed_session_coordinates_every_scope(self):
+        workspace, rows = self.rows()
+        for kind in ("session", "window", "agent"):
+            row = next(row for row in rows if row.kind == kind)
+            target = row.session.target
+            if row.agent is not None:
+                row = replace(row, agent=replace(row.agent, pane_target=replace(
+                    row.agent.pane_target, session_id=row.session.session_id)))
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, LETEE_CONFIG_DIR=directory), \
+                    patch.object(cockpit, "require_cockpit"), \
+                    patch.object(cockpit, "current_target", return_value=target), \
+                    patch.object(cockpit, "reset_to_help"), \
+                    patch.object(cockpit, "startup_deadline", return_value=None), \
+                    patch.object(cockpit, "attachment_failed", return_value=False), \
+                    patch.object(cockpit, "status_snapshot", return_value=cockpit.StatusSnapshot(target, None, None, True)), \
+                    patch.object(cockpit, "switch") as switch, \
+                    patch.object(finder_ui.sessions, "_run", return_value=(
+                        f"{row.session.session_id}\t{row.window.window_id if row.window else '@1'}\t"
+                        f"{row.agent.pane_target.pane_id if row.agent else '%2'}\n")), \
+                    patch.object(finder_ui.sessions, "ensure_created") as ensure:
+                config.save_sessions([target])
+                queued = operations.capture(operations.Effect("switch", target, automatic=True))
+                self.assertFalse(operations.perform(operations.Effect("save_favorites", target)).error)
+                removed = config.load_operations()
+                self.assertIn(target.format(), removed["invalidated"])
+                self.assertIsNone(operations.sample_target()[2])
+                queued_after_removal = operations.capture(operations.Effect("switch", target, automatic=True))
+
+                if row.agent is not None:
+                    expected_command = finder_ui.sessions.existing_pane_attach_command(row.agent.pane_target)
+                elif row.window is not None:
+                    expected_command = finder_ui.sessions.window_attach_command(finder_ui._window_target(row))
+                else:
+                    expected_command = finder_ui.sessions.existing_attach_command(
+                        target, row.session.session_id, row.session.socket_path)
+                commit = finder_ui._prepare_destination(row, lambda: workspace)
+                switch.assert_not_called()
+                commit()
+
+                state = config.load_operations()
+                self.assertNotIn(target.format(), state["invalidated"])
+                self.assertNotEqual(state["launch"], removed["launch"])
+                self.assertEqual(operations.sample_target()[2], target)
+                self.assertEqual(config.load_sessions(), [])
+                switch.assert_called_once()
+                self.assertEqual(switch.call_args.args[0], target)
+                command = switch.call_args.args[1]
+                self.assertEqual(command, expected_command)
+                self.assertIn("attach-session -t", command)
+                self.assertNotIn("new-session", command)
+                self.assertEqual("select-window" in command, kind != "session")
+                self.assertEqual("select-pane" in command, kind == "agent")
+                if kind == "agent":
+                    self.assertEqual(switch.call_args.args[2], row.agent.agent_id)
+                self.assertEqual(switch.call_args.kwargs["launch_id"], state["launch"])
+                self.assertTrue(operations.perform(queued).stale_navigation)
+                self.assertTrue(operations.perform(queued_after_removal).stale_navigation)
+                self.assertEqual(switch.call_count, 1)
+                ensure.assert_not_called()
 
     def test_vanished_or_unavailable_target_never_commits(self):
         workspace, rows = self.rows()
         row = rows[0]
         for latest in (Workspace(), replace(workspace, sessions=(replace(row.session, available=False),))):
             with self.subTest(latest=latest), patch.object(finder_ui.sessions, "existing_attach_command", return_value="prepared"), \
-                    patch.object(finder_ui.cockpit, "open_session") as navigate:
+                    patch.object(operations, "navigate") as navigate:
                 commit = finder_ui._prepare_destination(row, lambda: latest)
                 with self.assertRaisesRegex(SystemExit, "unavailable"):
                     commit()
@@ -58,10 +121,10 @@ class FinderWorkerTest(unittest.TestCase):
         renamed = replace(row.session, target=replace(row.session.target, session="renamed"))
         latest = replace(workspace, sessions=(renamed,))
         with patch.object(finder_ui.sessions, "existing_attach_command", return_value="stable-id-command"), \
-                patch.object(finder_ui.cockpit, "open_session") as navigate:
+                patch.object(operations, "navigate") as navigate:
             commit = finder_ui._prepare_destination(row, lambda: latest)
             commit()
-        navigate.assert_called_once_with(renamed.target, "stable-id-command")
+        navigate.assert_called_once_with(renamed.target, attach_command="stable-id-command")
 
     def test_worker_restores_and_saves_scope_when_interrupted(self):
         workspace = sample_workspace()
