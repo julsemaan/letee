@@ -38,16 +38,16 @@ class FinderWorkerTest(unittest.TestCase):
                 commit()
                 if kind == "session":
                     attach.assert_called_once_with(row.session.target, row.session.session_id, row.session.socket_path)
-                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", blocking=False, **identity)
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", blocking=False, cancelled=None, **identity)
                 elif kind == "window":
                     window = WindowTarget(row.session.target, row.session.session_id,
                                           row.window.window_id, row.session.socket_path)
                     attach.assert_called_once_with(window)
-                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", blocking=False, **identity)
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", blocking=False, cancelled=None, **identity)
                 else:
                     attach.assert_called_once_with(row.agent.pane_target)
                     navigate.assert_called_once_with(row.agent.pane_target, attach_command="prepared", agent_id=row.agent.agent_id,
-                                                    blocking=False, **identity)
+                                                    blocking=False, cancelled=None, **identity)
 
     def test_reopening_removed_session_coordinates_every_scope(self):
         workspace, rows = self.rows()
@@ -133,7 +133,7 @@ class FinderWorkerTest(unittest.TestCase):
             commit()
         navigate.assert_called_once_with(
             renamed.target, attach_command="stable-id-command", session_id=row.session.session_id,
-            socket_path=row.session.socket_path, window_id="", blocking=False)
+            socket_path=row.session.socket_path, window_id="", blocking=False, cancelled=None)
 
     def test_mutation_after_finder_resolution_rejects_stale_destination(self):
         workspace, rows = self.rows()

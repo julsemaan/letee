@@ -7,7 +7,7 @@ import curses
 from datetime import datetime
 import locale
 from queue import Empty, SimpleQueue
-from threading import Thread
+from threading import Event, Thread
 import time
 import unicodedata
 
@@ -17,6 +17,7 @@ from .names import WindowTarget
 from .workspace import Identity, Workspace
 
 FINDER_SCOPE_OPTION = "@letee_finder_scope"
+Commit = Callable[[Callable[[], bool]], None]
 
 
 def _safe(text: str) -> str:
@@ -32,7 +33,7 @@ class _Popup:
         self.scroll = 0
         self.error = ""
         self.opening: Identity | None = None
-        self.results: SimpleQueue[tuple[Callable[[], None] | None, SystemExit | Exception | None]] = SimpleQueue()
+        self.results: SimpleQueue[tuple[Commit | None, SystemExit | Exception | None]] = SimpleQueue()
         self.tabs: list[tuple[int, int, str]] = []
         self.disclosures: dict[int, tuple[int, int]] = {}
         self.height = self.width = self.capacity = 0
@@ -140,7 +141,7 @@ class _Popup:
         except curses.error:
             pass
 
-    def open(self, prepare_open: Callable[[Row], Callable[[], None]]) -> None:
+    def open(self, prepare_open: Callable[[Row], Commit]) -> None:
         if self.opening is not None:
             return
         row = self.finder.selected_row
@@ -160,7 +161,7 @@ class _Popup:
 
         Thread(target=worker, name="letee-finder-open", daemon=True).start()
 
-    def mouse(self, prepare_open: Callable[[Row], Callable[[], None]]) -> None:
+    def mouse(self, prepare_open: Callable[[Row], Commit]) -> None:
         try:
             _, x, y, _, buttons = curses.getmouse()
         except curses.error:
@@ -188,7 +189,7 @@ class _Popup:
                     else:
                         self.open(prepare_open)
 
-    def key(self, key, prepare_open: Callable[[Row], Callable[[], None]]) -> bool:
+    def key(self, key, prepare_open: Callable[[Row], Commit]) -> bool:
         if key in ("\x1b", "\x03"):
             return False
         if key == curses.KEY_MOUSE:
@@ -238,14 +239,13 @@ def run(
     workspace: Workspace,
     *,
     read_workspace: Callable[[], Workspace | None] | None = None,
-    prepare_open: Callable[[Row], Callable[[], None]],
+    prepare_open: Callable[[Row], Commit],
 ) -> bool:
     """Run without discovery I/O. read_workspace must consume updates nonblockingly.
 
     prepare_open runs in the background and must not navigate, focus, or use
-    curses. It returns a quick local commit, called here only while the original
-    destination is still available. Cancellation abandons preparation without
-    invoking its commit.
+    curses. Its commit runs in a worker only while the original destination is
+    available, and receives a cancellation check to call before publication.
     """
     scope = tmux.out("show-options", "-qv", "-t", tmux.SESSION, FINDER_SCOPE_OPTION)
     popup = _Popup(stdscr, workspace)
@@ -257,6 +257,17 @@ def run(
     old_cursor = None
     old_mouse = None
     pending = None
+    committing = False
+    cancelled = Event()
+
+    def commit_worker(commit: Commit) -> None:
+        try:
+            commit(cancelled.is_set)
+        except (SystemExit, Exception) as exc:
+            popup.results.put((None, exc))
+        else:
+            popup.results.put((None, None))
+
     old_escdelay = curses.get_escdelay()
     curses.set_escdelay(25)
     try:
@@ -292,20 +303,21 @@ def run(
             # A ready result must not overtake queued edits or cancellation.
             commit, error = pending
             pending = None
+            if committing and error is None:
+                return True
             destination = popup.finder.destination(popup.opening)
-            popup.opening = None
             if error is None and (destination is None or not destination.available):
                 popup.error = "Unavailable"
+            elif error is None:
+                committing = True
+                Thread(target=commit_worker, args=(commit,), name="letee-finder-commit", daemon=True).start()
+                continue
             else:
-                if error is None:
-                    try:
-                        commit()
-                    except (SystemExit, Exception) as exc:
-                        error = exc
-                    else:
-                        return True
                 popup.error = "Open failed: " + (str(error) or type(error).__name__)
+            popup.opening = None
+            committing = False
     finally:
+        cancelled.set()
         curses.set_escdelay(old_escdelay)
         stdscr.timeout(-1)
         stdscr.keypad(False)
@@ -324,7 +336,7 @@ def _window_target(row: Row) -> WindowTarget:
                         row.window.window_id, row.session.socket_path)
 
 
-def _prepare_destination(row: Row, current_workspace: Callable[[], Workspace]) -> Callable[[], None]:
+def _prepare_destination(row: Row, current_workspace: Callable[[], Workspace]) -> Commit:
     """Validate an existing destination without changing either workspace's focus."""
     if row.agent is not None:
         command = sessions.existing_pane_attach_command(row.agent.pane_target)
@@ -333,7 +345,7 @@ def _prepare_destination(row: Row, current_workspace: Callable[[], Workspace]) -
     else:
         command = sessions.existing_attach_command(row.session.target, row.session.session_id, row.session.socket_path)
 
-    def commit() -> None:
+    def commit(cancelled: Callable[[], bool] | None = None) -> None:
         # Refresh display metadata too, so a rename during preparation does not
         # install an obsolete current-target marker in the existing sidebar.
         latest = Finder(current_workspace()).destination(row.key)
@@ -343,9 +355,9 @@ def _prepare_destination(row: Row, current_workspace: Callable[[], Workspace]) -
                         window_id=row.window.window_id if row.window else "")
         if latest.agent is not None:
             operations.navigate(latest.agent.pane_target, attach_command=command, agent_id=latest.agent.agent_id,
-                                blocking=False, **identity)
+                                blocking=False, cancelled=cancelled, **identity)
         else:
-            operations.navigate(latest.session.target, attach_command=command, blocking=False, **identity)
+            operations.navigate(latest.session.target, attach_command=command, blocking=False, cancelled=cancelled, **identity)
 
     return commit
 

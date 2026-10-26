@@ -1,6 +1,7 @@
 """Server-scoped transactions. Callers submit intent, never hold sessions_lock."""
 from __future__ import annotations
 
+from collections.abc import Callable
 import subprocess
 import time
 import uuid
@@ -271,7 +272,7 @@ def navigate(
     target: Target | PaneTarget | None = None, *, slot: int | None = None,
     attach_command: str | None = None, agent_id: str = "",
     session_id: str = "", socket_path: str = "", window_id: str = "",
-    blocking: bool = True,
+    blocking: bool = True, cancelled: Callable[[], bool] | None = None,
 ) -> None:
     with config.sessions_lock(blocking=blocking) as acquired:
         if not acquired:
@@ -282,6 +283,8 @@ def navigate(
                 pane.target if pane else target, session_id, socket_path,
                 window_id=pane.window_id if pane else window_id, pane_id=pane.pane_id if pane else "",
             )
+        if cancelled is not None and cancelled():
+            return
         if slot is not None:
             favorites = config.load_sessions()
             if slot > len(favorites):
@@ -290,7 +293,9 @@ def navigate(
         cockpit.require_cockpit()
         effect = Effect("switch_pane" if isinstance(target, PaneTarget) else "switch", target,
                         attach_command=attach_command, agent_id=agent_id)
-        _perform_unlocked(effect, tuple(config.load_sessions()), _state(), raise_errors=True)
+        favorites, state = tuple(config.load_sessions()), _state()
+        if cancelled is None or not cancelled():
+            _perform_unlocked(effect, favorites, state, raise_errors=True)
 
 
 def create_and_switch(target: Target) -> None:
