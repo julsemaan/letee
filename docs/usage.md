@@ -138,11 +138,21 @@ The tree groups sessions, their windows, and agents. Type to filter by name or f
 | `Up` / `Down` | Select a row. |
 | `Tab` | Expand or collapse the selected branch. |
 | `Ctrl-T` | Cycle All, Sessions, Windows, and Agents scopes. |
+| `Ctrl-F` or click the filter summary | Open the filter checklist. |
 | `Enter` | Open the selected destination. |
 | `Left` / `Right`, `Home` / `End` | Move the query cursor. |
 | `Backspace` / `Delete` | Edit the query. |
 | `Ctrl-U` | Clear the query. |
-| `Esc` / `Ctrl-C` | Cancel. |
+| `Ctrl-C` | Cancel from results or filters. |
+| `Esc` | No action. |
+
+The filter summary always shows the active categories, or `none`. In the checklist, use `Up` / `Down` and `Space`, or click checkboxes, to select Needs attention, Running, Finished, or Idle/unknown. Scroll to reach more choices or Clear filters. Changes apply immediately. Only `Enter` returns to results, preserving the query, scope, and selections. On Clear filters, `Enter` also clears all categories. `Ctrl-F` leaves the checklist open, `Esc` does nothing, and `Ctrl-C` cancels Find.
+
+Needs attention matches the agents eligible for `prefix+j`: stored agent alerts, or agents awaiting input or authentication, failed, or rejected. Session bells alone do not qualify. Running matches working or submitted agents; Finished matches completed or canceled agents. Idle/unknown matches idle or unknown agents. Categories can overlap because of stored alerts. Selected categories match any of those categories; selecting none shows all destinations. Sessions and windows qualify through matching agents, but unrelated branches stay hidden.
+
+Each checklist label shows a count, such as `Running · 2`. Counts follow the text query and live updates, regardless of the selected scope, categories, or collapsed branches. Each agent counts once per matching category. Zero-count categories remain selectable. Filters combine with text search and every scope. Find remembers scope and categories per cockpit, even after cancellation. Saved filters from the older state-and-bell checklist reset to none.
+
+Live updates keep the selected destination visible even if it stops matching. Changing the query, scope, or filters chooses a fresh match. Clearing filters restores normal browsing expansion.
 
 Missing destinations are unavailable in Find and cannot be opened there. The Sessions sidebar retains its existing missing-session recovery: select a missing session and press `Enter` to recreate it.
 

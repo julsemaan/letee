@@ -5,9 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from .workspace import Agent, Identity, Session, Window, Workspace
+from .workspace import ATTENTION_STATES, Agent, Identity, Session, Window, Workspace
 
 SCOPES = ("All", "Sessions", "Windows", "Agents")
+_CATEGORY_STATES = {
+    "Needs attention": ATTENTION_STATES,
+    "Running": {"working", "submitted"},
+    "Finished": {"completed", "canceled"},
+    "Idle/unknown": {"idle", "unknown"},
+}
+FILTER_CATEGORIES = tuple(_CATEGORY_STATES)
+
+
+def _categories(agent: Agent) -> set[str]:
+    return {category for category, states in _CATEGORY_STATES.items()
+            if agent.state in states or (category == "Needs attention" and agent.alert)}
 
 
 @dataclass(frozen=True)
@@ -60,6 +72,7 @@ class Finder:
         self.workspace = workspace
         self.query = ""
         self.scope = "All"
+        self.categories: frozenset[str] = frozenset()
         self.selected: Identity | None = None
         self.rows: list[Row] = []
         self._selected_path = ""
@@ -100,6 +113,15 @@ class Finder:
             if self._mode != ("All", False):
                 self._expansions.pop(self._mode, None)
             self._rebuild(choose=True)
+
+    def set_filters(self, categories: set[str] | frozenset[str]) -> None:
+        categories = frozenset(categories)
+        if categories == self.categories:
+            return
+        self.categories = categories
+        if self._mode != ("All", False):
+            self._expansions.pop(self._mode, None)
+        self._rebuild(choose=True)
 
     def cycle_scope(self) -> None:
         self.set_scope(SCOPES[(SCOPES.index(self.scope) + 1) % len(SCOPES)])
@@ -146,7 +168,7 @@ class Finder:
 
     @property
     def _mode(self) -> tuple[str, bool]:
-        return self.scope, bool(self.query.split())
+        return self.scope, bool(self.query.split() or self.categories)
 
     def _cache_path(self) -> None:
         if self.selected in self._nodes:
@@ -188,14 +210,22 @@ class Finder:
                         f"{prefix}{agent.name} [{agent.state}]", session, window, agent, key,
                         ((agent.name, len(prefix)),))
         self._nodes = nodes
+        categories = {key: _categories(row.agent) for key, row in nodes.items() if row.agent is not None}
+        self.category_counts = dict.fromkeys(FILTER_CATEGORIES, 0)
+        eligible = set(nodes)
+        if self.categories:
+            eligible = {key for key, matches in categories.items() if self.categories & matches}
+            for key in tuple(eligible):
+                parent = parents[key]
+                while parent is not None:
+                    eligible.add(parent)
+                    parent = parents[parent]
         terms = self.query.casefold().split()
         destinations = set()
         scores = {}
         highlights: dict[Identity, set[int]] = {}
         kind = {"Sessions": "session", "Windows": "window", "Agents": "agent"}.get(self.scope)
         for key, row in nodes.items():
-            if kind and row.kind != kind:
-                continue
             matches = []
             for term in terms:
                 choices = []
@@ -208,6 +238,10 @@ class Finder:
                     break
                 matches.append(min(choices, key=lambda choice: choice[0]))
             else:
+                for category in categories.get(key, ()):
+                    self.category_counts[category] += 1
+                if key not in eligible or (kind and row.kind != kind):
+                    continue
                 destinations.add(key)
                 scores[key] = (sum(rank[0] == 2 for rank, *_ in matches),
                                sum(rank[0] == 1 for rank, *_ in matches),
@@ -216,7 +250,7 @@ class Finder:
                     highlights.setdefault(owner, set()).update(offset + i for i in positions)
 
         included = set(destinations)
-        # Keep a live selection openable if a rename stops matching the query.
+        # Keep a live selection openable if text or activity stops matching.
         if not choose and self.selected in nodes:
             included.add(self.selected)
             scores.setdefault(self.selected, (len(terms) + 1, 0, 0))

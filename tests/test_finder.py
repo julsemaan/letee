@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError, replace
 import unittest
 
 from finder_fixtures import sample_workspace
-from letee.finder import Finder, SCOPES
+from letee.finder import FILTER_CATEGORIES, Finder, SCOPES
 from letee.names import Target
 from letee.workspace import Session, Window, Workspace
 
@@ -11,6 +11,156 @@ class FinderTest(unittest.TestCase):
     def setUp(self):
         self.workspace = sample_workspace()
         self.finder = Finder(self.workspace)
+
+    def test_category_filters_or_scopes_and_text(self):
+        for scope in SCOPES:
+            with self.subTest(scope=scope):
+                finder = Finder(self.workspace)
+                finder.set_scope(scope)
+                finder.set_filters({"Needs attention"})
+                self.assertEqual({r.session.key for r in finder.rows}, {self.workspace.sessions[0].key})
+                self.assertFalse(any(r.window and r.window.name == "editor" for r in finder.rows))
+                finder.set_query("dev")
+                self.assertEqual(finder.rows, [])
+                finder.set_filters({"Needs attention", "Running"})
+                self.assertEqual({r.session.key for r in finder.rows}, {self.workspace.sessions[1].key})
+                finder.set_query("dev Codex")
+                self.assertEqual(bool(finder.rows), scope in ("All", "Agents"))
+
+    def test_category_membership_and_attention_parity(self):
+        from letee.discovery import SUPPORTED_TASK_STATES
+        from letee.workspace import ATTENTION_STATES
+
+        session = self.workspace.sessions[0]
+        window = session.windows[1]
+        agent = window.agents[0]
+        for state in SUPPORTED_TASK_STATES | {"idle", "unknown"}:
+            for alert in (False, True):
+                with self.subTest(state=state, alert=alert):
+                    changed = replace(agent, state=state, alert=alert)
+                    finder = Finder(Workspace((replace(session, windows=(replace(window, agents=(changed,)),)),)))
+                    expected = {
+                        "Needs attention": alert or state in ATTENTION_STATES,
+                        "Running": state in {"working", "submitted"},
+                        "Finished": state in {"completed", "canceled"},
+                        "Idle/unknown": state in {"idle", "unknown"},
+                    }
+                    self.assertEqual(finder.category_counts, {label: int(match) for label, match in expected.items()})
+                    for category in FILTER_CATEGORIES:
+                        finder.set_filters({category})
+                        self.assertEqual([r.agent for r in finder.rows if r.agent],
+                                         [changed] if expected[category] else [])
+
+    def test_overlapping_categories_count_each_agent_once(self):
+        session = self.workspace.sessions[0]
+        window = session.windows[1]
+        agent = replace(window.agents[0], state="working", alert=True)
+        finder = Finder(Workspace((replace(session, windows=(replace(window, agents=(agent,)),)),)))
+        finder.set_filters({"Needs attention", "Running"})
+        self.assertEqual([r.agent for r in finder.rows if r.agent], [agent])
+        self.assertEqual(finder.category_counts,
+                         {"Needs attention": 1, "Running": 1, "Finished": 0, "Idle/unknown": 0})
+
+    def test_session_bells_do_not_qualify_for_attention(self):
+        session = replace(self.workspace.sessions[1], bell=True)
+        empty = Session(Target("local", "empty"), "$9", "/local", bell=True)
+        for scope in SCOPES:
+            finder = Finder(Workspace((session, empty)))
+            finder.set_scope(scope)
+            finder.set_filters({"Needs attention"})
+            self.assertEqual(finder.rows, [])
+            self.assertEqual(finder.category_counts["Needs attention"], 0)
+            finder.set_filters(set())
+            self.assertEqual(any(r.session == empty for r in finder.rows), scope in ("All", "Sessions"))
+
+    def test_counts_follow_path_query_not_scope_filters_or_expansion(self):
+        expected = {"Needs attention": 1, "Running": 2, "Finished": 0, "Idle/unknown": 0}
+        self.assertEqual(self.finder.category_counts, expected)
+        for scope in SCOPES:
+            self.finder.set_scope(scope)
+            self.finder.set_filters({"Finished"})
+            self.assertEqual(self.finder.rows, [])
+            self.assertEqual(self.finder.category_counts, expected)
+            self.finder.set_query("dv lt f13")
+            self.assertEqual(self.finder.category_counts,
+                             {"Needs attention": 0, "Running": 1, "Finished": 0, "Idle/unknown": 0})
+            self.finder.set_query("dev Codex")
+            self.assertEqual(self.finder.category_counts["Running"], 1)
+            self.finder.set_query("editor Claude")
+            self.assertEqual(self.finder.category_counts, dict.fromkeys(FILTER_CATEGORIES, 0))
+            self.finder.set_query("")
+        self.finder.set_filters(set())
+        self.finder.set_scope("All")
+        self.finder.toggle()
+        self.assertEqual(self.finder.category_counts, expected)
+
+    def test_filter_updates_pin_selection_until_explicit_change(self):
+        self.finder.set_scope("Agents")
+        self.finder.set_filters({"Needs attention"})
+        selected = self.finder.selected
+        session = self.workspace.sessions[0]
+        window = session.windows[1]
+        changed = replace(session, windows=(replace(window, agents=(replace(window.agents[0], state="idle"),)),))
+        self.finder.update(Workspace((changed,)))
+        self.assertEqual(self.finder.selected, selected)
+        self.assertEqual(self.finder.selected_row.agent.state, "idle")
+        self.assertEqual(self.finder.category_counts,
+                         {"Needs attention": 0, "Running": 0, "Finished": 0, "Idle/unknown": 1})
+        self.finder.set_filters({"Running"})
+        self.assertEqual(self.finder.rows, [])
+        self.finder.set_filters({"Idle/unknown"})
+        self.assertEqual(self.finder.selected, selected)
+        self.finder.set_query("no match")
+        self.assertEqual(self.finder.rows, [])
+
+    def test_filter_expansion_reselection_and_clearing_restore_browsing(self):
+        self.finder.toggle()
+        browsing = [r.key for r in self.finder.rows]
+        self.finder.set_filters({"Needs attention"})
+        self.assertIn(self.workspace.current, [r.key for r in self.finder.rows])
+        self.finder.toggle(self.workspace.sessions[0].key)
+        self.finder.set_filters({"Needs attention", "Running"})
+        self.assertIn(self.workspace.current, [r.key for r in self.finder.rows])
+        self.finder.set_filters(set())
+        self.assertEqual([r.key for r in self.finder.rows], browsing)
+
+    def test_filter_live_updates_reveal_new_matching_branch(self):
+        self.finder.set_filters({"Needs attention"})
+        selected = self.finder.selected
+        session = self.workspace.sessions[1]
+        window = session.windows[0]
+        changed = replace(session, windows=(replace(window, agents=(replace(window.agents[0], state="input-required"),)),))
+        self.finder.update(replace(self.workspace, sessions=(self.workspace.sessions[0], changed)))
+        self.assertEqual(self.finder.selected, selected)
+        self.assertTrue(any(r.agent and r.agent.name == "Codex" for r in self.finder.rows))
+        self.assertEqual(self.finder.category_counts,
+                         {"Needs attention": 2, "Running": 0, "Finished": 0, "Idle/unknown": 0})
+
+    def test_counts_follow_live_alerts_renames_and_removal_without_counting_pinned_selection(self):
+        self.finder.set_query("dev Codex")
+        selected = self.finder.selected
+        session = self.workspace.sessions[1]
+        window = session.windows[0]
+        agent = window.agents[0]
+
+        def update_agent(**changes):
+            changed = replace(session, windows=(replace(window, agents=(replace(agent, **changes),)),))
+            self.finder.update(Workspace((changed,)))
+
+        update_agent(state="completed", alert=True)
+        self.assertEqual(self.finder.category_counts,
+                         {"Needs attention": 1, "Running": 0, "Finished": 1, "Idle/unknown": 0})
+        update_agent(state="completed", alert=False)
+        self.assertEqual(self.finder.category_counts["Needs attention"], 0)
+        self.assertEqual(self.finder.category_counts["Finished"], 1)
+        update_agent(name="Other", alert=True)
+        self.assertEqual(self.finder.selected, selected)
+        self.assertIsNotNone(self.finder.selected_row)
+        self.assertEqual(self.finder.category_counts, dict.fromkeys(FILTER_CATEGORIES, 0))
+        self.finder.update(Workspace())
+        self.assertEqual(self.finder.category_counts, dict.fromkeys(FILTER_CATEGORIES, 0))
+        self.finder.update(self.workspace)
+        self.assertEqual(self.finder.category_counts["Running"], 1)
 
     def test_initial_tree_contract_and_current_session(self):
         rows = self.finder.rows

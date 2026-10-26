@@ -6,17 +6,31 @@ from collections.abc import Callable
 import curses
 from datetime import datetime
 import locale
+import json
 from queue import Empty, SimpleQueue
 from threading import Thread
 import time
 import unicodedata
 
 from . import cockpit, runtime, sessions, tmux, tui
-from .finder import SCOPES, Finder, Row
+from .finder import FILTER_CATEGORIES, SCOPES, Finder, Row
 from .names import WindowTarget
 from .workspace import Identity, Workspace
 
 FINDER_SCOPE_OPTION = "@letee_finder_scope"
+FINDER_FILTERS_OPTION = "@letee_finder_filters"
+
+
+def _load_filters(value: str) -> frozenset[str]:
+    try:
+        data = json.loads(value)
+    except (ValueError, TypeError):
+        return frozenset()
+    if (not isinstance(data, dict) or not isinstance(data.get("categories"), list)
+            or any(not isinstance(category, str) or category not in FILTER_CATEGORIES
+                   for category in data["categories"])):
+        return frozenset()
+    return frozenset(data["categories"])
 
 
 def _safe(text: str) -> str:
@@ -37,6 +51,22 @@ class _Popup:
         self.disclosures: dict[int, tuple[int, int]] = {}
         self.height = self.width = self.capacity = 0
         self.follow_selection = True
+        self.filters_open = False
+        self.filter_index = 0
+        self.filter_scroll = 0
+
+    def toggle_filter(self) -> None:
+        categories = set(self.finder.categories)
+        if self.filter_index == len(FILTER_CATEGORIES):
+            categories.clear()
+        else:
+            categories.symmetric_difference_update({FILTER_CATEGORIES[self.filter_index]})
+        self.finder.set_filters(categories)
+        self.follow_selection = True
+
+    def follow_filter(self) -> None:
+        self.filter_scroll = min(self.filter_scroll, self.filter_index)
+        self.filter_scroll = max(self.filter_scroll, self.filter_index - max(1, self.capacity) + 1)
 
     def put(self, y: int, x: int, text: str, attr: int = 0) -> int:
         if not (0 <= y < self.height and 0 <= x < self.width - 1):
@@ -52,7 +82,7 @@ class _Popup:
 
     def render(self) -> None:
         self.height, self.width = self.screen.getmaxyx()
-        self.capacity = max(0, self.height - 5)
+        self.capacity = max(0, self.height - 6)
         rows = self.finder.rows
         if self.follow_selection and self.finder.selected_row in rows and self.capacity:
             index = rows.index(self.finder.selected_row)
@@ -61,6 +91,7 @@ class _Popup:
         self.scroll = max(0, min(self.scroll, max(0, len(rows) - self.capacity)))
         self.follow_selection = False
         self.screen.erase()
+        selection_attr = tui.color("add_entry") or curses.A_REVERSE
         self.put(0, 0, "> ", tui.color("title"))
         query_width = max(0, self.width - 3)
         self.query_start = min(self.query_start, self.cursor)
@@ -73,18 +104,41 @@ class _Popup:
         for scope in SCOPES:
             label = f"[{scope}] "
             end = x + tui.cell_width(label)
-            self.put(1, x, label, curses.A_REVERSE if scope == self.finder.scope else tui.color("hints"))
+            self.put(1, x, label, selection_attr if scope == self.finder.scope else tui.color("hints"))
             self.tabs.append((x, min(end, self.width - 1), scope))
             x = end
-        self.put(2, 0, "Ctrl-T scope  Tab expand  Enter open  Esc cancel", tui.color("hints"))
+        hints = ([("Up/Down", "select"), ("Space", "toggle"), ("Enter", "back")] if self.filters_open
+                 else [("Ctrl-T", "scope"), ("Ctrl-F", "filters"), ("Tab", "expand"), ("Enter", "open")])
+        x = 0
+        for key, action in hints + [("Ctrl-C", "cancel")]:
+            self.put(2, x, key, tui.color("create") | curses.A_BOLD)
+            x += tui.cell_width(key)
+            self.put(2, x, f" {action}  ", tui.color("hints") | curses.A_DIM)
+            x += tui.cell_width(action) + 3
+        filters = [category for category in FILTER_CATEGORIES if category in self.finder.categories]
+        self.put(3, 0, "Filters: " + (", ".join(filters) or "none"),
+                 selection_attr if self.filters_open else tui.color("hints"))
+        if self.filters_open:
+            labels = [(f"{category} · {self.finder.category_counts[category]}",
+                       category in self.finder.categories) for category in FILTER_CATEGORIES]
+            labels += [("Clear filters", None)]
+            self.filter_scroll = max(0, min(self.filter_scroll, max(0, len(labels) - self.capacity)))
+            for index in range(self.filter_scroll, min(len(labels), self.filter_scroll + self.capacity)):
+                label, checked = labels[index]
+                prefix = "" if checked is None else ("[x] " if checked else "[ ] ")
+                attr = selection_attr if index == self.filter_index else 0
+                if checked is None and index != self.filter_index:
+                    attr = tui.color("create") | curses.A_BOLD
+                self.put(4 + index - self.filter_scroll, 0, prefix + label, attr)
         now = time.time()
         self.disclosures = {}
-        for index, row in enumerate(rows[self.scroll:self.scroll + self.capacity], self.scroll):
-            y = 3 + index - self.scroll
+        visible_rows = [] if self.filters_open else rows[self.scroll:self.scroll + self.capacity]
+        for index, row in enumerate(visible_rows, self.scroll):
+            y = 4 + index - self.scroll
             selected = row.key == self.finder.selected
-            attr = curses.A_REVERSE if selected else 0
-            if not row.available:
-                attr |= tui.color("unavailable") | curses.A_DIM
+            attr = selection_attr if selected else 0
+            if not row.available and not selected:
+                attr = tui.color("unavailable") | curses.A_DIM
             prefix = "  " * row.depth
             arrow = ("v" if row.expanded else ">") if tui.ascii_mode() else ("▾" if row.expanded else "▸")
             self.put(y, 0, prefix + (arrow if row.has_children else " ") + " ", attr)
@@ -92,10 +146,10 @@ class _Popup:
             if row.has_children:
                 self.disclosures[y] = (arrow_x, index)
             x = arrow_x + 2
-            x += self.put(y, x, "* " if row.current else "  ", attr | tui.color("active"))
+            x += self.put(y, x, "* " if row.current else "  ", attr if selected else attr | tui.color("active"))
             if row.agent is not None:
                 x += self.put(y, x, tui.status_icon(row.agent.state, now) + " ",
-                              attr | tui.status_attr(row.agent.state))
+                              attr if selected else attr | tui.status_attr(row.agent.state))
             # Group adjacent characters so combining marks stay with their base.
             chunks: list[tuple[str, int]] = []
             for position, char in enumerate(row.label):
@@ -111,12 +165,12 @@ class _Popup:
                 elapsed = (datetime.now(timestamp.tzinfo) - timestamp).total_seconds()
                 x += self.put(y, x, " " + tui.format_duration(elapsed), attr | curses.A_DIM)
             if (row.kind == "session" and row.session.bell) or (row.agent is not None and row.agent.alert):
-                x += self.put(y, x, " BELL" if tui.ascii_mode() else " 🔔", attr | tui.color("danger"))
+                x += self.put(y, x, " BELL" if tui.ascii_mode() else " 🔔", attr if selected else attr | tui.color("danger"))
             if not row.available:
                 self.put(y, x, " " + tui.icons()["unavailable"], attr)
-        if not rows and self.capacity:
-            self.put(3, 0, "Loading..." if self.finder.workspace.loading else "No destinations", tui.color("hints"))
-        if self.height >= 4:
+        if not self.filters_open and not rows and self.capacity:
+            self.put(4, 0, "Loading..." if self.finder.workspace.loading else "No destinations", tui.color("hints"))
+        if self.height >= 6:
             self.put(self.height - 2, 0, self.finder.selected_path, tui.color("hints"))
             status = self.error
             if not status:
@@ -165,6 +219,18 @@ class _Popup:
             _, x, y, _, buttons = curses.getmouse()
         except curses.error:
             return
+        if self.filters_open:
+            if buttons & getattr(curses, "BUTTON4_PRESSED", 0):
+                self.filter_scroll = max(0, self.filter_scroll - 3)
+            elif buttons & getattr(curses, "BUTTON5_PRESSED", 0):
+                self.filter_scroll += 3
+            elif buttons & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
+                if 4 <= y < 4 + self.capacity and 0 <= x < self.width - 1:
+                    index = self.filter_scroll + y - 4
+                    if index < len(FILTER_CATEGORIES) + 1:
+                        self.filter_index = index
+                        self.toggle_filter()
+            return
         if buttons & getattr(curses, "BUTTON4_PRESSED", 0):
             self.scroll = max(0, self.scroll - 3)
         elif buttons & getattr(curses, "BUTTON5_PRESSED", 0):
@@ -176,8 +242,11 @@ class _Popup:
                         self.finder.set_scope(scope)
                         self.follow_selection = True
                         break
-            elif 3 <= y < 3 + self.capacity:
-                index = self.scroll + y - 3
+            elif y == 3 and 0 <= x < self.width - 1:
+                self.filters_open = True
+                self.follow_filter()
+            elif 4 <= y < 4 + self.capacity:
+                index = self.scroll + y - 4
                 if index < len(self.finder.rows) and 0 <= x < self.width - 1:
                     row = self.finder.rows[index]
                     self.finder.select(row.key)
@@ -189,9 +258,31 @@ class _Popup:
                         self.open(prepare_open)
 
     def key(self, key, prepare_open: Callable[[Row], Callable[[], None]]) -> bool:
-        if key in ("\x1b", "\x03"):
+        if key == "\x03":
             return False
-        if key == curses.KEY_MOUSE:
+        if self.filters_open:
+            if key in ("\n", "\r", curses.KEY_ENTER):
+                if self.filter_index == len(FILTER_CATEGORIES):
+                    self.toggle_filter()
+                self.filters_open = False
+                self.follow_selection = True
+            elif key in (curses.KEY_UP, curses.KEY_DOWN):
+                self.filter_index = max(0, min(len(FILTER_CATEGORIES),
+                                             self.filter_index + (-1 if key == curses.KEY_UP else 1)))
+                self.follow_filter()
+            elif key == " ":
+                self.toggle_filter()
+            elif key == curses.KEY_MOUSE:
+                self.mouse(prepare_open)
+            elif key == curses.KEY_RESIZE:
+                self.height, self.width = self.screen.getmaxyx()
+                self.capacity = max(0, self.height - 6)
+                self.follow_filter()
+            return True
+        if key == "\x06":
+            self.filters_open = True
+            self.follow_filter()
+        elif key == curses.KEY_MOUSE:
             self.mouse(prepare_open)
         elif key in ("\n", "\r", curses.KEY_ENTER):
             self.open(prepare_open)
@@ -248,7 +339,9 @@ def run(
     invoking its commit.
     """
     scope = tmux.out("show-options", "-qv", "-t", tmux.SESSION, FINDER_SCOPE_OPTION)
+    filters = tmux.out("show-options", "-qv", "-t", tmux.SESSION, FINDER_FILTERS_OPTION)
     popup = _Popup(stdscr, workspace)
+    popup.finder.set_filters(_load_filters(filters))
     if scope in SCOPES:
         popup.finder.set_scope(scope)
     tui.init_colors()
@@ -317,6 +410,8 @@ def run(
         except curses.error:
             pass
         tmux.tmux("set-option", "-t", tmux.SESSION, FINDER_SCOPE_OPTION, popup.finder.scope, capture=True)
+        filters = json.dumps({"categories": sorted(popup.finder.categories)})
+        tmux.tmux("set-option", "-t", tmux.SESSION, FINDER_FILTERS_OPTION, filters, capture=True)
 
 
 def _window_target(row: Row) -> WindowTarget:
