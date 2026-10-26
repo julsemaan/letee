@@ -1,12 +1,14 @@
 import curses
 from dataclasses import replace
-from threading import Event
+from threading import Event, Thread
+import os
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from finder_fixtures import sample_workspace
-from letee import finder_ui, tmux, tui
+from letee import cockpit, config, finder_ui, tmux, tui
 from letee.workspace import Workspace
 
 
@@ -156,6 +158,46 @@ class FinderUITest(unittest.TestCase):
                     self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: self.fail()))
                 self.assertFalse(opened)
                 self.assertIn(0, window.timeouts)
+
+    def test_contended_commit_allows_cancellation_and_retry_after_unlock(self):
+        row = finder_ui.Finder(self.workspace).rows[0]
+        window = FakeWindow([-1, "\x1b"])
+        popup = finder_ui._Popup(window, self.workspace)
+        results, errors = [], []
+
+        def run():
+            try:
+                results.append(finder_ui.run(window, self.workspace, prepare_open=lambda row: self.fail()))
+            except BaseException as error:
+                errors.append(error)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, LETEE_CONFIG_DIR=directory), \
+                patch.object(finder_ui.sessions, "existing_attach_command", return_value="prepared"), \
+                patch.object(finder_ui.sessions, "validate_destination") as validate, \
+                patch.object(cockpit, "require_cockpit"), \
+                patch.object(cockpit, "switch") as switch, \
+                patch.object(finder_ui, "_Popup", return_value=popup):
+            commit = finder_ui._prepare_destination(row, lambda: self.workspace)
+            popup.opening = row.key
+            popup.results.put((commit, None))
+            worker = Thread(target=run)
+            try:
+                with config.sessions_lock():
+                    worker.start()
+                    worker.join(1)
+                    self.assertFalse(worker.is_alive(), "Finder waited for the sessions lock")
+                    self.assertEqual(errors, [])
+                    self.assertEqual(results, [False])
+                    self.assertIn("busy", popup.error)
+                    self.assertIn("try again", popup.error)
+                    validate.assert_not_called()
+                    switch.assert_not_called()
+                commit()
+                validate.assert_called_once()
+                switch.assert_called_once()
+            finally:
+                worker.join(2)
 
     def test_instant_preparation_drains_edits_and_updates_before_cancellation(self):
         for keys in (["\n", "\x1b"], ["\n", "\x03"], ["\n", "x", "\x1b"], ["\n", "x", "\x03"]):

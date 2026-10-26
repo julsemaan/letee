@@ -343,9 +343,9 @@ def _prepare_destination(row: Row, current_workspace: Callable[[], Workspace]) -
                         window_id=row.window.window_id if row.window else "")
         if latest.agent is not None:
             operations.navigate(latest.agent.pane_target, attach_command=command, agent_id=latest.agent.agent_id,
-                                **identity)
+                                blocking=False, **identity)
         else:
-            operations.navigate(latest.session.target, attach_command=command, **identity)
+            operations.navigate(latest.session.target, attach_command=command, blocking=False, **identity)
 
     return commit
 

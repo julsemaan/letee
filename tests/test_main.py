@@ -315,8 +315,9 @@ class MainTest(unittest.TestCase):
                 MAIN_MODULE.config.save_sessions([old_target])
 
                 @contextmanager
-                def lock_after_kill():
-                    with sessions_lock():
+                def lock_after_kill(*, blocking=True):
+                    self.assertTrue(blocking)
+                    with sessions_lock(blocking=blocking):
                         MAIN_MODULE.config.save_sessions(updated)
                         yield True
 

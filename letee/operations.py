@@ -271,8 +271,11 @@ def navigate(
     target: Target | PaneTarget | None = None, *, slot: int | None = None,
     attach_command: str | None = None, agent_id: str = "",
     session_id: str = "", socket_path: str = "", window_id: str = "",
+    blocking: bool = True,
 ) -> None:
-    with config.sessions_lock():
+    with config.sessions_lock(blocking=blocking) as acquired:
+        if not acquired:
+            raise SystemExit("Session operations are busy; try again")
         if session_id:
             pane = target if isinstance(target, PaneTarget) else None
             sessions.validate_destination(

@@ -38,16 +38,16 @@ class FinderWorkerTest(unittest.TestCase):
                 commit()
                 if kind == "session":
                     attach.assert_called_once_with(row.session.target, row.session.session_id, row.session.socket_path)
-                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", **identity)
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", blocking=False, **identity)
                 elif kind == "window":
                     window = WindowTarget(row.session.target, row.session.session_id,
                                           row.window.window_id, row.session.socket_path)
                     attach.assert_called_once_with(window)
-                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", **identity)
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", blocking=False, **identity)
                 else:
                     attach.assert_called_once_with(row.agent.pane_target)
                     navigate.assert_called_once_with(row.agent.pane_target, attach_command="prepared", agent_id=row.agent.agent_id,
-                                                    **identity)
+                                                    blocking=False, **identity)
 
     def test_reopening_removed_session_coordinates_every_scope(self):
         workspace, rows = self.rows()
@@ -133,7 +133,7 @@ class FinderWorkerTest(unittest.TestCase):
             commit()
         navigate.assert_called_once_with(
             renamed.target, attach_command="stable-id-command", session_id=row.session.session_id,
-            socket_path=row.session.socket_path, window_id="")
+            socket_path=row.session.socket_path, window_id="", blocking=False)
 
     def test_mutation_after_finder_resolution_rejects_stale_destination(self):
         workspace, rows = self.rows()
@@ -158,11 +158,14 @@ class FinderWorkerTest(unittest.TestCase):
                     patch("subprocess.run", side_effect=AssertionError("External processes prohibited")):
                 config.save_sessions([target])
                 resolved = threading.Event()
+                mutated = threading.Event()
                 errors = []
                 navigate = operations.navigate
 
-                def wait_for_lock(*args, **kwargs):
+                def wait_for_mutation(*args, **kwargs):
                     resolved.set()
+                    if not mutated.wait(2):
+                        raise AssertionError("Mutation did not finish")
                     return navigate(*args, **kwargs)
 
                 def open_destination():
@@ -173,7 +176,7 @@ class FinderWorkerTest(unittest.TestCase):
 
                 # The workspace deliberately remains stale even after the mutation.
                 commit = finder_ui._prepare_destination(row, lambda: workspace)
-                with patch.object(operations, "navigate", side_effect=wait_for_lock):
+                with patch.object(operations, "navigate", side_effect=wait_for_mutation):
                     with config.sessions_lock():
                         worker = threading.Thread(target=open_destination)
                         worker.start()
@@ -183,6 +186,7 @@ class FinderWorkerTest(unittest.TestCase):
                             (target,), config.load_operations(), raise_errors=True)
                         self.assertFalse(result.error)
                         state = config.load_operations()
+                    mutated.set()
                     worker.join(2)
                 self.assertFalse(worker.is_alive())
                 self.assertEqual(len(errors), 1)
