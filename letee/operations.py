@@ -270,8 +270,15 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
 def navigate(
     target: Target | PaneTarget | None = None, *, slot: int | None = None,
     attach_command: str | None = None, agent_id: str = "",
+    session_id: str = "", socket_path: str = "", window_id: str = "",
 ) -> None:
     with config.sessions_lock():
+        if session_id:
+            pane = target if isinstance(target, PaneTarget) else None
+            sessions.validate_destination(
+                pane.target if pane else target, session_id, socket_path,
+                window_id=pane.window_id if pane else window_id, pane_id=pane.pane_id if pane else "",
+            )
         if slot is not None:
             favorites = config.load_sessions()
             if slot > len(favorites):

@@ -339,10 +339,13 @@ def _prepare_destination(row: Row, current_workspace: Callable[[], Workspace]) -
         latest = Finder(current_workspace()).destination(row.key)
         if latest is None or not latest.available:
             raise SystemExit("Destination is unavailable")
+        identity = dict(session_id=row.session.session_id, socket_path=row.session.socket_path,
+                        window_id=row.window.window_id if row.window else "")
         if latest.agent is not None:
-            operations.navigate(latest.agent.pane_target, attach_command=command, agent_id=latest.agent.agent_id)
+            operations.navigate(latest.agent.pane_target, attach_command=command, agent_id=latest.agent.agent_id,
+                                **identity)
         else:
-            operations.navigate(latest.session.target, attach_command=command)
+            operations.navigate(latest.session.target, attach_command=command, **identity)
 
     return commit
 

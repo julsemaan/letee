@@ -2,6 +2,7 @@ from dataclasses import replace
 import curses
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -9,6 +10,8 @@ from finder_fixtures import sample_workspace
 from letee import cockpit, config, finder_ui, operations, tmux
 from letee.finder import Finder
 from letee.names import WindowTarget
+from letee.discovery import SessionSnapshot, SourceSnapshot
+from letee.sidebar import SessionReconciler
 from letee.workspace import Workspace
 
 
@@ -23,6 +26,8 @@ class FinderWorkerTest(unittest.TestCase):
         workspace, rows = self.rows()
         for kind in ("session", "window", "agent"):
             row = next(row for row in rows if row.kind == kind)
+            identity = dict(session_id=row.session.session_id, socket_path=row.session.socket_path,
+                            window_id=row.window.window_id if row.window else "")
             prepare = {"session": "existing_attach_command", "window": "window_attach_command",
                        "agent": "existing_pane_attach_command"}[kind]
             with self.subTest(kind=kind), patch.object(finder_ui.sessions, prepare, return_value="prepared") as attach, \
@@ -33,15 +38,16 @@ class FinderWorkerTest(unittest.TestCase):
                 commit()
                 if kind == "session":
                     attach.assert_called_once_with(row.session.target, row.session.session_id, row.session.socket_path)
-                    navigate.assert_called_once_with(row.session.target, attach_command="prepared")
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", **identity)
                 elif kind == "window":
                     window = WindowTarget(row.session.target, row.session.session_id,
                                           row.window.window_id, row.session.socket_path)
                     attach.assert_called_once_with(window)
-                    navigate.assert_called_once_with(row.session.target, attach_command="prepared")
+                    navigate.assert_called_once_with(row.session.target, attach_command="prepared", **identity)
                 else:
                     attach.assert_called_once_with(row.agent.pane_target)
-                    navigate.assert_called_once_with(row.agent.pane_target, attach_command="prepared", agent_id=row.agent.agent_id)
+                    navigate.assert_called_once_with(row.agent.pane_target, attach_command="prepared", agent_id=row.agent.agent_id,
+                                                    **identity)
 
     def test_reopening_removed_session_coordinates_every_scope(self):
         workspace, rows = self.rows()
@@ -60,9 +66,10 @@ class FinderWorkerTest(unittest.TestCase):
                     patch.object(cockpit, "attachment_failed", return_value=False), \
                     patch.object(cockpit, "status_snapshot", return_value=cockpit.StatusSnapshot(target, None, None, True)), \
                     patch.object(cockpit, "switch") as switch, \
-                    patch.object(finder_ui.sessions, "_run", return_value=(
+                    patch.object(finder_ui.sessions, "_run", side_effect=lambda _op, _target, query, **_kwargs: (
                         f"{row.session.session_id}\t{row.window.window_id if row.window else '@1'}\t"
-                        f"{row.agent.pane_target.pane_id if row.agent else '%2'}\n")), \
+                        f"{row.agent.pane_target.pane_id if row.agent else '%2'}"
+                        + (f"\t{target.session}" if "session_name" in query[-1] else "") + "\n")), \
                     patch.object(finder_ui.sessions, "ensure_created") as ensure:
                 config.save_sessions([target])
                 queued = operations.capture(operations.Effect("switch", target, automatic=True))
@@ -124,7 +131,90 @@ class FinderWorkerTest(unittest.TestCase):
                 patch.object(operations, "navigate") as navigate:
             commit = finder_ui._prepare_destination(row, lambda: latest)
             commit()
-        navigate.assert_called_once_with(renamed.target, attach_command="stable-id-command")
+        navigate.assert_called_once_with(
+            renamed.target, attach_command="stable-id-command", session_id=row.session.session_id,
+            socket_path=row.session.socket_path, window_id="")
+
+    def test_mutation_after_finder_resolution_rejects_stale_destination(self):
+        workspace, rows = self.rows()
+        row = next(row for row in rows if row.kind == "session")
+        target = row.session.target
+        renamed = replace(target, session="renamed")
+        for mutation in ("rename", "kill"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, LETEE_CONFIG_DIR=directory), \
+                    patch.object(cockpit, "require_cockpit"), \
+                    patch.object(cockpit, "current_target", return_value=None), \
+                    patch.object(cockpit, "rename_target"), \
+                    patch.object(cockpit, "reset_to_help"), \
+                    patch.object(cockpit, "startup_deadline", return_value=None), \
+                    patch.object(cockpit, "switch") as switch, \
+                    patch.object(finder_ui.sessions, "rename"), \
+                    patch.object(finder_ui.sessions, "kill"), \
+                    patch.object(finder_ui.sessions, "existing_attach_command", return_value="stable-id-command"), \
+                    patch.object(finder_ui.sessions, "ensure_created") as ensure, \
+                    patch.object(finder_ui.sessions, "_run", return_value=(
+                        f"{row.session.session_id}\t@1\t%2\t{renamed.session}\n" if mutation == "rename" else "")), \
+                    patch("subprocess.run", side_effect=AssertionError("External processes prohibited")):
+                config.save_sessions([target])
+                resolved = threading.Event()
+                errors = []
+                navigate = operations.navigate
+
+                def wait_for_lock(*args, **kwargs):
+                    resolved.set()
+                    return navigate(*args, **kwargs)
+
+                def open_destination():
+                    try:
+                        commit()
+                    except BaseException as error:
+                        errors.append(error)
+
+                # The workspace deliberately remains stale even after the mutation.
+                commit = finder_ui._prepare_destination(row, lambda: workspace)
+                with patch.object(operations, "navigate", side_effect=wait_for_lock):
+                    with config.sessions_lock():
+                        worker = threading.Thread(target=open_destination)
+                        worker.start()
+                        self.assertTrue(resolved.wait(2))
+                        result = operations._perform_unlocked(
+                            operations.Effect(mutation, target, message=renamed.session),
+                            (target,), config.load_operations(), raise_errors=True)
+                        self.assertFalse(result.error)
+                        state = config.load_operations()
+                    worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], SystemExit)
+                self.assertEqual(config.load_operations(), state)
+                self.assertIn(target.format(), state["invalidated"])
+                switch.assert_not_called()
+                submitted = []
+                snapshot = SessionSnapshot(local=SourceSnapshot(
+                    sessions=(renamed,) if mutation == "rename" else (), available=True, bells=frozenset()), remotes={})
+                SessionReconciler().reconcile(
+                    tuple(config.load_sessions()), cockpit.current_target(), snapshot,
+                    lambda effect: submitted.append(effect) or True, 0)
+                self.assertFalse(any(effect.target == target for effect in submitted))
+                stale_restore = operations.perform(operations.Effect("ensure_created", target, automatic=True))
+                self.assertTrue(stale_restore.stale_navigation)
+                ensure.assert_not_called()
+
+    def test_live_validation_rejects_changed_identity_or_membership(self):
+        workspace, rows = self.rows()
+        row = next(row for row in rows if row.kind == "agent")
+        expected = [row.session.session_id, row.window.window_id,
+                    row.agent.pane_target.pane_id, row.session.target.session]
+        for index in range(4):
+            changed = expected.copy()
+            changed[index] = "different"
+            with self.subTest(field=index), patch.object(
+                    finder_ui.sessions, "_run", return_value="\t".join(changed) + "\n"):
+                with self.assertRaisesRegex(SystemExit, "changed or is unavailable"):
+                    finder_ui.sessions.validate_destination(
+                        row.session.target, row.session.session_id, row.session.socket_path,
+                        window_id=row.window.window_id, pane_id=row.agent.pane_target.pane_id)
 
     def test_worker_restores_and_saves_scope_when_interrupted(self):
         workspace = sample_workspace()

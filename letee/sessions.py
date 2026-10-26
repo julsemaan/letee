@@ -543,6 +543,26 @@ def _existing_attach_command(
     return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
 
 
+def validate_destination(
+    target: Target, session_id: str, socket_path: str, *, window_id: str = "", pane_id: str = "",
+) -> None:
+    """Check live identity and name before publishing prepared navigation."""
+    query = ("tmux", "-S", socket_path, "list-panes", "-a", "-F",
+             "#{session_id}\t#{window_id}\t#{pane_id}\t#{session_name}")
+    output = _run(
+        "find", target,
+        ssh_command(target.host or "", shlex.join(query)) if target.kind == "ssh" else query,
+        **({"env": _inner_server_env()} if target.kind == "local" else {}),
+    )
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if (len(fields) == 4 and fields[0] == session_id and fields[3] == target.session
+                and (not window_id or fields[1] == window_id)
+                and (not pane_id or fields[2] == pane_id)):
+            return
+    raise SystemExit("Destination changed or is unavailable")
+
+
 def existing_attach_command(
     target: Target, session_id: str, socket_path: str, *, overlay: bool | None = None,
 ) -> str:
