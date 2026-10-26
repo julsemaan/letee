@@ -46,6 +46,7 @@ class StatusResult:
     refreshed: bool = False
     suppression_expired: bool = False
     sampled: bool = False
+    attachment_failure: tuple[Target, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class StatusPoller:
         self.bell_target: Target | None = None
         self.current_agent: str | None = None
         self.pane_active = True
+        self.attachment_failure: tuple[Target, str] | None = None
         self._generation = 0
         self._refresh_pending = False
         self._refresh_target: Target | None = None
@@ -116,6 +118,7 @@ class StatusPoller:
         pane_active = state.pane_active
         suppression_expired = False
         sampled = False
+        attachment_failure = None
         try:
             for command, target in commands:
                 if command == "discard" and target is not None:
@@ -142,6 +145,7 @@ class StatusPoller:
             bell_target = status.bell_target
             stored_agent = status.current_agent
             pane_active = status.pane_active
+            attachment_failure = status.attachment_failure
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
             diagnostics.error(error, handling="fallback", operation="status_sample", generation=generation)
         current_agent = _focused_agent_id(snapshot, current_target, stored_agent)
@@ -155,6 +159,7 @@ class StatusPoller:
             any(command == "refresh" for command, _ in commands),
             suppression_expired,
             sampled,
+            attachment_failure,
         )
 
     def _run_sample(
@@ -238,6 +243,7 @@ class StatusPoller:
                 else:
                     self.current_agent = self._pending_agent[1]
                 self.pane_active = result.pane_active
+                self.attachment_failure = result.attachment_failure
         if self._future is None and now >= self._next_poll:
             commands, self._commands = tuple(self._commands), []
             self._future_trace = {
@@ -262,6 +268,7 @@ class StatusPoller:
     def observe(self, update: RuntimeUpdate) -> None:
         if update.stale:
             return
+        self.attachment_failure = None
         if update.failed:
             if (
                 not update.partial_success

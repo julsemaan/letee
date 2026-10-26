@@ -85,6 +85,70 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
             submitted.clear()
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_overlay_failure_after_restoration_launch_retries_with_healthy_discovery(self, _timing):
+        target = Target("ssh", "work", "dev")
+        healthy = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        retry = sidebar.RestorationRetry()
+        marker = target
+        with (
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar.sessions, "attach_command", return_value="ssh dev attach"),
+            patch.object(sidebar.cockpit, "open_session") as launch,
+        ):
+            for generation, delay in enumerate((1, 2, 4, 5, 5), 1):
+                submitted = []
+                sidebar._sync_active_session(
+                    target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                    retry=retry, now=retry.deadline,
+                )
+                self.assertEqual(len(submitted), 1)
+                result = sidebar._perform_effect(submitted[0], ())
+                marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry)
+                self.assertIsNone(marker)
+                failure = (target, str(generation))
+                now = retry.deadline + 1
+                marker = sidebar._reconcile_attachment_failure(marker, target, failure, retry, now)
+                self.assertEqual(marker, target)
+                self.assertEqual(retry.delay, delay)
+                deadline = retry.deadline
+                marker = sidebar._reconcile_attachment_failure(marker, target, failure, retry, now + 0.1)
+                self.assertEqual(retry.deadline, deadline)
+                self.assertEqual(sidebar._sync_active_session(
+                    target, healthy, marker, lambda _: self.fail("retried before backoff"),
+                    retry=retry, now=deadline - 0.01,
+                ), target)
+            # Installation now works. Launch clears the marker, not the retry history.
+            submitted = []
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=retry.deadline,
+            )
+            result = sidebar._perform_effect(submitted[0], ())
+            marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry)
+            self.assertIsNone(marker)
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda _: self.fail("duplicate attachment"),
+                retry=retry, now=retry.deadline + 100,
+            )
+        self.assertEqual(launch.call_count, 6)
+
+    def test_failure_is_not_consumed_again_after_explicit_navigation_or_for_other_target(self):
+        target = Target("ssh", "work", "dev")
+        other = Target("local", "other")
+        failure = (target, "123")
+        retry = sidebar.RestorationRetry()
+        with patch.object(sidebar, "load_timing", return_value=config.Timing()):
+            self.assertIsNone(sidebar._reconcile_attachment_failure(None, other, failure, retry, 0))
+            self.assertEqual(retry.delay, 0)
+            self.assertEqual(sidebar._reconcile_attachment_failure(None, target, failure, retry, 1), target)
+            sidebar._reconcile_active_session_effect(
+                target, sidebar.EffectResult(sidebar.Effect("switch", target), ()), retry=retry,
+            )
+            self.assertEqual(retry.delay, 0)
+            self.assertIsNone(sidebar._reconcile_attachment_failure(None, target, failure, retry, 2))
+            self.assertEqual(retry.delay, 0)
+
     def test_stale_automatic_failure_does_not_show_error(self):
         target = Target("local", "old")
         state = SidebarState(status="unchanged")
@@ -110,7 +174,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             self.assertEqual(retry.deadline, 13)
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
-    def test_restoration_success_resets_and_stale_results_do_not_change_backoff(self, _load_timing):
+    def test_automatic_launch_preserves_backoff_and_stale_results_do_not_change_it(self, _load_timing):
         target = Target("local", "work")
         retry = sidebar.RestorationRetry()
         effect = sidebar.Effect("switch", target, automatic=True)
@@ -128,7 +192,7 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         submitted = []
         sidebar._sync_active_session(
             target, snapshot(local=("work",)), target,
-            lambda effect: submitted.append(effect) or True, retry=retry, now=31,
+            lambda effect: submitted.append(effect) or True, retry=retry, now=32,
         )
         self.assertEqual(len(submitted), 1)
 
@@ -298,10 +362,8 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                 if automatic:
                     tmux_command.assert_not_called()
                 else:
-                    self.assertIn(
-                        call("respawn-pane", "-k", "-t", "%2", "prepared attach"),
-                        tmux_command.call_args_list,
-                    )
+                    respawns = [c.args[:5] for c in tmux_command.call_args_list if c.args[0] == "respawn-pane"]
+                    self.assertEqual(respawns, [("respawn-pane", "-k", "-t", "%2", "prepared attach")])
 
     def test_queued_stale_notification_does_not_mark_target(self):
         target = Target("local", "cached")
@@ -477,8 +539,9 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                     self.assertEqual(retry.overlay, "show_reconnecting")
                     switch.assert_not_called()
             self.assertIsNone(marker)
-            self.assertIsNone(retry.target)
-            self.assertIsNone(retry.overlay)
+            self.assertEqual(retry.target, target)
+            self.assertEqual(retry.delay, 2)
+            self.assertEqual(retry.overlay, "show_reconnecting")
             switch.assert_called_once_with(target, "attach")
 
     def test_failed_switch_retries_once_snapshot_is_healthy(self):
@@ -604,6 +667,61 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                 Effect("switch", target, automatic=True),
             ],
         )
+
+    def test_production_loop_retries_asynchronous_failures_without_discovery_loss(self):
+        target = Target("ssh", "work", "dev")
+        healthy = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        disconnected = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+        poller = unittest.mock.Mock(
+            snapshot=disconnected, current_target=target, bell_target=None, current_agent=None,
+            pane_active=True, status_sampled=True, refresh_pending=False, attachment_failure=None,
+        )
+        clock = [0.0]
+        launches = []
+        ticks = []
+
+        def tick(now):
+            ticks.append(now)
+            poller.snapshot = disconnected if len(ticks) == 1 else healthy
+            poller.attachment_failure = (target, str(len(launches))) if 0 < len(launches) < 3 else None
+            return True
+
+        def launch(*_args):
+            launches.append(clock[0])
+
+        def monotonic():
+            clock[0] += 0.1
+            return clock[0]
+
+        poller.tick.side_effect = tick
+        results = []
+        actions = unittest.mock.Mock(busy=False)
+        actions.submit.side_effect = lambda effect, favorites: results.append(
+            sidebar._perform_effect(effect, favorites)
+        ) or True
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar.time, "monotonic", side_effect=monotonic),
+            patch.object(sidebar, "load_timing", return_value=config.Timing()),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(sidebar, "load_sessions", return_value=[target]),
+            patch.object(sidebar, "_current_target", return_value=target),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.sessions, "attach_command", return_value="ssh dev attach"),
+            patch.object(sidebar.cockpit, "show_reconnecting"),
+            patch.object(sidebar.cockpit, "switch", side_effect=launch),
+        ):
+            sidebar.run(FakeScreen([*([-1] * 100), STOP], size=(12, 40)))
+        self.assertEqual(len(launches), 3, (launches, ticks))
+        self.assertGreaterEqual(launches[1] - launches[0], 1)
+        self.assertGreaterEqual(launches[2] - launches[1], 2)
+        self.assertIs(poller.snapshot, healthy)
 
     def test_failed_manual_switch_from_other_target_waits_for_status_sample(self):
         old = Target("local", "old")
@@ -8712,8 +8830,8 @@ class SidebarDiagnosticsTest(unittest.TestCase):
         completed = next(r for r in records if r["event"] == "restoration_result")
         self.assertEqual(completed["outcome"], "attachment_launched")
         self.assertEqual(completed["action_id"], "restore-action")
-        self.assertEqual(len([r for r in records if r["event"] == "restoration_reset"]), 1)
-        self.assertEqual(retry, sidebar.RestorationRetry())
+        self.assertEqual(len([r for r in records if r["event"] == "restoration_reset"]), 0)
+        self.assertEqual(retry, expected)
 
     def test_draw_and_refresh_failures_retry_with_inherited_render_correlation(self):
         trace = {"request_id": "request-test", "sample_id": "sample-test", "snapshot_id": "snapshot-test"}

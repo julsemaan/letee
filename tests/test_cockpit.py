@@ -924,6 +924,13 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._install_right_pane_reset("%1", "%2", "C-x")
         hook = call.call_args.args[-1]
         self.assertNotIn("run-shell", hook)
+        self.assertIn("#{&&:#{==:#{hook_pane},%2},#{pane_dead}}", hook)
+        self.assertIn("#{==:#{@letee_attachment_launch_generation},#{pane_pid}}", hook)
+        self.assertIn("#{==:#{@letee_attachment_target},#{@letee_current_target}}", hook)
+        self.assertIn("#{!=:#{@letee_expected_right_pane_death_generation},#{pane_pid}}", hook)
+        self.assertIn("set-option -F -t %2 @letee_attachment_failure_target", hook)
+        self.assertIn("set-option -F -t %2 @letee_attachment_failure_generation '#{pane_pid}'", hook)
+        self.assertLess(hook.index("@letee_attachment_failure_generation"), hook.index("Active session is unavailable"))
         self.assertIn("respawn-pane", hook)
 
     def test_attach_flushes_diagnostics_before_exec(self):
@@ -977,13 +984,11 @@ class CockpitLayoutTest(unittest.TestCase):
         target_match = "#{==:#{@letee_expected_right_pane_death_target},#{@letee_current_target}}"
         generation_match = "#{==:#{@letee_expected_right_pane_death_generation},#{pane_pid}}"
         fallback = cockpit._right_pane_death_action("%1", "%2", "", succeeded=False)
-        stale_ack = (
-            f"if-shell -F '{generation_match}' {{ {cockpit._clear_expected_right_pane_death()} }} "
-            f"{{ {fallback} }}"
-        )
+        stale_ack = f"if-shell -F '{generation_match}' {{ {cockpit._clear_expected_right_pane_death()} }} "
         self.assertIn(target_match, command)
         self.assertIn(generation_match, command)
         self.assertIn(stale_ack, command)
+        self.assertIn(fallback, command)
 
     def test_set_expected_right_pane_death_sets_or_unsets_session_options(self):
         target = Target("local", "work")
@@ -1295,11 +1300,18 @@ class CockpitLayoutTest(unittest.TestCase):
                     "if-shell",
                     "-F",
                     "1",
+                    "set-option -p -t %2 @letee_attachment_launch_generation '' ; "
+                    "set-option -u -t letee @letee_attachment_failure_target ; "
+                    "set-option -u -t letee @letee_attachment_failure_generation ; "
                     "set-option -t letee @letee_current_target local:work",
                 ),
                 ("set-option", "-u", "-t", "letee", "@letee_current_agent"),
                 ("set-option", "-u", "-t", "letee", "@letee_bell_target"),
-                ("respawn-pane", "-k", "-t", "%2", "attach work"),
+                ("respawn-pane", "-k", "-t", "%2", "attach work", ";",
+                 "display-message", "-p", cockpit._RESPAWN_SUCCEEDED, ";",
+                 "set-option", "-p", "-t", "%2", cockpit.ATTACHMENT_TARGET_OPTION, "local:work", ";",
+                 "set-option", "-p", "-F", "-t", "%2", cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}", ";",
+                 "display-message", "-p", "-t", "%2", "#{pane_pid}"),
                 ("select-pane", "-t", "%2"),
             ],
         )
@@ -1705,7 +1717,7 @@ class CockpitLayoutTest(unittest.TestCase):
         out.assert_called_once_with("display-message", "-p", "-t", "%1", "#{pane_active}", check=False)
 
     def test_status_snapshot_reads_all_runtime_state_with_one_tmux_call(self):
-        with patch.object(cockpit.tmux, "out", return_value="%1\t%1\tlocal:work\tssh:dev:bell\tagent-1\t.") as out:
+        with patch.object(cockpit.tmux, "out", return_value="%1\t%1\tlocal:work\tssh:dev:bell\tagent-1\t\t\t.") as out:
             status = cockpit.status_snapshot()
 
         self.assertEqual(
@@ -1725,26 +1737,40 @@ class CockpitLayoutTest(unittest.TestCase):
                 "-p",
                 "-t",
                 cockpit.TARGET,
-                "#{pane_id}\t#{@letee_sidebar_pane}\t#{@letee_current_target}\t#{@letee_bell_target}\t#{@letee_current_agent}\t.",
+                "#{pane_id}\t#{@letee_sidebar_pane}\t#{@letee_current_target}\t#{@letee_bell_target}\t#{@letee_current_agent}\t#{@letee_attachment_failure_target}\t#{@letee_attachment_failure_generation}\t.",
             ),
         )
 
+    def test_status_snapshot_reports_only_failure_for_current_target(self):
+        for failed_target, generation, expected in (
+            ("ssh:dev:work", "123", (Target("ssh", "work", "dev"), "123")),
+            ("local:old", "123", None),
+            ("ssh:dev:work", "", None),
+            ("bad", "123", None),
+        ):
+            with self.subTest(target=failed_target, generation=generation), patch.object(
+                cockpit.tmux, "out",
+                return_value=f"%1\t%1\tssh:dev:work\t\t\t{failed_target}\t{generation}\t.",
+            ) as query:
+                self.assertEqual(cockpit.status_snapshot().attachment_failure, expected)
+                query.assert_called_once()
+
     def test_status_snapshot_accepts_empty_options(self):
-        with patch.object(cockpit.tmux, "out", return_value="%1\t\t\t\t\t."):
+        with patch.object(cockpit.tmux, "out", return_value="%1\t\t\t\t\t\t\t."):
             self.assertEqual(
                 cockpit.status_snapshot(),
                 cockpit.StatusSnapshot(None, None, None, True),
             )
 
     def test_status_snapshot_marks_sidebar_inactive_when_another_pane_is_active(self):
-        with patch.object(cockpit.tmux, "out", return_value="%2\t%1\t\t\t\t."):
+        with patch.object(cockpit.tmux, "out", return_value="%2\t%1\t\t\t\t\t\t."):
             self.assertEqual(
                 cockpit.status_snapshot(),
                 cockpit.StatusSnapshot(None, None, None, False),
             )
 
     def test_status_snapshot_ignores_invalid_targets_and_malformed_output(self):
-        with patch.object(cockpit.tmux, "out", return_value="%1\t%1\tbad\tssh:nope\tagent-1\t."):
+        with patch.object(cockpit.tmux, "out", return_value="%1\t%1\tbad\tssh:nope\tagent-1\t\t\t."):
             status = cockpit.status_snapshot()
         self.assertEqual(status, cockpit.StatusSnapshot(None, None, "agent-1", True))
 
@@ -2084,7 +2110,7 @@ class CockpitDiagnosticsTest(unittest.TestCase):
                 expanded = expanded.replace(f"#{{?0,{marker},}}", "")
                 self.assertEqual(shlex.split(expanded)[-1], expected)
 
-    def test_disabled_attachment_diagnostics_preserve_original_commands(self):
+    def test_disabled_diagnostics_still_install_failure_identity_in_respawn_queue(self):
         with (
             patch.dict(os.environ, {"LETEE_DEBUG_LOG": ""}),
             patch.object(cockpit, "right_pane", return_value="%2"),
@@ -2095,13 +2121,17 @@ class CockpitDiagnosticsTest(unittest.TestCase):
             cockpit.switch(Target("local", "work"), "attach work")
         identity.uuid4.assert_not_called()
         query.assert_not_called()
-        self.assertEqual(command.call_args_list, [
-            call("if-shell", "-F", "1", "set-option -t letee @letee_current_target local:work"),
-            call("set-option", "-u", "-t", "letee", cockpit.CURRENT_AGENT_OPTION),
-            call("set-option", "-u", "-t", "letee", cockpit.BELL_TARGET_OPTION),
-            call("respawn-pane", "-k", "-t", "%2", "attach work"),
-            call("select-pane", "-t", "%2"),
-        ])
+        self.assertEqual(len(command.call_args_list), 5)
+        marker = command.call_args_list[0].args[-1]
+        self.assertIn("@letee_attachment_launch_generation ''", marker)
+        self.assertIn("set-option -u -t letee @letee_attachment_failure_generation", marker)
+        respawns = [c.args for c in command.call_args_list if c.args[0] == "respawn-pane"]
+        self.assertEqual(len(respawns), 1)
+        self.assertEqual(respawns[0][:5], ("respawn-pane", "-k", "-t", "%2", "attach work"))
+        self.assertIn(cockpit.ATTACHMENT_TARGET_OPTION, respawns[0])
+        self.assertIn(cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION, respawns[0])
+        self.assertIn("#{pane_pid}", respawns[0])
+        command.assert_any_call("select-pane", "-t", "%2")
 
     def test_diagnostic_identity_failure_does_not_prevent_focus(self):
         def execute(*args, **kwargs):
@@ -2115,6 +2145,11 @@ class CockpitDiagnosticsTest(unittest.TestCase):
         ):
             cockpit.switch(Target("local", "work"), "attach work")
         command.assert_any_call("select-pane", "-t", "%2")
+        respawn = next(c.args for c in command.call_args_list if c.args[0] == "respawn-pane")
+        self.assertIn(cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION, respawn)
+        diagnostic_write = next(c.args[-1] for c in command.call_args_list
+                                if c.args[0] == "if-shell" and cockpit.ATTACHMENT_ID_OPTION in c.args[-1])
+        self.assertNotIn(cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION, diagnostic_write)
         self.assertTrue(any(r["event"] == "switch_completed" for r in self.records()))
 
     def test_failed_respawn_does_not_complete_replacement(self):
@@ -2188,6 +2223,8 @@ class CockpitDiagnosticsTest(unittest.TestCase):
                 if args[0] == "respawn-pane":
                     self.assertEqual(args[5:], (
                         ";", "display-message", "-p", cockpit._RESPAWN_SUCCEEDED, ";",
+                        "set-option", "-p", "-t", "%2", cockpit.ATTACHMENT_TARGET_OPTION, "local:work", ";",
+                        "set-option", "-p", "-F", "-t", "%2", cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}", ";",
                         "display-message", "-p", "-t", "%2", "#{pane_pid}",
                     ))
                     raise failure
