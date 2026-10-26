@@ -1179,6 +1179,12 @@ class CockpitLayoutTest(unittest.TestCase):
             [
                 unittest.mock.call(
                     "if-shell", "-F", "-t", "%2", "#{==:#{@letee_current_target},local:old}",
+                    "if-shell -F '#{&&:#{&&:#{==:#{@letee_attachment_target},local:old},"
+                    "#{==:#{@letee_attachment_failure_target},local:old}},"
+                    "#{&&:#{!=:#{@letee_attachment_failure_generation},},"
+                    "#{==:#{@letee_attachment_failure_generation},#{@letee_attachment_launch_generation}}}}' { "
+                    "set-option -t letee @letee_attachment_failure_target local:new ; "
+                    "set-option -p -t %2 @letee_attachment_target local:new } ; "
                     "if-shell -F '#{&&:#{==:#{@letee_attachment_target},local:old},"
                     "#{==:#{@letee_attachment_launch_generation},#{pane_pid}}}' { "
                     "set-option -p -t %2 @letee_attachment_target local:new } ; "

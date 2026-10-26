@@ -1199,7 +1199,18 @@ def rename_target(old: Target, new: Target) -> None:
         if right:
             target_match = _option_equals(ATTACHMENT_TARGET_OPTION, old.format())
             generation_match = _option_equals(ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}")
+            failure_target_match = _option_equals(ATTACHMENT_FAILURE_TARGET_OPTION, old.format())
+            failure_generation_match = _option_equals(
+                ATTACHMENT_FAILURE_GENERATION_OPTION, f"#{{{ATTACHMENT_LAUNCH_GENERATION_OPTION}}}",
+            )
+            pending_failure = (
+                f"#{{&&:#{{&&:{target_match},{failure_target_match}}},"
+                f"#{{&&:#{{!=:#{{{ATTACHMENT_FAILURE_GENERATION_OPTION}}},}},{failure_generation_match}}}}}"
+            )
             action = (
+                f"if-shell -F '{pending_failure}' {{ "
+                f"set-option -t {tmux.SESSION} {ATTACHMENT_FAILURE_TARGET_OPTION} {shlex.quote(new.format())} ; "
+                f"set-option -p -t {right} {ATTACHMENT_TARGET_OPTION} {shlex.quote(new.format())} }} ; "
                 f"if-shell -F '#{{&&:{target_match},{generation_match}}}' {{ "
                 f"set-option -p -t {right} {ATTACHMENT_TARGET_OPTION} {shlex.quote(new.format())} }} ; "
                 f"{action}"

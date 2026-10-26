@@ -171,16 +171,31 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
         cockpit = sidebar.cockpit
         old, new = Target("ssh", "old", "dev"), Target("ssh", "new", "dev")
         healthy = snapshot(remotes={"dev": source("ssh", ("new",), host="dev")})
-        for generation, attachment_target, renamed in (
-            ("123", old, True), ("122", old, False), ("123", Target("local", "other"), False),
+        other = Target("local", "other")
+        for generation, attachment_target, pending_failure, renamed in (
+            ("123", old, None, True), ("122", old, None, False), ("123", other, None, False),
+            ("123", old, (old, "123"), True),
+            ("123", old, (other, "123"), False),
+            ("124", old, (old, "123"), False),
+            ("123", other, (old, "123"), False),
         ):
-            with self.subTest(generation=generation, attachment_target=attachment_target):
+            with self.subTest(generation=generation, attachment_target=attachment_target,
+                              pending_failure=pending_failure):
                 options = {
                     cockpit.CURRENT_TARGET_OPTION: old.format(),
                     cockpit.ATTACHMENT_TARGET_OPTION: attachment_target.format(),
                     cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION: generation,
                     "pane_pid": "123", "pane_dead": "0", "pane_dead_status": "1",
                 }
+                retry = sidebar.RestorationRetry()
+                marker = None
+                if pending_failure:
+                    failed_target, failed_generation = pending_failure
+                    options[cockpit.ATTACHMENT_FAILURE_TARGET_OPTION] = failed_target.format()
+                    options[cockpit.ATTACHMENT_FAILURE_GENERATION_OPTION] = failed_generation
+                    marker = sidebar._reconcile_attachment_failure(None, old, pending_failure, retry, 10)
+                    # The unavailable-screen respawn replaces the failed attachment's PID.
+                    options["pane_pid"] = "456"
 
                 def expand(value):
                     def replace(match):
@@ -224,6 +239,29 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
                 self.assertEqual(options[cockpit.CURRENT_TARGET_OPTION], new.format())
                 self.assertEqual(options[cockpit.ATTACHMENT_TARGET_OPTION],
                                  new.format() if renamed else attachment_target.format())
+                if pending_failure:
+                    self.assertEqual(options[cockpit.ATTACHMENT_FAILURE_TARGET_OPTION],
+                                     new.format() if renamed else failed_target.format())
+                    self.assertEqual(options[cockpit.ATTACHMENT_FAILURE_GENERATION_OPTION], failed_generation)
+                    with patch.object(cockpit.tmux, "out", return_value=(
+                        f"%1\t%1\t{new.format()}\t\t\t"
+                        f"{options[cockpit.ATTACHMENT_FAILURE_TARGET_OPTION]}\t{failed_generation}\t."
+                    )):
+                        status = cockpit.status_snapshot()
+                    marker = sidebar._reconcile_attachment_failure(
+                        marker, status.current_target, status.attachment_failure, retry, 10.1,
+                    )
+                    submitted = []
+                    sidebar._sync_active_session(
+                        new, healthy, marker, lambda _: self.fail("retried before backoff"),
+                        retry=retry, now=10.2,
+                    )
+                    sidebar._sync_active_session(
+                        new, healthy, marker, lambda effect: submitted.append(effect) or True,
+                        retry=retry, now=100,
+                    )
+                    self.assertEqual(submitted, [sidebar.Effect("switch", new, automatic=True)] if renamed else [])
+                    continue
                 with patch.object(cockpit.tmux, "tmux") as command:
                     cockpit._install_right_pane_reset("%1", "%2", "C-x")
                 hook = command.call_args.args[-1]
