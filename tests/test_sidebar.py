@@ -10395,7 +10395,11 @@ class SidebarDiagnosticsTest(OperationTestCase):
         discovery = unittest.mock.Mock(snapshot=snapshot(local=("one",), remotes={"dev": offline}))
         poller = sidebar.AsyncStatusPoller(discovery, active)
         try:
-            with patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(active, None, None, True)):
+            with (
+                patch.object(sidebar.cockpit, "current_target", return_value=active),
+                patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+                patch.object(sidebar.cockpit, "status_snapshot", return_value=sidebar.cockpit.StatusSnapshot(active, None, None, True)),
+            ):
                 poller.tick(0)
                 poller._future.result(timeout=2)
                 poller.tick(0)
