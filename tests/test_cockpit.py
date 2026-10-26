@@ -928,7 +928,16 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("#{==:#{@letee_attachment_launch_generation},#{pane_pid}}", hook)
         self.assertIn("#{==:#{@letee_attachment_target},#{@letee_current_target}}", hook)
         self.assertIn("#{!=:#{@letee_expected_right_pane_death_generation},#{pane_pid}}", hook)
-        self.assertIn("set-option -F -t %2 @letee_attachment_failure_target", hook)
+        unsuccessful = "#{||:#{pane_dead_status},#{pane_dead_signal}}"
+        identity = (
+            "#{&&:#{&&:#{pane_dead},#{==:#{@letee_attachment_launch_generation},#{pane_pid}}},"
+            "#{&&:#{==:#{@letee_attachment_target},#{@letee_current_target}},"
+            "#{!=:#{@letee_expected_right_pane_death_generation},#{pane_pid}}}}"
+        )
+        self.assertIn(
+            f"if-shell -F '#{{&&:{unsuccessful},{identity}}}' {{ "
+            "set-option -F -t %2 @letee_attachment_failure_target", hook,
+        )
         self.assertIn("set-option -F -t %2 @letee_attachment_failure_generation '#{pane_pid}'", hook)
         self.assertLess(hook.index("@letee_attachment_failure_generation"), hook.index("Active session is unavailable"))
         self.assertIn("respawn-pane", hook)

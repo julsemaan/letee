@@ -133,6 +133,38 @@ class ActiveSessionAvailabilityTest(unittest.TestCase):
             )
         self.assertEqual(launch.call_count, 6)
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_clean_detach_does_not_retry_but_failure_markers_do(self, _timing):
+        for target, healthy in (
+            (Target("local", "work"), snapshot(local=("work",))),
+            (Target("ssh", "work", "dev"), snapshot(
+                remotes={"dev": source("ssh", ("work",), host="dev")},
+            )),
+        ):
+            for failed in (False, True):
+                with self.subTest(target=target, failed=failed):
+                    value = target.format()
+                    failure_fields = f"{value}\t123" if failed else "\t"
+                    with patch.object(
+                        sidebar.cockpit.tmux, "out",
+                        return_value=f"%1\t%1\t{value}\t\t\t{failure_fields}\t.",
+                    ):
+                        status = sidebar.cockpit.status_snapshot()
+                    retry = sidebar.RestorationRetry()
+                    marker = sidebar._reconcile_attachment_failure(
+                        None, status.current_target, status.attachment_failure, retry, 10,
+                    )
+                    self.assertEqual(marker, target if failed else None)
+                    submitted = []
+                    sidebar._sync_active_session(
+                        target, healthy, marker,
+                        lambda effect: submitted.append(effect) or True,
+                        retry=retry, now=100,
+                    )
+                    self.assertEqual(submitted, [
+                        sidebar.Effect("switch", target, automatic=True),
+                    ] if failed else [])
+
     def test_failure_is_not_consumed_again_after_explicit_navigation_or_for_other_target(self):
         target = Target("ssh", "work", "dev")
         other = Target("local", "other")

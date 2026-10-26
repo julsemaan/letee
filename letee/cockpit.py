@@ -515,8 +515,9 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     )
     current_attachment = _option_equals(ATTACHMENT_TARGET_OPTION, f"#{{{CURRENT_TARGET_OPTION}}}")
     unexpected = f"#{{!=:#{{{EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION}}},#{{pane_pid}}}}"
+    unsuccessful = "#{||:#{pane_dead_status},#{pane_dead_signal}}"
     record_failure = (
-        f"if-shell -F '#{{&&:{attachment_match},#{{&&:{current_attachment},{unexpected}}}}}' {{ "
+        f"if-shell -F '#{{&&:{unsuccessful},#{{&&:{attachment_match},#{{&&:{current_attachment},{unexpected}}}}}}}' {{ "
         f"set-option -F -t {right} {ATTACHMENT_FAILURE_TARGET_OPTION} '#{{{ATTACHMENT_TARGET_OPTION}}}' ; "
         f"set-option -F -t {right} {ATTACHMENT_FAILURE_GENERATION_OPTION} '#{{pane_pid}}' "
         f"}} ; "

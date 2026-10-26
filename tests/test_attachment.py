@@ -63,6 +63,13 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(process.wait(timeout=5), 7)
         self.assertEqual(termios.tcgetattr(slave), original)
 
+    def test_clean_detach_and_installer_failure_preserve_exit_status(self):
+        for status in (0, 23):
+            with self.subTest(status=status):
+                process, _, slave, original = self.start(f"raise SystemExit({status})")
+                self.assertEqual(process.wait(timeout=5), status)
+                self.assertEqual(termios.tcgetattr(slave), original)
+
     def test_waiting_animation_clears_before_auth_prompt_and_never_resumes(self):
         process, master, slave, original = self.start(
             "import time; time.sleep(.4); print('Password: ', end='', flush=True); "
