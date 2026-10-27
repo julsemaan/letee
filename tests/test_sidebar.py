@@ -2,11 +2,13 @@ import curses
 import inspect
 import json
 import os
+import re
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -62,6 +64,7 @@ def _assert_deferred_switch(testcase, switch, target, *extra):
     switch.assert_called_once()
     testcase.assertEqual(switch.call_args.args[0], target)
     testcase.assertTrue(callable(switch.call_args.args[1]))
+    testcase.assertTrue(switch.call_args.kwargs["launch_id"])
     testcase.assertEqual(switch.call_args.args[2:], extra)
 
 
@@ -184,7 +187,7 @@ class RevisionTargetSynchronizationTest(OperationTestCase):
                 kind = "pane_query_new" if respawned.is_set() else "pane_query_old"
                 events.append(kind)
                 return new_command if respawned.is_set() else old_command
-            return f"%3\t\t{options.get(sidebar.cockpit.CURRENT_TARGET_OPTION, '')}\t\t\t."
+            return f"%3\t\t{options.get(sidebar.cockpit.CURRENT_TARGET_OPTION, '')}\t\t\t\t\t."
 
         def run_switch():
             try:
@@ -597,15 +600,19 @@ class SessionReconcilerTest(OperationTestCase):
                 options[args[3]] = args[4]
             elif args[0] == "if-shell":
                 # Apply marker updates and guarded clears to the fake tmux options.
-                command = shlex.split(args[-1])
                 marker_guard = sidebar.cockpit._option_equals(
                     sidebar.cockpit.STARTUP_OPTION, options.get(sidebar.cockpit.STARTUP_OPTION, ""),
                 )
-                if args[2] in ("1", marker_guard):
-                    if "-u" in command:
-                        options.pop(command[-1], None)
-                    else:
-                        options[command[3]] = command[4]
+                launch_guard = sidebar.cockpit._option_equals(
+                    sidebar.cockpit.STARTUP_LAUNCH_OPTION, options.get(sidebar.cockpit.STARTUP_LAUNCH_OPTION, ""),
+                )
+                if args[2] in ("1", marker_guard, f"#{{&&:{marker_guard},{launch_guard}}}"):
+                    for queued in args[-1].split(" ; "):
+                        command = shlex.split(queued)
+                        if "-u" in command:
+                            options.pop(command[-1], None)
+                        else:
+                            options[command[-2]] = command[-1]
 
         def empty_sample():
             return snapshot(remotes={"dev": source("ssh", host="dev")})
@@ -673,18 +680,20 @@ class SessionReconcilerTest(OperationTestCase):
                     if args[0] == "set-option" and "-u" not in args:
                         options[args[3]] = args[4]
                     elif args[0] == "if-shell":
-                        command = shlex.split(args[-1])
                         guard = sidebar.cockpit._option_equals(
                             sidebar.cockpit.STARTUP_OPTION,
                             options.get(sidebar.cockpit.STARTUP_OPTION, ""),
                         )
                         if args[2] in ("1", guard):
-                            if "-u" in command:
-                                with config.sessions_lock(blocking=False) as acquired:
-                                    cleared_under_lock.append(not acquired)
-                                options.pop(command[-1], None)
-                            else:
-                                options[command[3]] = command[4]
+                            for queued in args[-1].split(" ; "):
+                                command = shlex.split(queued)
+                                if "-u" in command:
+                                    if command[-1] == sidebar.cockpit.STARTUP_OPTION:
+                                        with config.sessions_lock(blocking=False) as acquired:
+                                            cleared_under_lock.append(not acquired)
+                                    options.pop(command[-1], None)
+                                else:
+                                    options[command[-2]] = command[-1]
 
                 with (
                     patch.object(config, "config_dir", return_value=Path(directory)),
@@ -1189,7 +1198,7 @@ class SidebarTrackingMutationTest(OperationTestCase):
             return command
 
         def launch(*args, **kwargs):
-            if args == ("respawn-pane", "-k", "-t", "%2", command):
+            if args[:5] == ("respawn-pane", "-k", "-t", "%2", command):
                 assert_locked()
 
         pane = PaneTarget(target, "@1", "%3", "/tmp/tmux")
@@ -1212,8 +1221,13 @@ class SidebarTrackingMutationTest(OperationTestCase):
 
                 self.assertFalse(result.error)
                 attach.assert_called_once_with(destination)
-                self.assertIn(call("respawn-pane", "-k", "-t", "%2", command),
-                              tmux_command.call_args_list)
+                tmux_command.assert_any_call(
+                    "respawn-pane", "-k", "-t", "%2", command, ";",
+                    "display-message", "-p", "letee-respawn-succeeded", ";",
+                    "set-option", "-p", "-t", "%2", sidebar.cockpit.ATTACHMENT_TARGET_OPTION, target.format(), ";",
+                    "set-option", "-p", "-F", "-t", "%2", sidebar.cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}", ";",
+                    "display-message", "-p", "-t", "%2", "#{pane_pid}", capture=True,
+                )
 
     def test_cli_kill_before_sidebar_rename_acquires_lock(self):
         from contextlib import contextmanager
@@ -1451,6 +1465,217 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
             submitted.clear()
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_overlay_failure_after_restoration_launch_retries_with_healthy_discovery(self, _timing):
+        target = Target("ssh", "work", "dev")
+        healthy = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        retry = sidebar.RestorationRetry()
+        marker = target
+        with (
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+            patch.object(sidebar.sessions, "ensure_created"),
+            patch.object(sidebar.sessions, "attach_command", return_value="ssh dev attach"),
+            patch.object(sidebar.cockpit, "switch") as launch,
+        ):
+            for generation, delay in enumerate((1, 2, 4, 5, 5), 1):
+                submitted = []
+                sidebar._sync_active_session(
+                    target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                    retry=retry, now=retry.deadline,
+                )
+                self.assertEqual(len(submitted), 1)
+                result = sidebar._perform_effect(submitted[0], ())
+                marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry)
+                self.assertIsNone(marker)
+                failure = (target, str(generation))
+                now = retry.deadline + 1
+                marker = sidebar._reconcile_attachment_failure(marker, target, failure, retry, now)
+                self.assertEqual(marker, target)
+                self.assertEqual(retry.delay, delay)
+                deadline = retry.deadline
+                marker = sidebar._reconcile_attachment_failure(marker, target, failure, retry, now + 0.1)
+                self.assertEqual(retry.deadline, deadline)
+                self.assertEqual(sidebar._sync_active_session(
+                    target, healthy, marker, lambda _: self.fail("retried before backoff"),
+                    retry=retry, now=deadline - 0.01,
+                ), target)
+            # Installation now works. Launch clears the marker, not the retry history.
+            submitted = []
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda effect: submitted.append(effect) or True,
+                retry=retry, now=retry.deadline,
+            )
+            result = sidebar._perform_effect(submitted[0], ())
+            marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry)
+            self.assertIsNone(marker)
+            sidebar._sync_active_session(
+                target, healthy, marker, lambda _: self.fail("duplicate attachment"),
+                retry=retry, now=retry.deadline + 100,
+            )
+        self.assertEqual(launch.call_count, 6)
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_clean_detach_does_not_retry_but_failure_markers_do(self, _timing):
+        for target, healthy in (
+            (Target("local", "work"), snapshot(local=("work",))),
+            (Target("ssh", "work", "dev"), snapshot(
+                remotes={"dev": source("ssh", ("work",), host="dev")},
+            )),
+        ):
+            for failed in (False, True):
+                with self.subTest(target=target, failed=failed):
+                    value = target.format()
+                    failure_fields = f"{value}\t123" if failed else "\t"
+                    with patch.object(
+                        sidebar.cockpit.tmux, "out",
+                        return_value=f"%1\t%1\t{value}\t\t\t{failure_fields}\t.",
+                    ):
+                        status = sidebar.cockpit.status_snapshot()
+                    retry = sidebar.RestorationRetry()
+                    marker = sidebar._reconcile_attachment_failure(
+                        None, status.current_target, status.attachment_failure, retry, 10,
+                    )
+                    self.assertEqual(marker, target if failed else None)
+                    submitted = []
+                    sidebar._sync_active_session(
+                        target, healthy, marker,
+                        lambda effect: submitted.append(effect) or True,
+                        retry=retry, now=100,
+                    )
+                    self.assertEqual(submitted, [
+                        sidebar.Effect("switch", target, automatic=True),
+                    ] if failed else [])
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_renamed_attachment_failure_retries_only_for_current_generation(self, _timing):
+        cockpit = sidebar.cockpit
+        old, new = Target("ssh", "old", "dev"), Target("ssh", "new", "dev")
+        healthy = snapshot(remotes={"dev": source("ssh", ("new",), host="dev")})
+        other = Target("local", "other")
+        for generation, attachment_target, pending_failure, renamed in (
+            ("123", old, None, True), ("122", old, None, False), ("123", other, None, False),
+            ("123", old, (old, "123"), True),
+            ("123", old, (other, "123"), False),
+            ("124", old, (old, "123"), False),
+            ("123", other, (old, "123"), False),
+        ):
+            with self.subTest(generation=generation, attachment_target=attachment_target,
+                              pending_failure=pending_failure):
+                options = {
+                    cockpit.CURRENT_TARGET_OPTION: old.format(),
+                    cockpit.ATTACHMENT_TARGET_OPTION: attachment_target.format(),
+                    cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION: generation,
+                    "pane_pid": "123", "pane_dead": "0", "pane_dead_status": "1",
+                }
+                retry = sidebar.RestorationRetry()
+                marker = None
+                if pending_failure:
+                    failed_target, failed_generation = pending_failure
+                    options[cockpit.ATTACHMENT_FAILURE_TARGET_OPTION] = failed_target.format()
+                    options[cockpit.ATTACHMENT_FAILURE_GENERATION_OPTION] = failed_generation
+                    marker = sidebar._reconcile_attachment_failure(None, old, pending_failure, retry, 10)
+                    # The unavailable-screen respawn replaces the failed attachment's PID.
+                    options["pane_pid"] = "456"
+
+                def expand(value):
+                    def replace(match):
+                        field = match[1]
+                        if ":" not in field:
+                            return options.get(field, "")
+                        operator, operands = field.split(":", 1)
+                        left, right = operands.split(",", 1)
+                        return str(int({
+                            "==": left == right, "!=": left != right,
+                            "&&": bool(left and left != "0" and right and right != "0"),
+                            "||": bool((left and left != "0") or (right and right != "0")),
+                        }[operator]))
+                    while "#{" in value:
+                        value = re.sub(r"#\{([^{}]*)\}", replace, value)
+                    return value
+
+                def execute(*args):
+                    if args[0] == "if-shell":
+                        end = args.index("}")
+                        if expand(args[2]) == "1":
+                            execute(*args[4:end])
+                        execute(*args[end + 2:])
+                    elif ";" in args:
+                        index = args.index(";")
+                        execute(*args[:index])
+                        execute(*args[index + 1:])
+                    elif args[0] == "set-option":
+                        options[args[-2]] = expand(args[-1])
+
+                # Execute only the rename queue's if-shell/set-option subset, never host tmux.
+                with (
+                    patch.object(cockpit, "current_target", return_value=old),
+                    patch.object(cockpit, "bell_target", return_value=None),
+                    patch.object(cockpit, "_option", return_value="%2"),
+                    patch.object(cockpit.tmux, "tmux", side_effect=lambda *args: (
+                        execute(*shlex.split(args[-1])) if expand(args[-2]) == "1" else None
+                    )),
+                ):
+                    cockpit.rename_target(old, new)
+                self.assertEqual(options[cockpit.CURRENT_TARGET_OPTION], new.format())
+                self.assertEqual(options[cockpit.ATTACHMENT_TARGET_OPTION],
+                                 new.format() if renamed else attachment_target.format())
+                if pending_failure:
+                    self.assertEqual(options[cockpit.ATTACHMENT_FAILURE_TARGET_OPTION],
+                                     new.format() if renamed else failed_target.format())
+                    self.assertEqual(options[cockpit.ATTACHMENT_FAILURE_GENERATION_OPTION], failed_generation)
+                    with patch.object(cockpit.tmux, "out", return_value=(
+                        f"%1\t%1\t{new.format()}\t\t\t"
+                        f"{options[cockpit.ATTACHMENT_FAILURE_TARGET_OPTION]}\t{failed_generation}\t."
+                    )):
+                        status = cockpit.status_snapshot()
+                    marker = sidebar._reconcile_attachment_failure(
+                        marker, status.current_target, status.attachment_failure, retry, 10.1,
+                    )
+                    submitted = []
+                    sidebar._sync_active_session(
+                        new, healthy, marker, lambda _: self.fail("retried before backoff"),
+                        retry=retry, now=10.2,
+                    )
+                    sidebar._sync_active_session(
+                        new, healthy, marker, lambda effect: submitted.append(effect) or True,
+                        retry=retry, now=100,
+                    )
+                    self.assertEqual(submitted, [sidebar.Effect("switch", new, automatic=True)] if renamed else [])
+                    continue
+                with patch.object(cockpit.tmux, "tmux") as command:
+                    cockpit._install_right_pane_reset("%1", "%2", "C-x")
+                hook = command.call_args.args[-1]
+                condition = re.search(
+                    r"if-shell -F '([^']+)' \{ set-option -F -t %2 @letee_attachment_failure_target", hook,
+                )[1]
+                options["pane_dead"] = "1"
+                failure = (new, "123") if expand(condition) == "1" else None
+                retry = sidebar.RestorationRetry()
+                marker = sidebar._reconcile_attachment_failure(None, new, failure, retry, 10)
+                submitted = []
+                sidebar._sync_active_session(
+                    new, healthy, marker, lambda effect: submitted.append(effect) or True,
+                    retry=retry, now=100,
+                )
+                self.assertEqual(submitted, [sidebar.Effect("switch", new, automatic=True)] if renamed else [])
+
+    def test_failure_is_not_consumed_again_after_explicit_navigation_or_for_other_target(self):
+        target = Target("ssh", "work", "dev")
+        other = Target("local", "other")
+        failure = (target, "123")
+        retry = sidebar.RestorationRetry()
+        with patch.object(sidebar, "load_timing", return_value=config.Timing()):
+            self.assertIsNone(sidebar._reconcile_attachment_failure(None, other, failure, retry, 0))
+            self.assertEqual(retry.delay, 0)
+            self.assertEqual(sidebar._reconcile_attachment_failure(None, target, failure, retry, 1), target)
+            sidebar._reconcile_active_session_effect(
+                target, sidebar.EffectResult(sidebar.Effect("switch", target), ()), retry=retry,
+            )
+            self.assertEqual(retry.delay, 0)
+            self.assertIsNone(sidebar._reconcile_attachment_failure(None, target, failure, retry, 2))
+            self.assertEqual(retry.delay, 0)
+
     def test_stale_automatic_failure_does_not_show_error(self):
         target = Target("local", "old")
         state = SidebarState(status="unchanged")
@@ -1476,7 +1701,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             self.assertEqual(retry.deadline, 13)
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
-    def test_restoration_success_resets_and_stale_results_do_not_change_backoff(self, _load_timing):
+    def test_automatic_launch_preserves_backoff_and_stale_results_do_not_change_it(self, _load_timing):
         target = Target("local", "work")
         retry = sidebar.RestorationRetry()
         effect = sidebar.Effect("switch", target, automatic=True)
@@ -1494,7 +1719,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
         submitted = []
         sidebar._sync_active_session(
             target, snapshot(local=("work",)), target,
-            lambda effect: submitted.append(effect) or True, retry=retry, now=31,
+            lambda effect: submitted.append(effect) or True, retry=retry, now=32,
         )
         self.assertEqual(len(submitted), 1)
 
@@ -1695,10 +1920,10 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                 if automatic:
                     tmux_command.assert_not_called()
                 else:
-                    self.assertIn(
-                        call("respawn-pane", "-k", "-t", "%2", "prepared attach"),
-                        tmux_command.call_args_list,
-                    )
+                    respawns = [c.args[:5] for c in tmux_command.call_args_list if c.args[0] == "respawn-pane"]
+                    self.assertEqual(len(respawns), 2)
+                    self.assertIn("Switching session", respawns[0][4])
+                    self.assertEqual(respawns[1], ("respawn-pane", "-k", "-t", "%2", "prepared attach"))
 
     def test_queued_stale_absent_restore_does_not_mark_target(self):
         target = Target("local", "cached")
@@ -1818,60 +2043,24 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
 
-    def test_preparation_timeout_retries_without_replacing_reconnecting_screen(self):
+    def test_normal_remote_switch_does_not_wait_for_overlay_ssh(self):
         target = Target("ssh", "work", "dev")
-        healthy = snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")})
-        retry = sidebar.RestorationRetry()
-        timeout = subprocess.TimeoutExpired(["ssh"], 3)
-        submitted = []
         with (
-            patch.object(sidebar.cockpit, "current_target", return_value=target),
             patch.object(sidebar.cockpit, "right_pane", return_value="%2"),
             patch.object(sidebar.cockpit.tmux, "tmux") as tmux_call,
             patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
             patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=True),
             patch.object(sidebar.sessions, "load_persistent_ssh", return_value=True),
-            patch.object(sidebar.sessions.subprocess, "run", side_effect=[
-                timeout, timeout, subprocess.CompletedProcess(["ssh"], 0, stdout=""),
-            ]) as run,
+            patch.object(sidebar.sessions.subprocess, "run", side_effect=AssertionError("blocking SSH")) as run,
         ):
             result = sidebar._perform_effect(sidebar.Effect("switch", target), ())
-            self.assertEqual(result.error, "overlay ssh:dev:work timed out")
-            marker = sidebar._reconcile_active_session_effect(None, result, retry=retry, now=10)
-            self.assertEqual(marker, target)
-            respawns = [item.args for item in tmux_call.call_args_list if item.args[0] == "respawn-pane"]
-            self.assertEqual(len(respawns), 2)
-            self.assertIn("Preparing%s", respawns[0][4])
-            self.assertIn("Reconnecting%s", respawns[1][4])
-            calls_before_retry = list(tmux_call.call_args_list)
-
-            sidebar._sync_active_session(
-                target, healthy, marker, lambda effect: submitted.append(effect) or True,
-                retry=retry, now=10,
-            )
-            self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
-            result = sidebar._perform_effect(submitted.pop(), ())
-            self.assertEqual(result.error, "overlay ssh:dev:work timed out")
-            marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=11)
-            self.assertEqual(marker, target)
-            self.assertEqual(tmux_call.call_args_list, calls_before_retry)
-
-            sidebar._sync_active_session(
-                target, healthy, marker, lambda effect: submitted.append(effect) or True,
-                retry=retry, now=retry.deadline - 0.01,
-            )
-            self.assertEqual(submitted, [])
-            sidebar._sync_active_session(
-                target, healthy, marker, lambda effect: submitted.append(effect) or True,
-                retry=retry, now=retry.deadline,
-            )
-            self.assertEqual(submitted, [sidebar.Effect("switch", target, automatic=True)])
-            result = sidebar._perform_effect(submitted.pop(), ())
-            self.assertFalse(result.error)
-            self.assertIsNone(sidebar._reconcile_active_session_effect(marker, result, retry=retry, now=12))
-            self.assertIsNone(retry.target)
-            self.assertEqual(run.call_count, 3)
-            self.assertEqual(tmux_call.call_args.args, ("select-pane", "-t", "%2"))
+        self.assertFalse(result.error)
+        run.assert_not_called()
+        respawns = [item.args for item in tmux_call.call_args_list if item.args[0] == "respawn-pane"]
+        self.assertEqual(len(respawns), 2)
+        self.assertIn("Switching session", respawns[0][4])
+        self.assertEqual(shlex.split(respawns[1][4])[:6], [sys.executable, "-m", "letee.attachment", target.format(), "--", "ssh"])
+        self.assertEqual(tmux_call.call_args.args, ("select-pane", "-t", "%2"))
 
     def test_absent_remote_preparation_timeout_keeps_existing_pane_until_success(self):
         target = Target("ssh", "work", "dev")
@@ -2029,6 +2218,66 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                 Effect("switch", target, automatic=True),
             ],
         )
+
+    def test_production_loop_retries_asynchronous_failures_without_discovery_loss(self):
+        target = Target("ssh", "work", "dev")
+        healthy = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})
+        disconnected = snapshot(remotes={"dev": source("ssh", host="dev", available=False)})
+        poller = unittest.mock.Mock(
+            snapshot=disconnected, current_target=target, bell_target=None, current_agent=None,
+            pane_active=True, status_sampled=True, refresh_pending=False, attachment_failure=None,
+            startup_deadline=None, launch_id=operations.launch_identity(),
+        )
+        clock = [0.0]
+        launches = []
+        ticks = []
+
+        def tick(now):
+            ticks.append(now)
+            poller.snapshot = disconnected if len(ticks) == 1 else healthy
+            poller.attachment_failure = (target, str(len(launches))) if 0 < len(launches) < 3 else None
+            poller.attachment_failed = poller.attachment_failure is not None
+            poller.launch_id = operations.launch_identity()
+            return True
+
+        def launch(*_args, **_kwargs):
+            launches.append(clock[0])
+
+        def monotonic():
+            clock[0] += 0.1
+            return clock[0]
+
+        poller.tick.side_effect = tick
+        results = []
+        actions = unittest.mock.Mock(busy=False)
+        actions.submit.side_effect = lambda effect, favorites: results.append(
+            sidebar._perform_effect(effect, favorites)
+        ) or True
+        actions.poll.side_effect = lambda: results.pop(0) if results else None
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "EffectRunner", return_value=actions),
+            patch.object(sidebar.time, "monotonic", side_effect=monotonic),
+            patch.object(sidebar, "load_timing", return_value=config.Timing()),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(sidebar.cockpit, "current_target", return_value=target),
+            patch.object(sidebar.cockpit, "startup_deadline", return_value=None),
+            patch.object(sidebar.sessions, "ensure_created"),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(2, None)),
+            patch.object(sidebar, "_bell_targets", return_value=set()),
+            patch.object(sidebar.sessions, "attach_command", return_value="ssh dev attach"),
+            patch.object(sidebar.cockpit, "show_reconnecting"),
+            patch.object(sidebar.cockpit, "switch", side_effect=launch),
+        ):
+            sidebar.run(FakeScreen([*([-1] * 100), STOP], size=(12, 40)))
+        self.assertEqual(len(launches), 3, (launches, ticks))
+        self.assertGreaterEqual(launches[1] - launches[0], 1)
+        self.assertGreaterEqual(launches[2] - launches[1], 2)
+        self.assertIs(poller.snapshot, healthy)
 
     def test_failed_manual_switch_from_other_target_waits_for_status_sample(self):
         old = Target("local", "old")
@@ -4667,7 +4916,9 @@ class AsyncSidebarWorkTest(OperationTestCase):
                 patch.object(
                     sidebar.cockpit,
                     "status_snapshot",
-                    return_value=sidebar.cockpit.StatusSnapshot(target, target, "agent", False),
+                    return_value=sidebar.cockpit.StatusSnapshot(
+                        target, target, "agent", False, attachment_failure=(target, "123"),
+                    ),
                 ) as read,
                 patch.object(sidebar.cockpit, "startup_deadline", return_value=42) as marker,
                 patch.object(sidebar.cockpit, "current_target") as legacy_target,
@@ -4680,6 +4931,7 @@ class AsyncSidebarWorkTest(OperationTestCase):
         read.assert_called_once_with()
         marker.assert_called_once_with(target)
         self.assertEqual(result.startup_deadline, 42)
+        self.assertEqual(result.attachment_failure, (target, "123"))
         legacy_target.assert_not_called()
         legacy_activity.assert_not_called()
         self.assertEqual(
@@ -7599,6 +7851,8 @@ class SidebarDrawTest(OperationTestCase):
             target_two = Target("local", "two")
             attach_command.assert_not_called()
             _assert_deferred_switch(self, switch, target_two)
+            self.assertEqual(switch.call_args.args[1](), "attach")
+            attach_command.assert_called_once_with(target_two)
 
     def test_malformed_mouse_event_is_ignored(self):
         screen = FakeScreen([curses.KEY_MOUSE, STOP])
@@ -10630,8 +10884,8 @@ class SidebarDiagnosticsTest(OperationTestCase):
         completed = next(r for r in records if r["event"] == "restoration_result")
         self.assertEqual(completed["outcome"], "attachment_launched")
         self.assertEqual(completed["action_id"], "restore-action")
-        self.assertEqual(len([r for r in records if r["event"] == "restoration_reset"]), 1)
-        self.assertEqual(retry, sidebar.RestorationRetry())
+        self.assertEqual(len([r for r in records if r["event"] == "restoration_reset"]), 0)
+        self.assertEqual(retry, expected)
 
     def test_draw_and_refresh_failures_retry_with_inherited_render_correlation(self):
         trace = {"request_id": "request-test", "sample_id": "sample-test", "snapshot_id": "snapshot-test"}

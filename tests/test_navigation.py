@@ -6,7 +6,7 @@ from letee.names import PaneTarget, Target
 
 
 class NavigationTest(unittest.TestCase):
-    def test_open_session_defers_attachment_to_switch(self):
+    def test_open_session_passes_eager_attachment_to_switch(self):
         for target in (Target("local", "work"), Target("ssh", "work", "dev")):
             with (
                 self.subTest(target=target),
@@ -15,10 +15,8 @@ class NavigationTest(unittest.TestCase):
             ):
                 cockpit.open_session(target)
 
-                attach.assert_not_called()
-                self.assertEqual(switch.call_args.args[0], target)
-                self.assertEqual(switch.call_args.args[1](), "attach")
                 attach.assert_called_once_with(target)
+                switch.assert_called_once_with(target, "attach")
 
     def test_open_session_passes_supplied_command_through(self):
         target = Target("ssh", "work", "dev")
@@ -35,7 +33,7 @@ class NavigationTest(unittest.TestCase):
                 if callable(command):
                     command.assert_not_called()
 
-    def test_open_agent_defers_exact_pane_attachment_and_preserves_agent_id(self):
+    def test_open_agent_builds_exact_pane_attachment_and_preserves_agent_id(self):
         pane = PaneTarget(Target("ssh", "work", "dev"), "@2", "%8", "/tmp/tmux")
         with (
             patch.object(cockpit, "switch") as switch,
@@ -43,9 +41,5 @@ class NavigationTest(unittest.TestCase):
         ):
             cockpit.open_agent(pane, "agent-1")
 
-            attach.assert_not_called()
-            target, prepare, agent_id = switch.call_args.args
-            self.assertEqual(target, pane.target)
-            self.assertEqual(agent_id, "agent-1")
-            self.assertEqual(prepare(), "pane attach")
             attach.assert_called_once_with(pane)
+            switch.assert_called_once_with(pane.target, "pane attach", "agent-1")

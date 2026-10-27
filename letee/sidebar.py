@@ -365,6 +365,7 @@ class RestorationRetry:
     delay: float = 0
     deadline: float = 0
     overlay: str | None = None
+    last_failure: tuple[Target, str] | None = None
     _diagnostic_deferral: tuple[object, ...] | None = field(default=None, compare=False, repr=False)
     _diagnostic_deferred_at: float = field(default=0, compare=False, repr=False)
 
@@ -376,6 +377,7 @@ class RestorationRetry:
         self.delay = 0
         self.deadline = 0
         self.overlay = None
+        # Navigation resets backoff, not consumption of an already sampled exit.
         self._diagnostic_deferral = None
         self._diagnostic_deferred_at = 0
 
@@ -542,6 +544,20 @@ class SessionReconciler:
             self._completed[target] = source
 
 
+def _reconcile_attachment_failure(
+    interrupted: Target | None,
+    target: Target | None,
+    failure: tuple[Target, str] | None,
+    retry: RestorationRetry,
+    now: float,
+) -> Target | None:
+    if not isinstance(failure, tuple) or failure[0] != target or failure == retry.last_failure:
+        return interrupted
+    retry.failed(failure[0], now)
+    retry.last_failure = failure
+    return target
+
+
 def _sync_active_session(
     target: Target | None,
     snapshot: SessionSnapshot,
@@ -638,7 +654,7 @@ def _reconcile_active_session_effect(
             completed = result.completed_at if now is None else now
             with diagnostics.get_diagnostics().context(action_id=result.action_id, input_id=result.input_id):
                 retry.failed(target, time.monotonic() if completed is None else completed)
-        elif not result.error and navigation:
+        elif not result.effect.automatic and (navigation or result.effect.kind == "show_reconnecting"):
             retry.reset()
     if not result.error and navigation:
         return None
@@ -1573,6 +1589,7 @@ class AsyncStatusPoller(runtime.StatusPoller):
     ) -> StatusResult:
         launch_id = None
         attachment_failed = False
+        attachment_failure = None
         synchronize = synchronize or (state is not None and state.synchronize)
         state = state or self._poll_state()
         snapshot = state.snapshot
@@ -1615,6 +1632,7 @@ class AsyncStatusPoller(runtime.StatusPoller):
             stored_agent = status.current_agent
             pane_active = status.pane_active
             attachment_failed = status.attachment_failed
+            attachment_failure = status.attachment_failure
             synchronized = synchronize
         except (OSError, SystemExit, subprocess.SubprocessError) as error:
             diagnostics.error(error, handling="fallback", operation="status_sample", generation=generation)
@@ -1629,10 +1647,11 @@ class AsyncStatusPoller(runtime.StatusPoller):
             any(command == "refresh" for command, _ in commands),
             suppression_expired,
             sampled,
-            startup_deadline,
-            synchronized,
-            launch_id,
-            attachment_failed,
+            attachment_failure=attachment_failure,
+            startup_deadline=startup_deadline,
+            synchronized=synchronized,
+            launch_id=launch_id,
+            attachment_failed=attachment_failed,
         )
 
     def tick(self, now: float) -> bool:
@@ -1694,6 +1713,7 @@ class AsyncStatusPoller(runtime.StatusPoller):
                 self.current_target = result.current_target
                 self.startup_deadline = result.startup_deadline
                 self.attachment_failed = result.attachment_failed
+                self.attachment_failure = result.attachment_failure
                 if result.sampled and not result.synchronized and result.launch_id != self.launch_id:
                     self.request_target_sync()
                 self.launch_id = result.launch_id
@@ -3696,6 +3716,10 @@ def run(stdscr: curses.window) -> None:
                 restoration_retry.reset()
             if getattr(poller, "status_sampled", False) is True:
                 awaiting_navigation_sample = False
+                unavailable_target_shown = _reconcile_attachment_failure(
+                    unavailable_target_shown, current_target,
+                    getattr(poller, "attachment_failure", None), restoration_retry, now,
+                )
             if not burst_count:
                 trace_transitions(poller.current_target)
             if (

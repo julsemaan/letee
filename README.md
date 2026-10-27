@@ -69,7 +69,7 @@ For keyboard enthusiasts, these are the default keys.
 
 ### Find work
 
-`C-s f` or the sidebar's Find button opens a searchable tree of sessions, windows, and agents. Type to filter, use arrow keys to select, and press `Enter` to open. `Esc` cancels without changing your sidebar layout or focus.
+`C-s f` or the sidebar's Find button opens a searchable tree of sessions, windows, and agents. Type to filter, use arrow keys to select, and press `Enter` to open. `Ctrl-F` opens category filters; `Space` toggles them and `Enter` returns to results. `Ctrl-C` cancels from either view without changing your sidebar layout or focus. `Esc` does nothing.
 
 ### Add session
 

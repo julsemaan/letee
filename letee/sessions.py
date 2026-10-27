@@ -467,11 +467,18 @@ def _overlay_source(target: Target) -> str:
     return REMOTE_OVERLAY_PATH if target.kind == "ssh" else shlex.quote(str(OVERLAY_FILE))
 
 
+def _remote_attach_command(target: Target, command: str, *, overlay: bool) -> str:
+    if overlay:
+        with diagnostics.operation("sessions.overlay_install"):
+            # Only the installer reads the pipe; attachment keeps the terminal stdin.
+            contents = shlex.quote(OVERLAY_FILE.read_text())
+            command = f"printf %s {contents} | ( {_SSH_INSTALL_OVERLAY} ) && {command}"
+    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
+
+
 @_session_operation("sessions.attach_command")
 def attach_command(target: Target, *, overlay: bool | None = None, attach_only: bool = False) -> str:
     overlay = load_tmux_config_overlay() if overlay is None else overlay
-    if overlay and target.kind == "ssh":
-        _install_overlay(target)
     action = (f"attach-session -t {shlex.quote('=' + target.session)}" if attach_only
               else f"new-session -A -s {shlex.quote(target.session)}")
     command = f"{INNER_TMUX} -T clipboard {action}"
@@ -479,15 +486,13 @@ def attach_command(target: Target, *, overlay: bool | None = None, attach_only: 
         command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
         return f"env -u TMUX {command}"
-    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
+    return _remote_attach_command(target, command, overlay=overlay)
 
 
 @_session_operation("sessions.pane_attach_command")
 def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None) -> str:
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     target = pane_target.target
-    if overlay and target.kind == "ssh":
-        _install_overlay(target)
     parts = []
     if overlay:
         parts.append(f"source-file {_overlay_source(target)}")
@@ -499,7 +504,7 @@ def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None)
     command = f"tmux -S {shlex.quote(pane_target.socket_path)} " + " \\; ".join(parts)
     if target.kind == "local":
         return f"env -u TMUX {command}"
-    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
+    return _remote_attach_command(target, command, overlay=overlay)
 
 
 def _existing_attach_command(
@@ -523,8 +528,6 @@ def _existing_attach_command(
         raise SystemExit(f"find {target.format()} failed: target no longer exists")
 
     overlay = load_tmux_config_overlay() if overlay is None else overlay
-    if overlay and target.kind == "ssh":
-        _install_overlay(target)
     prefix = f"tmux -S {shlex.quote(socket_path)}"
     if target.kind == "local":
         prefix = f"env -u TMUX {prefix}"
@@ -540,7 +543,7 @@ def _existing_attach_command(
     command = " && ".join(f"{prefix} {part}" for part in parts)
     if target.kind == "local":
         return command
-    return shlex.join(ssh_command("-t", target.host or "", command, interactive=True))
+    return _remote_attach_command(target, command, overlay=overlay)
 
 
 def validate_destination(
