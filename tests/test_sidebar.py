@@ -1637,7 +1637,9 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                             return options.get(field, "")
                         operator, operands = field.split(":", 1)
                         left, right = operands.split(",", 1)
-                        truth = lambda v: bool(v and v != "0")
+                        def truth(v):
+                            return bool(v and v != "0")
+
                         return str(int({
                             "==": left == right, "!=": left != right,
                             "&&": truth(left) and truth(right),
@@ -1709,7 +1711,9 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                 submitted = []
                 for now in (0, 1):
                     data = SessionSnapshot(replace(source("local", ("work",)), sampled_at=now), {})
-                    submit = lambda effect: submitted.append(effect) or True
+                    def submit(effect):
+                        return submitted.append(effect) or True
+
                     marker = sidebar._sync_active_session(
                         active, data, marker, submit, retry=retry, now=now,
                     )
