@@ -1466,6 +1466,63 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             submitted.clear()
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_combined_schedulers_preserve_attachment_backoff_after_discovery(self, _timing):
+        target, favorite = Target("local", "work"), Target("local", "other")
+        retry = sidebar.RestorationRetry()
+        reconciler = sidebar.SessionReconciler()
+        marker = None
+        launch_id = "initial"
+
+        def schedule(now, failed, favorites=(target,)):
+            nonlocal marker
+            data = SessionSnapshot(replace(source("local", ("work",)), sampled_at=now), {})
+            submitted = []
+
+            def submit(effect):
+                submitted.append(effect)
+                return True
+
+            # Match production order and the action runner's busy guard.
+            marker = sidebar._sync_active_session(
+                target, data, marker, submit, retry=retry, now=now,
+            )
+            if not submitted:
+                reconciler.reconcile(
+                    favorites, target, data, submit, now,
+                    shared_launch_id=launch_id, attachment_failed=failed,
+                    restoration_retry=retry,
+                )
+            return submitted
+
+        for generation, (failed_at, delay) in enumerate(((0, 1), (2, 2), (5, 4), (10, 5), (16, 5))):
+            with self.subTest(failed_at=failed_at, delay=delay):
+                marker = sidebar._reconcile_attachment_failure(
+                    marker, target, (target, str(generation)), retry, failed_at,
+                )
+                self.assertEqual(retry.deadline, failed_at + delay)
+                self.assertEqual(schedule(failed_at, True), [])
+                if delay > 1:
+                    # In particular, t=3 must not switch before the t=4 deadline.
+                    effects = schedule(failed_at + 1, True, (target, favorite))
+                    self.assertEqual(effects, [Effect("ensure_created", favorite, automatic=True)])
+                    reconciler.observe(sidebar.EffectResult(
+                        effects[0], (), completed_at=failed_at + 1,
+                    ))
+                self.assertEqual(schedule(failed_at + delay - 0.01, True), [])
+                launched_at = failed_at + delay
+                effects = schedule(launched_at, True)
+                self.assertEqual(effects, [Effect("switch", target, automatic=True)])
+                launch_id = str(generation)
+                config.save_operations({"launch": launch_id})
+                result = sidebar.EffectResult(
+                    effects[0], (), launch_id=launch_id, completed_at=launched_at,
+                )
+                reconciler.observe(result)
+                marker = sidebar._reconcile_active_session_effect(marker, result, retry=retry)
+                self.assertEqual(schedule(launched_at + 0.2, False), [])
+                self.assertEqual(retry.delay, delay)
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
     def test_overlay_failure_after_restoration_launch_retries_with_healthy_discovery(self, _timing):
         target = Target("ssh", "work", "dev")
         healthy = snapshot(remotes={"dev": source("ssh", ("work",), host="dev")})

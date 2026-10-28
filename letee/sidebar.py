@@ -445,6 +445,7 @@ class SessionReconciler:
         shared_deadline: float | None = None,
         shared_launch_id: str | None = None,
         attachment_failed: bool = False,
+        restoration_retry: RestorationRetry | None = None,
     ) -> None:
         if shared_launch_id != self._shared_launch_id:
             if active is not None:
@@ -502,6 +503,13 @@ class SessionReconciler:
                 target in self._pending
                 or self._completed.get(target) is source
                 or (retry is not None and now < retry.deadline)
+                # Discovery confirms creation, not successful active attachment.
+                or (
+                    target == active
+                    and restoration_retry is not None
+                    and restoration_retry.target == target
+                    and now < restoration_retry.deadline
+                )
             ):
                 continue
             kind = "switch" if target == active else "ensure_created"
@@ -3748,6 +3756,7 @@ def run(stdscr: curses.window) -> None:
                         reconciler.reconcile(
                             tuple(state.favorites), current_target, poller.snapshot, queue_effect, now,
                             poller.startup_deadline, poller.launch_id, poller.attachment_failed is True,
+                            restoration_retry=restoration_retry,
                         )
                 except SystemExit as error:
                     diagnostics.error(error, handling="status", operation="sync_active_session")
