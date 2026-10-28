@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+import fcntl
+import json
 from functools import lru_cache
 import math
 import os
@@ -139,6 +142,46 @@ def sessions_path(server: str | None = None) -> Path:
     if name == DEFAULT_SERVER:
         return config_dir() / "sessions"
     return config_dir() / "servers" / name / "sessions"
+
+
+@contextmanager
+def sessions_lock(*, blocking: bool = True):
+    """Serialize CLI mutations and sidebar restoration for this server."""
+    path = sessions_path().with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def load_operations() -> dict:
+    try:
+        return json.loads(sessions_path().with_suffix(".operations").read_text())
+    except FileNotFoundError:
+        return {"launch": "", "invalidated": []}
+
+
+def save_operations(state: dict) -> None:
+    """Atomic publication; caller owns sessions_lock."""
+    path = sessions_path().with_suffix(".operations")
+    temporary = path.with_suffix(".operations.tmp")
+    temporary.write_text(json.dumps(state))
+    os.replace(temporary, path)
+
+
+def sessions_revision() -> tuple[int, int] | None:
+    try:
+        stat = sessions_path().stat()
+        return stat.st_mtime_ns, stat.st_ctime_ns
+    except FileNotFoundError:
+        return None
 
 
 def _load_config() -> tuple[Path, dict]:

@@ -477,14 +477,16 @@ def _remote_attach_command(target: Target, command: str, *, overlay: bool) -> st
 
 
 @_session_operation("sessions.attach_command")
-def attach_command(target: Target, *, overlay: bool | None = None) -> str:
+def attach_command(target: Target, *, overlay: bool | None = None, attach_only: bool = False) -> str:
     overlay = load_tmux_config_overlay() if overlay is None else overlay
-    new_session = f"{INNER_TMUX} -T clipboard new-session -A -s {shlex.quote(target.session)}"
+    action = (f"attach-session -t {shlex.quote('=' + target.session)}" if attach_only
+              else f"new-session -A -s {shlex.quote(target.session)}")
+    command = f"{INNER_TMUX} -T clipboard {action}"
     if overlay:
-        new_session += f" \\; source-file {_overlay_source(target)}"
+        command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
-        return f"env -u TMUX {new_session}"
-    return _remote_attach_command(target, new_session, overlay=overlay)
+        return f"env -u TMUX {command}"
+    return _remote_attach_command(target, command, overlay=overlay)
 
 
 @_session_operation("sessions.pane_attach_command")
@@ -542,6 +544,26 @@ def _existing_attach_command(
     if target.kind == "local":
         return command
     return _remote_attach_command(target, command, overlay=overlay)
+
+
+def validate_destination(
+    target: Target, session_id: str, socket_path: str, *, window_id: str = "", pane_id: str = "",
+) -> None:
+    """Check live identity and name before publishing prepared navigation."""
+    query = ("tmux", "-S", socket_path, "list-panes", "-a", "-F",
+             "#{session_id}\t#{window_id}\t#{pane_id}\t#{session_name}")
+    output = _run(
+        "find", target,
+        ssh_command(target.host or "", shlex.join(query)) if target.kind == "ssh" else query,
+        **({"env": _inner_server_env()} if target.kind == "local" else {}),
+    )
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if (len(fields) == 4 and fields[0] == session_id and fields[3] == target.session
+                and (not window_id or fields[1] == window_id)
+                and (not pane_id or fields[2] == pane_id)):
+            return
+    raise SystemExit("Destination changed or is unavailable")
 
 
 def existing_attach_command(
@@ -615,7 +637,7 @@ def _run(
             _remote_metadata(operation, target, error)
             diagnostics.error(error, handling="raise", stage="command", operation=operation, target_kind=target.kind)
             reason = (error.stderr or "").strip() or f"exit status {error.returncode}"
-            raise SystemExit(f"{operation} {target.format()} failed: {reason}") from None
+            raise SystemExit(f"{operation} {target.format()} failed: {reason}") from error
         except OSError as error:
             diagnostics.error(error, handling="raise", stage="command", operation=operation, target_kind=target.kind)
             reason = error.strerror or str(error)
@@ -656,6 +678,39 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
             command += (f" && {{ {INNER_TMUX} source-file {REMOTE_OVERLAY_PATH}; "
                         "letee_overlay_rc=$?; printf 'LETEE_DIAG overlay %s\\n' \"$letee_overlay_rc\"; true; }")
         _run("create", target, ssh_command(target.host or "", command))
+
+
+def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
+    """Create a detached session, or accept an exact, verified duplicate.
+
+    Reuse create's overlay behavior. Only duplicate-session failures are
+    recoverable; connection, timeout, and overlay failures still propagate.
+    """
+    try:
+        create(target, overlay=overlay)
+    except SystemExit as error:
+        cause = error.__cause__
+        if (
+            not isinstance(cause, subprocess.CalledProcessError)
+            or cause.returncode != 1
+            or (cause.stderr or "").strip() != f"duplicate session: {target.session}"
+            or str(error) != f"create {target.format()} failed: duplicate session: {target.session}"
+        ):
+            raise
+        # Another creator may have won the race. Never use -A here: it can
+        # attach to an existing session even when combined with -d.
+        if target.kind == "local":
+            command = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=" + target.session)
+            kwargs = {"env": _inner_server_env()}
+        else:
+            command = ssh_command(
+                target.host or "", f"{INNER_TMUX} has-session -t {shlex.quote('=' + target.session)}",
+            )
+            kwargs = {}
+        try:
+            _run("create", target, command, **kwargs)
+        except SystemExit:
+            raise error
 
 
 @_session_operation("sessions.kill")

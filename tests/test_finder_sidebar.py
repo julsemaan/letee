@@ -1,16 +1,15 @@
 import curses
 import subprocess
-import unittest
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 from letee import sidebar, workspace
 from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
-from test_sidebar import FakeScreen, STOP
+from test_sidebar import FakeScreen, OperationTestCase, STOP
 
 
-class FinderSidebarTest(unittest.TestCase):
+class FinderSidebarTest(OperationTestCase):
     def data(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%1", "/tmp/finder-test", session_id="$1",
@@ -25,16 +24,18 @@ class FinderSidebarTest(unittest.TestCase):
         target, _, data = self.data()
         screen = FakeScreen([*keys, STOP], size=(14, 40))
         poller = Mock(snapshot=data, current_target=target, current_agent=None,
-                      pending_agent=None, bell_target=None, pane_active=True)
+                      pending_agent=None, bell_target=None, pane_active=True,
+                      startup_deadline=None, launch_id=None, attachment_failed=False)
         poller.tick.side_effect = (lambda now: tick(now, poller)) if tick else (lambda now: False)
         publisher = Mock()
         with ExitStack() as stack:
             for name, value in {
                 "AsyncStatusPoller": poller, "DiscoveryPoller": Mock(),
-                "load_hosts": [], "load_sessions": [target], "_current_target": target,
+                "load_hosts": [], "_current_target": target,
                 "_init_colors": None, "_mouse_mask": None,
             }.items():
                 stack.enter_context(patch.object(sidebar, name, return_value=value))
+            stack.enter_context(patch.object(sidebar.config, "load_sessions", return_value=[target]))
             stack.enter_context(patch.object(sidebar.runtime, "WorkspacePublisher", return_value=publisher))
             stack.enter_context(patch.object(sidebar.curses, "curs_set"))
             stack.enter_context(patch.object(sidebar.curses, "beep"))

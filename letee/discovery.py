@@ -86,6 +86,7 @@ class SourceSnapshot:
     panes: tuple[PaneTarget, ...] = ()
     agents: tuple[AgentEntry, ...] = ()
     focused_panes: frozenset[PaneTarget] = frozenset()
+    sampled_at: float = field(default_factory=time.monotonic, compare=False)
     request_id: str | None = field(default=None, compare=False)
     _pane_metadata: tuple = field(init=False, repr=False)
 
@@ -373,6 +374,7 @@ def local_snapshot() -> SourceSnapshot:
 
 
 def _local_snapshot(request_id: str | None) -> SourceSnapshot:
+    sampled_at = time.monotonic()
     timeout = load_timing().local_command_timeout
     with diagnostics.operation("discovery.local_snapshot", request_id=request_id, timeout=timeout) as operation:
         try:
@@ -396,7 +398,7 @@ def _local_snapshot(request_id: str | None) -> SourceSnapshot:
         if not snapshot.available:
             operation.outcome = "unavailable"
             return snapshot
-        return replace(snapshot, agents=_read_local_agents(snapshot.panes, request_id=request_id))
+        return replace(snapshot, agents=_read_local_agents(snapshot.panes, request_id=request_id), sampled_at=sampled_at)
 
 
 def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
@@ -671,7 +673,10 @@ class DiscoveryPoller:
         error = _read_output(request.errors, stderr, request_id=request.request_id, stream="stderr")
         request.output.close()
         request.errors.close()
-        snapshot = _source_result(returncode, text, error, kind="ssh", host=host, request_id=request.request_id)
+        snapshot = replace(
+            _source_result(returncode, text, error, kind="ssh", host=host, request_id=request.request_id),
+            sampled_at=request.started,
+        )
         previous = self.remotes[host]
         changed = snapshot != previous
         diagnostics.log(
@@ -806,6 +811,7 @@ class DiscoveryPoller:
                 tuple(item for item in source.panes if item.target != target),
                 tuple(item for item in source.agents if item.pane_target.target != target),
                 frozenset(item for item in source.focused_panes if item.target != target),
+                sampled_at=source.sampled_at,
                 request_id=source.request_id,
             )
             return
@@ -827,6 +833,7 @@ class DiscoveryPoller:
                 tuple(item for item in source.panes if item.target != target),
                 tuple(item for item in source.agents if item.pane_target.target != target),
                 frozenset(item for item in source.focused_panes if item.target != target),
+                sampled_at=source.sampled_at,
                 request_id=source.request_id,
             )
 

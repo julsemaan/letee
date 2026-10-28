@@ -1,13 +1,16 @@
 import curses
 import json
 from dataclasses import replace
-from threading import Event
+from threading import Event, Thread, current_thread
+import os
+import subprocess
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from finder_fixtures import sample_workspace
-from letee import finder_ui, tmux, tui
+from letee import cockpit, config, finder_ui, tmux, tui
 from letee.workspace import Workspace
 
 
@@ -90,7 +93,7 @@ class FinderUITest(unittest.TestCase):
 
     def run_ui(self, keys, **kwargs):
         window = FakeWindow(keys)
-        result = finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None, **kwargs)
+        result = finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: None, **kwargs)
         return result, window
 
     def test_result_selection_overrides_theme_colors(self):
@@ -193,7 +196,7 @@ class FinderUITest(unittest.TestCase):
 
     def test_successful_navigation_saves_scope_for_reopening(self):
         window = FakeWindow(["\x14", "\x14", "\n"] + [-1] * 1000)
-        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
+        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: None))
         self.assertEqual(self.stored_scope, "Windows")
         _, reopened = self.run_ui(["\x03"])
         self.assertTrue(any(text == "[Windows] " and attr & curses.A_REVERSE
@@ -416,7 +419,7 @@ class FinderUITest(unittest.TestCase):
     def test_successful_navigation_saves_filters(self):
         self.stored_filters = json.dumps({"categories": ["Needs attention"]})
         window = FakeWindow(["\x14", "\x14", "\x14", "\n"] + [-1] * 1000)
-        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
+        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: None))
         self.assertEqual(json.loads(self.stored_filters), {"categories": ["Needs attention"]})
 
     def test_edit_cursor_clear_and_scope(self):
@@ -433,19 +436,107 @@ class FinderUITest(unittest.TestCase):
     def test_open_is_async_and_success_returns_true(self):
         opened = []
         window = FakeWindow(["\n"] + [-1] * 1000)
-        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: opened.append(row)))
+        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: opened.append(row)))
         self.assertEqual(opened[0].key, self.workspace.sessions[0].key)
 
     def test_ready_result_does_not_commit_before_queued_cancellation(self):
-        opened = []
-        window = FakeWindow(["\x03"])
+        for cancel in ("\x03",):
+            with self.subTest(cancel=cancel):
+                opened = []
+                window = FakeWindow([cancel])
+                popup = finder_ui._Popup(window, self.workspace)
+                popup.opening = self.workspace.sessions[0].key
+                popup.results.put((lambda cancelled: opened.append(True), None))
+                with patch.object(finder_ui, "_Popup", return_value=popup):
+                    self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: self.fail()))
+                self.assertFalse(opened)
+                self.assertIn(0, window.timeouts)
+
+    def test_contended_commit_allows_cancellation_and_retry_after_unlock(self):
+        row = finder_ui.Finder(self.workspace).rows[0]
+        window = FakeWindow([-1] * 20 + ["\x03"])
         popup = finder_ui._Popup(window, self.workspace)
-        popup.opening = self.workspace.sessions[0].key
-        popup.results.put((lambda: opened.append(True), None))
-        with patch.object(finder_ui, "_Popup", return_value=popup):
-            self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: self.fail()))
-        self.assertFalse(opened)
-        self.assertIn(0, window.timeouts)
+        results, errors = [], []
+
+        def run():
+            try:
+                results.append(finder_ui.run(window, self.workspace, prepare_open=lambda row: self.fail()))
+            except BaseException as error:
+                errors.append(error)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, LETEE_CONFIG_DIR=directory), \
+                patch.object(finder_ui.sessions, "existing_attach_command", return_value="prepared"), \
+                patch.object(finder_ui.sessions, "validate_destination") as validate, \
+                patch.object(cockpit, "require_cockpit"), \
+                patch.object(cockpit, "switch") as switch, \
+                patch.object(finder_ui, "_Popup", return_value=popup):
+            commit = finder_ui._prepare_destination(row, lambda: self.workspace)
+            popup.opening = row.key
+            popup.results.put((commit, None))
+            worker = Thread(target=run)
+            try:
+                with config.sessions_lock():
+                    worker.start()
+                    worker.join(1)
+                    self.assertFalse(worker.is_alive(), "Finder waited for the sessions lock")
+                    self.assertEqual(errors, [])
+                    self.assertEqual(results, [False])
+                    self.assertIn("busy", popup.error)
+                    self.assertIn("try again", popup.error)
+                    validate.assert_not_called()
+                    switch.assert_not_called()
+                commit()
+                validate.assert_called_once()
+                switch.assert_called_once()
+            finally:
+                worker.join(2)
+
+    def test_cancellation_during_live_validation_prevents_publication(self):
+        started, release, finished = Event(), Event(), Event()
+        input_thread = current_thread()
+        io_threads = []
+        row = finder_ui.Finder(self.workspace).rows[0]
+
+        def delayed_io(*args, **kwargs):
+            io_threads.append(current_thread())
+            started.set()
+            if not release.wait(2):
+                raise AssertionError("Validation blocked the input loop")
+            return subprocess.CompletedProcess(
+                args[0], 0, f"{row.session.session_id}\t@1\t%2\t{row.session.target.session}\n", "")
+
+        def cancel_during_validation():
+            return "\x03" if started.is_set() else -1
+
+        def prepare(row):
+            commit = finder_ui._prepare_destination(row, lambda: self.workspace)
+
+            def tracked_commit(*args, **kwargs):
+                try:
+                    return commit(*args, **kwargs)
+                finally:
+                    finished.set()
+            return tracked_commit
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, LETEE_CONFIG_DIR=directory), \
+                patch.object(finder_ui.sessions, "existing_attach_command", return_value="prepared"), \
+                patch.object(cockpit, "require_cockpit"), \
+                patch.object(cockpit, "switch") as switch, \
+                patch("subprocess.run", side_effect=delayed_io):
+            before = config.load_operations()
+            window = FakeWindow(["\n"] + [cancel_during_validation] * 1000)
+            try:
+                self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=prepare))
+                self.assertFalse(finished.is_set())
+            finally:
+                release.set()
+                self.assertTrue(finished.wait(3))
+            self.assertEqual(config.load_operations(), before)
+            switch.assert_not_called()
+            self.assertTrue(io_threads)
+            self.assertTrue(all(thread is not input_thread for thread in io_threads))
 
     def test_instant_preparation_drains_edits_and_updates_before_cancellation(self):
         for keys in (["\n", "\x03"], ["\n", "x", "\x03"]):
@@ -462,7 +553,7 @@ class FinderUITest(unittest.TestCase):
                 with patch.object(finder_ui.Thread, "start", lambda thread: thread.run()):
                     self.assertFalse(finder_ui.run(
                         window, self.workspace, read_workspace=read_workspace,
-                        prepare_open=lambda row: lambda: opened.append(row.key)))
+                        prepare_open=lambda row: lambda cancelled: opened.append(row.key)))
                 self.assertFalse(opened)
                 self.assertEqual(len(updates), len(keys))
                 if "x" in keys:
@@ -481,7 +572,7 @@ class FinderUITest(unittest.TestCase):
             started.set()
             release.wait(2)
             finished.set()
-            return lambda: None
+            return lambda cancelled: None
 
         def type_after_start():
             self.assertTrue(started.wait(1))
@@ -505,7 +596,7 @@ class FinderUITest(unittest.TestCase):
             started.set()
             release.wait(2)
             finished.set()
-            return lambda: opened.append(row)
+            return lambda cancelled: opened.append(row)
 
         def cancel_after_start():
             self.assertTrue(started.wait(1))
@@ -528,7 +619,7 @@ class FinderUITest(unittest.TestCase):
             if len(attempts) == 1:
                 failed.set()
                 raise RuntimeError("cannot open")
-            return lambda: None
+            return lambda cancelled: None
 
         def wait_for_error():
             self.assertTrue(failed.wait(1))
@@ -547,7 +638,7 @@ class FinderUITest(unittest.TestCase):
                     attempts = []
                     failed = Event()
 
-                    def fail():
+                    def fail(cancelled=None):
                         failed.set()
                         raise error_type("navigation failed")
 
@@ -557,13 +648,13 @@ class FinderUITest(unittest.TestCase):
                             if phase == "prepare":
                                 fail()
                             return fail
-                        return lambda: None
+                        return lambda cancelled: None
 
                     def wait_for_failure():
                         self.assertTrue(failed.wait(1))
                         return -1
 
-                    # Commit failures happen on the UI thread, before the next key.
+                    # Allow the worker failure to reach the input loop before retrying.
                     keys = list("letee") + ["\n"] + [-1] * 20 + [wait_for_failure, "\n"] + [-1] * 1000
                     window = FakeWindow(keys)
                     self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=prepare))
@@ -618,7 +709,7 @@ class FinderUITest(unittest.TestCase):
                 def prepare(row):
                     started.set()
                     release.wait(2)
-                    return lambda: opened.append(row.key)
+                    return lambda cancelled: opened.append(row.key)
 
                 def remove_original():
                     self.assertTrue(started.wait(1))
@@ -650,7 +741,7 @@ class FinderUITest(unittest.TestCase):
         def prepare(row):
             started.set()
             release.wait(2)
-            return lambda: opened.append(row.key)
+            return lambda cancelled: opened.append(row.key)
 
         def change_query():
             self.assertTrue(started.wait(1))
@@ -678,7 +769,7 @@ class FinderUITest(unittest.TestCase):
         window = FakeWindow([-1, "\n", "\x03"])
         self.assertFalse(finder_ui.run(window, self.workspace,
                                      read_workspace=lambda: next(updates, None),
-                                     prepare_open=lambda row: lambda: opened.append(row)))
+                                     prepare_open=lambda row: lambda cancelled: opened.append(row)))
         self.assertFalse(opened)
         self.assertIn("Unavailable", frame_text(window.frames[-1]))
         self.assertIn("letee", frame_text(window.frames[-1]))
@@ -695,7 +786,7 @@ class FinderUITest(unittest.TestCase):
 
     def test_query_viewport_tracks_cursor_and_resize(self):
         window = FakeWindow(list("abcdefghijk界") + [curses.KEY_LEFT, "\x03"], (8, 12))
-        finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None)
+        finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: None)
         writes, cursor = window.frames[-1]
         self.assertEqual(cursor, (0, 8))
         self.assertTrue(any("界" in text for _, _, text, _ in writes))
@@ -723,12 +814,12 @@ class FinderUITest(unittest.TestCase):
                         return curses.KEY_RESIZE
 
                     window = FakeWindow(list("界e\u0301" * 20) + [curses.KEY_LEFT, resize, "\x03"], size)
-                    self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None))
+                    self.assertFalse(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: None))
 
     def test_tab_expands_tree_and_down_selects_window(self):
         opened = []
         window = FakeWindow(["\t", curses.KEY_DOWN, "\n"] + [-1] * 1000)
-        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: opened.append(row)))
+        self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: opened.append(row)))
         self.assertEqual(opened[0].kind, "window")
         self.assertTrue(any("editor" in frame_text(frame) for frame in window.frames))
 
@@ -739,14 +830,14 @@ class FinderUITest(unittest.TestCase):
         opened = []
         with patch.object(curses, "getmouse", side_effect=lambda: next(clicks)):
             window = FakeWindow([curses.KEY_MOUSE] * 3 + [-1] * 1000)
-            self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: opened.append(row)))
+            self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: opened.append(row)))
         self.assertEqual(opened[0].kind, "window")
 
     def test_wheel_does_not_change_selection(self):
         opened = []
         with patch.object(curses, "getmouse", return_value=(0, 10, 4, 0, curses.BUTTON5_PRESSED)):
             window = FakeWindow([curses.KEY_MOUSE, "\n"] + [-1] * 1000, (7, 80))
-            self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: opened.append(row)))
+            self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: opened.append(row)))
         self.assertEqual(opened[0].key, self.workspace.sessions[0].key)
 
     def test_combining_mark_stays_with_highlighted_base(self):
@@ -754,7 +845,7 @@ class FinderUITest(unittest.TestCase):
         session = replace(session, windows=(replace(session.windows[0], name="q\u0301"),))
         workspace = replace(self.workspace, sessions=(session,))
         window = FakeWindow(["\x14", "\x14", "q", "\x03"])
-        finder_ui.run(window, workspace, prepare_open=lambda row: lambda: None)
+        finder_ui.run(window, workspace, prepare_open=lambda row: lambda cancelled: None)
         writes = window.frames[-1][0]
         self.assertTrue(any("q\u0301" in text and attr & curses.A_UNDERLINE for _, _, text, attr in writes))
         self.assertFalse(any(text.startswith("\u0301") for _, _, text, _ in writes))
@@ -769,14 +860,14 @@ class FinderUITest(unittest.TestCase):
             with self.subTest(ascii=ascii_mode), patch.object(tui, "ascii_mode", return_value=ascii_mode), \
                     patch.object(tui, "color", side_effect=lambda name: curses.A_BLINK if name == "danger" else 0):
                 screen = FakeWindow(["\t", curses.KEY_DOWN, "\t", "\x03"])
-                finder_ui.run(screen, workspace, prepare_open=lambda row: lambda: None)
+                finder_ui.run(screen, workspace, prepare_open=lambda row: lambda cancelled: None)
                 indicators = [(y, attr) for y, _, text, attr in screen.frames[-1][0] if text == indicator]
                 self.assertEqual([y for y, _ in indicators], [4, 6])
                 self.assertTrue(all(attr & curses.A_BLINK for _, attr in indicators))
 
     def test_render_highlights_and_current_are_distinct(self):
         window = FakeWindow(["\t", "\t", "\x14", "\x14", "\x14", "C", "\x03"])
-        finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda: None)
+        finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: None)
         writes = [write for frame, _ in window.frames for write in frame]
         self.assertTrue(any(attr & curses.A_UNDERLINE for _, _, _, attr in writes))
         self.assertTrue(any(attr & curses.A_REVERSE for _, _, _, attr in writes))

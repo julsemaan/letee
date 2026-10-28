@@ -979,7 +979,12 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertLess(command.index(expected_marker), command.index(current_target))
         self.assertLess(command.index(current_target), command.index(help_command))
         self.assertIn(help_command, command)
-        # A markerless death uses the unavailable fallback, even without a target marker.
+        # A markerless death reports the failed attachment's target and launch.
+        self.assertIn(
+            "set-option -F -t letee @letee_attachment_failure "
+            "'#{@letee_current_target}:#{@letee_startup_launch}'",
+            command,
+        )
         self.assertIn("Active session is unavailable.", command)
         self.assertIn("select-pane -t %1", command)
 
@@ -992,7 +997,9 @@ class CockpitLayoutTest(unittest.TestCase):
         command = calls[1][4]
         target_match = "#{==:#{@letee_expected_right_pane_death_target},#{@letee_current_target}}"
         generation_match = "#{==:#{@letee_expected_right_pane_death_generation},#{pane_pid}}"
-        fallback = cockpit._right_pane_death_action("%1", "%2", "", succeeded=False)
+        fallback = cockpit._right_pane_death_action(
+            "%1", "%2", "", succeeded=False, record_failure=False,
+        )
         stale_ack = f"if-shell -F '{generation_match}' {{ {cockpit._clear_expected_right_pane_death()} }} "
         self.assertIn(target_match, command)
         self.assertIn(generation_match, command)
@@ -1163,11 +1170,60 @@ class CockpitLayoutTest(unittest.TestCase):
             timeout=None,
         )
 
+    def test_renamed_active_target_survives_original_pane_start_command(self):
+        options = {cockpit.CURRENT_TARGET_OPTION: "local:old"}
+
+        def update(*args, **kwargs):
+            if args[0] == "set-option" and "-u" not in args:
+                options[args[-2]] = args[-1]
+            elif args[0] == "if-shell":
+                update(*shlex.split(args[-1]))
+
+        with (
+            patch.object(cockpit, "_option", side_effect=lambda key: options.get(key, "")),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value="tmux -L letee.inner new-session -A -s old"),
+            patch.object(cockpit.tmux, "tmux", side_effect=update),
+        ):
+            cockpit.rename_target(Target("local", "old"), Target("local", "new"))
+            self.assertEqual(cockpit.current_target(), Target("local", "new"))
+            cockpit.rename_target(Target("local", "new"), Target("local", "newer"))
+            self.assertEqual(cockpit.current_target(), Target("local", "newer"))
+
+    def test_renamed_target_survives_reattach_then_another_rename(self):
+        old, new, newer = (Target("local", name) for name in ("old", "new", "newer"))
+        options = {cockpit.CURRENT_TARGET_OPTION: old.format()}
+
+        def update(*args, **kwargs):
+            if args[0] == "set-option":
+                if "-u" in args:
+                    options.pop(args[-1], None)
+                else:
+                    options[args[-2]] = args[-1]
+            elif args[0] == "if-shell":
+                update(*shlex.split(args[-1]))
+            elif args[0] == "respawn-pane":
+                pane_command.return_value = args[-1]
+
+        with (
+            patch.object(cockpit, "_option", side_effect=lambda key: options.get(key, "")),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit, "startup_timeout", return_value=1),
+            patch.object(cockpit.tmux, "out", return_value="tmux -L letee.inner new-session -A -s old") as pane_command,
+            patch.object(cockpit.tmux, "tmux", side_effect=update),
+        ):
+            cockpit.rename_target(old, new)
+            cockpit.switch(new, "tmux -L letee.inner new-session -A -s new")
+            cockpit.rename_target(new, newer)
+            self.assertEqual(cockpit.current_target(), newer)
+            self.assertEqual(cockpit.current_target(), newer)
+
     def test_rename_target_updates_active_and_bell_markers_without_switching(self):
         old = Target("local", "old")
         new = Target("local", "new")
         with (
             patch.object(cockpit, "current_target", return_value=old),
+            patch.object(cockpit, "_option", return_value=""),
             patch.object(cockpit, "bell_target", return_value=old),
             patch.object(cockpit, "_option", return_value="%2"),
             patch.object(cockpit.tmux, "tmux") as tmux_call,
@@ -1177,6 +1233,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             tmux_call.call_args_list,
             [
+                unittest.mock.call("set-option", "-t", "letee", cockpit.RENAMED_TARGET_OPTION, "local:new local:old"),
                 unittest.mock.call(
                     "if-shell", "-F", "-t", "%2", "#{==:#{@letee_current_target},local:old}",
                     "if-shell -F '#{&&:#{&&:#{==:#{@letee_attachment_target},local:old},"
@@ -1224,6 +1281,7 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Esc    cancel mouse move", command)
         self.assertIn("Priority / Session", command)
         self.assertIn("Enter  activate selected row", command)
+        self.assertNotIn("recreate missing session", command)
         self.assertIn("e      rename selected session", command)
         self.assertNotIn("a      open Add session menu", command)
         self.assertNotIn("?      open help from sidebar", command)
@@ -1306,7 +1364,9 @@ class CockpitLayoutTest(unittest.TestCase):
         enable_clipboard.assert_called_once_with()
         install_bindings.assert_called_once_with("C-x", "%1", "%2")
 
-    def test_switch_uses_valid_right_pane_and_supplied_attach_command(self):
+    @patch.object(cockpit.time, "monotonic", return_value=5)
+    @patch.object(cockpit, "startup_timeout", return_value=10)
+    def test_switch_uses_valid_right_pane_and_supplied_attach_command(self, _timeout, _clock):
         calls = []
         target = cockpit.Target("local", "work")
         with (
@@ -1318,6 +1378,8 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                ("set-option", "-t", "letee", cockpit.STARTUP_OPTION, "local:work\t15.0"),
+                ("set-option", "-u", "-t", "letee", cockpit.RENAMED_TARGET_OPTION),
                 (
                     "if-shell",
                     "-F",
@@ -1420,7 +1482,38 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Preparing%s", events[0][1])
         self.assertEqual(events[2], ("respawn", "attach work"))
 
-    def test_deferred_remote_overlay_timeout_replaces_preparing_with_reconnecting(self):
+    def test_deferred_switch_renews_startup_deadline_after_slow_preparation(self):
+        target = Target("ssh", "work", "dev")
+        marker = None
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.time, "monotonic", return_value=5) as clock,
+            patch.object(cockpit, "startup_timeout", return_value=10),
+        ):
+            def prepare():
+                self.assertEqual(marker, "ssh:dev:work\t15.0")
+                clock.return_value = 16
+                return "attach work"
+
+            def tmux_call(*args, **kwargs):
+                nonlocal marker
+                if args[:4] == ("set-option", "-t", "letee", cockpit.STARTUP_OPTION):
+                    marker = args[4]
+                elif args[0] == "respawn-pane" and args[4] == "attach work":
+                    self.assertEqual(marker, "ssh:dev:work\t26.0")
+
+            with patch.object(cockpit.tmux, "tmux", side_effect=tmux_call) as tmux:
+                cockpit.switch(target, prepare)
+
+        tmux.assert_any_call(
+            "respawn-pane", "-k", "-t", "%2", "attach work", ";",
+            "display-message", "-p", "letee-respawn-succeeded", ";",
+            "set-option", "-p", "-t", "%2", cockpit.ATTACHMENT_TARGET_OPTION, target.format(), ";",
+            "set-option", "-p", "-F", "-t", "%2", cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION, "#{pane_pid}", ";",
+            "display-message", "-p", "-t", "%2", "#{pane_pid}", capture=True,
+        )
+
+    def test_remote_overlay_timeout_replaces_preparing_with_reconnecting(self):
         target = Target("ssh", "work", "dev")
         timeout = subprocess.TimeoutExpired(["ssh"], 3)
         with (
@@ -1483,6 +1576,77 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertIn("Switching session", events[0][1])
         self.assertIn("Session ssh:dev:work is unavailable.", events[2][1])
 
+    @patch.object(cockpit.time, "monotonic", return_value=5)
+    @patch.object(cockpit, "startup_timeout", return_value=10)
+    def test_failed_preparation_clears_its_startup_marker(self, _timeout, _clock):
+        target = Target("ssh", "work", "dev")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            self.assertRaisesRegex(RuntimeError, "preparation failed"),
+        ):
+            cockpit.switch(target, unittest.mock.Mock(side_effect=RuntimeError("preparation failed")))
+
+        tmux_call.assert_any_call(
+            "if-shell", "-F", cockpit._option_equals(cockpit.STARTUP_OPTION, "ssh:dev:work\t15.0"),
+            f"set-option -u -t {cockpit.tmux.SESSION} {cockpit.STARTUP_OPTION}",
+        )
+
+    @patch.object(cockpit.time, "monotonic", return_value=5)
+    @patch.object(cockpit, "startup_timeout", return_value=10)
+    def test_failed_preparation_cleanup_preserves_newer_startup_marker(self, _timeout, _clock):
+        target = Target("ssh", "work", "dev")
+
+        def prepare():
+            cockpit.tmux.tmux("set-option", "-t", cockpit.tmux.SESSION, cockpit.STARTUP_OPTION, "ssh:dev:work\t25.0")
+            raise RuntimeError("preparation failed")
+
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            self.assertRaisesRegex(RuntimeError, "preparation failed"),
+        ):
+            cockpit.switch(target, prepare)
+
+        cleanup = [
+            item.args for item in tmux_call.call_args_list
+            if item.args[-1] == f"set-option -u -t {cockpit.tmux.SESSION} {cockpit.STARTUP_OPTION}"
+        ]
+        self.assertEqual(cleanup, [(
+            "if-shell", "-F", cockpit._option_equals(cockpit.STARTUP_OPTION, "ssh:dev:work\t15.0"),
+            f"set-option -u -t {cockpit.tmux.SESSION} {cockpit.STARTUP_OPTION}",
+        )])
+
+    def test_failed_preparation_marks_only_its_target_and_launch(self):
+        target = Target("local", "work")
+        failure = OSError("preparation failed")
+        with patch.object(cockpit, "right_pane", return_value="%2"), \
+             patch.object(cockpit.tmux, "tmux") as command, \
+             self.assertRaises(OSError) as raised:
+            cockpit.switch(target, unittest.mock.Mock(side_effect=failure), launch_id="old")
+
+        self.assertIs(raised.exception, failure)
+        guard = f"#{{&&:{cockpit._option_equals(cockpit.CURRENT_TARGET_OPTION, target.format())},{cockpit._option_equals(cockpit.STARTUP_LAUNCH_OPTION, 'old')}}}"
+        command.assert_any_call(
+            "if-shell", "-F", guard,
+            f"set-option -t letee {cockpit.ATTACHMENT_FAILURE_OPTION} local:work:old",
+        )
+
+    def test_failed_preparation_preserves_original_exception_when_cleanup_fails(self):
+        target = Target("ssh", "work", "dev")
+        error = RuntimeError("preparation failed")
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+            patch.object(cockpit, "clear_startup", side_effect=OSError("cleanup failed")) as clear,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            cockpit.switch(target, unittest.mock.Mock(side_effect=error))
+
+        clear.assert_called_once()
+        self.assertIs(raised.exception, error)
+        self.assertIn("Session ssh:dev:work is unavailable.", tmux_call.call_args.args[4])
+
     def test_switch_rejects_missing_cockpit_without_preparing(self):
         prepare = unittest.mock.Mock(return_value="attach work")
         with patch.object(cockpit, "right_pane", return_value=None):
@@ -1526,50 +1690,14 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("⠋", command)
         self.assertNotIn("╭", command)
 
-    def test_show_missing_displays_waiting_state_with_session_details(self):
-        with (
-            patch.dict(cockpit.os.environ, {}, clear=True),
-            patch.object(cockpit, "right_pane", return_value="%2"),
-            patch.object(cockpit.tmux, "tmux") as tmux_call,
-        ):
-            cockpit.show_missing(cockpit.Target("ssh", "work", "dev"))
-
-        command = tmux_call.call_args.args
-        self.assertEqual(command[:4], ("respawn-pane", "-k", "-t", "%2"))
-        self.assertIn("Session missing", command[4])
-        self.assertIn("    \x1b[2mSession\x1b[0m  work", command[4])
-        self.assertIn("    \x1b[2mHost\x1b[0m     dev", command[4])
-        self.assertIn("Waiting for session%s", command[4])
-        self.assertIn("⠋", command[4])
-        self.assertIn("while :", command[4])
-        self.assertNotIn("Press Enter", command[4])
-        self.assertNotIn("recreate", command[4])
-
-    def test_show_missing_uses_ascii_waiting_state_when_requested(self):
-        with (
-            patch.dict(cockpit.os.environ, {"LETEE_ASCII": "1"}),
-            patch.object(cockpit, "right_pane", return_value="%2"),
-            patch.object(cockpit.tmux, "tmux") as tmux_call,
-        ):
-            cockpit.show_missing(cockpit.Target("ssh", "work", "dev"))
-
-        command = tmux_call.call_args.args[4]
-        self.assertIn("+-- Session missing --+", command)
-        self.assertIn("45:|:.  ", command)
-        self.assertIn("Waiting for session%s", command)
-        self.assertNotIn("⠋", command)
-        self.assertNotIn("╭", command)
-        self.assertNotIn("Press Enter", command)
-        self.assertNotIn("recreate", command)
-
-    def test_missing_animation_uses_ascii_for_non_utf_encoding(self):
+    def test_reconnecting_animation_uses_ascii_for_non_utf_encoding(self):
         with (
             patch.dict(cockpit.os.environ, {}, clear=True),
             patch.object(cockpit.locale, "getpreferredencoding", return_value="ANSI_X3.4-1968"),
         ):
-            command = cockpit._missing_command(cockpit.Target("ssh", "work", "dev"))
+            command = cockpit._reconnecting_command(cockpit.Target("ssh", "work", "dev"))
 
-        self.assertIn("+-- Session missing --+", command)
+        self.assertIn("+-- Connection interrupted --+", command)
         self.assertIn("45:|:.  ", command)
         self.assertNotIn("⠋", command)
         self.assertNotIn("╭", command)
@@ -1598,6 +1726,8 @@ class CockpitLayoutTest(unittest.TestCase):
                 patch.object(cockpit.tmux, "tmux") as tmux_call,
             ):
                 self.assertEqual(cockpit.current_target(), None if marker.endswith(":other") else target)
+                tmux_call.assert_not_called()
+                self.assertEqual(cockpit.current_target(repair=True), None if marker.endswith(":other") else target)
                 self.assertEqual(tmux_call.call_count, int(marker.endswith(":other")))
 
     def test_current_target_recovers_from_right_pane_command(self):
@@ -1660,7 +1790,7 @@ class CockpitLayoutTest(unittest.TestCase):
                     patch.object(cockpit.tmux, "out", return_value=command),
                     patch.object(cockpit.tmux, "tmux") as tmux_call,
                 ):
-                    self.assertIsNone(cockpit.current_target())
+                    self.assertIsNone(cockpit.current_target(repair=True))
 
                 tmux_call.assert_called_once_with(
                     "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
@@ -1690,7 +1820,7 @@ class CockpitLayoutTest(unittest.TestCase):
                     patch.object(cockpit.tmux, "out", return_value=command),
                     patch.object(cockpit.tmux, "tmux") as tmux_call,
                 ):
-                    self.assertIsNone(cockpit.current_target())
+                    self.assertIsNone(cockpit.current_target(repair=True))
 
                 tmux_call.assert_called_once_with(
                     "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
@@ -1709,7 +1839,7 @@ class CockpitLayoutTest(unittest.TestCase):
                     patch.object(cockpit.tmux, "out", return_value=command),
                     patch.object(cockpit.tmux, "tmux") as tmux_call,
                 ):
-                    self.assertIsNone(cockpit.current_target())
+                    self.assertIsNone(cockpit.current_target(repair=True))
 
                 tmux_call.assert_called_once_with(
                     "set-option", "-u", "-t", cockpit.tmux.SESSION, cockpit.CURRENT_TARGET_OPTION
@@ -2135,6 +2265,8 @@ class CockpitDiagnosticsTest(unittest.TestCase):
     def test_disabled_diagnostics_still_install_failure_identity_in_respawn_queue(self):
         with (
             patch.dict(os.environ, {"LETEE_DEBUG_LOG": ""}),
+            patch.object(cockpit.time, "monotonic", return_value=5),
+            patch.object(cockpit, "startup_timeout", return_value=10),
             patch.object(cockpit, "right_pane", return_value="%2"),
             patch.object(cockpit.tmux, "out") as query,
             patch.object(cockpit.tmux, "tmux") as command,
@@ -2143,8 +2275,8 @@ class CockpitDiagnosticsTest(unittest.TestCase):
             cockpit.switch(Target("local", "work"), "attach work")
         identity.uuid4.assert_not_called()
         query.assert_not_called()
-        self.assertEqual(len(command.call_args_list), 5)
-        marker = command.call_args_list[0].args[-1]
+        self.assertEqual(len(command.call_args_list), 7)
+        marker = command.call_args_list[2].args[-1]
         self.assertIn("@letee_attachment_launch_generation ''", marker)
         self.assertIn("set-option -u -t letee @letee_attachment_failure_generation", marker)
         respawns = [c.args for c in command.call_args_list if c.args[0] == "respawn-pane"]

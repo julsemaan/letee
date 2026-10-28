@@ -1067,6 +1067,18 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertIsNone(poller.snapshot.remotes["dev"])
         poller.close()
 
+    def test_remote_sample_freshness_uses_request_start_not_completion(self):
+        clock = Mock(return_value=4)
+        process = FakeProcess()
+        poller = self.make_poller(["dev"], popen=Mock(return_value=process), clock=clock)
+        poller.tick()
+        # Complete before expiry so this tests sampling time, not stale-result rejection.
+        clock.return_value = 4 + poller._timing.remote_command_timeout / 2
+        process.returncode = 0
+        poller.tick()
+        self.assertEqual(poller.snapshot.remotes["dev"].sampled_at, 4)
+        poller.close()
+
     def test_active_remote_host_polls_every_half_second(self):
         now = [0.0]
         popen = Mock(side_effect=[FakeProcess(0), FakeProcess(0)])
