@@ -997,7 +997,9 @@ class CockpitLayoutTest(unittest.TestCase):
         command = calls[1][4]
         target_match = "#{==:#{@letee_expected_right_pane_death_target},#{@letee_current_target}}"
         generation_match = "#{==:#{@letee_expected_right_pane_death_generation},#{pane_pid}}"
-        fallback = cockpit._right_pane_death_action("%1", "%2", "", succeeded=False)
+        fallback = cockpit._right_pane_death_action(
+            "%1", "%2", "", succeeded=False, record_failure=False,
+        )
         stale_ack = f"if-shell -F '{generation_match}' {{ {cockpit._clear_expected_right_pane_death()} }} "
         self.assertIn(target_match, command)
         self.assertIn(generation_match, command)

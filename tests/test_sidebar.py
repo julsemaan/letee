@@ -1605,6 +1605,123 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                     ] if failed else [])
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_pane_death_failure_channels_drive_both_schedulers(self, _timing):
+        cockpit = sidebar.cockpit
+        target = Target("local", "work")
+        for exit_status, signal, generation, attachment_target, expected, preparation, failed in (
+            ("0", "", "123", target.format(), "", False, False),
+            ("1", "", "123", target.format(), "", False, True),
+            ("0", "TERM", "123", target.format(), "", False, True),
+            ("1", "", "122", target.format(), "", False, False),
+            ("1", "", "123", "local:other", "", False, False),
+            ("1", "", "123", target.format(), "123", False, False),
+            ("0", "", "123", target.format(), "", True, True),
+        ):
+            with self.subTest(exit_status=exit_status, signal=signal, generation=generation,
+                              attachment_target=attachment_target, expected=expected,
+                              preparation=preparation):
+                options = {
+                    "hook_pane": "%2", "pane_dead": "1", "pane_pid": "123",
+                    "pane_dead_status": exit_status, "pane_dead_signal": signal,
+                    cockpit.CURRENT_TARGET_OPTION: target.format(),
+                    cockpit.STARTUP_LAUNCH_OPTION: "launch",
+                    cockpit.ATTACHMENT_LAUNCH_GENERATION_OPTION: generation,
+                    cockpit.ATTACHMENT_TARGET_OPTION: attachment_target,
+                    cockpit.EXPECTED_RIGHT_PANE_DEATH_GENERATION_OPTION: expected,
+                }
+
+                def expand(value):
+                    def replace_format(match):
+                        field = match[1]
+                        if ":" not in field:
+                            return options.get(field, "")
+                        operator, operands = field.split(":", 1)
+                        left, right = operands.split(",", 1)
+                        truth = lambda v: bool(v and v != "0")
+                        return str(int({
+                            "==": left == right, "!=": left != right,
+                            "&&": truth(left) and truth(right),
+                            "||": truth(left) or truth(right),
+                        }[operator]))
+                    while "#{" in value:
+                        value = re.sub(r"#\{([^{}]*)\}", replace_format, value)
+                    return value
+
+                def execute(tokens):
+                    # Interpret only the hook's native conditionals and option writes.
+                    while tokens:
+                        if tokens[0] == ";":
+                            tokens = tokens[1:]
+                            continue
+                        if tokens[0] == "if-shell":
+                            condition = expand(tokens[2])
+                            tokens = tokens[3:]
+                            branches = []
+                            while tokens and tokens[0] == "{":
+                                depth, end = 1, 1
+                                while depth:
+                                    depth += (tokens[end] == "{") - (tokens[end] == "}")
+                                    end += 1
+                                branches.append(tokens[1:end - 1])
+                                tokens = tokens[end:]
+                            branch = 0 if condition not in ("", "0") else 1
+                            if branch < len(branches):
+                                execute(branches[branch])
+                            continue
+                        end = tokens.index(";") if ";" in tokens else len(tokens)
+                        command, tokens = tokens[:end], tokens[end:]
+                        if command[0] == "set-option":
+                            if "-u" in command:
+                                options.pop(command[-1], None)
+                            else:
+                                options[command[-2]] = expand(command[-1])
+
+                with (
+                    patch.dict(os.environ, {"LETEE_DEBUG_LOG": ""}),
+                    patch.object(cockpit.tmux, "tmux") as call,
+                ):
+                    cockpit._install_right_pane_reset("%1", "%2", "C-x")
+                command = call.call_args.args[-1]
+                if preparation:
+                    command = cockpit._right_pane_death_action(
+                        "%1", "%2", "", succeeded=False, target=target,
+                    )
+                execute(shlex.split(command))
+                config.save_operations({"launch": "launch", "invalidated": []})
+                fields = [options.get(name, "") for name in (
+                    cockpit.ATTACHMENT_FAILURE_TARGET_OPTION,
+                    cockpit.ATTACHMENT_FAILURE_GENERATION_OPTION,
+                )]
+                with (
+                    patch.object(cockpit, "_option", side_effect=lambda name: options.get(name, "")),
+                    patch.object(cockpit.tmux, "out", return_value=(
+                        f"%1\t%1\t{target.format()}\t\t\t" + "\t".join(fields) + "\t."
+                    )),
+                ):
+                    launch, status, active, deadline = operations.sample_target()
+                self.assertEqual(status.attachment_failed, failed)
+                self.assertEqual(status.attachment_failure is not None, failed and not preparation)
+                retry = sidebar.RestorationRetry()
+                marker = sidebar._reconcile_attachment_failure(
+                    None, active, status.attachment_failure, retry, 0,
+                )
+                reconciler = sidebar.SessionReconciler()
+                submitted = []
+                for now in (0, 1):
+                    data = SessionSnapshot(replace(source("local", ("work",)), sampled_at=now), {})
+                    submit = lambda effect: submitted.append(effect) or True
+                    marker = sidebar._sync_active_session(
+                        active, data, marker, submit, retry=retry, now=now,
+                    )
+                    if not submitted:
+                        reconciler.reconcile(
+                            (target,), active, data, submit, now,
+                            shared_launch_id=launch, shared_deadline=deadline,
+                            attachment_failed=status.attachment_failed, restoration_retry=retry,
+                        )
+                self.assertEqual(submitted, [Effect("switch", target, automatic=True)] if failed else [])
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
     def test_renamed_attachment_failure_retries_only_for_current_generation(self, _timing):
         cockpit = sidebar.cockpit
         old, new = Target("ssh", "old", "dev"), Target("ssh", "new", "dev")

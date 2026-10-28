@@ -478,6 +478,7 @@ def _right_pane_death_action(
     *,
     succeeded: bool,
     target: Target | None = None,
+    record_failure: bool = True,
 ) -> str:
     cleanup = "set-option -u -t letee @letee_current_agent ; set-option -u -t letee @letee_bell_target"
     marker_cleanup = _clear_expected_right_pane_death()
@@ -492,10 +493,13 @@ def _right_pane_death_action(
         if target is not None
         else ""
     )
-    return (
-        f"{cleanup} ; {restore_target}{marker_cleanup} ; "
+    failure_marker = (
         f"set-option -F -t {tmux.SESSION} {ATTACHMENT_FAILURE_OPTION} "
         f"'#{{{CURRENT_TARGET_OPTION}}}:#{{{STARTUP_LAUNCH_OPTION}}}' ; "
+        if record_failure else ""
+    )
+    return (
+        f"{cleanup} ; {restore_target}{marker_cleanup} ; {failure_marker}"
         f"respawn-pane -k -t {right} {shlex.quote(_unavailable_command(target))} ; select-pane -t {left}"
     )
 
@@ -525,10 +529,14 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     record_failure = (
         f"if-shell -F '#{{&&:{unsuccessful},#{{&&:{attachment_match},#{{&&:{current_attachment},{unexpected}}}}}}}' {{ "
         f"set-option -F -t {right} {ATTACHMENT_FAILURE_TARGET_OPTION} '#{{{ATTACHMENT_TARGET_OPTION}}}' ; "
-        f"set-option -F -t {right} {ATTACHMENT_FAILURE_GENERATION_OPTION} '#{{pane_pid}}' "
+        f"set-option -F -t {right} {ATTACHMENT_FAILURE_GENERATION_OPTION} '#{{pane_pid}}' ; "
+        f"set-option -F -t {tmux.SESSION} {ATTACHMENT_FAILURE_OPTION} "
+        f"'#{{{CURRENT_TARGET_OPTION}}}:#{{{STARTUP_LAUNCH_OPTION}}}' "
         f"}} ; "
     )
-    fallback = record_failure + _right_pane_death_action(left, right, prefix="", succeeded=False)
+    fallback = record_failure + _right_pane_death_action(
+        left, right, prefix="", succeeded=False, record_failure=False,
+    )
     state_action = (
         f"if-shell -F '#{{==:#{{{EXPECTED_RIGHT_PANE_DEATH_OPTION}}},{_EXPECTED_RIGHT_PANE_DEATH_PENDING}}}' "
         f"{{ set-option -t {tmux.SESSION} {EXPECTED_RIGHT_PANE_DEATH_OPTION} {_EXPECTED_RIGHT_PANE_DEATH_CONSUMED} }} "
