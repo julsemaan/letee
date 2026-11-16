@@ -27,6 +27,73 @@ def setUpModule():
     unittest.addModuleCleanup(timing_patch.stop)
 
 
+class SSHResetTest(unittest.TestCase):
+    def setUp(self):
+        persistence = patch.object(sessions, "load_persistent_ssh", return_value=True)
+        persistence.start()
+        self.addCleanup(persistence.stop)
+
+    def test_reset_uses_managed_socket_once_per_host_and_local_timeout(self):
+        with (
+            patch.object(sessions, "load_timing", return_value=Timing(local_command_timeout=0.25)),
+            patch.object(sessions.subprocess, "run", return_value=Mock(returncode=0)) as run,
+        ):
+            sessions.reset_ssh_masters(["dev", "prod", "dev"])
+        self.assertEqual([c.args[0] for c in run.call_args_list], [
+            ("ssh", *sessions.INTERACTIVE_OPTIONS, "-O", "exit", host)
+            for host in ("dev", "prod")
+        ])
+        for invocation in run.call_args_list:
+            self.assertEqual(invocation.kwargs["timeout"], 0.25)
+            self.assertTrue(invocation.kwargs["capture_output"])
+            self.assertFalse(invocation.kwargs["check"])
+
+    def test_missing_master_is_normal(self):
+        with (
+            patch.object(sessions.subprocess, "run", return_value=Mock(
+                returncode=255,
+                stderr="Control socket connect(/home/me/.ssh/letee-hash): No such file or directory\n",
+            )),
+            patch.object(sessions.diagnostics, "error") as error,
+            redirect_stderr(io.StringIO()) as output,
+        ):
+            sessions.reset_ssh_masters(["dev"])
+        error.assert_not_called()
+        self.assertEqual(output.getvalue(), "")
+
+    def test_failures_warn_and_continue_to_next_host(self):
+        for failure in (
+            Mock(returncode=255, stderr="Permission denied"),
+            Mock(returncode=255, stderr="ssh: missing config: No such file or directory"),
+            subprocess.TimeoutExpired("ssh", 0.25),
+            OSError("unavailable"),
+        ):
+            with (
+                self.subTest(failure=failure),
+                patch.object(sessions.subprocess, "run", side_effect=[failure, Mock(returncode=0)]) as run,
+                patch.object(sessions.diagnostics, "error") as error,
+                redirect_stderr(io.StringIO()) as output,
+            ):
+                sessions.reset_ssh_masters(["dev", "prod"])
+            self.assertEqual(run.call_count, 2)
+            error.assert_called_once()
+            self.assertIn("Warning: could not reset SSH master for dev", output.getvalue())
+
+    def test_host_validation_prevents_ssh_invocation(self):
+        for host in ("-dev", "user@dev", "dev;true", ""):
+            with self.subTest(host=host), patch.object(sessions.subprocess, "run") as run:
+                with self.assertRaises(SystemExit):
+                    sessions.reset_ssh_masters([host])
+                run.assert_not_called()
+
+    def test_persistence_opt_out_and_empty_hosts_do_not_run_ssh(self):
+        with patch.object(sessions.subprocess, "run") as run:
+            sessions.reset_ssh_masters([])
+            with patch.object(sessions, "load_persistent_ssh", return_value=False):
+                sessions.reset_ssh_masters(["dev"])
+        run.assert_not_called()
+
+
 class SessionOperationsTest(unittest.TestCase):
     def test_configured_operation_and_authentication_deadlines(self):
         timing = Timing(
