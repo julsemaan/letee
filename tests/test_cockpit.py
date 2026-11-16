@@ -12,6 +12,12 @@ from letee import cockpit, diagnostics
 from letee.names import PaneTarget, Target
 
 
+def setUpModule():
+    reset = patch.object(cockpit.sessions, "reset_ssh_masters")
+    reset.start()
+    unittest.addModuleCleanup(reset.stop)
+
+
 class SidebarCollapseTest(unittest.TestCase):
     def setUp(self):
         self.options = {cockpit.SIDEBAR_PANE_OPTION: "%1", cockpit.RIGHT_PANE_OPTION: "%2"}
@@ -114,12 +120,46 @@ class CockpitStartupTest(unittest.TestCase):
         valid.start()
         self.addCleanup(valid.stop)
 
+    def test_fresh_start_resets_before_preparation_and_creation(self):
+        for interactive in (True, False):
+            events = []
+            with (
+                self.subTest(interactive=interactive),
+                patch.object(cockpit, "ensure_config"),
+                patch.object(cockpit.shutil, "get_terminal_size", return_value=os.terminal_size((100, 24))),
+                patch.object(cockpit, "load_hosts", return_value=["dev"]),
+                patch.object(cockpit.sys.stdin, "isatty", return_value=interactive),
+                patch.object(cockpit.sessions, "reset_ssh_masters", side_effect=lambda hosts: events.append(("reset", hosts))),
+                patch.object(cockpit, "_prepare_remote_hosts", side_effect=lambda hosts: events.append(("prepare", hosts))),
+                patch.object(cockpit, "ensure_cockpit", side_effect=lambda **kwargs: events.append(("create",))),
+                patch.object(cockpit, "_attach", return_value=0),
+            ):
+                self.assertEqual(cockpit.cockpit(), 0)
+            self.assertEqual(events, [("reset", ["dev"]), ("prepare", ["dev"]), ("create",)])
+
+    def test_reset_cancellation_does_not_prepare_or_create_cockpit(self):
+        with (
+            patch.object(cockpit, "ensure_config"),
+            patch.object(cockpit.shutil, "get_terminal_size", return_value=os.terminal_size((100, 24))),
+            patch.object(cockpit, "load_hosts", return_value=["dev"]),
+            patch.object(cockpit.sessions, "reset_ssh_masters", side_effect=KeyboardInterrupt),
+            patch.object(cockpit, "_prepare_remote_hosts") as prepare,
+            patch.object(cockpit, "ensure_cockpit") as create,
+            patch.object(cockpit, "_attach") as attach,
+            patch("builtins.print"),
+        ):
+            self.assertEqual(cockpit.cockpit(), 130)
+        prepare.assert_not_called()
+        create.assert_not_called()
+        attach.assert_not_called()
+
     def test_valid_cockpit_reattaches_without_ssh_preparation_or_sidebar_restart(self):
         events = []
         with (
             patch.object(cockpit, "ensure_config") as ensure_config,
             patch.object(cockpit.shutil, "get_terminal_size", return_value=os.terminal_size((100, 24))),
             patch.object(cockpit, "_valid", return_value=True) as valid,
+            patch.object(cockpit.sessions, "reset_ssh_masters") as reset,
             patch.object(cockpit, "load_hosts") as load_hosts,
             patch.object(cockpit, "_prepare_remote_hosts") as prepare_hosts,
             patch.object(cockpit, "ensure_cockpit", side_effect=lambda: events.append("configure")) as ensure_cockpit,
@@ -130,6 +170,7 @@ class CockpitStartupTest(unittest.TestCase):
         ensure_config.assert_called_once_with()
         valid.assert_called_once_with()
         attach.assert_called_once_with()
+        reset.assert_not_called()
         load_hosts.assert_not_called()
         prepare_hosts.assert_not_called()
         ensure_cockpit.assert_called_once_with()

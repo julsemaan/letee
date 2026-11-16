@@ -177,13 +177,17 @@ For example:
 hosts = ["my-remote-machine"]
 ```
 
-By default, letee makes OpenSSH reuse one authenticated transport per host with `ControlMaster=auto`, `ControlPersist=10m`, and `ControlPath=~/.ssh/letee-%C`. Later discovery polls, switches, creates, and kills avoid repeating TCP setup, key exchange, and authentication. Control sockets remain for 10 minutes after the last use.
+By default, letee makes OpenSSH reuse one authenticated transport per host with `ControlMaster=auto`, `ControlPersist=10m`, and `ControlPath=~/.ssh/letee-%C`. Later discovery polls, switches, creates, and kills avoid repeating TCP setup, key exchange, and authentication. Control sockets remain for 10 minutes after the last use. Before SSH preparation or discovery on a fresh cockpit startup, letee closes its managed masters for configured hosts. This also happens on non-TTY starts. Missing masters are normal; other reset failures produce a warning and startup continues.
+
+After changing forwarding or other SSH connection settings in `~/.ssh/config`, quit the cockpit and reopen letee to apply them. Reattaching to an existing cockpit does not reset connections. Quit and detach leave masters running until the next fresh start or their persistence timeout. Remote tmux sessions and the SSH agent remain running.
+
+Masters are shared across named letee servers. Starting a fresh cockpit can disconnect SSH clients in another instance using those masters.
 
 Interactive startup blocks before opening the cockpit while it groups hosts by effective `IdentityAgent`, or by `IdentityFile` when no agent applies. It warms one host from each group sequentially, trying the next group host after a warm-up failure, then probes remaining hosts together without sharing the terminal. Failed probes retry through sequential interactive SSH checks, so enter passphrases when OpenSSH asks. Preflight disables multiplexing, so an existing control connection cannot bypass authentication. Hosts that still fail remain unavailable, and diagnostics suggest running `ssh <host>` directly. Non-TTY startup skips these SSH checks and reports why. With no configured hosts, letee prints no SSH setup output.
 
 Letee reuses a reachable inherited `SSH_AUTH_SOCK`. When none is usable, it starts or reuses the persistent fallback agent socket `~/.ssh/letee-agent.sock`. Unlocked keys survive later letee launches while that agent stays alive. Shared SSH options include `AddKeysToAgent=yes`, so successfully used file-backed keys are cached in the agent. Hardware-backed keys and keys requiring confirmation can still prompt for each use. Grouping reduces concurrent prompts but cannot override token or agent confirmation policy.
 
-New letee SSH connections use `ConnectTimeout=2`, `ServerAliveInterval=5`, and `ServerAliveCountMax=3` by default. The `[timing]` settings above control these values. Keepalive detects dead connections and keeps idle sessions active through network and NAT timeouts; it remains enabled when `persistent_ssh` is disabled. Existing persistent masters retain their previous keepalive settings until replaced, so restarting letee alone does not change those connections.
+New letee SSH connections use `ConnectTimeout=2`, `ServerAliveInterval=5`, and `ServerAliveCountMax=3` by default. The `[timing]` settings above control these values. Keepalive detects dead connections and keeps idle sessions active through network and NAT timeouts; it remains enabled when `persistent_ssh` is disabled. Existing persistent masters retain their previous keepalive settings until replaced. Quit and reopen the cockpit to replace letee-managed masters.
 
 To omit letee's persistence options, set:
 
@@ -191,7 +195,7 @@ To omit letee's persistence options, set:
 persistent_ssh = false
 ```
 
-SSH configuration still applies, so this opt-out does not disable multiplexing configured there.
+SSH configuration still applies, so this opt-out does not disable multiplexing configured there. It also skips letee's startup master reset.
 
 Host names must match:
 

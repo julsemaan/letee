@@ -14,6 +14,7 @@ import signal
 import socket
 import stat
 import subprocess
+import sys
 import time
 
 from . import diagnostics
@@ -392,6 +393,39 @@ def group_hosts(hosts: Iterable[str]) -> list[list[str]]:
         grouped.setdefault(key, []).append(host)
     diagnostics.log("sessions.group_hosts.result", group_count=len(grouped), host_count=sum(map(len, grouped.values())))
     return list(grouped.values())
+
+
+@diagnostics.operation("sessions.reset_ssh_masters")
+def reset_ssh_masters(hosts: Iterable[str]) -> None:
+    """Close managed transports before a fresh cockpit starts using SSH."""
+    if not load_persistent_ssh():
+        return
+    for host in dict.fromkeys(validate_host(host) for host in hosts):
+        with diagnostics.operation("sessions.reset_ssh_master", host=host) as operation:
+            try:
+                result = subprocess.run(
+                    ("ssh", *INTERACTIVE_OPTIONS, "-O", "exit", host),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=load_timing().local_command_timeout,
+                    env={**os.environ, "LC_ALL": "C"},
+                )
+                operation.fields["returncode"] = result.returncode
+                if result.returncode == 0:
+                    operation.outcome = "closed"
+                    continue
+                message = result.stderr.strip()
+                if message.startswith("Control socket connect(") and message.endswith(": No such file or directory"):
+                    operation.outcome = "absent"
+                    continue
+                diagnostics.error(handling="ignored", stage="ssh_master_reset", host=host,
+                                  returncode=result.returncode)
+            except (OSError, subprocess.SubprocessError) as error:
+                diagnostics.error(error, handling="ignored", stage="ssh_master_reset", host=host)
+            operation.outcome = "failed"
+            print(f"Warning: could not reset SSH master for {host}; SSH configuration changes may not apply.",
+                  file=sys.stderr, flush=True)
 
 
 def prepare_host(host: str) -> bool:

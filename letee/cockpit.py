@@ -762,6 +762,7 @@ def cockpit() -> int:
             return _attach()
         hosts = load_hosts()
         try:
+            sessions.reset_ssh_masters(hosts)
             _prepare_remote_hosts(hosts)
         except KeyboardInterrupt as error:
             operation.outcome = "cancelled"
