@@ -151,7 +151,7 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
 
 def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict, *, raise_errors: bool = False) -> EffectResult:
     target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
-    planned = planned_favorites(effect, favorites)
+    planned = favorites
     partial = reset = False
     def result(error: str = "", stale: bool = False) -> EffectResult:
         return EffectResult(effect, planned, error, stale_navigation=stale,
@@ -173,6 +173,10 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 if (deadline is not None and time.monotonic() < deadline
                         and not cockpit.attachment_failed(target, state["launch"])):
                     return result(stale=True)
+        if (effect.kind in ("switch", "add_switch", "switch_pane", "create")
+                and isinstance(effect.target, Target) and effect.attach_command is None):
+            validate_session_name(target.session)
+        planned = planned_favorites(effect, favorites)
         if effect.kind in ("switch", "add_switch", "switch_pane", "create") and isinstance(target, Target):
             if effect.kind == "create":
                 sessions.create(target)
