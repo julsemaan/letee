@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from . import cockpit, config, diagnostics, sessions
-from .names import PaneTarget, Target
+from .names import PaneTarget, Target, validate_session_name
 
 
 @dataclass(frozen=True)
@@ -88,7 +88,7 @@ def is_current(result: EffectResult) -> bool:
 def renamed_target(effect: Effect) -> Target | None:
     if effect.kind != "rename" or not isinstance(effect.target, Target):
         return None
-    return Target(effect.target.kind, effect.message, effect.target.host)
+    return Target(effect.target.kind, validate_session_name(effect.message), effect.target.host)
 
 
 def planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[Target, ...]:
@@ -151,7 +151,7 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
 
 def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict, *, raise_errors: bool = False) -> EffectResult:
     target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
-    planned = planned_favorites(effect, favorites)
+    planned = favorites
     partial = reset = False
     def result(error: str = "", stale: bool = False) -> EffectResult:
         return EffectResult(effect, planned, error, stale_navigation=stale,
@@ -173,6 +173,17 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 if (deadline is not None and time.monotonic() < deadline
                         and not cockpit.attachment_failed(target, state["launch"])):
                     return result(stale=True)
+        legacy_attach = False
+        if (effect.kind in ("switch", "add_switch", "switch_pane", "create")
+                and isinstance(effect.target, Target) and effect.attach_command is None):
+            try:
+                validate_session_name(target.session)
+            except SystemExit:
+                if effect.kind == "create":
+                    raise
+                sessions.require_existing(target)
+                legacy_attach = True
+        planned = planned_favorites(effect, favorites)
         if effect.kind in ("switch", "add_switch", "switch_pane", "create") and isinstance(target, Target):
             if effect.kind == "create":
                 sessions.create(target)
@@ -181,7 +192,9 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             # Ensure creation under the lock; delayed pane commands must not recreate renamed targets.
             # Automatic preparation must leave the current overlay in place on failure.
             command = effect.attach_command
-            if effect.automatic:
+            if legacy_attach:
+                command = sessions.attach_command(target, attach_only=True)
+            elif effect.automatic:
                 sessions.ensure_created(target)
                 command = sessions.attach_command(target, attach_only=True)
             if effect.automatic and cockpit.current_target() != target:

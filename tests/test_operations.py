@@ -10,7 +10,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from letee import config, cockpit, operations
-from letee.names import Target
+from letee.names import PaneTarget, Target
 
 
 class OperationsTest(unittest.TestCase):
@@ -22,6 +22,75 @@ class OperationsTest(unittest.TestCase):
         self.addCleanup(self.env.stop)
         self.work = Target("local", "work")
         config.save_sessions([self.work])
+
+    def test_existing_legacy_navigation_uses_attach_only(self):
+        for kind in ("switch", "add_switch"):
+            for target in (Target("local", "work.one"), Target("ssh", "work.one", "dev")):
+                with self.subTest(kind=kind, target=target):
+                    config.save_sessions([self.work])
+                    with patch.object(operations.sessions, "_run", return_value="") as probe, \
+                         patch.object(operations.sessions, "load_tmux_config_overlay", return_value=False), \
+                         patch.object(cockpit, "switch") as switch:
+                        result = operations.perform(operations.Effect(kind, target))
+                        self.assertFalse(result.error)
+                        command = switch.call_args.args[1]
+                        command = command() if callable(command) else command
+                    self.assertIn("attach-session", command)
+                    self.assertNotIn("new-session", command)
+                    probe.assert_called_once()
+                    query = probe.call_args.args[2]
+                    if target.kind == "local":
+                        self.assertEqual(query[-3:], ("has-session", "-t", "=work.one"))
+                    else:
+                        self.assertIn("has-session -t =work.one", query[-1])
+                    expected = [self.work, target] if kind == "add_switch" else [self.work]
+                    self.assertEqual(config.load_sessions(), expected)
+
+    def test_missing_legacy_navigation_keeps_favorites_and_operation_state(self):
+        for kind in ("switch", "add_switch"):
+            for target in (Target("local", "work.one"), Target("ssh", "work.one", "dev")):
+                with self.subTest(kind=kind, target=target):
+                    state = config.load_operations()
+                    with patch.object(operations.sessions, "_run", side_effect=SystemExit("missing session")), \
+                         patch.object(cockpit, "switch") as switch:
+                        result = operations.perform(operations.Effect(kind, target))
+                    self.assertEqual(result.error, "missing session")
+                    self.assertEqual(result.favorites, (self.work,))
+                    self.assertEqual(config.load_sessions(), [self.work])
+                    self.assertEqual(config.load_operations(), state)
+                    switch.assert_not_called()
+
+    def test_create_rejects_legacy_names_before_side_effects(self):
+        for target in (Target("local", "work.one"), Target("ssh", "work.one", "dev")):
+            with self.subTest(target=target):
+                state = config.load_operations()
+                with patch.object(operations.sessions, "_run") as command, \
+                     patch.object(cockpit, "switch") as switch:
+                    result = operations.perform(operations.Effect("create", target))
+                self.assertIn("Invalid session", result.error)
+                self.assertEqual(config.load_sessions(), [self.work])
+                self.assertEqual(config.load_operations(), state)
+                command.assert_not_called()
+                switch.assert_not_called()
+
+    def test_legacy_navigation_allows_explicit_attach_and_pane_targets(self):
+        target = Target("local", "work.one")
+        pane = PaneTarget(target, "@1", "%2", "/tmp/inner.sock")
+        effects = (
+            operations.Effect("switch", target, attach_command="attach-only"),
+            operations.Effect("switch_pane", pane),
+        )
+        for effect in effects:
+            with self.subTest(effect=effect):
+                with patch.object(cockpit, "switch") as switch:
+                    result = operations.perform(effect)
+                self.assertFalse(result.error)
+                switch.assert_called_once()
+                command = switch.call_args.args[1]
+                if effect.attach_command is not None:
+                    self.assertEqual(command, "attach-only")
+                else:
+                    self.assertIn("attach-session", command())
 
     def test_attachment_failure_is_launch_scoped_and_allows_retry_during_startup(self):
         launch = operations.launch_identity()

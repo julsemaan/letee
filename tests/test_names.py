@@ -44,6 +44,23 @@ class NameDiagnosticsTest(unittest.TestCase):
                 self.assertNotIn("secret", repr(error.call_args))
 
 
+class SessionNameTest(unittest.TestCase):
+    def test_creation_names_are_strict_and_returned_unchanged(self):
+        for value in ("a", "-V", "Work_123-abc", "x" * 64):
+            with self.subTest(value=value):
+                self.assertEqual(names.validate_session_name(value), value)
+        for value in ("", ".", "work.one", "a:b", "a b", "a/b", "a\n", "a\t", "a\x00", "café", "x" * 65):
+            with self.subTest(value=value), patch.object(diagnostics, "error") as error:
+                with self.assertRaisesRegex(SystemExit, "Invalid session"):
+                    names.validate_session_name(value)
+                error.assert_called_once_with(handling="exit", reason="invalid_session_name")
+
+    def test_legacy_targets_and_dotted_hostnames_remain_readable(self):
+        for text in ("local:work.one", "ssh:dev.example:work.one"):
+            self.assertEqual(names.parse_target(text).format(), text)
+        self.assertEqual(names.validate_host("dev.example"), "dev.example")
+
+
 class ServerNameTest(unittest.TestCase):
     def test_default_and_named_servers_map_to_private_outer_socket_names(self):
         self.assertEqual(normalize_server(None), "default")

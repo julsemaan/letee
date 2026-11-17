@@ -30,7 +30,7 @@ from .config import (
     load_status_timeout,
     load_timing,
 )
-from .names import PaneTarget, Target, validate_name
+from .names import PaneTarget, Target, validate_session_name
 from .workspace import AgentActivity, visible_agents
 from .runtime import _focused_agent_id as _focused_agent_id
 
@@ -724,7 +724,7 @@ def _available_locations(snapshot: SessionSnapshot) -> list[tuple[str, str]]:
 
 def _valid_session_name(name: str) -> bool:
     try:
-        validate_name(name, "session")
+        validate_session_name(name)
     except SystemExit as error:
         diagnostics.error(error, handling="validation", operation="validate_session_name")
         return False
@@ -1871,7 +1871,7 @@ def _search_key(
     _clear_status(state)
     text = state.filter_text
     if text and not _valid_session_name(text):
-        state.status = "Invalid session name"
+        state.status = "Session names must match [A-Za-z0-9_-]{1,64}"
     return True
 
 
@@ -1888,7 +1888,7 @@ def _rename_key(
     if key in (curses.KEY_BACKSPACE, 8, 127):
         state.creation_text = state.creation_text[:-1]
     elif key in (10, 13, curses.KEY_ENTER):
-        name = validate_name(state.creation_text, "session")
+        name = validate_session_name(state.creation_text)
         if _name_conflicts(
             name, state.creation_host or "", existing_sessions, state.rename_target
         ):

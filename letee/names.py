@@ -7,6 +7,7 @@ from typing import Literal
 from . import diagnostics
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+SESSION_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 SESSION_ID_RE = re.compile(r"^\$\d+$")
 WINDOW_ID_RE = re.compile(r"^@\d+$")
 PANE_ID_RE = re.compile(r"^%\d+$")
@@ -20,6 +21,14 @@ def validate_name(value: str, label: str = "name") -> str:
     if not NAME_RE.fullmatch(value):
         diagnostics.error(handling="exit", reason="invalid_name")
         raise SystemExit(f"Invalid {label}: {value!r}. Must match [A-Za-z0-9_.-]{{1,64}}")
+    return value
+
+
+def validate_session_name(value: str) -> str:
+    """Validate mutation destinations without restricting legacy target parsing."""
+    if not SESSION_NAME_RE.fullmatch(value):
+        diagnostics.error(handling="exit", reason="invalid_session_name")
+        raise SystemExit(f"Invalid session: {value!r}. Must match [A-Za-z0-9_-]{{1,64}}")
     return value
 
 
