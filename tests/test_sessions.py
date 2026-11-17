@@ -416,7 +416,7 @@ class SessionOperationsTest(unittest.TestCase):
         )
 
     def test_remote_create_and_kill_use_configured_persistence(self):
-        target = Target("ssh", "work.one", "dev")
+        target = Target("ssh", "work-one", "dev")
         with (
             patch("letee.sessions.load_persistent_ssh", side_effect=[True, False]),
             patch("letee.sessions.load_tmux_config_overlay", return_value=False),
@@ -432,11 +432,11 @@ class SessionOperationsTest(unittest.TestCase):
                     "ssh", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
                     "-o", "AddKeysToAgent=yes", "-o", "ControlMaster=auto",
                     "-o", "ControlPath=~/.ssh/letee-%C", "-o", "ControlPersist=10m",
-                    "dev", "tmux -L letee.inner new-session -d -s work.one",
+                    "dev", "tmux -L letee.inner new-session -d -s work-one",
                 ),
                 (
                     "ssh", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
-                    "-o", "AddKeysToAgent=yes", "dev", "tmux -L letee.inner kill-session -t work.one",
+                    "-o", "AddKeysToAgent=yes", "dev", "tmux -L letee.inner kill-session -t work-one",
                 ),
             ],
         )
@@ -489,6 +489,34 @@ class SessionOperationsTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(SystemExit, r"^rename ssh:dev:work timed out$"):
                 rename(Target("ssh", "work", "dev"), "renamed")
+
+    def test_invalid_names_cannot_mutate_local_or_remote_sessions(self):
+        for kind, host in (("local", None), ("ssh", "dev.example")):
+            for name in ("", "work.one", "a:b", "a b", "a/b", "a\n", "a\x00", "café", "x" * 65):
+                with self.subTest(kind=kind, name=name), patch.object(sessions.subprocess, "run") as run:
+                    with self.assertRaisesRegex(SystemExit, "Invalid session"):
+                        rename(Target(kind, "old", host), name)
+                    for action in (create, sessions.ensure_created, attach_command):
+                        with self.assertRaisesRegex(SystemExit, "Invalid session"):
+                            action(Target(kind, name, host), overlay=True)
+                    run.assert_not_called()
+
+    def test_legacy_dotted_targets_can_attach_without_creation(self):
+        for kind, host in (("local", None), ("ssh", "dev.example")):
+            with self.subTest(kind=kind):
+                command = attach_command(Target(kind, "work.one", host), overlay=False, attach_only=True)
+                self.assertIn("attach-session -t =work.one", command)
+                self.assertNotIn("new-session", command)
+
+    def test_creation_preserves_valid_boundary_names(self):
+        for kind, host in (("local", None), ("ssh", "dev.example")):
+            for name in ("a", "-V", "Work_123-abc", "x" * 64):
+                with self.subTest(kind=kind, name=name), patch.object(sessions.subprocess, "run") as run:
+                    target = Target(kind, name, host)
+                    create(target, overlay=False)
+                    self.assertIn(name, str(run.call_args.args[0]))
+                    self.assertIn(name, attach_command(target, overlay=False))
+                    self.assertEqual(rename(target, name), target)
 
     def test_rename_validates_new_name_before_running_command(self):
         with patch("letee.sessions.subprocess.run") as run:
@@ -550,15 +578,15 @@ class EnsureCreatedTest(unittest.TestCase):
                 self.assertEqual(run.call_args.kwargs["env"], {"PATH": "x"})
 
     def test_existing_or_concurrently_created_session_is_verified_exactly(self):
-        for target in (Target("local", "work.one"), Target("ssh", "work.one", "dev")):
-            duplicate = subprocess.CalledProcessError(1, ["tmux"], stderr="duplicate session: work.one\n")
+        for target in (Target("local", "work-one"), Target("ssh", "work-one", "dev")):
+            duplicate = subprocess.CalledProcessError(1, ["tmux"], stderr="duplicate session: work-one\n")
             with (
                 self.subTest(target=target),
                 patch.object(sessions.subprocess, "run", side_effect=[duplicate, Mock(stdout="")]) as run,
             ):
                 self.assertIsNone(sessions.ensure_created(target, overlay=False))
             command = run.call_args.args[0]
-            expected = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=work.one")
+            expected = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=work-one")
             if target.kind == "local":
                 self.assertEqual(command, expected)
                 self.assertNotIn("TMUX", run.call_args.kwargs["env"])

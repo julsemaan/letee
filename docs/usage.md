@@ -71,7 +71,9 @@ local:<session>
 ssh:<host>:<session>
 ```
 
-Hosts and session names must match `[A-Za-z0-9_.-]{1,64}`. SSH hosts must not start with `-`.
+New session names and rename destinations must match `[A-Za-z0-9_-]{1,64}`: 1–64 ASCII letters, digits, underscores, or hyphens. Leading hyphens are allowed. Invalid names are rejected, never sanitized, because tmux changes dots in session names. Existing saved targets remain readable and are not automatically renamed or deleted; attach-only commands can still use them.
+
+Hosts and cockpit names keep the `[A-Za-z0-9_.-]{1,64}` format. SSH hosts and cockpit names must not start with `-`.
 
 `switch` and the sidebar use outer tmux `respawn-pane` on the right pane. The real tmux sessions stay alive. `rename` requires a tracked target and updates only the selected outer server after the tmux rename succeeds. `-L <name>` applies to the cockpit, tracked-session commands, and `kill-server`; `list-servers` discovers running verified letee servers independently of the selected name.
 

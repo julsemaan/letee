@@ -480,16 +480,30 @@ class MainTest(unittest.TestCase):
         rename.assert_not_called()
         replace.assert_not_called()
 
-    def test_rename_rejects_invalid_new_name_without_touching_tmux(self):
-        target = Target("local", "work")
-        with (
-            patch("letee.config.load_sessions", return_value=[target]),
-            patch("letee.operations.sessions.rename") as rename,
-        ):
-            with self.assertRaisesRegex(SystemExit, "Invalid session"):
-                main(["rename", target.format(), "bad name"])
+    def test_invalid_session_mutations_leave_tracked_state_unchanged(self):
+        from letee import config
 
-        rename.assert_not_called()
+        for kind, host in (("local", None), ("ssh", "dev.example")):
+            target = Target(kind, "work.one", host)
+            config.save_sessions([target])
+            for name in ("", "new.name", "a:b", "a b", "a/b", "a\n", "café", "x" * 65):
+                for command in ("create", "rename"):
+                    args = (["rename", target.format(), name] if command == "rename" else
+                            ["create", kind, *([host] if host else []), name])
+                    with (
+                        self.subTest(kind=kind, name=name, command=command),
+                        patch("letee.sessions.subprocess.run") as run,
+                        patch("letee.config.save_sessions") as save,
+                        patch("letee.config.save_operations") as save_operations,
+                        patch("letee.cockpit.switch") as switch,
+                        self.assertRaisesRegex(SystemExit, "Invalid session"),
+                    ):
+                        main(args)
+                    run.assert_not_called()
+                    save.assert_not_called()
+                    save_operations.assert_not_called()
+                    switch.assert_not_called()
+                    self.assertEqual(config.load_sessions(), [target])
 
     def test_failed_rename_does_not_replace_tracked_target(self):
         target = Target("local", "old")

@@ -3727,6 +3727,19 @@ class AddFlowTest(OperationTestCase):
         # Invalid names never create.
         self.assertEqual(entries_for("bad name"), empty_state)
 
+    def test_invalid_creation_names_keep_legacy_search_matches(self):
+        data = snapshot(local=("work.one",))
+        for name in ("work.one", "a:b", "a b", "a/b", "a\n", "café", "x" * 65):
+            with self.subTest(name=name):
+                entries = sidebar._search_entries("", name, data, [])
+                self.assertFalse(any(entry.kind == "create" for entry in entries))
+        entries = sidebar._search_entries("", "work.one", data, [])
+        self.assertEqual([(entry.label, entry.kind) for entry in entries], [("work.one", "session")])
+        state = SidebarState(add_view="search", creation_host="", filter_text="work")
+        sidebar._search_key(state, ord("."), data)
+        self.assertEqual(state.filter_text, "work.")
+        self.assertIn("[A-Za-z0-9_-]{1,64}", state.status)
+
     def test_search_sorts_exact_match_first_and_hides_create_row(self):
         data = snapshot(local=("workshop", "work"))
 
@@ -3804,7 +3817,7 @@ class AddFlowTest(OperationTestCase):
         self.assertEqual(state.status, "")
 
         self.assertTrue(_search_key(state, ord(" "), data))
-        self.assertEqual(state.status, "Invalid session name")
+        self.assertIn("[A-Za-z0-9_-]{1,64}", state.status)
 
     def test_search_key_caps_name_length_and_clears_stale_status(self):
         data = snapshot()
@@ -4250,7 +4263,7 @@ class SidebarStateTest(OperationTestCase):
 
         state.filter_text = "bad name"
         self.assertTrue(_search_key(state, ord("!"), data))
-        self.assertEqual(state.status, "Invalid session name")
+        self.assertIn("[A-Za-z0-9_-]{1,64}", state.status)
 
     def test_search_key_allows_same_name_on_different_host(self):
         data = snapshot(local=("work",), remotes={"dev": source("ssh", host="dev")})
@@ -4325,6 +4338,14 @@ class SidebarStateTest(OperationTestCase):
             (state.add_view, state.rename_target, state.creation_host, state.creation_text),
             ("name", target, "", "old"),
         )
+
+    def test_rename_rejects_invalid_names_without_losing_editor_text(self):
+        old = Target("local", "work.one")
+        for name in ("", "new.name", "a:b", "a b", "a/b", "a\n", "café", "x" * 65):
+            state = SidebarState(add_view="name", rename_target=old, creation_host="", creation_text=name)
+            with self.subTest(name=name), self.assertRaisesRegex(SystemExit, "Invalid session"):
+                _rename_key(state, 10, (old,))
+            self.assertEqual((state.add_view, state.rename_target, state.creation_text), ("name", old, name))
 
     def test_rename_key_rejects_same_host_conflict_without_closing_editor(self):
         old = Target("local", "old")
@@ -10680,7 +10701,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
             ("mouse_capability", "letee.sidebar.curses.has_mouse", curses.error, sidebar._mouse_diagnostics),
             ("terminal_capability", "letee.sidebar.curses.tigetstr", ValueError, sidebar._mouse_diagnostics),
             ("init_colors", "letee.sidebar.curses.has_colors", curses.error, sidebar._init_colors),
-            ("validate_session_name", "letee.sidebar.validate_name", SystemExit, lambda: sidebar._valid_session_name("one")),
+            ("validate_session_name", "letee.sidebar.validate_session_name", SystemExit, lambda: sidebar._valid_session_name("one")),
             ("mouse_motion_mode", "letee.sidebar.os.write", OSError, sidebar._mouse_mask),
             ("mouse_mask", "letee.sidebar.curses.mousemask", curses.error, sidebar._mouse_mask),
             ("mouse_cleanup", "letee.sidebar.os.write", OSError, sidebar._mouse_cleanup),

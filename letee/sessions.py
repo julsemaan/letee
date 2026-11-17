@@ -19,7 +19,7 @@ import time
 
 from . import diagnostics
 from .config import load_persistent_ssh, load_timing, load_tmux_config_overlay
-from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, WindowTarget, validate_host
+from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, WindowTarget, validate_host, validate_session_name
 
 
 OVERLAY_FILE = Path(__file__).with_name("tmux-overlay.conf")
@@ -512,6 +512,8 @@ def _remote_attach_command(target: Target, command: str, *, overlay: bool) -> st
 
 @_session_operation("sessions.attach_command")
 def attach_command(target: Target, *, overlay: bool | None = None, attach_only: bool = False) -> str:
+    if not attach_only:
+        validate_session_name(target.session)
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     action = (f"attach-session -t {shlex.quote('=' + target.session)}" if attach_only
               else f"new-session -A -s {shlex.quote(target.session)}")
@@ -683,6 +685,7 @@ def _run(
 
 @_session_operation("sessions.create")
 def create(target: Target, *, overlay: bool | None = None) -> None:
+    validate_session_name(target.session)
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     if target.kind == "local":
         command = ("tmux", "-L", INNER_SERVER_SOCKET, "new-session", "-d", "-s", target.session)
@@ -839,6 +842,7 @@ def kill_agent(pane_target: PaneTarget) -> None:
 
 @_session_operation("sessions.rename")
 def rename(target: Target, new_name: str) -> Target:
+    validate_session_name(new_name)
     renamed = Target(target.kind, new_name, target.host)
     if target.kind == "local":
         _run(

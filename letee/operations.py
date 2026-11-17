@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from . import cockpit, config, diagnostics, sessions
-from .names import PaneTarget, Target
+from .names import PaneTarget, Target, validate_session_name
 
 
 @dataclass(frozen=True)
@@ -88,7 +88,7 @@ def is_current(result: EffectResult) -> bool:
 def renamed_target(effect: Effect) -> Target | None:
     if effect.kind != "rename" or not isinstance(effect.target, Target):
         return None
-    return Target(effect.target.kind, effect.message, effect.target.host)
+    return Target(effect.target.kind, validate_session_name(effect.message), effect.target.host)
 
 
 def planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[Target, ...]:
