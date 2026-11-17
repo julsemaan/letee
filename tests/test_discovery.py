@@ -1201,6 +1201,27 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertEqual(self._timeout_requests(poller, now, 4), [3, 6, 10, 10])
         self.assertEqual(self._connect_timeouts(popen), [f"ConnectTimeout={n}" for n in (2, 4, 7, 7)])
 
+    def test_expired_completions_escalate_timeouts_and_preserve_snapshot(self):
+        now = [0.0]
+        popen = Mock(side_effect=lambda *args, **kwargs: FakeProcess())
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        self.addCleanup(poller.close)
+        previous = SourceSnapshot(True, (Target("ssh", "work", "dev"),), frozenset())
+        poller.remotes["dev"] = previous
+        limits = []
+        for _ in range(4):
+            poller.tick()
+            request = poller._active["dev"]
+            limits.append(request.timeout)
+            request.process.returncode = 255
+            now[0] = request.started + request.timeout + 0.1
+            self.assertFalse(poller.tick())
+            self.assertIs(poller.remotes["dev"], previous)
+            self.assertNotIn("dev", poller._active)
+            self.assertEqual(poller._next["dev"], now[0])
+        self.assertEqual(limits, [3, 6, 10, 10])
+        self.assertEqual(self._connect_timeouts(popen), [f"ConnectTimeout={n}" for n in (2, 4, 7, 7)])
+
     def test_success_resets_timeouts_but_refresh_keeps_them(self):
         now = [0.0]
         processes = [FakeProcess(), FakeProcess(), FakeProcess(0)]

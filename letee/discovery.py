@@ -671,6 +671,7 @@ class DiscoveryPoller:
             request.output.close()
             request.errors.close()
             del self._active[host]
+            self._timeout_factor[host] = min(self._timeout_factor[host] * 2, self._max_timeout_factor)
             self._next[host] = self._clock()
             diagnostics.log(
                 "discovery.request_finished", host=host, request_id=request.request_id,
