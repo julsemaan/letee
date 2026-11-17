@@ -173,9 +173,16 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
                 if (deadline is not None and time.monotonic() < deadline
                         and not cockpit.attachment_failed(target, state["launch"])):
                     return result(stale=True)
+        legacy_attach = False
         if (effect.kind in ("switch", "add_switch", "switch_pane", "create")
                 and isinstance(effect.target, Target) and effect.attach_command is None):
-            validate_session_name(target.session)
+            try:
+                validate_session_name(target.session)
+            except SystemExit:
+                if effect.kind == "create":
+                    raise
+                sessions.require_existing(target)
+                legacy_attach = True
         planned = planned_favorites(effect, favorites)
         if effect.kind in ("switch", "add_switch", "switch_pane", "create") and isinstance(target, Target):
             if effect.kind == "create":
@@ -185,7 +192,9 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             # Ensure creation under the lock; delayed pane commands must not recreate renamed targets.
             # Automatic preparation must leave the current overlay in place on failure.
             command = effect.attach_command
-            if effect.automatic:
+            if legacy_attach:
+                command = sessions.attach_command(target, attach_only=True)
+            elif effect.automatic:
                 sessions.ensure_created(target)
                 command = sessions.attach_command(target, attach_only=True)
             if effect.automatic and cockpit.current_target() != target:

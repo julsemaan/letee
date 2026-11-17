@@ -717,6 +717,17 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
         _run("create", target, ssh_command(target.host or "", command))
 
 
+def require_existing(target: Target) -> None:
+    """Reject missing legacy destinations before navigation changes state."""
+    if target.kind == "local":
+        command = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=" + target.session)
+        kwargs = {"env": _inner_server_env()}
+    else:
+        command = ssh_command(target.host or "", f"{INNER_TMUX} has-session -t {shlex.quote('=' + target.session)}")
+        kwargs = {}
+    _run("find", target, command, **kwargs)
+
+
 def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
     """Create a detached session, or accept an exact, verified duplicate.
 
