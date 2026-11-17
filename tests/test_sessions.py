@@ -110,6 +110,8 @@ class SessionOperationsTest(unittest.TestCase):
             kill(Target("ssh", "work", "dev"))
             self.assertEqual(run.call_args.kwargs["timeout"], 0.75)
             self.assertIn("ConnectTimeout=4", run.call_args.args[0])
+            self.assertIn("ConnectTimeout=4", ssh_command("dev", "true", persistent_ssh=False))
+            self.assertIn("ConnectTimeout=9", ssh_command("dev", "true", persistent_ssh=False, connect_timeout=9))
             self.assertIn("ServerAliveInterval=7", run.call_args.args[0])
             self.assertIn("ServerAliveCountMax=2", run.call_args.args[0])
             sessions.prepare_host("dev")

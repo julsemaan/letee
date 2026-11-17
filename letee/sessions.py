@@ -445,7 +445,7 @@ def probe_hosts(hosts: Iterable[str]) -> list[bool]:
     return results
 
 
-def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: bool = False) -> tuple[str, ...]:
+def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: bool = False, connect_timeout: int | None = None) -> tuple[str, ...]:
     if persistent_ssh is None:
         persistent_ssh = load_persistent_ssh()
     if interactive:
@@ -455,6 +455,8 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: boo
         multiplex = MULTIPLEX_OPTIONS if persistent_ssh else ()
         persist = PERSIST_OPTIONS if persistent_ssh else ()
     timing = load_timing()
+    if connect_timeout is None:
+        connect_timeout = timing.ssh_connect_timeout
     # Only fixed, non-sensitive options are inspected. Later options override defaults.
     effective = {"ControlMaster": "auto" if persistent_ssh else "config",
                  "ControlPath": "managed" if persistent_ssh else "config",
@@ -469,14 +471,14 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: boo
     if interactive and persistent_ssh:
         effective["ControlMaster"] = "no"
     diagnostics.log("sessions.ssh_settings", persistent_ssh=persistent_ssh, interactive=interactive,
-                    connect_timeout=timing.ssh_connect_timeout,
+                    connect_timeout=connect_timeout,
                     keepalive_interval=timing.ssh_keepalive_interval,
                     keepalive_count_max=timing.ssh_keepalive_count_max,
                     control_master=effective["ControlMaster"], control_path=effective["ControlPath"],
                     control_persist=effective["ControlPersist"], batch_mode=effective["BatchMode"])
     return (
         "ssh",
-        "-o", f"ConnectTimeout={timing.ssh_connect_timeout}",
+        "-o", f"ConnectTimeout={connect_timeout}",
         "-o", f"ServerAliveInterval={timing.ssh_keepalive_interval}",
         "-o", f"ServerAliveCountMax={timing.ssh_keepalive_count_max}",
         *SSH_OPTIONS, *multiplex, *persist, *args,

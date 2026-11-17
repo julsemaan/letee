@@ -68,7 +68,7 @@ hosts = ["dev-slow"]
 persistent_ssh = false
 ```
 
-`--delay-ms` adds one-way delay, so `300ms` approximates `600ms` RTT. Set `persistent_ssh = false` so letee's OpenSSH multiplexing does not bypass the proxy after the first connection. Run a direct smoke test with:
+`--delay-ms` adds one-way delay, so `300ms` approximates `600ms` RTT. `--delay-ms 1500` is slow enough that discovery only connects once its timeouts escalate; watch `timeout_factor` in `discovery.request_starting` diagnostics. Set `persistent_ssh = false` so letee's OpenSSH multiplexing does not bypass the proxy after the first connection. Run a direct smoke test with:
 
 ```sh
 ssh dev-slow

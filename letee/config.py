@@ -29,6 +29,7 @@ CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAUL
 class Timing:
     ssh_connect_timeout: int = 2
     remote_command_timeout: float = 3
+    remote_command_max_timeout: float = 10
     local_command_timeout: float = 2
     ssh_auth_timeout: float = 60
     ssh_master_check_timeout: float = 0.5
@@ -228,6 +229,9 @@ def load_timing() -> Timing:
     if timing.retry_initial_delay > timing.retry_max_delay:
         diagnostics.error(handling="exit", reason="invalid_retry_delay_range")
         raise SystemExit(f"Invalid config {cfg}: timing.retry_initial_delay must not exceed timing.retry_max_delay")
+    if timing.remote_command_max_timeout < timing.remote_command_timeout:
+        diagnostics.error(handling="exit", reason="invalid_remote_command_timeout_range")
+        raise SystemExit(f"Invalid config {cfg}: timing.remote_command_max_timeout must not be less than timing.remote_command_timeout")
     return timing
 
 

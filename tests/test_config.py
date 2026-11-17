@@ -45,6 +45,7 @@ class ConfigTest(unittest.TestCase):
             ({"timing": {"private": 1}}, config.load_timing, "unknown_timing_key"),
             ({"timing": {"local_command_timeout": 0}}, config.load_timing, "invalid_timing_value"),
             ({"timing": {"retry_initial_delay": 9}}, config.load_timing, "invalid_retry_delay_range"),
+            ({"timing": {"remote_command_max_timeout": 2}}, config.load_timing, "invalid_remote_command_timeout_range"),
             ({"keybindings": []}, config.load_keybindings, "invalid_keybindings_table"),
             ({"keybindings": {"private": "z"}}, config.load_keybindings, "unknown_keybinding_action"),
             ({"keybindings": {"agents": "z", "focus_agents": "x"}}, config.load_keybindings, "duplicate_keybinding_action"),
@@ -169,6 +170,12 @@ class ConfigTest(unittest.TestCase):
             "[timing]\nssh_keepalive_interval = 1.0",
             "[timing]\nssh_keepalive_count_max = true",
             "[timing]\nretry_initial_delay = 6\nretry_max_delay = 5",
+            "[timing]\nremote_command_max_timeout = 2",
+            "[timing]\nremote_command_timeout = 12",
+            "[timing]\nremote_command_max_timeout = true",
+            "[timing]\nremote_command_max_timeout = 0",
+            "[timing]\nremote_command_max_timeout = -1",
+            "[timing]\nremote_command_max_timeout = inf",
         ):
             with self.subTest(text=text):
                 config.load_timing.cache_clear()
