@@ -20,7 +20,7 @@ Inner local and remote sessions keep their normal tmux prefix and bindings. They
 
 The compact strip shows session numbers, including numbers beyond 9, and agents as a status icon, a space, and two display columns of their name. Working agents keep their spinner even when selected. `!` marks alerts. Click entries to switch without expanding; wheel-scroll each section to reach overflow entries. Titles, metadata, management controls, and agent ordering are omitted.
 
-`C-s h` and the top `»` button, or `>` in ASCII mode, expand and focus the right pane. `C-s s` and `C-s a` expand and focus Sessions or Agents. Management actions expand before showing controls, menus, or prompts. Focus alone does not expand the strip, and returning to the right pane does not collapse it. Session shortcuts, alert jumps, and agent cycling preserve compact mode.
+`C-s h` and the top `»` button, or `>>` in ASCII mode, expand and focus the right pane. `C-s s` and `C-s a` expand and focus Sessions or Agents. Management actions expand before showing controls, menus, or prompts. Focus alone does not expand the strip, and returning to the right pane does not collapse it. Session shortcuts, alert jumps, and agent cycling preserve compact mode.
 
 ## Inner tmux servers
 

@@ -2674,6 +2674,22 @@ class FakeScreen:
         self.calls.append(("timeout", *args))
 
 
+# Enough session rows that the agent panel gets exactly its configured share.
+MANY_SESSIONS = [Entry(str(i), "session", Target("local", str(i)), tracked=True) for i in range(40)]
+
+
+def row_text(screen, row, since=0):
+    """Rebuild one screen row from addnstr spans written after call index `since`."""
+    cells = {}
+    for item in screen.calls[since:]:
+        if item[0] == "erase":
+            cells = {}
+        elif item[0] == "addnstr" and item[1] == row:
+            for offset, char in enumerate(item[3][: item[4]]):
+                cells[item[2] + offset] = char
+    return "".join(cells.get(column, " ") for column in range(max(cells, default=-1) + 1)).strip()
+
+
 def run(stdscr):
     sidebar_run(stdscr)
 
@@ -2871,16 +2887,17 @@ class CompactSidebarTest(OperationTestCase):
         for ascii_mode in (False, True):
             with patch.object(sidebar, "_ascii", return_value=ascii_mode):
                 agent = sidebar.Entry("Pi agent", "agent", target, pane_target=pane, agent_id="a", status="working")
-                self.assertEqual(sidebar._compact_line(agent, 1, set(), target, {(pane, "a")}, "/"), "/ Pi!")
+                self.assertEqual(sidebar._compact_line(agent, 3, True, "/"), "/ 3 !")
+                self.assertEqual(sidebar._compact_line(agent, None, True, "/"), "/ Pi!")
                 wide = sidebar.Entry("界面", "agent", target, pane_target=pane, status="completed")
-                self.assertEqual(sidebar._compact_line(wide, 1, set(), target, set(), None), ("+" if ascii_mode else "✓") + " 界 ")
-                self.assertEqual(sidebar._compact_line(sidebar.Entry("e\u0301cole", "agent", status="idle"), 1, set(), target, set(), None), "o e\u0301c " if ascii_mode else "○ e\u0301c ")
+                self.assertEqual(sidebar._compact_line(wide, None, False, None), ("+" if ascii_mode else "✓") + " 界 ")
+                self.assertEqual(sidebar._compact_line(sidebar.Entry("e\u0301cole", "agent", status="idle"), None, False, None), "o e\u0301c " if ascii_mode else "○ e\u0301c ")
 
     def test_session_numbers_continue_and_active_bells_are_acknowledged(self):
         target = Target("local", "work")
         entry = sidebar.Entry("work", "session", target, tracked=True)
-        self.assertEqual(sidebar._compact_line(entry, 12, {target}, None, set(), None), "12  !")
-        self.assertEqual(sidebar._compact_line(entry, 12, {target}, target, set(), None), "12   ")
+        self.assertEqual(sidebar._compact_line(entry, 12, sidebar._alerted(entry, {target}, None, set()), None), "12  !")
+        self.assertEqual(sidebar._compact_line(entry, 12, sidebar._alerted(entry, {target}, target, set()), None), "12   ")
 
     def test_geometry_filters_controls_and_maps_one_row_entries(self):
         entries = [sidebar.Entry("empty", "empty"), sidebar.Entry("one", "session"), sidebar.Entry("two", "session")]
@@ -2950,7 +2967,8 @@ class CompactSidebarTest(OperationTestCase):
             sidebar._draw(screen, sessions, 0, "", "", agent_entries=agents, agent_selected=1, active_agent_id="a", spinner_frame="⠋", compact=True)
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
         self.assertIn("  »  ", lines)
-        self.assertIn("⠋ Pi ", lines)
+        # The agent is labelled with its session's number in the strip above.
+        self.assertIn("⠋ 1  ", lines)
         self.assertIn("─────", lines)
         self.assertFalse(any("Order" in line or "AGENTS" in line or "work" in line for line in lines))
 
@@ -2966,12 +2984,10 @@ class SidebarViewModeTest(OperationTestCase):
         self.assertEqual(sidebar._selectable(entries)[0], 0)
 
     def test_empty_normal_view_shows_add_instructions(self):
-        entries = _entries(snapshot(local=("work",)), [])
-
-        self.assertEqual(
-            [(entry.label, entry.kind) for entry in entries],
-            [("No sessions yet", "empty"), ("Press Enter to add one.", "hint")],
-        )
+        for ascii_mode, hint in ((False, "Press ↵ or click ＋ add"), (True, "Press Enter or click + add")):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
+                entries = _entries(snapshot(local=("work",)), [])
+            self.assertEqual([(entry.label, entry.kind) for entry in entries], [("No sessions yet", "empty"), (hint, "hint")])
 
     def test_tracked_remote_favorite_shows_connecting_during_initial_discovery(self):
         target = Target("ssh", "work", "dev")
@@ -3141,8 +3157,8 @@ class AgentSidebarTest(OperationTestCase):
     def test_agent_cursor_replaces_icon_only_while_focused(self):
         entry = Entry("pi", "agent", Target("local", "work"), status="completed")
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 40)[0], "› pi · completed")
-            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[0], "✓ pi · completed")
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40)[0].rstrip(" work"), "› pi · completed")
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[0].rstrip(" work"), "✓ pi · completed")
 
     def test_spinner_frames_progress_and_wrap(self):
         with patch("letee.sidebar._ascii", return_value=False):
@@ -3186,18 +3202,31 @@ class AgentSidebarTest(OperationTestCase):
         self.assertEqual(entry.pane_target, pane)
         self.assertEqual(entry.host, "dev")
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ work · editor"])
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle" + " " * 18 + "work:editor"])
 
     def test_agent_location_omits_host_and_truncates_safely(self):
         pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/tmux", "editor")
         entry = Entry("pi", "agent", pane.target, host="dev", pane_target=pane, agent_id="id")
 
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ work · editor")
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40), ["? pi · unknown" + " " * 15 + "work:editor"])
             lines = _entry_lines(entry, False, set(), None, 4)
 
-        self.assertNotIn("dev", lines[1])
+        self.assertNotIn("dev", lines[0])
         self.assertTrue(all(sidebar._cell_width(line) <= 4 for line in lines))
+
+    def test_agent_location_skips_repeated_window_and_drops_it_before_clipping(self):
+        def location(session, window, width):
+            pane = PaneTarget(Target("local", session), "@1", "%2", "/tmp/tmux", window)
+            entry = Entry("pi", "agent", pane.target, pane_target=pane, agent_id="id", status="idle")
+            return sidebar._agent_row_parts(entry, None, width, None, None, None)[1]
+
+        with patch("letee.sidebar._ascii", return_value=False):
+            self.assertEqual(location("notes", "notes", 40), "notes")
+            self.assertEqual(location("infra", "terraform", 40), "infra:terraform")
+            self.assertEqual(location("infra", "terraform", 22), "infra")
+            self.assertEqual(location("infrastructure", "tf", 20), "infrast…")
+            self.assertEqual(location("infra", "terraform", 14), "")
 
     def test_local_agent_location_uses_window_name(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux", "shell")
@@ -3209,7 +3238,7 @@ class AgentSidebarTest(OperationTestCase):
         entry = _agent_entries(data, [pane.target])[0]
 
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ work · shell")
+            self.assertTrue(_entry_lines(entry, False, set(), None, 40)[0].endswith(" work:shell"))
 
     def test_draw_shows_agent_divider_and_empty_state(self):
         screen = FakeScreen(size=(10, 40))
@@ -3218,7 +3247,10 @@ class AgentSidebarTest(OperationTestCase):
 
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
         self.assertTrue(any(line.startswith("AGENTS ") for line in text))
-        self.assertIn("  No active agents", text)
+        # Same indent and style as the empty sessions state.
+        self.assertEqual(row_text(screen, 4), "No active agents")
+        self.assertEqual(row_text(screen, 5), "Detected via agent-status plugin")
+        self.assertIn("    No active agents", [line.rstrip() for line in text])
 
     def test_empty_agent_message_stays_inside_narrow_pane(self):
         screen = FakeScreen(size=(10, 12))
@@ -3227,12 +3259,12 @@ class AgentSidebarTest(OperationTestCase):
 
         message = next(
             call for call in screen.calls
-            if call[0] == "addnstr" and "No active" in call[3]
+            if call[0] == "addnstr" and "No act" in call[3]
         )
-        self.assertLessEqual(sidebar._cell_width(message[3]), 12)
+        self.assertLessEqual(message[2] + sidebar._cell_width(message[3]), 12)
 
-    def test_agent_status_message_is_single_bounded_line(self):
-        screen = FakeScreen(size=(10, 12))
+    def test_agent_status_message_is_single_bounded_line_on_the_rule(self):
+        screen = FakeScreen(size=(10, 30))
 
         _draw(
             screen,
@@ -3249,9 +3281,10 @@ class AgentSidebarTest(OperationTestCase):
             if call[0] == "addnstr" and "failed" in call[3]
         )
         self.assertNotIn("\n", message[3])
-        self.assertLessEqual(sidebar._cell_width(message[3]), 12)
+        self.assertEqual((message[1], message[2]), (3, len("AGENTS ")))
+        self.assertLessEqual(len("AGENTS ") + sidebar._cell_width(message[3]), 30)
 
-    def test_short_height_keeps_both_lines_of_first_agent_entry_visible(self):
+    def test_short_height_keeps_first_agent_row_visible(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%1", "/tmp/tmux", "shell")
         agent = Entry("pi", "agent", target, pane_target=pane, agent_id="id", status="idle")
@@ -3260,8 +3293,7 @@ class AgentSidebarTest(OperationTestCase):
         _draw(screen, [], 0, "", "", agent_entries=[agent])
 
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        self.assertIn("○ pi · idle", text)
-        self.assertIn("  └─ work · shell", text)
+        self.assertIn("○ pi · idle" + " " * 19 + "work:shell", text)
 
     def test_agent_entry_can_be_selected_with_mouse(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
@@ -3381,9 +3413,9 @@ class AgentSidebarTest(OperationTestCase):
         with patch("letee.sidebar._ascii", return_value=False):
             lines = {entry.agent_id: _entry_lines(entry, False, set(), None, 40, now=now)[0] for entry in entries}
 
-        self.assertEqual(lines["working"][2:], "pi · working · for 12s")
-        self.assertEqual(lines["idle"], "○ pi · idle")
-        self.assertEqual(lines["future"], "? pi · input-required")
+        self.assertEqual(lines["working"][2:].removesuffix("work").rstrip(), "pi · working 12s")
+        self.assertEqual(lines["idle"].removesuffix("work").rstrip(), "○ pi · idle")
+        self.assertEqual(lines["future"].removesuffix("work").rstrip(), "? pi · input-required")
 
     def test_duration_formatter_covers_seconds_minutes_hours_and_days(self):
         self.assertEqual([sidebar._format_duration(seconds) for seconds in (12, 180, 7200, 345600)], ["12s", "3m", "2h", "4d"])
@@ -3393,7 +3425,7 @@ class AgentSidebarTest(OperationTestCase):
         with patch("letee.sidebar._ascii", return_value=True):
             lines = _entry_lines(entry, False, set(), None, 14)
         self.assertIn(lines[0][0], "|/-\\")
-        self.assertEqual(lines[0][1:], " pi · working")
+        self.assertEqual(lines[0][1:], " pi - working")
         self.assertTrue(all(sidebar._cell_width(line) <= 14 for line in lines))
 
 
@@ -3511,13 +3543,24 @@ class AgentAlertTest(OperationTestCase):
 
     def test_agent_alert_marker_has_unicode_and_ascii_forms(self):
         entry = Entry("pi", "agent", self.target, pane_target=self.pane, agent_id="id", status="completed")
-        for ascii_mode, marker in ((False, "🔔"), (True, "BELL")):
+        for ascii_mode in (False, True):
             with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 line = _entry_lines(entry, False, set(), None, 40, agent_alerts={(self.pane, "id")})[0]
-            self.assertIn(marker, line)
+            self.assertIn("completed !", line)
 
 
 class AddFlowTest(OperationTestCase):
+    def test_unavailable_locations_show_a_short_reason(self):
+        snapshot = SessionSnapshot(SourceSnapshot(True, (), frozenset()), {
+            "auth": SourceSnapshot(False, (), frozenset(), "user@auth: Permission denied (publickey)."),
+            "slow": SourceSnapshot(False, (), frozenset(), "timed out"),
+            "odd": SourceSnapshot(False, (), frozenset(), "line one\nboom"),
+            "bare": SourceSnapshot(False, (), frozenset()),
+            "notmux": SourceSnapshot(False, (), frozenset(), "bash: tmux: command not found"),
+        })
+        labels = [entry.label for entry in sidebar._add_entries("location", "", snapshot, []) if entry.kind == "unavailable"]
+        self.assertEqual(labels, ["auth: auth failed", "slow: timed out", "odd: boom", "bare: unavailable", "notmux: tmux missing"])
+
     def test_add_title_renders_back_and_returns_hit_column(self):
         screen = FakeScreen(size=(6, 40))
 
@@ -3570,9 +3613,7 @@ class AddFlowTest(OperationTestCase):
 
         _draw(screen, [], 0, "", "wor", name_input=True, adding=True)
 
-        footer = " ".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] >= 4)
-        self.assertIn("type a name", footer)
-        self.assertIn("create or switch", footer)
+        self.assertEqual(row_text(screen, 5), "↵ open/create  Esc back")
 
     def test_name_title_renders_back_and_returns_hit_column(self):
         screen = FakeScreen(size=(6, 40))
@@ -3719,13 +3760,13 @@ class AddFlowTest(OperationTestCase):
                 for entry in sidebar._search_entries("", name, data, list(favorites))
             ]
 
-        empty_state = [("No sessions", "empty"), ("Type a session name to create", "hint")]
         # A tracked name remains available as a switch target.
         tracked_entries = sidebar._search_entries("", "work", data, [Target("local", "work")])
         self.assertEqual([(entry.label, entry.kind) for entry in tracked_entries], [("work", "session")])
         self.assertEqual(sidebar._selectable(tracked_entries), [0])
-        # Invalid names never create.
-        self.assertEqual(entries_for("bad name"), empty_state)
+        # Invalid names never create, and the rule explains why.
+        self.assertEqual(entries_for("bad name"), [(sidebar.NAME_RULE, "hint")])
+        self.assertEqual(entries_for("zzz"), [("zzz", "create")])
 
     def test_invalid_creation_names_keep_legacy_search_matches(self):
         data = snapshot(local=("work.one",))
@@ -3734,7 +3775,7 @@ class AddFlowTest(OperationTestCase):
                 entries = sidebar._search_entries("", name, data, [])
                 self.assertFalse(any(entry.kind == "create" for entry in entries))
         entries = sidebar._search_entries("", "work.one", data, [])
-        self.assertEqual([(entry.label, entry.kind) for entry in entries], [("work.one", "session")])
+        self.assertEqual([(entry.label, entry.kind) for entry in entries], [("work.one", "session"), (sidebar.NAME_RULE, "hint")])
         state = SidebarState(add_view="search", creation_host="", filter_text="work")
         sidebar._search_key(state, ord("."), data)
         self.assertEqual(state.filter_text, "work.")
@@ -3868,8 +3909,8 @@ class AddFlowTest(OperationTestCase):
         state = SidebarState(add_view="name", creation_host="", creation_text="x" * 64)
         sidebar._draw_name(screen, state)
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
-        self.assertTrue(any("● localhost" in line for line in lines))
-        self.assertTrue(any(line.startswith(" ❯ ") for line in lines))
+        self.assertTrue(any(line.startswith(" letee") for line in lines))
+        self.assertEqual(row_text(screen, 1), "Name: " + "x" * 8)
         self.assertTrue(any("Letters" in line for line in lines))
         cursor = next(call for call in screen.calls if call[0] == "move")
         self.assertLess(cursor[2], 16)
@@ -3882,8 +3923,8 @@ class AddFlowTest(OperationTestCase):
 
         sidebar._draw_name(screen, state)
 
-        feedback = next(call for call in screen.calls if call[0] == "addnstr" and "✕ Invalid session name" in call[3])
-        self.assertEqual(feedback[1], 4)
+        feedback = next(call for call in screen.calls if call[0] == "addnstr" and "⚠ Invalid session name" in call[3])
+        self.assertEqual(feedback[1], 2)
 
     def test_name_screen_has_ascii_fallback(self):
         screen = FakeScreen(size=(6, 30))
@@ -3898,11 +3939,9 @@ class AddFlowTest(OperationTestCase):
             sidebar._draw_name(screen, state)
 
         lines = [call[3] for call in screen.calls if call[0] == "addnstr"]
-        self.assertTrue(any("* dev" in line for line in lines))
-        self.assertTrue(any(line.startswith(" > ") for line in lines))
-        self.assertTrue(any("Rename session" in line for line in lines))
-        self.assertTrue(any("Esc cancel" in line for line in lines))
-        self.assertTrue(any("Enter rename" in line for line in lines))
+        self.assertTrue(any(line.startswith(" letee / Rename - dev") for line in lines))
+        self.assertEqual(row_text(screen, 1), "Name: work")
+        self.assertEqual(row_text(screen, 5), "Enter rename  Esc back")
 
 
 class AddMouseTest(OperationTestCase):
@@ -4984,10 +5023,10 @@ class SidebarStateTest(OperationTestCase):
         with patch.dict("letee.sidebar._COLOR", {"active": 123, "agent_working": 456}, clear=True):
             sidebar._draw_entries(screen, entries, 0, 7, 40, set(), None, active_agent_id="one")
 
-        first_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "work" in call[3])
-        second_location = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 4 and "work" in call[3])
-        self.assertEqual(first_location[5], 123)
-        self.assertNotEqual(second_location[5], 123)
+        first_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1 and "pi" in call[3])
+        second_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "pi" in call[3])
+        self.assertEqual(first_row[5], 123)
+        self.assertNotEqual(second_row[5], 123)
 
     def test_focused_pane_selects_active_agent_without_sidebar_click(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
@@ -5949,30 +5988,20 @@ class SidebarColorTest(OperationTestCase):
         self.assertEqual(
             init_pair.call_args_list,
             [
-                call(1, 79, 233),
-                call(2, 214, -1),
-                call(3, 36, -1),
-                call(4, 30, -1),
-                call(5, 79, -1),
-                call(6, curses.COLOR_YELLOW, -1),
-                call(7, curses.COLOR_RED, -1),
-                call(8, 30, -1),
-                call(9, 233, 79),
-                call(10, 79, -1),
-                call(11, 214, -1),
+                call(1, 79, 234), call(2, 214, -1), call(3, 36, -1), call(4, 30, -1),
+                call(5, 79, -1), call(6, 179, -1), call(7, 167, -1), call(8, 244, -1),
+                call(9, 234, 79), call(10, 244, -1), call(11, 214, -1),
                 call(12, 36, -1), call(13, 30, -1), call(14, 167, -1),
-                call(15, curses.COLOR_MAGENTA, -1), call(16, curses.COLOR_RED, -1),
-                call(17, curses.COLOR_RED, -1), call(18, 79, -1),
-                call(19, curses.COLOR_YELLOW, -1),
-                call(20, 30, -1),
+                call(15, 176, -1), call(16, 167, -1), call(17, 167, -1), call(18, 79, -1),
+                call(19, 179, -1), call(20, 30, -1), call(21, 244, 234),
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
-        self.assertEqual(sidebar._COLOR["hints"], (8 << 8) | curses.A_DIM)
-        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD | curses.A_REVERSE)
-        self.assertEqual(sidebar._COLOR["slot_active"], (11 << 8) | curses.A_BOLD | curses.A_REVERSE)
+        self.assertEqual(sidebar._COLOR["hints"], 8 << 8)
+        self.assertEqual(sidebar._COLOR["slot"], 10 << 8)
+        self.assertEqual(sidebar._COLOR["slot_active"], (11 << 8) | curses.A_BOLD)
 
     def test_8_color_terminal_uses_safe_palette(self):
         with (
@@ -5995,21 +6024,22 @@ class SidebarColorTest(OperationTestCase):
                 call(5, curses.COLOR_CYAN, -1),
                 call(6, curses.COLOR_YELLOW, -1),
                 call(7, curses.COLOR_RED, -1),
-                call(8, curses.COLOR_CYAN, -1),
+                call(8, -1, -1),
                 call(9, curses.COLOR_BLACK, curses.COLOR_CYAN),
-                call(10, curses.COLOR_CYAN, -1),
+                call(10, -1, -1),
                 call(11, curses.COLOR_YELLOW, -1),
                 call(12, curses.COLOR_GREEN, -1), call(13, curses.COLOR_CYAN, -1),
                 call(14, curses.COLOR_RED, -1), call(15, curses.COLOR_MAGENTA, -1),
                 call(16, curses.COLOR_RED, -1), call(17, curses.COLOR_RED, -1),
                 call(18, curses.COLOR_CYAN, -1), call(19, curses.COLOR_YELLOW, -1),
-                call(20, curses.COLOR_CYAN, -1),
+                call(20, curses.COLOR_CYAN, -1), call(21, -1, curses.COLOR_BLACK),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
         self.assertEqual(sidebar._COLOR["section"], (5 << 8) | curses.A_BOLD)
-        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_BOLD | curses.A_REVERSE)
-        self.assertEqual(sidebar._COLOR["slot_active"], (11 << 8) | curses.A_BOLD | curses.A_REVERSE)
+        self.assertEqual(sidebar._COLOR["hints"], (8 << 8) | curses.A_DIM)
+        self.assertEqual(sidebar._COLOR["slot"], (10 << 8) | curses.A_DIM)
+        self.assertEqual(sidebar._COLOR["slot_active"], (11 << 8) | curses.A_BOLD)
 
     def test_no_color_terminal_leaves_palette_empty(self):
         sidebar._COLOR = {"title": 123}
@@ -6040,7 +6070,7 @@ class SidebarDrawTest(OperationTestCase):
                     header = next(item for item in compact.calls if item[0] == "addnstr" and item[1] == 0)
                     self.assertEqual(header[5], title[5])
                     self.assertEqual(header[5], color or (curses.A_BOLD | curses.A_REVERSE))
-                    self.assertEqual(header[3], ("  >  " if ascii_mode else "  »  ").ljust(7))
+                    self.assertEqual(header[3], ("  >> " if ascii_mode else "  »  ").ljust(7))
                     self.assertEqual(header[4], 7)
 
     def test_expanded_header_has_collapse_control_but_add_header_does_not(self):
@@ -6050,7 +6080,7 @@ class SidebarDrawTest(OperationTestCase):
                     screen = FakeScreen(size=(10, width))
                     sidebar._draw_title(screen, width, [], "", adding=adding)
                     header = next(item[3] for item in screen.calls if item[0] == "addnstr" and item[1] == 0)
-                    control = "<" if ascii_mode else "‹"
+                    control = "<" if ascii_mode else "«"
                     self.assertEqual(header[1] == control, not adding)
                     self.assertTrue(any(("back" if adding else "add") in item[3] for item in screen.calls if item[0] == "addnstr"))
 
@@ -6067,7 +6097,7 @@ class SidebarDrawTest(OperationTestCase):
 
     def test_default_agent_panel_uses_40_percent_of_available_height(self):
         entries = [Entry("", "order")]
-        layout = sidebar._agent_layout(24, 1, entries, 40, False)
+        layout = sidebar._agent_layout(24, 1, entries, 40, False, MANY_SESSIONS)
         footer_top, session_top, _, separator = layout
         available = footer_top - session_top - 1
 
@@ -6076,38 +6106,47 @@ class SidebarDrawTest(OperationTestCase):
 
     def test_tall_to_small_resize_keeps_percentage_instead_of_rows(self):
         entries = [Entry("", "order")]
-        tall = sidebar._agent_layout(30, 1, entries, 60, False)
-        small = sidebar._agent_layout(12, 1, entries, 60, False)
+        tall = sidebar._agent_layout(30, 1, entries, 60, False, MANY_SESSIONS)
+        small = sidebar._agent_layout(12, 1, entries, 60, False, MANY_SESSIONS)
 
         self.assertEqual(tall[0] - tall[3] - 1, 16)
         self.assertEqual(small[0] - small[3] - 1, 5)
 
     def test_small_to_tall_resize_expands_proportionally(self):
         entries = [Entry("", "order")]
-        small = sidebar._agent_layout(12, 1, entries, 40, False)
-        tall = sidebar._agent_layout(30, 1, entries, 40, False)
+        small = sidebar._agent_layout(12, 1, entries, 40, False, MANY_SESSIONS)
+        tall = sidebar._agent_layout(30, 1, entries, 40, False, MANY_SESSIONS)
 
         self.assertEqual(small[0] - small[3] - 1, 3)
         self.assertEqual(tall[0] - tall[3] - 1, 10)
 
     def test_small_screen_does_not_use_stale_tall_panel_rows(self):
         entries = [Entry("", "order")]
-        tall = sidebar._agent_layout(40, 1, entries, 80, False)
-        small = sidebar._agent_layout(12, 1, entries, 80, False)
+        tall = sidebar._agent_layout(40, 1, entries, 80, False, MANY_SESSIONS)
+        small = sidebar._agent_layout(12, 1, entries, 80, False, MANY_SESSIONS)
 
         self.assertGreater(tall[0] - tall[3] - 1, 20)
         self.assertEqual(small[0] - small[3] - 1, 6)
 
     def test_minimum_complete_agent_rows_remain_visible(self):
         entries = [Entry("", "order"), Entry("pi", "agent")]
-        footer_top, _, minimum_agent_rows, separator = sidebar._agent_layout(20, 1, entries, 0, False)
+        footer_top, _, minimum_agent_rows, separator = sidebar._agent_layout(20, 1, entries, 0, False, MANY_SESSIONS)
 
         self.assertEqual(minimum_agent_rows, 4)
         self.assertGreaterEqual(footer_top - separator - 1, 4)
 
+    def test_agents_take_rows_sessions_leave_blank(self):
+        agents = [Entry("", "order"), Entry("pi", "agent")]
+        sessions = MANY_SESSIONS[:3]
+        footer_top, session_top, _, separator = sidebar._agent_layout(30, 1, agents, 40, False, sessions)
+
+        # Three one-row sessions plus one spare row; the percentage would have left 15.
+        self.assertEqual(separator - session_top, 4)
+        self.assertEqual(footer_top - separator - 1, 30 - 1 - session_top - 1 - 4)
+
     def test_maximum_panel_rows_leave_session_section_space(self):
         entries = [Entry("", "order"), Entry("pi", "agent")]
-        footer_top, session_top, _, separator = sidebar._agent_layout(20, 1, entries, 100, False)
+        footer_top, session_top, _, separator = sidebar._agent_layout(20, 1, entries, 100, False, MANY_SESSIONS)
 
         self.assertGreaterEqual(separator - session_top, 1)
         self.assertLessEqual(footer_top - separator - 1, footer_top - session_top - 2)
@@ -6279,7 +6318,7 @@ class SidebarDrawTest(OperationTestCase):
     def test_down_more_uses_last_available_row(self):
         entries = [
             Entry(str(i), "session", Target("local", str(i)), tracked=True)
-            for i in range(4)
+            for i in range(8)
         ]
         screen = FakeScreen(size=(6, 30))
 
@@ -6291,7 +6330,7 @@ class SidebarDrawTest(OperationTestCase):
     def test_reorder_handle_uses_reverse_video_in_color_and_monochrome(self):
         entry = Entry("work", "session", Target("local", "work"), tracked=True)
 
-        for ascii_mode, handle in ((False, "↕"), (True, ":")):
+        for ascii_mode, handle in ((False, "↕"), (True, "=")):
             for palette in ({"move": 123}, {}):
                 with self.subTest(ascii=ascii_mode, color=bool(palette)), patch(
                     "letee.sidebar._ascii", return_value=ascii_mode
@@ -6309,6 +6348,32 @@ class SidebarDrawTest(OperationTestCase):
                 self.assertEqual(
                     rendered[5], palette.get("move", 0) | curses.A_BOLD | curses.A_REVERSE
                 )
+
+    def test_handle_and_badge_are_solid_only_where_the_pointer_is_shown(self):
+        entry = Entry("work", "session", Target("local", "work"), tracked=True, shortcut_slot=1)
+        palette = {"move": 1 << 8, "hints": 2 << 8, "create": 3 << 8, "slot": 4 << 8}
+        for kwargs, pointed in (({}, True), ({"pane_active": False}, False), ({"selection_pointer_visible": False}, False)):
+            with self.subTest(**kwargs), patch.dict("letee.sidebar._COLOR", palette, clear=True):
+                screen = FakeScreen(size=(6, 30))
+                sidebar._draw_entries(screen, [entry], 0, 5, 30, set(), None, **kwargs)
+            handle = next(call for call in screen.calls if call[0] == "addnstr" and "↕" in call[3])
+            badge = next(call for call in screen.calls if call[0] == "addnstr" and call[2] == 0)
+            self.assertEqual(handle[5], palette["move"] | curses.A_BOLD | curses.A_REVERSE if pointed else palette["hints"])
+            self.assertEqual(badge[3], "›1 " if pointed else " 1 ")
+            self.assertEqual(badge[5], palette["create"] | curses.A_BOLD if pointed else palette["slot"])
+
+    def test_move_target_keeps_its_slot_badge_on_the_entry_row(self):
+        entries = [
+            Entry(name, "session", Target("local", name), tracked=True, shortcut_slot=slot)
+            for slot, name in enumerate(("one", "two"), 1)
+        ]
+        for source, target, entry_row in ((0, 1, 2), (1, 0, 2)):
+            with self.subTest(source=source):
+                screen = FakeScreen(size=(8, 30))
+                sidebar._draw_entries(screen, entries, source, 7, 30, set(), None,
+                                      move_source_entry=source, move_target_entry=target)
+                badge = next(call for call in screen.calls if call[0] == "addnstr" and call[3].strip() == str(target + 1))
+                self.assertEqual(badge[1], entry_row)
 
     def test_move_mode_hides_reorder_handles(self):
         entries = [
@@ -6359,9 +6424,9 @@ class SidebarDrawTest(OperationTestCase):
             for call in screen.calls
             if call[0] == "addnstr" and call[3].startswith("Click to place")
         ]
-        self.assertEqual(rows, {"one": 1, "two": 3, "three": 5})
+        self.assertEqual(rows, {"one": 1, "two": 2, "three": 4})
         self.assertEqual(target_attr, 123)
-        self.assertEqual(indicators, [(4, "Click to place " + "─" * 15, 123)])
+        self.assertEqual(indicators, [(3, "Click to place " + "─" * 15, 123)])
 
     def test_move_target_prompt_has_ascii_fallback(self):
         entry = Entry("work", "session", Target("local", "work"), tracked=True)
@@ -6396,21 +6461,16 @@ class SidebarDrawTest(OperationTestCase):
         self.assertIsNone(_entry_at_row(entries, 3, 7, 8, 1))  # footer/down marker
 
 
-    def test_move_mode_keeps_normal_footer(self):
+    def test_move_mode_footer_explains_place_and_cancel(self):
         entry = Entry("work", "session", Target("local", "work"), tracked=True)
-        for ascii_mode, expected in ((False, "↵ activate"), (True, "Enter activate")):
+        for ascii_mode, enter in ((False, "↵"), (True, "Enter")):
             screen = FakeScreen(size=(10, 60))
             with self.subTest(ascii=ascii_mode), patch(
                 "letee.sidebar._ascii", return_value=ascii_mode
             ):
                 _draw(screen, [entry], 0, "", "", agent_entries=[], move_source_entry=0)
 
-            footer = [
-                call[3].rstrip()
-                for call in screen.calls
-                if call[0] == "addnstr" and call[1] == 9
-            ]
-            self.assertEqual(footer, [expected])
+            self.assertEqual(row_text(screen, 9), "click place  Esc cancel")
 
     def test_footer_fills_terminal_width(self):
         screen = FakeScreen(size=(7, 60))
@@ -6428,9 +6488,8 @@ class SidebarDrawTest(OperationTestCase):
         _draw(screen, [], 0, "killed local:work", "", agent_entries=[])
 
         status = next(call for call in screen.calls if call[0] == "addnstr" and "killed local:work" in call[3])
-        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 6]
         self.assertEqual(status[1], 1)
-        self.assertEqual(footer, ["↵ activate"])
+        self.assertEqual(row_text(screen, 6), "↵ add")
 
     def test_name_input_status_renders_below_name_input(self):
         screen = FakeScreen(size=(7, 30))
@@ -6448,48 +6507,71 @@ class SidebarDrawTest(OperationTestCase):
         status = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
         self.assertLessEqual(sidebar._cell_width(status[3]), 12)
 
-    def test_sessions_and_agents_share_minimal_footer_with_ascii_fallback(self):
-        removed_hints = ("Tab", "resize", "add", "remove", "kill", "reorder", "K/J", "[ / ]")
-        for ascii_mode, expected in (
-            (False, ["↵ activate"]),
-            (True, ["Enter activate"]),
-        ):
-            footers = []
-            for focused_region in ("sessions", "agents"):
-                screen = FakeScreen(size=(10, 60))
-                with self.subTest(ascii=ascii_mode, focused_region=focused_region), patch(
-                    "letee.sidebar._ascii", return_value=ascii_mode
-                ):
-                    _draw(
-                        screen, [], 0, "hidden status", "", agent_entries=[], focused_region=focused_region
-                    )
-                footer = [
-                    call[3].rstrip()
-                    for call in screen.calls
-                    if call[0] == "addnstr" and call[1] >= 9
-                ]
-                self.assertEqual(footer, expected)
-                self.assertFalse(any(hint in " ".join(footer) for hint in removed_hints))
-                footers.append(footer)
-            self.assertEqual(footers[0], footers[1])
+    def test_footer_draws_key_pair_slash_as_label_text(self):
+        screen = FakeScreen(size=(5, 30))
+        with patch.dict("letee.sidebar._COLOR", {"footer": 7}, clear=True):
+            sidebar._draw_footer(screen, 5, 30, [("[/]", "resize")], False)
+        keys = [call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 4 and call[5] != 7]
+        self.assertEqual(keys, ["[", "]"])
+        self.assertEqual(row_text(screen, 4), "[/] resize")
 
-    def test_name_input_uses_two_instruction_rows_with_ascii_fallback(self):
-        for ascii_mode, expected in (
-            (False, ["type a name  backspace edit", "esc back  ↵ create or switch"]),
-            (True, ["type a name  backspace edit", "esc back  Enter create or switch"]),
-        ):
+    def test_hint_rows_carry_no_action_icon(self):
+        for ascii_mode in (False, True):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
+                line = _entry_lines(Entry("No available locations", "hint"), False, set(), None, 40)[0]
+            self.assertEqual(line, "    No available locations")
+
+    def test_footer_hints_follow_the_focused_row_with_ascii_fallback(self):
+        target = Target("local", "work")
+        tracked = Entry("work", "session", target, tracked=True)
+        untracked = Entry("work", "session", target)
+        agents = [Entry("", "order"), Entry("pi", "agent", target, agent_id="id", status="idle")]
+        for ascii_mode, enter, arrows in ((False, "↵", "←/→"), (True, "Enter", "Left/Right")):
+            for name, kwargs, expected in (
+                ("tracked", {"entries": [tracked]}, f"{enter} open  e rename  r remove  x kill"),
+                ("untracked", {"entries": [untracked]}, f"{enter} open  e rename  x kill"),
+                ("empty", {"entries": _entries(snapshot(), [])}, f"{enter} add"),
+                ("add button", {"entries": [tracked], "add_button_selected": True}, f"{enter} add"),
+                ("agent", {"focused_region": "agents", "agent_selected": 1}, f"{enter} jump  x kill  [/] resize"),
+                ("order", {"focused_region": "agents"}, f"{arrows} order  [/] resize"),
+            ):
+                kwargs = {"entries": [], **kwargs}
+                screen = FakeScreen(size=(10, 60))
+                with self.subTest(ascii=ascii_mode, row=name), patch("letee.sidebar._ascii", return_value=ascii_mode):
+                    _draw(screen, kwargs.pop("entries"), 0, "", "", agent_entries=agents, **kwargs)
+                self.assertEqual(row_text(screen, 9), expected)
+
+    def test_footer_drops_trailing_hints_that_do_not_fit(self):
+        screen = FakeScreen(size=(10, 20))
+        _draw(screen, [Entry("work", "session", Target("local", "work"), tracked=True)], 0, "", "", agent_entries=[])
+        self.assertEqual(row_text(screen, 9), "↵ open  e rename")
+
+    def test_footer_uses_configured_sidebar_keys(self):
+        keys = dict(sidebar.DEFAULT_SIDEBAR_KEYBINDINGS, rename="n", remove="d", kill="X", resize_inc="C-Up", resize_dec="C-Down")
+        screen = FakeScreen(size=(10, 60))
+        entry = Entry("work", "session", Target("local", "work"), tracked=True)
+        _draw(screen, [entry], 0, "", "", agent_entries=[], sidebar_keys=keys)
+        self.assertEqual(row_text(screen, 9), "↵ open  n rename  d remove  X kill")
+        agent = Entry("pi", "agent", Target("local", "work"), agent_id="id", status="idle")
+        screen = FakeScreen(size=(10, 60))
+        _draw(screen, [entry], 0, "", "", agent_entries=[agent], focused_region="agents", sidebar_keys=keys)
+        self.assertEqual(row_text(screen, 9), "↵ jump  X kill  C-Up/C-Down resize")
+
+    def test_name_input_footer_has_ascii_fallback(self):
+        for ascii_mode, enter in ((False, "↵"), (True, "Enter")):
             screen = FakeScreen(size=(7, 60))
             with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 _draw(screen, [], 0, "ignored", "", name_input=True, adding=True)
-            footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
-            self.assertEqual(footer, expected)
+            self.assertEqual(row_text(screen, 6), f"{enter} open/create  Esc back")
+            self.assertEqual(row_text(screen, 5), "")
 
-    def test_footer_reuses_title_style_and_dims_inactive_pane(self):
+    def test_footer_keys_use_title_style_labels_use_footer_style_and_dim(self):
         screen = FakeScreen(size=(7, 60))
-        with patch.dict("letee.sidebar._COLOR", {"title": 123}, clear=True):
+        with patch.dict("letee.sidebar._COLOR", {"title": 123, "footer": 77}, clear=True):
             _draw(screen, [], 0, "", "", dimmed=True)
-        footer = [call for call in screen.calls if call[0] == "addnstr" and call[1] >= 5]
-        self.assertTrue(all(call[5] == _fade(123) for call in footer))
+        footer = {call[3]: call[5] for call in screen.calls if call[0] == "addnstr" and call[1] == 6}
+        self.assertEqual(footer["↵"], _fade(123))
+        self.assertEqual(footer["add"], _fade(77))
 
     def test_footer_monochrome_fallback_is_bold_reverse_video(self):
         screen = FakeScreen(size=(7, 60))
@@ -6543,7 +6625,7 @@ class SidebarDrawTest(OperationTestCase):
                     if call[0] == "addnstr" and call[3].startswith("AGENTS ")
                 )
                 self.assertEqual(
-                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_percentage, name_input),
+                    sidebar._agent_prompt_row(screen, footer_height, entries, agent_percentage, name_input, []),
                     divider[1] + 2,
                 )
 
@@ -6558,7 +6640,7 @@ class SidebarDrawTest(OperationTestCase):
         title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         session_badge = next(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and call[2] == 0)
         self.assertIn("> add", title)
-        self.assertEqual(session_badge, "[1]")
+        self.assertEqual(session_badge, " 1 ")
 
     def test_inactive_sidebar_hides_add_button_pointer(self):
         screen = FakeScreen(size=(7, 40))
@@ -6570,19 +6652,19 @@ class SidebarDrawTest(OperationTestCase):
         self.assertIn("add", title)
         self.assertNotIn("> add", title)
 
-    def test_title_adds_terminal_icon_with_ascii_fallback(self):
+    def test_title_uses_font_independent_collapse_arrow_with_ascii_fallback(self):
         screen = FakeScreen(size=(5, 40))
 
         with patch("letee.sidebar._ascii", return_value=False):
             _draw(screen, [], 0, "ok", "")
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].startswith(" ‹  letee"))
+        self.assertTrue(title[3].startswith(" « letee"))
 
         screen = FakeScreen(size=(5, 40))
         with patch("letee.sidebar._ascii", return_value=True):
             _draw(screen, [], 0, "ok", "")
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertTrue(title[3].startswith(" < letee"))
+        self.assertTrue(title[3].startswith(" << letee"))
 
     def test_draw_erases_without_forcing_full_repaint(self):
         screen = FakeScreen(size=(5, 40))
@@ -6630,10 +6712,9 @@ class SidebarDrawTest(OperationTestCase):
         screen = FakeScreen(size=(6, 40))
         _draw(screen, entries, 0, "filtering", "work", name_input=True, adding=True)
         add_text = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
         self.assertIn("letee", add_text)
         self.assertNotIn("1 match", add_text)
-        self.assertTrue(filter_row[3].startswith(" Name: work"))
+        self.assertEqual(row_text(screen, 1), "Name: work")
 
     def test_name_input_uses_dedicated_full_width_row(self):
         screen = FakeScreen(size=(6, 40))
@@ -6644,7 +6725,7 @@ class SidebarDrawTest(OperationTestCase):
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
         self.assertNotIn("work", title[3])
-        self.assertEqual(filter_row[3], " Name: work" + " " * 29)
+        self.assertEqual(row_text(screen, 1), "Name: work")
         self.assertEqual(filter_row[4], 40)
         self.assertIn(("move", 1, len(" Name: work")), screen.calls)
 
@@ -6667,15 +6748,15 @@ class SidebarDrawTest(OperationTestCase):
         self.assertTrue(filter_row[3].startswith(" Name: "))
         self.assertIn(("move", 1, len(" Name: ")), screen.calls)
 
-    def test_narrow_name_input_drops_count_before_clipping_query(self):
+    def test_narrow_name_input_keeps_the_typed_tail_visible(self):
         screen = FakeScreen(size=(5, 16))
 
         _draw(screen, [Entry("work", "session", Target("local", "work"))], 0, "filtering", "abcdefghij", name_input=True, adding=True)
 
         title = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        filter_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1)
         self.assertNotIn("abcdefghij", title[3])
-        self.assertEqual(filter_row[3], " Name: abcdefgh…")
+        # Typed text clips from the left so the end near the cursor stays visible.
+        self.assertEqual(row_text(screen, 1), "Name: cdefghij")
         cursor = next(call for call in screen.calls if call[0] == "move")
         self.assertEqual(cursor, ("move", 1, 15))
 
@@ -6725,9 +6806,11 @@ class SidebarDrawTest(OperationTestCase):
         screen = FakeScreen(size=(8, 40))
         target = Target("ssh", "work", "dev")
 
-        _draw(screen, [Entry("work", "session", target)], 0, "", "", bell_targets={target})
+        with patch.dict("letee.sidebar._COLOR", {"danger": 5 << 8}, clear=True):
+            _draw(screen, [Entry("work", "session", target)], 0, "", "", bell_targets={target})
 
-        self.assertTrue(any(call[0] == "addnstr" and "work 🔔" in call[3] for call in screen.calls))
+        self.assertTrue(any(call[0] == "addnstr" and call[3].endswith("work !") for call in screen.calls))
+        self.assertIn(("addnstr", 2, 8, " !", 32, (5 << 8) | curses.A_BOLD), screen.calls)
 
     def test_draw_does_not_mark_current_target_bell(self):
         screen = FakeScreen()
@@ -6735,7 +6818,7 @@ class SidebarDrawTest(OperationTestCase):
 
         _draw(screen, [Entry("work", "session", target)], 0, "", "", bell_targets={target}, current_target=target)
 
-        self.assertFalse(any(call[0] == "addnstr" and "🔔" in call[3] for call in screen.calls))
+        self.assertFalse(any(call[0] == "addnstr" and call[3].rstrip().endswith("work !") for call in screen.calls))
 
 
 
@@ -6936,7 +7019,7 @@ class SidebarDrawTest(OperationTestCase):
             run(screen)
 
         rename.assert_called_once_with(old, "new")
-        self.assertTrue(any(call[0] == "addnstr" and "Rename session" in call[3] for call in screen.calls))
+        self.assertTrue(any(call[0] == "addnstr" and "letee / Rename" in call[3] for call in screen.calls))
         self.assertTrue(any(call[0] == "addnstr" and "new" in call[3] for call in screen.calls))
 
     def test_e_rejects_absent_local_and_remote_sessions_with_matching_prefix(self):
@@ -7171,8 +7254,8 @@ class SidebarDrawTest(OperationTestCase):
             patch(
                 "letee.sidebar.curses.getmouse",
                 side_effect=[
-                    (0, 0, 17, 0, curses.BUTTON1_PRESSED),
-                    (0, 0, 17, 0, curses.BUTTON1_RELEASED),
+                    (0, 0, 7, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 7, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
             patch("letee.sidebar._init_colors"),
@@ -7507,8 +7590,8 @@ class SidebarDrawTest(OperationTestCase):
                 "letee.sidebar.curses.getmouse",
                 side_effect=[
                     (0, 28, 2, 0, curses.BUTTON1_PRESSED),
-                    (0, 0, 4, 0, curses.REPORT_MOUSE_POSITION),
-                    (0, 0, 4, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 3, 0, curses.REPORT_MOUSE_POSITION),
+                    (0, 0, 3, 0, curses.BUTTON1_PRESSED),
                 ],
             ),
             patch("letee.sidebar._init_colors"),
@@ -7622,7 +7705,7 @@ class SidebarDrawTest(OperationTestCase):
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.getmouse", side_effect=[
-                (0, 28, 4, 0, curses.BUTTON1_PRESSED),
+                (0, 28, 3, 0, curses.BUTTON1_PRESSED),
                 (0, 0, 2, 0, curses.BUTTON1_PRESSED),
             ]),
             patch("letee.sidebar._init_colors"),
@@ -7833,7 +7916,7 @@ class SidebarDrawTest(OperationTestCase):
             patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
             patch(
                 "letee.sidebar.curses.getmouse",
-                return_value=(0, 7, 4, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+                return_value=(0, 7, 3, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
             ),
             patch("letee.sidebar._init_colors"),
             patch("letee.config.load_sessions", return_value=[first, second]),
@@ -7846,7 +7929,7 @@ class SidebarDrawTest(OperationTestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with(second, 7, 4, unittest.mock.ANY)
+        show_menu.assert_called_once_with(second, 7, 3, unittest.mock.ANY)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
         switch.assert_not_called()
@@ -7884,7 +7967,7 @@ class SidebarDrawTest(OperationTestCase):
             patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
             patch(
                 "letee.sidebar.curses.getmouse",
-                return_value=(0, 7, 17, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+                return_value=(0, 7, 7, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
             ),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_hosts", return_value=[]),
@@ -7896,7 +7979,7 @@ class SidebarDrawTest(OperationTestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi-two", second, 7, 17, unittest.mock.ANY)
+        show_menu.assert_called_once_with("pi-two", second, 7, 7, unittest.mock.ANY)
         self.assertEqual(drawn[-1]["agent_selected"], 2)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
@@ -8195,11 +8278,10 @@ class SidebarDrawTest(OperationTestCase):
             )
 
         slot_call = next(call for call in screen.calls
-                         if call[0] == "addnstr" and call[3].startswith("["))
-        self.assertEqual(slot_call[3], "[3]")
+                         if call[0] == "addnstr" and call[3] == " 3 ")
         self.assertEqual(slot_call[5], 456)
         line_call = next(call for call in screen.calls
-                         if call[0] == "addnstr" and call[1] == slot_call[1] and not call[3].startswith("["))
+                         if call[0] == "addnstr" and call[1] == slot_call[1] and call[3] != " 3 ")
         self.assertEqual(line_call[5], 123)
 
     def test_tracked_entries_render_session_then_source_without_raw_targets(self):
@@ -8208,10 +8290,9 @@ class SidebarDrawTest(OperationTestCase):
 
         self.assertEqual(local.host, "localhost")
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["dashboard", "  └─ @localhost"])
-            self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["  auth", "  └─ @dev"])
-        with patch("letee.sidebar._ascii", return_value=True):
-            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["dashboard", "  `- @localhost"])
+            # Local sessions need no host tag; remote ones right-align it on the same row.
+            self.assertEqual(_entry_lines(local, True, set(), None, 30), ["dashboard"])
+            self.assertEqual(_entry_lines(remote, False, set(), None, 30), ["    auth" + " " * 18 + "@dev"])
 
         self.assertNotIn("local:", "".join(_entry_lines(local, True, set(), None, 30)))
         self.assertNotIn("ssh:", "".join(_entry_lines(remote, False, set(), None, 30)))
@@ -8222,10 +8303,31 @@ class SidebarDrawTest(OperationTestCase):
         with patch("letee.sidebar._ascii", return_value=False):
             lines = _entry_lines(entry, False, {entry.target}, None, 20)
 
-        self.assertEqual(len(lines), 2)
-        self.assertTrue(lines[0].endswith("… 🔔"))
-        self.assertTrue(lines[1].endswith("…"))
-        self.assertTrue(all(len(line) <= 20 for line in lines))
+        # Too narrow for both: the name keeps the room and the host tag is dropped.
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].endswith("… !"))
+        self.assertNotIn("@", lines[0])
+        self.assertLessEqual(len(lines[0]), 20)
+
+    def test_host_tag_is_accented_except_on_unavailable_rows(self):
+        target = Target("ssh", "auth", "dev")
+        palette = {"remote": 4 << 8, "unavailable": 6 << 8, "local": 3 << 8}
+        for unavailable, accented in ((False, True), (True, False)):
+            entry = Entry("auth", "session", target, host="dev", tracked=True,
+                          unavailable_favorite=unavailable, status="offline" if unavailable else None)
+            screen = FakeScreen(size=(6, 30))
+            with self.subTest(unavailable=unavailable), patch.dict("letee.sidebar._COLOR", palette, clear=True):
+                sidebar._draw_entries(screen, [entry], 0, 5, 30, set(), None)
+            tag_calls = [call for call in screen.calls if call[0] == "addnstr" and call[3] == "@dev"]
+            self.assertEqual([call[5] for call in tag_calls], [palette["remote"]] if accented else [])
+
+    def test_tracked_rows_are_single_line_unless_unavailable(self):
+        available = Entry("work", "session", Target("local", "work"), tracked=True)
+        unavailable = replace(available, unavailable_favorite=True, status="offline")
+        self.assertEqual(sidebar._entry_height(available), 1)
+        self.assertEqual(sidebar._entry_height(unavailable), 2)
+        with patch("letee.sidebar._ascii", return_value=False):
+            self.assertEqual(_entry_lines(unavailable, False, set(), None, 30)[1], "  └─ offline")
 
     def test_ascii_tracked_metadata_and_ellipsis_are_ascii_only(self):
         entry = Entry(
@@ -8238,8 +8340,8 @@ class SidebarDrawTest(OperationTestCase):
 
         self.assertTrue(lines[0].isascii())
         self.assertTrue(lines[1].isascii())
-        self.assertIn("@", lines[1])
-        self.assertIn("reconnecting...", lines[1])
+        self.assertTrue(lines[0].endswith("@long-host"))
+        self.assertEqual(lines[1], "  `- reconnecting...")
         self.assertIn("...", "".join(lines))
 
     def test_active_duplicate_is_highlighted_in_tracked_and_all_sections(self):
@@ -8258,7 +8360,8 @@ class SidebarDrawTest(OperationTestCase):
 
     def test_active_tracked_styles_both_rows_and_both_rows_map_to_entry(self):
         target = Target("local", "work")
-        entry = Entry("work", "session", target, host="laptop", tracked=True)
+        entry = Entry("work", "session", target, host="laptop", tracked=True,
+                      unavailable_favorite=True, status="offline")
         screen = FakeScreen(size=(6, 30))
 
         with patch.dict("letee.sidebar._COLOR", {"active": 123}, clear=True):
@@ -8282,7 +8385,7 @@ class SidebarDrawTest(OperationTestCase):
     def test_tracked_rows_have_no_tracked_glyph(self):
         target = Target("local", "work")
         entry = Entry("work", "session", target, host="laptop", tracked=True)
-        for ascii_mode, pointer in ((False, "› work"), (True, "> work")):
+        for ascii_mode, pointer in ((False, "›   work"), (True, ">   work")):
             screen = FakeScreen(size=(7, 30))
             with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
                 _draw(screen, [entry], 0, "ok", "")
@@ -8421,9 +8524,7 @@ class SidebarDrawTest(OperationTestCase):
         expected_death.assert_called_once_with(target)
         error = next(call for call in screen.calls if call[0] == "addnstr" and "kill local:work failed: denied" in call[3])
         self.assertEqual(error[1], 1)
-        footer = [call[3].rstrip() for call in screen.calls if call[0] == "addnstr" and call[1] == 7]
-        self.assertTrue(footer)
-        self.assertTrue(all(line == "↵ activate" for line in footer))
+        self.assertEqual(row_text(screen, 7), "↵ open  e rename  r remove  x kill")
 
 
 
@@ -8657,6 +8758,16 @@ class SidebarBurstInputTest(OperationTestCase):
                         size=(12, width),
                     )
                     toggle.assert_called_once_with()
+
+    def test_ascii_header_collapse_covers_both_arrow_cells(self):
+        for column in (1, 2):
+            with self.subTest(column=column), patch.object(sidebar, "_ascii", return_value=True), \
+                    patch.object(sidebar.cockpit, "toggle_sidebar") as toggle:
+                self._run(
+                    [curses.KEY_MOUSE, STOP], snapshot(),
+                    mouse_events=[(0, column, 0, 0, curses.BUTTON1_PRESSED)], size=(12, 40),
+                )
+                toggle.assert_called_once_with()
 
     def test_header_collapse_ignores_other_events_and_add_views(self):
         cases = [
@@ -9212,6 +9323,11 @@ class SidebarScrollOffsetTest(OperationTestCase):
         self.assertIn(None, final_offsets)
 
     @staticmethod
+    def _crowded(target):
+        # Unavailable tracked sessions fill their share, so the agent panel keeps its percentage.
+        return [target, *(Target("local", f"gone-{index}") for index in range(8))]
+
+    @staticmethod
     def _agent_data(count=5):
         target = Target("local", "work")
         agents = tuple(
@@ -9228,7 +9344,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         )
 
     def test_agent_wheel_scrolls_only_agent_viewport_without_focus(self):
-        target, data = self._agent_data()
+        target, data = self._agent_data(12)
         captured = []
         draw_signature = inspect.signature(sidebar._draw)
 
@@ -9253,7 +9369,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "load_hosts", return_value=[]),
-            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(config, "load_sessions", return_value=self._crowded(target)),
             patch.object(sidebar.cockpit, "current_target", return_value=None),
             patch.object(sidebar, "_init_colors"),
             patch.object(sidebar, "_mouse_mask"),
@@ -9271,7 +9387,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         self.assertEqual(captured[-1]["agent_scroll_offset"], 1)
 
     def test_left_click_maps_scrolled_agent_row_to_visible_agent(self):
-        target, data = self._agent_data(4)
+        target, data = self._agent_data(12)
         second = data.agents[1].pane_target
         poller = unittest.mock.Mock(launch_id=None,
             snapshot=data,
@@ -9286,14 +9402,14 @@ class SidebarScrollOffsetTest(OperationTestCase):
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "load_hosts", return_value=[]),
-            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(config, "load_sessions", return_value=self._crowded(target)),
             patch.object(sidebar.cockpit, "current_target", return_value=None),
             patch.object(sidebar, "_init_colors"),
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar.curses, "getmouse", side_effect=(
                 (0, 0, 16, 0, curses.BUTTON5_PRESSED),
-                (0, 0, 16, 0, curses.BUTTON1_PRESSED),
+                (0, 0, 15, 0, curses.BUTTON1_PRESSED),
             )),
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
@@ -9303,7 +9419,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         self.assertEqual(switch.call_args.args[1](), sidebar.sessions.pane_attach_command(second))
 
     def test_right_click_maps_scrolled_agent_row_to_visible_agent(self):
-        target, data = self._agent_data(4)
+        target, data = self._agent_data(12)
         second = data.agents[1].pane_target
         poller = unittest.mock.Mock(launch_id=None,
             snapshot=data,
@@ -9318,7 +9434,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "load_hosts", return_value=[]),
-            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(config, "load_sessions", return_value=self._crowded(target)),
             patch.object(sidebar.cockpit, "current_target", return_value=None),
             patch.object(sidebar, "_init_colors"),
             patch.object(sidebar, "_mouse_mask"),
@@ -9326,14 +9442,14 @@ class SidebarScrollOffsetTest(OperationTestCase):
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar.curses, "getmouse", side_effect=(
                 (0, 0, 16, 0, curses.BUTTON5_PRESSED),
-                (0, 7, 16, 0, curses.BUTTON3_PRESSED),
+                (0, 7, 15, 0, curses.BUTTON3_PRESSED),
             )),
             patch.object(sidebar.cockpit, "show_agent_menu") as show_menu,
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi", second, 7, 16, unittest.mock.ANY)
+        show_menu.assert_called_once_with("pi", second, 7, 15, unittest.mock.ANY)
         switch.assert_not_called()
 
     def test_agent_keyboard_navigation_resets_agent_scroll_offset(self):
@@ -9378,7 +9494,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
                 self.assertIsNone(captured[-1])
 
     def test_discovery_refresh_preserves_and_clamps_agent_scroll_offset(self):
-        target, data = self._agent_data(6)
+        target, data = self._agent_data(12)
         reduced_data = SessionSnapshot(
             SourceSnapshot(
                 True,
@@ -9421,7 +9537,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "load_hosts", return_value=[]),
-            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(config, "load_sessions", return_value=self._crowded(target)),
             patch.object(sidebar.cockpit, "current_target", return_value=None),
             patch.object(sidebar, "_init_colors"),
             patch.object(sidebar, "_mouse_mask"),
@@ -9438,7 +9554,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         self.assertEqual(captured, [None, 4, 0])
 
     def test_agent_panel_resize_clamps_agent_scroll_offset(self):
-        target, data = self._agent_data(6)
+        target, data = self._agent_data(12)
         captured = []
         draw_signature = inspect.signature(sidebar._draw)
         poller = unittest.mock.Mock(launch_id=None,
@@ -9465,7 +9581,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         with (
             patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
             patch.object(sidebar, "load_hosts", return_value=[]),
-            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(config, "load_sessions", return_value=self._crowded(target)),
             patch.object(sidebar.cockpit, "current_target", return_value=None),
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar.curses, "curs_set"),
@@ -9615,33 +9731,34 @@ class AgentOrderingTest(OperationTestCase):
         _sync_agent_selection(state, [priority[0], priority[2], priority[1]])
         self.assertEqual((state.agent_selected_index, state.selected_agent_key), (1, (pane, "id")))
 
-    def test_ordering_row_is_two_rows_and_mouse_selectable(self):
+    def test_ordering_row_is_one_row_and_mouse_selectable(self):
         order = Entry("", "order")
-        self.assertEqual(_entry_height(order), 2)
+        self.assertEqual(_entry_height(order), 1)
         entries = [order, Entry("pi", "agent", Target("local", "work"), agent_id="id")]
         self.assertEqual(_entry_at_row(entries, 0, 4, 9, 0, top=4), 0)
-        self.assertEqual(_entry_at_row(entries, 0, 6, 9, 0, top=4), 1)
+        self.assertEqual(_entry_at_row(entries, 0, 5, 9, 0, top=4), 1)
 
     def test_ordering_row_renders_in_unicode_and_ascii(self):
         screen = FakeScreen(size=(10, 40))
-        _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], agent_ordering="priority")
+        agent = Entry("pi", "agent", Target("local", "work"), agent_id="id", status="idle")
+        _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order"), agent], agent_ordering="priority")
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
         self.assertTrue(any("⇅" in line and "Priority" in line and "Session" in line for line in text))
         with patch("letee.sidebar._ascii", return_value=True):
             screen = FakeScreen(size=(10, 40))
-            _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], agent_ordering="session")
+            _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order"), agent], agent_ordering="session")
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        order_line = next(line for line in text if "Order:" in line)
-        self.assertIn("PRIORITY", order_line)
-        self.assertIn("SESSION", order_line)
-        self.assertTrue(order_line.isascii())
+        # Same wording in both modes; only the glyph differs.
+        order_line = next(line for line in text if "Priority" in line)
+        self.assertEqual(order_line, "   Priority  Session")
 
-    def test_empty_agent_view_keeps_ordering_row(self):
+    def test_empty_agent_view_hides_ordering_row_and_its_footer(self):
         screen = FakeScreen(size=(10, 40))
-        _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")])
+        _draw(screen, [], 0, "", "", agent_entries=[Entry("", "order")], focused_region="agents")
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        self.assertTrue(any("⇅" in line for line in text))
-        self.assertIn("  No active agents", text)
+        self.assertFalse(any("⇅" in line or "Priority" in line for line in text))
+        self.assertEqual(row_text(screen, 4), "No active agents")
+        self.assertNotIn("order", row_text(screen, 9))
 
     def test_numeric_tmux_ids_sort_numerically(self):
         target = Target("local", "work")
@@ -9854,7 +9971,7 @@ class AgentOrderingTest(OperationTestCase):
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar, "_draw", return_value=(2, None)),
-            patch.object(sidebar.curses, "getmouse", return_value=(0, 7, 6, 0, curses.BUTTON3_PRESSED)),
+            patch.object(sidebar.curses, "getmouse", return_value=(0, 7, 5, 0, curses.BUTTON3_PRESSED)),
             patch.object(sidebar.cockpit, "show_agent_menu") as show_menu,
         ):
             run(screen)
@@ -9905,7 +10022,7 @@ class AgentOrderingTest(OperationTestCase):
             patch.object(sidebar.curses, "getmouse", side_effect=(
                 (0, 0, 8, 0, curses.BUTTON5_PRESSED),
                 (0, 0, 8, 0, curses.BUTTON4_PRESSED),
-                (0, 14, 6, 0, curses.BUTTON1_PRESSED),
+                (0, 14, 5, 0, curses.BUTTON1_PRESSED),
             )),
         ):
             run(screen)
@@ -10490,7 +10607,7 @@ class PrefixActionTest(OperationTestCase):
             call for call in screen.calls
             if call[0] == "addnstr" and "no agents need attention" in call[3]
         )
-        self.assertEqual(message[3], "⚠ no agents need attention")
+        self.assertEqual(message[3], "⚠ no agents need attention ")
         self.assertEqual(message[5], 123 | curses.A_BOLD)
 
     def test_failed_alert_switch_preserves_alert(self):
@@ -11407,7 +11524,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
     def test_first_click_after_idle_recovers_only_with_tmux_click_signal(self):
         target = Target("local", "one")
         pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
-        for region, row in (("sessions", 2), ("agents", 14)):
+        for region, row in (("sessions", 2), ("agents", 6)):
             with self.subTest(region=region):
                 poller = unittest.mock.Mock(
                     snapshot=SessionSnapshot(SourceSnapshot(
@@ -11448,7 +11565,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
     def test_tmux_click_signal_recovers_pure_release(self):
         target = Target("local", "one")
         pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
-        for region, row in (("sessions", 2), ("agents", 14)):
+        for region, row in (("sessions", 2), ("agents", 6)):
             for debug_enabled in (True, False):
                 with self.subTest(region=region, debug=debug_enabled):
                     poller = unittest.mock.Mock(
@@ -11945,6 +12062,44 @@ class SidebarKeybindingTest(OperationTestCase):
         self.assertGreater(len(percentages), 1)
         self.assertEqual(percentages[0], 40)
         self.assertEqual(percentages[1], 40 - resize_step)
+
+
+class AsciiModeTest(OperationTestCase):
+    def test_every_screen_stays_ascii(self):
+        local, remote = Target("local", "api"), Target("ssh", "train", "gpu")
+        sessions = [
+            Entry("api", "session", local, "localhost", tracked=True, shortcut_slot=1),
+            Entry("train", "session", remote, "gpu", tracked=True, shortcut_slot=2),
+            Entry("gone", "session", Target("ssh", "gone", "down"), "down", unavailable_favorite=True, tracked=True),
+        ] + MANY_SESSIONS[:20]
+        pane = PaneTarget(local, "@1", "%1", "/tmp/tmux", "editor")
+        agents = [Entry("", "order")] + [
+            Entry("pi", "agent", local, pane_target=pane, agent_id=status, status=status)
+            for status in ("working", "input-required", "completed", "failed", "submitted", "idle", None)
+        ] * 3
+        snapshot_down = SessionSnapshot(SourceSnapshot(True, (), frozenset()), {
+            "down": SourceSnapshot(False, (), frozenset(), "timed out"),
+        })
+        screens = [
+            lambda s: _draw(s, sessions, 1, "", "", bell_targets={remote}, agent_entries=agents,
+                            agent_alerts={(pane, "completed")}, spinner_frame=sidebar.ASCII_SPINNER[0], scroll_offset=2),
+            lambda s: _draw(s, sessions, 1, "kill failed", "", agent_entries=agents, focused_region="agents",
+                            status_region="agents", agent_selected=3, agent_scroll_offset=2),
+            lambda s: _draw(s, sessions, 0, "", "", agent_entries=agents, move_source_entry=0, move_target_entry=1),
+            lambda s: _draw(s, _entries(snapshot(), []), 0, "", "", agent_entries=[Entry("", "order")]),
+            lambda s: _draw(s, sidebar._add_entries("location", "", snapshot_down, []), 1, "", "", adding=True),
+            lambda s: _draw(s, sidebar._add_entries("search", "new", snapshot_down, [], host=""), 0, "", "new",
+                            name_input=True, adding=True, creation_host=""),
+            lambda s: sidebar._draw_name(s, SidebarState(add_view="name", creation_host="gpu", creation_text="x", status="taken")),
+            lambda s: _draw(s, sessions, 1, "", "", agent_entries=agents, compact=True, bell_targets={remote},
+                            agent_alerts={(pane, "completed")}, spinner_frame=sidebar.ASCII_SPINNER[0]),
+        ]
+        for index, draw in enumerate(screens):
+            screen = FakeScreen(size=(24, 40) if index != 7 else (24, 5))
+            with self.subTest(screen=index), patch("letee.sidebar._ascii", return_value=True):
+                draw(screen)
+                text = "".join(call[3] for call in screen.calls if call[0] == "addnstr")
+                self.assertTrue(text.isascii(), sorted({char for char in text if not char.isascii()}))
 
 
 if __name__ == "__main__":

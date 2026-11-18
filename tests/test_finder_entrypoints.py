@@ -31,7 +31,7 @@ class FinderEntrypointsTest(unittest.TestCase):
             "#{?#{e|>:#{client_height},37},30,#{e|/:#{e|*:#{client_height},80},100}}",
         )
         run.assert_called_once_with(
-            ["tmux", "-L", server_socket("work"), "display-popup", "-E",
+            ["tmux", "-L", server_socket("work"), "display-popup", "-E", "-T", " Find ",
              "-w", "100", "-h", "30", "-x", "C", "-y", "C",
              shlex.join([sys.executable, "-m", "letee", "-L", "work", "finder"])],
             text=True, capture_output=False, check=True, timeout=None,

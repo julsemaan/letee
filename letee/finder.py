@@ -195,9 +195,9 @@ class Finder:
             fields[key] = fields.get(parent, []) + [(key, text, offset) for text, offset in own_fields]
 
         for session in self.workspace.sessions:
-            host = session.target.host or "local"
+            host = session.target.host or "localhost"
             name = session.target.session
-            add(session.key, "session", f"{name} [{host}]", session,
+            add(session.key, "session", f"{name} @{host}", session,
                 own_fields=((name, 0), (host, len(name) + 2)))
             for window in sorted(session.windows, key=lambda window: window.index):
                 key = session.key + (window.window_id,)

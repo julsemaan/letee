@@ -38,6 +38,9 @@ def _safe(text: str) -> str:
     return "".join(char if char.isprintable() else " " for char in text)
 
 
+
+LIST_TOP = 3  # query, scope + filters, key hints
+
 class _Popup:
     def __init__(self, screen, workspace: Workspace):
         self.screen = screen
@@ -49,6 +52,7 @@ class _Popup:
         self.opening: Identity | None = None
         self.results: SimpleQueue[tuple[Commit | None, SystemExit | Exception | None]] = SimpleQueue()
         self.tabs: list[tuple[int, int, str]] = []
+        self.filters_x = 0
         self.disclosures: dict[int, tuple[int, int]] = {}
         self.height = self.width = self.capacity = 0
         self.follow_selection = True
@@ -83,7 +87,7 @@ class _Popup:
 
     def render(self) -> None:
         self.height, self.width = self.screen.getmaxyx()
-        self.capacity = max(0, self.height - 6)
+        self.capacity = max(0, self.height - LIST_TOP - 2)
         rows = self.finder.rows
         if self.follow_selection and self.finder.selected_row in rows and self.capacity:
             index = rows.index(self.finder.selected_row)
@@ -99,7 +103,10 @@ class _Popup:
         while (self.query_start < self.cursor
                and tui.cell_width(self.finder.query[self.query_start:self.cursor]) >= query_width):
             self.query_start += 1
-        self.put(0, 2, self.finder.query[self.query_start:])
+        if self.finder.query:
+            self.put(0, 2, self.finder.query[self.query_start:])
+        else:
+            self.put(0, 2, "Search sessions, windows, agents", tui.color("hints") or curses.A_DIM)
         self.tabs = []
         x = 0
         for scope in SCOPES:
@@ -108,17 +115,19 @@ class _Popup:
             self.put(1, x, label, selection_attr if scope == self.finder.scope else tui.color("hints"))
             self.tabs.append((x, min(end, self.width - 1), scope))
             x = end
+        # The filter summary shares the scope row and opens the filter list when clicked.
+        filters = [category for category in FILTER_CATEGORIES if category in self.finder.categories]
+        self.filters_x = x + 1
+        self.put(1, self.filters_x, "Filters: " + (", ".join(filters) or "none"),
+                 selection_attr if self.filters_open else tui.color("hints"))
         hints = ([("Up/Down", "select"), ("Space", "toggle"), ("Enter", "back")] if self.filters_open
                  else [("Ctrl-T", "scope"), ("Ctrl-F", "filters"), ("Tab", "expand"), ("Enter", "open")])
         x = 0
         for key, action in hints + [("Ctrl-C", "cancel")]:
             self.put(2, x, key, tui.color("create") | curses.A_BOLD)
             x += tui.cell_width(key)
-            self.put(2, x, f" {action}  ", tui.color("hints") | curses.A_DIM)
+            self.put(2, x, f" {action}  ", tui.color("hints"))
             x += tui.cell_width(action) + 3
-        filters = [category for category in FILTER_CATEGORIES if category in self.finder.categories]
-        self.put(3, 0, "Filters: " + (", ".join(filters) or "none"),
-                 selection_attr if self.filters_open else tui.color("hints"))
         if self.filters_open:
             labels = [(f"{category} · {self.finder.category_counts[category]}",
                        category in self.finder.categories) for category in FILTER_CATEGORIES]
@@ -130,12 +139,12 @@ class _Popup:
                 attr = selection_attr if index == self.filter_index else 0
                 if checked is None and index != self.filter_index:
                     attr = tui.color("create") | curses.A_BOLD
-                self.put(4 + index - self.filter_scroll, 0, prefix + label, attr)
+                self.put(LIST_TOP + index - self.filter_scroll, 0, prefix + label, attr)
         now = time.time()
         self.disclosures = {}
         visible_rows = [] if self.filters_open else rows[self.scroll:self.scroll + self.capacity]
         for index, row in enumerate(visible_rows, self.scroll):
-            y = 4 + index - self.scroll
+            y = LIST_TOP + index - self.scroll
             selected = row.key == self.finder.selected
             attr = selection_attr if selected else 0
             if not row.available and not selected:
@@ -166,11 +175,14 @@ class _Popup:
                 elapsed = (datetime.now(timestamp.tzinfo) - timestamp).total_seconds()
                 x += self.put(y, x, " " + tui.format_duration(elapsed), attr | curses.A_DIM)
             if (row.kind == "session" and row.session.bell) or (row.agent is not None and row.agent.alert):
-                x += self.put(y, x, " BELL" if tui.ascii_mode() else " 🔔", attr if selected else attr | tui.color("danger"))
+                x += self.put(y, x, f" {tui.icons()['alert']}", attr if selected else attr | tui.color("danger"))
             if not row.available:
-                self.put(y, x, " " + tui.icons()["unavailable"], attr)
+                x += self.put(y, x, " " + tui.icons()["unavailable"], attr)
+            if selected:
+                # Extend the selection bar across the row, like the sidebar.
+                self.put(y, x, " " * max(0, self.width - x - 1), attr)
         if not self.filters_open and not rows and self.capacity:
-            self.put(4, 0, "Loading..." if self.finder.workspace.loading else "No destinations", tui.color("hints"))
+            self.put(LIST_TOP, 0, "Loading..." if self.finder.workspace.loading else "No destinations", tui.color("hints"))
         if self.height >= 6:
             self.put(self.height - 2, 0, self.finder.selected_path, tui.color("hints"))
             status = self.error
@@ -226,8 +238,8 @@ class _Popup:
             elif buttons & getattr(curses, "BUTTON5_PRESSED", 0):
                 self.filter_scroll += 3
             elif buttons & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
-                if 4 <= y < 4 + self.capacity and 0 <= x < self.width - 1:
-                    index = self.filter_scroll + y - 4
+                if LIST_TOP <= y < LIST_TOP + self.capacity and 0 <= x < self.width - 1:
+                    index = self.filter_scroll + y - LIST_TOP
                     if index < len(FILTER_CATEGORIES) + 1:
                         self.filter_index = index
                         self.toggle_filter()
@@ -237,17 +249,17 @@ class _Popup:
         elif buttons & getattr(curses, "BUTTON5_PRESSED", 0):
             self.scroll += 3
         elif buttons & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED | curses.BUTTON1_DOUBLE_CLICKED):
-            if y == 1:
+            if y == 1 and self.filters_x <= x < self.width - 1:
+                self.filters_open = True
+                self.follow_filter()
+            elif y == 1:
                 for start, end, scope in self.tabs:
                     if start <= x < end:
                         self.finder.set_scope(scope)
                         self.follow_selection = True
                         break
-            elif y == 3 and 0 <= x < self.width - 1:
-                self.filters_open = True
-                self.follow_filter()
-            elif 4 <= y < 4 + self.capacity:
-                index = self.scroll + y - 4
+            elif LIST_TOP <= y < LIST_TOP + self.capacity:
+                index = self.scroll + y - LIST_TOP
                 if index < len(self.finder.rows) and 0 <= x < self.width - 1:
                     row = self.finder.rows[index]
                     self.finder.select(row.key)
@@ -277,7 +289,7 @@ class _Popup:
                 self.mouse(prepare_open)
             elif key == curses.KEY_RESIZE:
                 self.height, self.width = self.screen.getmaxyx()
-                self.capacity = max(0, self.height - 6)
+                self.capacity = max(0, self.height - LIST_TOP - 2)
                 self.follow_filter()
             return True
         if key == "\x06":

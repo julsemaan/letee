@@ -544,6 +544,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_layout_hooks") as install_layout_hooks,
             patch.object(cockpit, "_install_bell_hook") as install_bell_hook,
             patch.object(cockpit, "_install_right_pane_reset") as install_right_pane_reset,
+            patch.object(cockpit, "_apply_overlay") as apply_overlay,
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
             patch.object(cockpit, "_enable_truecolor") as enable_truecolor,
@@ -557,6 +558,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_layout_hooks.assert_called_once_with("%1", 52)
         install_bell_hook.assert_called_once_with()
         install_right_pane_reset.assert_called_once_with("%1", "%2", "C-x")
+        apply_overlay.assert_called_once_with()
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
@@ -570,6 +572,25 @@ class CockpitLayoutTest(unittest.TestCase):
             ],
         )
 
+    def test_apply_overlay_sources_shared_overlay_unless_disabled(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled), (
+                patch.object(cockpit, "load_tmux_config_overlay", return_value=enabled)
+            ), patch.object(cockpit.tmux, "tmux") as tmux_call:
+                cockpit._apply_overlay()
+            expected = [unittest.mock.call("source-file", str(cockpit.sessions.OVERLAY_FILE), check=False, capture=True)]
+            self.assertEqual(tmux_call.call_args_list, expected if enabled else [])
+
+    def test_apply_overlay_logs_tmux_stderr_on_failure(self):
+        failed = subprocess.CompletedProcess([], 1, "", "unknown option: menu-style\n")
+        with (
+            patch.object(cockpit, "load_tmux_config_overlay", return_value=True),
+            patch.object(cockpit.tmux, "tmux", return_value=failed),
+            patch.object(cockpit.diagnostics, "log") as log,
+        ):
+            cockpit._apply_overlay()
+        log.assert_called_once_with("cockpit_overlay_failed", returncode=1, stderr="unknown option: menu-style")
+
     def test_existing_cockpit_gets_layout_reapplied(self):
         with (
             patch.object(cockpit, "_valid", return_value=True),
@@ -578,6 +599,7 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_fix_layout") as fix_layout,
             patch.object(cockpit, "_install_layout_hooks") as install_layout_hooks,
             patch.object(cockpit, "_install_bindings") as install_bindings,
+            patch.object(cockpit, "_apply_overlay") as apply_overlay,
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
             patch.object(cockpit, "_enable_truecolor") as enable_truecolor,
@@ -595,6 +617,7 @@ class CockpitLayoutTest(unittest.TestCase):
         install_bell_hook.assert_called_once_with()
         install_right_pane_reset.assert_called_once_with("%1", "%1", "C-x")
         install_bindings.assert_called_once_with("C-x", "%1", "%1")
+        apply_overlay.assert_called_once_with()
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         enable_truecolor.assert_called_once_with()
@@ -1346,7 +1369,7 @@ class CockpitLayoutTest(unittest.TestCase):
         with patch.dict(cockpit.os.environ, {"LETEE_ASCII": "1"}):
             command = cockpit.help_command("C-x")
 
-        self.assertIn(":      start mouse move; hover destination, then click", command)
+        self.assertIn("=      start mouse move; hover destination, then click", command)
         self.assertNotIn("↕      start mouse move; hover destination, then click", command)
 
     def test_new_cockpit_sets_configured_prefix_and_startup_help(self):
@@ -1354,7 +1377,7 @@ class CockpitLayoutTest(unittest.TestCase):
 
         def tmux_call(*args, **kwargs):
             calls.append((args, kwargs))
-            return type("Result", (), {"returncode": 1})()
+            return type("Result", (), {"returncode": 1, "stderr": ""})()
 
         with (
             patch.object(cockpit, "ensure_config", return_value=(None, "wrapper")),
@@ -1395,12 +1418,14 @@ class CockpitLayoutTest(unittest.TestCase):
             patch.object(cockpit, "_install_bell_hook"),
             patch.object(cockpit, "_install_right_pane_reset"),
             patch.object(cockpit, "_install_bindings") as install_bindings,
+            patch.object(cockpit, "_apply_overlay") as apply_overlay,
             patch.object(cockpit, "_enable_mouse") as enable_mouse,
             patch.object(cockpit, "_enable_clipboard") as enable_clipboard,
             patch.object(cockpit, "_enable_truecolor"),
         ):
             cockpit.ensure_cockpit()
 
+        apply_overlay.assert_called_once_with()
         enable_mouse.assert_called_once_with()
         enable_clipboard.assert_called_once_with()
         install_bindings.assert_called_once_with("C-x", "%1", "%2")

@@ -5,7 +5,6 @@ import os
 import platform
 import shlex
 import subprocess
-import textwrap
 import threading
 import time
 from collections import Counter
@@ -24,6 +23,7 @@ from .operations import (
 )
 from .discovery import DiscoveryPoller, SessionSnapshot, SourceSnapshot
 from .config import (
+    DEFAULT_SIDEBAR_KEYBINDINGS,
     load_agent_panel_resize_step,
     load_hosts,
     load_sidebar_keybindings,
@@ -38,6 +38,12 @@ from .runtime import _focused_agent_id as _focused_agent_id
 UI_POLL_INTERVAL_MS = 50
 MAX_INPUT_BURST = 32
 DEFAULT_AGENT_PANEL_PERCENTAGE = 40
+_ORDER_WORDS = {"priority": "Priority", "session": "Session"}
+_ORDER_GAP = "  "
+_COLLAPSE = {False: "«", True: "<<"}  # keyed by ASCII mode
+NAME_RULE = "Letters, numbers, _ -"  # names.SESSION_NAME_RE
+_MORE = {"up": {False: "↑ more", True: "^ more"}, "down": {False: "↓ more", True: "v more"}}  # keyed by ASCII mode
+_SEPARATOR = {False: " · ", True: " - "}  # keyed by ASCII mode
 MOVE_SCROLL_INTERVAL = 0.2
 MOVE_HANDLE_WIDTH = 3
 MOUSE_RECOVERY_WINDOW = 1.0
@@ -128,6 +134,9 @@ class Entry:
     status: str | None = None
     runtime_updated_at: datetime | None = None
     task_status_timestamp: datetime | None = None
+
+
+_EMPTY_AGENTS = [Entry("No active agents", "empty"), Entry("Detected via agent-status plugin", "hint")]
 
 
 @dataclass(frozen=True)
@@ -709,7 +718,7 @@ def _entries(snapshot: SessionSnapshot, favorites: list[Target] | None = None) -
         ))
     return out or [
         Entry("No sessions yet", "empty"),
-        Entry("Press Enter to add one.", "hint"),
+        Entry(f"Press {'Enter' if _ascii() else '↵'} or click {_icons()['create']} add", "hint"),
     ]
 
 
@@ -757,7 +766,7 @@ def _search_entries(
     if source is None:
         return [Entry("connecting…", "unavailable", host=host)]
     if not source.available:
-        label = f"reconnecting…: {source.error}" if source.error else "reconnecting…"
+        label = f"reconnecting…: {_unavailable_reason(source)}" if source.error else "reconnecting…"
         return [Entry(label, "unavailable", host=host)]
     needle = filter_text.lower()
     matches = [
@@ -773,12 +782,37 @@ def _search_entries(
     ):
         entries.append(Entry(filter_text, "create", host=host))
     entries.extend(Entry(target.session, "session", target, target.host) for target in matches)
+    if filter_text and not _valid_session_name(filter_text):
+        # Say why typing did not offer a create row.
+        return entries + [Entry(NAME_RULE, "hint", host=host)]
     if not entries:
         return [
             Entry("No sessions", "empty", host=host),
             Entry("Type a session name to create", "hint", host=host),
         ]
     return entries
+
+
+_ERROR_REASONS = (
+    ("permission denied", "auth failed"),
+    ("could not resolve", "unknown host"),
+    ("connection refused", "refused"),
+    ("no route to host", "unreachable"),
+    ("timed out", "timed out"),
+    ("host key verification failed", "host key changed"),
+    ("tmux: command not found", "tmux missing"),
+    ("tmux: not found", "tmux missing"),
+)
+
+
+def _unavailable_reason(source: SourceSnapshot | None) -> str:
+    """A few words on why a host is unavailable; discovery errors are raw ssh/tmux stderr."""
+    if source is None:
+        return "connecting…"
+    error = (source.error or "").strip()
+    lowered = error.lower()
+    reason = next((short for needle, short in _ERROR_REASONS if needle in lowered), None)
+    return reason or (error.splitlines()[-1] if error else "unavailable")
 
 
 def _add_entries(
@@ -793,10 +827,10 @@ def _add_entries(
     entries = [Entry("Select a location", "section")]
     entries.extend(Entry(label, "location", host=entry_host) for label, entry_host in _available_locations(snapshot))
     if not snapshot.local.available:
-        entries.append(Entry("localhost: unavailable", "unavailable", host=""))
+        entries.append(Entry(f"localhost: {_unavailable_reason(snapshot.local)}", "unavailable", host=""))
     for remote_host, source in snapshot.remotes.items():
         if source is None or not source.available:
-            entries.append(Entry(f"{remote_host}: unavailable", "unavailable", host=remote_host))
+            entries.append(Entry(f"{remote_host}: {_unavailable_reason(source)}", "unavailable", host=remote_host))
     if not entries or not any(entry.kind == "location" for entry in entries):
         entries.append(Entry("No available locations", "hint"))
     return entries
@@ -1914,13 +1948,17 @@ def _agent_layout(
     agent_entries: list[Entry],
     agent_percentage: int,
     name_input: bool,
+    session_entries: list[Entry],
 ) -> tuple[int, int, int, int]:
     footer_top = height - footer_height
     session_top = 3 if name_input else 2
     minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
     available = footer_top - session_top - 1
     wanted = max(minimum_agent_rows, round(available * agent_percentage / 100))
-    agent_body = min(max(minimum_agent_rows, wanted), available - 1)
+    # The percentage is the agents' minimum share: rows sessions would leave blank go to agents,
+    # keeping one spare row so a move-mode drop prompt does not scroll the list.
+    unused = available - sum(_entry_height(entry) for entry in session_entries) - 1
+    agent_body = min(max(minimum_agent_rows, wanted, unused), available - 1)
     separator = footer_top - agent_body - 1
     return footer_top, session_top, minimum_agent_rows, separator
 
@@ -1931,9 +1969,10 @@ def _agent_prompt_row(
     agent_entries: list[Entry],
     agent_percentage: int,
     name_input: bool,
+    session_entries: list[Entry],
 ) -> int:
     h, _ = stdscr.getmaxyx()
-    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_percentage, name_input)
+    _, _, _, separator = _agent_layout(h, footer_height, agent_entries, agent_percentage, name_input, session_entries)
     return max(0, min(h - 1, separator + 2))
 
 
@@ -1984,9 +2023,55 @@ def _bell_targets(
 
 
 def _entry_height(entry: Entry) -> int:
-    if entry.kind == "order":
-        return 2
-    return 2 if entry.tracked or entry.kind == "agent" else 1
+    # Tracked sessions are one row; a second row explains why one is unavailable.
+    return 2 if entry.tracked and entry.unavailable_favorite else 1
+
+
+def _alerted(
+    entry: Entry, bell_targets: set[Target], current_target: Target | None,
+    agent_alerts: set[tuple[PaneTarget, str]] | None,
+) -> bool:
+    """Whether a row should carry the alert mark; the visible session never does."""
+    if entry.kind == "session":
+        return entry.target in bell_targets and entry.target != current_target
+    if entry.kind == "agent":
+        return (entry.pane_target, entry.agent_id) in (agent_alerts or set())
+    return False
+
+
+def _agent_row_parts(
+    entry: Entry, pointer: str | None, width: int, now: datetime | None,
+    agent_alerts: set[tuple[PaneTarget, str]] | None, spinner_frame: str | None,
+) -> tuple[str, str]:
+    """An agent row's left text and its right-aligned `session:window`, which yields first when narrow."""
+    status = entry.status or "unknown"
+    indicator = pointer or (spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic()))
+    timestamp = entry.task_status_timestamp or entry.runtime_updated_at
+    duration = ""
+    if status == "working" and timestamp:
+        duration = " " + _format_duration(((now or datetime.now(timezone.utc)) - timestamp).total_seconds())
+    alert = f" {_icons()['alert']}" if _alerted(entry, set(), None, agent_alerts) else ""
+    prefix, suffix = f"{indicator} ", f"{_SEPARATOR[_ascii()]}{status}{duration}{alert}"
+    window = entry.pane_target.window_name if entry.pane_target else ""
+    room = width - _cell_width(prefix + suffix)
+    name = _truncate_cells(entry.label, max(0, room))
+    # The location only gets what the full name leaves, and is dropped below a useful width.
+    leftover = room - _cell_width(name) - 1
+    location = ""
+    if entry.target and leftover >= 4:
+        session = entry.target.session
+        full = session if window in ("", session) else f"{session}:{window}"
+        # Drop the window before clipping the session name.
+        location = full if _cell_width(full) <= leftover else _truncate_cells(session, leftover)
+    return _truncate_cells(prefix + name + suffix, width), location
+
+
+def _join_right(left: str, right: str, width: int) -> str:
+    return left + " " * (width - _cell_width(left) - _cell_width(right)) + right if right else left
+
+
+def _host_tag(entry: Entry) -> str:
+    return f"@{entry.host}" if entry.target is not None and entry.target.kind == "ssh" and entry.host else ""
 
 
 def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: int | None = None) -> tuple[int, int]:
@@ -2184,17 +2269,17 @@ def _draw_title(
     creation_host: str | None = None,
 ) -> tuple[int, int | None]:
     width = max(1, w)
-    brand = " letee" if _ascii() else "  letee"
+    brand = " letee"
     if adding:
         section = "Add session"
         if creation_host is not None:
-            section += f" · {'localhost' if creation_host == '' else creation_host}"
+            section += f"{_SEPARATOR[_ascii()]}{'localhost' if creation_host == '' else creation_host}"
         left = f"{brand} / {section}"
     else:
-        left = (" <" if _ascii() else " ‹") + brand
+        left = f" {_COLLAPSE[_ascii()]}{brand}"
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     if not adding:
-        label = f"{_icons()['selected']} add" if add_button_selected else "＋ add"
+        label = f"{_icons()['selected'] if add_button_selected else _icons()['create']} add"
         add_col = width - _cell_width(label)
         find_bounds = _find_bounds(width, add_col)
         main_width = find_bounds[0] if find_bounds else max(0, add_col)
@@ -2212,13 +2297,25 @@ def _draw_title(
     return (min(width - 1, len(left)), add_col)
 
 
-def _draw_name_input(stdscr: curses.window, w: int, filter_text: str, dimmed: bool) -> tuple[int, int]:
+def _draw_text_field(
+    stdscr: curses.window, row: int, w: int, text: str, dimmed: bool, placeholder: str = "",
+) -> tuple[int, int]:
+    """The one input style: a muted label, then the typed text tail-clipped so the cursor stays visible."""
     prefix = " Name: "
-    text = _truncate_cells(filter_text, max(0, w - _cell_width(prefix)))
-    line = prefix + text
-    attr = _color("hints") or curses.A_DIM
-    stdscr.addnstr(1, 0, line.ljust(w), w, _fade(attr) if dimmed else attr)
-    return 1, min(w - 1, _cell_width(line))
+    room = max(0, w - _cell_width(prefix) - 1)
+    visible = text[-room:] if room else ""
+    label_attr = _color("hints") or curses.A_DIM
+    stdscr.addnstr(row, 0, prefix.ljust(w), w, _fade(label_attr) if dimmed else label_attr)
+    column = _cell_width(prefix)
+    if visible:
+        stdscr.addnstr(row, column, visible, room, _fade(curses.A_BOLD) if dimmed else curses.A_BOLD)
+    elif placeholder:
+        stdscr.addnstr(row, column, _truncate_cells(placeholder, room), room, _fade(label_attr) if dimmed else label_attr)
+    return row, min(w - 1, column + _cell_width(visible))
+
+
+def _draw_name_input(stdscr: curses.window, w: int, filter_text: str, dimmed: bool) -> tuple[int, int]:
+    return _draw_text_field(stdscr, 1, w, filter_text, dimmed, placeholder="search or new name")
 
 
 def _truncate(text: str, width: int) -> str:
@@ -2258,53 +2355,34 @@ def _entry_lines(
         return [_truncate_cells(f"{pointer} {location_icon} {entry.label}", width)]
     if entry.kind == "order":
         pointer = icon["selected"] if selected else (" " if _ascii() else "⇅")
-        if _ascii():
-            line = f"{pointer} Order:  PRIORITY  SESSION"
-        else:
-            line = f"{pointer}  Priority  Session"
-        return [_truncate_cells(line, width), ""]
+        return [_truncate_cells(f"{pointer}{_ORDER_GAP}{_ORDER_WORDS['priority']}{_ORDER_GAP}{_ORDER_WORDS['session']}", width)]
     if entry.kind == "agent":
-        separator = " · "
-        alert = " BELL" if _ascii() else " 🔔"
-        alert = alert if (entry.pane_target, entry.agent_id) in (agent_alerts or set()) else ""
-        status = entry.status or "unknown"
-        indicator = pointer if selected else (spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic()))
-        prefix = f"{indicator} "
-        timestamp = entry.task_status_timestamp or entry.runtime_updated_at
-        detail = ""
-        if status == "working" and timestamp:
-            duration = _format_duration(((now or datetime.now(timezone.utc)) - timestamp).total_seconds())
-            detail = f" · for {duration}"
-        suffix = separator + status + detail + alert
-        name = _truncate_cells(entry.label, max(0, width - _cell_width(prefix + suffix)))
-        first = _truncate_cells(prefix + name + suffix, width)
-        branch = "`-" if _ascii() else "└─"
-        location_prefix = f"  {branch} "
-        window_name = entry.pane_target.window_name if entry.pane_target else ""
-        location = f"{entry.target.session if entry.target else ''} · {window_name}"
-        return [_truncate_cells(first, width), _truncate_cells(location_prefix + location, width)]
+        return [_join_right(*_agent_row_parts(entry, pointer if selected else None, width, now, agent_alerts, spinner_frame), width)]
     if entry.kind == "session":
         kind = "unavailable" if entry.unavailable_favorite else ("remote" if entry.target and entry.target.kind == "ssh" else "local")
-        bell = " BELL" if _ascii() else " 🔔"
-        bell = bell if entry.target in bell_targets and entry.target != current_target else ""
+        bell = f" {icon['alert']}" if _alerted(entry, bell_targets, current_target, agent_alerts) else ""
         if entry.tracked:
-            prefix = "" if entry.shortcut_slot is not None else f"{pointer} "
-            room = max(0, width - _cell_width(prefix) - _cell_width(bell))
-            label = _truncate_cells(entry.label, room)
+            # Rows past slot 9 get a blank gutter so names line up with badged rows.
+            prefix = "" if entry.shortcut_slot is not None else f"{pointer}   "
+            tag = _host_tag(entry)
+            room = width - _cell_width(prefix) - _cell_width(bell)
+            # The name wins over the host tag when the sidebar is too narrow for both.
+            if tag and room - _cell_width(tag) - 1 < min(6, _cell_width(entry.label)):
+                tag = ""
+            label = _truncate_cells(entry.label, max(0, room - (_cell_width(tag) + 1 if tag else 0)))
             first = prefix + label + bell
-            host_prefix = "@"
+            if tag:
+                first += " " * max(1, width - _cell_width(first) - _cell_width(tag)) + tag
+            if not entry.unavailable_favorite:
+                return [first]
             status = (entry.status or "unavailable").replace("…", "...") if _ascii() else (entry.status or "unavailable")
-            separator = " | " if _ascii() else " · "
-            suffix = f"{separator}{status}" if entry.unavailable_favorite else ""
             branch = "`-" if _ascii() else "└─"
-            meta_prefix = f"  {branch} "
-            host = _truncate_cells(entry.host or "", max(0, width - _cell_width(meta_prefix) - _cell_width(host_prefix) - _cell_width(suffix)))
-            return [first, meta_prefix + host_prefix + host + suffix]
+            return [first, _truncate_cells(f"  {branch} {status}", width)]
         prefix = f"{pointer} {icon[kind]} "
         first = prefix + _truncate_cells(entry.label, max(0, width - _cell_width(prefix) - _cell_width(bell))) + bell
         return [first]
     if entry.kind == "hint":
-        return [_truncate_cells(f"  {icon['enter']} {entry.label}", width)]
+        return [_truncate_cells(f"    {entry.label}", width)]
     if entry.kind == "empty":
         return [_truncate_cells(f"    {entry.label}", width)]
     label = entry.label.replace("…", "...") if _ascii() else entry.label
@@ -2370,7 +2448,7 @@ def _draw_entries(
     row = top
     if start:
         attr = _color("hints") or curses.A_DIM
-        stdscr.addnstr(row, 0, "↑ more", w - 1, _fade(attr) if dimmed else attr)
+        stdscr.addnstr(row, 0, _MORE["up"][_ascii()], w - 1, _fade(attr) if dimmed else attr)
         row += 1
     for idx in range(start, end):
         if row >= h - 1:
@@ -2384,10 +2462,18 @@ def _draw_entries(
             max(0, handle_start - 4 if entry.shortcut_slot is not None else handle_start)
             if entry.tracked else w
         )
-        lines = _entry_lines(
-            entry, selected_entry and not dimmed and selection_pointer_visible and pane_active, bell_targets, current_target, entry_width,
-            now, agent_alerts, spinner_frame, agent_ordering,
-        )
+        cursor_visible = selected_entry and not dimmed and selection_pointer_visible and pane_active
+        agent_location = ""
+        if entry.kind == "agent":
+            agent_left, agent_location = _agent_row_parts(
+                entry, _icons()["selected"] if cursor_visible else None, entry_width, now, agent_alerts, spinner_frame,
+            )
+            lines = [_join_right(agent_left, agent_location, entry_width)]
+        else:
+            lines = _entry_lines(
+                entry, cursor_visible, bell_targets, current_target, entry_width,
+                now, agent_alerts, spinner_frame, agent_ordering,
+            )
         # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
         is_move_source = move_source_entry is not None and idx == move_source_entry
         is_move_target = move_target_entry is not None and idx == move_target_entry
@@ -2397,6 +2483,8 @@ def _draw_entries(
             destination_line = (prompt + rule * max(0, w - len(prompt)))[:w]
             place_after = move_source_entry is not None and move_source_entry < idx
             lines = [lines[0], destination_line] if place_after else [destination_line, lines[0]]
+        # The row carrying the entry itself; a drop prompt may be drawn above it.
+        entry_line = 1 if is_move_target and not place_after else 0
         if diagnostics.get_diagnostics().enabled:
             diagnostics.log("sidebar_entry_draw", **_trace_entry(entry, idx), status=entry.status,
                             row=row, row_count=len(lines), viewport_top=top, viewport_bottom=h - 1,
@@ -2404,20 +2492,23 @@ def _draw_entries(
         base_attr = _entry_attr(entry, active_entry or active_agent, dimmed, move_source=is_move_source, move_target=is_move_target)
         slot_badge = ""
         slot_width = 0
-        if entry.tracked and entry.shortcut_slot is not None and not is_move_target:
+        ico = _icons()
+        pointed = selected_entry and not dimmed and selection_pointer_visible and pane_active
+        if entry.tracked and entry.shortcut_slot is not None:
             slot_width = 4
-            ico = _icons()
+        alerted = _alerted(entry, bell_targets, current_target, agent_alerts)
         for line_number, line in enumerate(lines):
             if row >= h - 1:
                 break
             attr = _fade(base_attr) if line_number and not (active_entry or active_agent or is_move_target) else base_attr
-            if line_number == 0 and slot_width:
-                if selected_entry and not dimmed and selection_pointer_visible and pane_active:
-                    slot_badge = f" {ico['selected']} "
-                else:
-                    slot_badge = f"[{entry.shortcut_slot}]"
-                slot_attr = _color("slot_active") if active_entry else _color("slot")
-                stdscr.addnstr(row, 0, slot_badge, w, slot_attr or curses.A_BOLD)
+            if line_number == entry_line and slot_width:
+                slot_badge = f"{ico['selected'] if pointed else ' '}{entry.shortcut_slot} "
+                slot_attr = (
+                    _color("slot_active") if active_entry
+                    else (_color("create") | curses.A_BOLD) if pointed
+                    else _color("slot")
+                ) or curses.A_BOLD
+                stdscr.addnstr(row, 0, slot_badge, w, _fade(slot_attr) if dimmed else slot_attr)
                 stdscr.addnstr(row, 3, " " + line, max(0, handle_start - 3), attr)
             else:
                 stdscr.addnstr(row, 0, line, w, attr)
@@ -2426,26 +2517,48 @@ def _draw_entries(
                     semantic_attr = _fade(status_attr) if dimmed else status_attr
                     icon_attr = semantic_attr
                     stdscr.addnstr(row, 0, line[0], min(1, w), icon_attr)
-                    column = line.rfind(entry.status)
+                    # Search after the separator so a window named like a status is not recolored.
+                    separator = _SEPARATOR[_ascii()]
+                    column = line.find(f"{separator}{entry.status}")
                     if column >= 0:
+                        column = _cell_width(line[:column]) + len(separator)
                         stdscr.addnstr(row, column, entry.status, max(0, w - column), semantic_attr)
+            if line_number == entry_line:
+                # Recolor the trailing host tag and alert mark drawn as part of the row.
+                line_col = 4 if slot_width else 0
+                # Unavailable rows keep their warning color for the whole row.
+                tag = _host_tag(entry) if entry.tracked and not entry.unavailable_favorite else ""
+                accents = [(tag, _color("remote") or curses.A_BOLD)]
+                if entry.kind == "agent":
+                    accents = [(agent_location, _color("hints") or curses.A_DIM)]
+                if alerted:
+                    accents.append((f" {ico['alert']}", (_color("danger") or 0) | curses.A_BOLD))
+                for text, accent_attr in accents:
+                    column = line.rfind(text) if text else -1
+                    if column >= 0:
+                        stdscr.addnstr(
+                            row, line_col + _cell_width(line[:column]), text, max(0, w - line_col - column),
+                            _fade(accent_attr) if dimmed else accent_attr,
+                        )
             if entry.tracked and move_source_entry is None and line_number == int(is_move_target):
-                handle = ":" if _ascii() else "↕"
+                handle = "=" if _ascii() else "↕"
                 handle_col = max(0, w - 2)
                 handle_text = (
                     " " * max(0, handle_col - handle_start)
                     + handle
                     + " " * max(0, handle_end - handle_col - 1)
                 )
-                handle_attr = (_color("move") or 0) | curses.A_BOLD | curses.A_REVERSE
+                # Only the selected row gets a solid handle; the rest stay quiet but clickable.
+                handle_attr = (
+                    (_color("move") or 0) | curses.A_BOLD | curses.A_REVERSE if pointed
+                    else _color("hints") or curses.A_DIM
+                )
                 stdscr.addnstr(
                     row, handle_start, handle_text, handle_end - handle_start,
                     _fade(handle_attr) if dimmed else handle_attr,
                 )
             if entry.kind == "order" and line_number == 0:
-                active_word = "SESSION" if agent_ordering == "session" else "PRIORITY"
-                if not _ascii():
-                    active_word = "Session" if agent_ordering == "session" else "Priority"
+                active_word = _ORDER_WORDS[agent_ordering]
                 active_attr = _color("active") or curses.A_REVERSE
                 column = line.find(active_word)
                 if column >= 0:
@@ -2459,34 +2572,59 @@ def _draw_entries(
             row += 1
     if end < len(entries) and row < h - 1:
         attr = _color("hints") or curses.A_DIM
-        stdscr.addnstr(h - 2, 0, "↓ more", w - 1, _fade(attr) if dimmed else attr)
+        stdscr.addnstr(h - 2, 0, _MORE["down"][_ascii()], w - 1, _fade(attr) if dimmed else attr)
 
 
-def _draw_footer(
-    stdscr: curses.window,
-    h: int,
-    w: int,
-    name_input: bool = False,
-    dimmed: bool = False,
-    adding: bool = False,
-) -> int:
+def _footer_hints(
+    entry: Entry | None, name_input: bool, adding: bool, keys: dict[str, str], *, moving: bool,
+) -> list[tuple[str, str]]:
+    """Key hints for the focused row; `entry` is None when nothing actionable is selected."""
+    enter = "Enter" if _ascii() else "↵"
+    if moving:
+        return [("click", "place"), ("Esc", "cancel")]
     if name_input:
-        logical_rows = [
-            "type a name  backspace edit",
-            f"esc back  {'Enter' if _ascii() else '↵'} create or switch",
-        ]
-    elif adding:
-        logical_rows = [f"{'Enter' if _ascii() else '↵'} select · Esc back" if not _ascii() else "Enter select  Esc back"]
-    else:
-        logical_rows = [f"{'Enter' if _ascii() else '↵'} activate"]
-    width = max(1, w - 1)
-    lines = [line for logical_row in logical_rows for line in (textwrap.wrap(logical_row, width=width) or [""])]
-    attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
-    for row, line in enumerate(lines, h - len(lines)):
-        row_attr = _fade(attr) if dimmed else attr
-        stdscr.addnstr(row, 0, line.ljust(w - 1), w - 1, row_attr)
-        stdscr.chgat(row, w - 1, 1, row_attr)
-    return len(lines)
+        return [(enter, "open/create"), ("Esc", "back")]
+    if adding:
+        return [(enter, "select"), ("Esc", "back")]
+    resize = (f"{keys['resize_inc']}/{keys['resize_dec']}", "resize")
+    if entry is None or entry.kind not in ("session", "agent", "order"):
+        return [(enter, "add")]
+    if entry.kind == "order":
+        return [("Left/Right" if _ascii() else "←/→", "order"), resize]
+    if entry.kind == "agent":
+        return [(enter, "jump"), (keys["kill"], "kill"), resize]
+    hints = [(enter, "open"), (keys["rename"], "rename")]
+    if entry.tracked:
+        hints.append((keys["remove"], "remove"))
+    return hints + [(keys["kill"], "kill")]
+
+
+def _draw_footer(stdscr: curses.window, h: int, w: int, hints: list[tuple[str, str]], dimmed: bool = False) -> int:
+    """Draw one bar of key hints, dropping trailing hints that do not fit."""
+    row = h - 1
+    width = max(1, w - 1)  # ncurses rejects writing the bottom-right cell.
+    bar_attr = _color("footer") or (curses.A_BOLD | curses.A_REVERSE)
+    key_attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
+    bar_attr, key_attr = (_fade(bar_attr), _fade(key_attr)) if dimmed else (bar_attr, key_attr)
+    stdscr.addnstr(row, 0, " " * width, width, bar_attr)
+    stdscr.chgat(row, w - 1, 1, bar_attr)
+    column = 0
+    for key, label in hints:
+        needed = _cell_width(key) + 1 + _cell_width(label) + (2 if column else 1)
+        if column + needed > width:
+            break
+        column += 2 if column else 1
+        # Pairs like "[/]" draw the slash as label text so both keys read separately.
+        for index, part in enumerate(key.split("/") if len(key) > 1 else [key]):
+            if index:
+                stdscr.addnstr(row, column, "/", width - column, bar_attr)
+                column += 1
+            stdscr.addnstr(row, column, part, width - column, key_attr)
+            column += _cell_width(part)
+        column += 1
+        stdscr.addnstr(row, column, label, width - column, bar_attr)
+        column += _cell_width(label)
+    return 1
 
 
 def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False) -> int | None:
@@ -2495,28 +2633,17 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     width = max(1, w)
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     ascii_mode = _ascii()
-    title = " e Rename session" if ascii_mode else " ✎ Rename session"
-    back_col = _draw_back_title(stdscr, width, title, attr, dimmed)
+    # Same layout as add-search: the host lives in the title and the field sits on row 1.
     host = "localhost" if state.creation_host == "" else (state.creation_host or "")
-    host_icon = "*" if ascii_mode else ("●" if state.creation_host == "" else "◆")
-    host_attr = _color("local" if state.creation_host == "" else "remote") or curses.A_BOLD
-    stdscr.addnstr(2, 0, _truncate_cells(f" {host_icon} {host}", width), width, _fade(host_attr) if dimmed else host_attr)
-    prefix = " > " if ascii_mode else " ❯ "
-    room = max(0, width - _cell_width(prefix) - 1)
-    visible = state.creation_text[-room:] if room else ""
-    field = prefix + (visible or "session-name")
-    field_attr = _color("add_entry") or curses.A_REVERSE
-    stdscr.addnstr(3, 0, _truncate_cells(field, width).ljust(width), width, _fade(field_attr) if dimmed else field_attr)
-    if h > 5:
-        message = f" ! {state.status}" if ascii_mode and state.status else f" ✕ {state.status}" if state.status else " Letters, numbers, . _ -"
+    title = f" letee / Rename{_SEPARATOR[ascii_mode]}{host}" if host else " letee / Rename"
+    back_col = _draw_back_title(stdscr, width, title, attr, dimmed)
+    cursor = _draw_text_field(stdscr, 1, width, state.creation_text, dimmed, placeholder="session-name")
+    if h > 3:
+        message = f" {_icons()['unavailable']} {state.status}" if state.status else f" {NAME_RULE}"
         message_attr = (_color("danger") or curses.A_BOLD) if state.status else (_color("hints") or curses.A_DIM)
-        stdscr.addnstr(4, 0, _truncate_cells(message, width), width, _fade(message_attr) if dimmed else message_attr)
-    footer = "Esc cancel  Enter rename" if ascii_mode else "Esc cancel · ↵ rename"
-    footer_width = max(0, width - 1)
-    stdscr.addnstr(h - 1, 0, footer[:footer_width].ljust(footer_width), footer_width, _fade(attr) if dimmed else attr)
-    if width > 1:
-        stdscr.chgat(h - 1, width - 1, 1, _fade(attr) if dimmed else attr)
-    stdscr.move(3, min(width - 1, _cell_width(prefix + visible)))
+        stdscr.addnstr(2, 0, _truncate_cells(message, width), width, _fade(message_attr) if dimmed else message_attr)
+    _draw_footer(stdscr, h, width, [("Enter" if ascii_mode else "↵", "rename"), ("Esc", "back")], dimmed)
+    stdscr.move(*cursor)
     _refresh_screen(stdscr)
     return back_col
 
@@ -2542,23 +2669,21 @@ def _compact_rows(
     return [(index, top + row) for row, index in enumerate(indices[start:start + capacity])]
 
 
-def _compact_line(
-    entry: Entry, number: int, bell_targets: set[Target], current_target: Target | None,
-    agent_alerts: set[tuple[PaneTarget, str]], spinner_frame: str | None,
-) -> str:
+def _compact_line(entry: Entry, number: int | None, alerted: bool, spinner_frame: str | None) -> str:
+    """Five columns: a session's number, or an agent's status icon and its session's number."""
+    mark = "!" if alerted else " "
     if entry.kind == "session":
-        alert = entry.target in bell_targets and entry.target != current_target
-        return str(number)[:4].ljust(4) + ("!" if alert else " ")
-    name = ""
-    for char in entry.label:
-        if _cell_width(name + char) > 2:
-            break
-        name += char
-    name += " " * (2 - _cell_width(name))
+        return str(number)[:4].ljust(4) + mark
     status = entry.status or "unknown"
     indicator = spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic())
-    alert = (entry.pane_target, entry.agent_id) in agent_alerts
-    return indicator + " " + name + ("!" if alert else " ")
+    # Agents of sessions outside the strip fall back to the first two cells of their name.
+    tag = str(number)[:2] if number is not None else ""
+    if number is None:
+        for char in entry.label:
+            if _cell_width(tag + char) > 2:
+                break
+            tag += char
+    return indicator + " " + tag + " " * (2 - _cell_width(tag)) + mark
 
 
 def _draw_compact(
@@ -2580,22 +2705,27 @@ def _draw_compact(
             if row != height - 1:
                 raise
 
-    header = "  >  " if _ascii() else "  »  "
+    header = "  >> " if _ascii() else "  »  "
     write_row(0, header[:width].ljust(width), _color("title") or (curses.A_BOLD | curses.A_REVERSE))
     if 0 < separator < height:
         write_row(separator, ("-" if _ascii() else "─") * width, _color("section") or curses.A_BOLD)
+    session_numbers: dict[Target | None, int] = {}
     for section, kind, selection, offset, start, end in (
         (entries, "session", selected, scroll_offset, top, separator),
         (agents, "agent", agent_selected, agent_scroll_offset, separator + 1, bottom),
     ):
         numbers = {index: number for number, index in enumerate((i for i, entry in enumerate(section) if entry.kind == kind), 1)}
+        if kind == "session":
+            session_numbers = {section[index].target: number for index, number in numbers.items()}
         for index, row in _compact_rows(section, kind, selection, offset, start, end):
             entry = section[index]
             active = entry.target == current_target if kind == "session" else (
                 entry.pane_target == active_agent_pane and entry.agent_id == active_agent_id
             )
             attr = _entry_attr(entry, active)
-            line = _compact_line(entry, numbers[index], bell_targets, current_target, agent_alerts, spinner_frame)
+            number = numbers[index] if kind == "session" else session_numbers.get(entry.target)
+            alerted = _alerted(entry, bell_targets, current_target, agent_alerts)
+            line = _compact_line(entry, number, alerted, spinner_frame)
             if diagnostics.get_diagnostics().enabled:
                 diagnostics.log("sidebar_entry_draw", **_trace_entry(entry, index), status=entry.status,
                                 row=row, row_count=1, viewport_top=start, viewport_bottom=end,
@@ -2603,6 +2733,8 @@ def _draw_compact(
             write_row(row, line, attr)
             if kind == "agent":
                 stdscr.chgat(row, 0, 1, _status_attr(entry.status or "unknown"))
+            if alerted and row != height - 1:
+                stdscr.chgat(row, _cell_width(line) - 1, 1, (_color("danger") or 0) | curses.A_BOLD)
     _refresh_screen(stdscr)
     return 0, None
 
@@ -2637,6 +2769,7 @@ def _draw(
     agent_scroll_offset: int | None = None,
     compact: bool = False,
     active_agent_pane: PaneTarget | None = None,
+    sidebar_keys: dict[str, str] | None = None,
 ) -> tuple[int, int | None]:
     stdscr.erase()
     if compact:
@@ -2665,7 +2798,20 @@ def _draw(
             message_row, 0, message, max(1, w),
             _fade(message_attr) if dimmed else message_attr,
         )
-    footer_height = _draw_footer(stdscr, h, w, name_input, dimmed, adding)
+    has_real_agents = any(entry.kind == "agent" for entry in agent_entries or ())
+    if focused_region == "agents":
+        # The order toggle is hidden while there is nothing to order.
+        focused_entry = agent_entries[agent_selected] if has_real_agents and agent_selected < len(agent_entries) else None
+    else:
+        focused_entry = entries[selected] if entries and selected < len(entries) and not add_button_selected else None
+    footer_height = _draw_footer(
+        stdscr, h, w,
+        _footer_hints(
+            focused_entry, name_input, adding, sidebar_keys or DEFAULT_SIDEBAR_KEYBINDINGS,
+            moving=move_source_entry is not None,
+        ),
+        dimmed,
+    )
     if agent_entries is None:
         _draw_entries(
             stdscr, entries, selected, h - footer_height + 1, w, bell_targets or set(), current_target,
@@ -2679,12 +2825,11 @@ def _draw(
         _refresh_screen(stdscr)
         return footer_height, add_col
     agents = agent_entries
-    has_real_agents = any(e.kind == "agent" for e in agents) if agents else False
     footer_top, session_top, minimum_agent_rows, separator = _agent_layout(
-        h, footer_height, agents, agent_percentage, name_input
+        h, footer_height, agents, agent_percentage, name_input, entries
     )
     if footer_top - session_top < 2 + minimum_agent_rows:
-        stdscr.addnstr(session_top, 0, "Terminal too short; resize window", max(0, w - 1), curses.A_BOLD)
+        stdscr.addnstr(session_top, 0, " Terminal too short; resize window", max(0, w - 1), _color("hints") or curses.A_DIM)
         _refresh_screen(stdscr)
         return footer_height, add_col
     _draw_entries(
@@ -2696,7 +2841,12 @@ def _draw(
     )
     rule = "-" if _ascii() else "─"
     label = "AGENTS "
-    stdscr.addnstr(separator, 0, label + rule * max(0, w - len(label)), w, _color("section") or curses.A_BOLD)
+    section_attr = _color("section") or curses.A_BOLD
+    stdscr.addnstr(separator, 0, label + rule * max(0, w - len(label)), w, section_attr)
+    if status_region == "agents" and status:
+        # Agent errors sit on the rule so they never cover part of an agent row.
+        notice = _truncate_cells(message, max(0, w - len(label) - 1))
+        stdscr.addnstr(separator, len(label), notice + " ", max(0, w - len(label)), _fade(message_attr) if dimmed else message_attr)
     if has_real_agents:
         _draw_entries(
             stdscr, agents, agent_selected, footer_top + 1, w, set(), None,
@@ -2706,18 +2856,10 @@ def _draw(
             scroll_offset=agent_scroll_offset, pane_active=pane_active,
         )
     else:
+        # Discovery depends on the plugin, so point at it rather than listing agent names.
         _draw_entries(
-            stdscr, agents, 0, footer_top + 1, w, set(), None,
+            stdscr, _EMPTY_AGENTS, 0, footer_top + 1, w, set(), None,
             dimmed or focused_region != "agents", top=separator + 1,
-            spinner_frame=None, agent_ordering=agent_ordering,
-            scroll_offset=agent_scroll_offset, pane_active=pane_active,
-        )
-        empty_agents = _truncate_cells("  No active agents", max(1, w))
-        stdscr.addnstr(separator + 2, 0, empty_agents, max(1, w), curses.A_DIM)
-    if status_region == "agents" and status:
-        stdscr.addnstr(
-            separator + 2, 0, message, max(1, w),
-            _fade(message_attr) if dimmed else message_attr,
         )
     if name_input:
         stdscr.move(*cursor)
@@ -3497,7 +3639,7 @@ def run(stdscr: curses.window) -> None:
         if state.agent_scroll_offset is not None and not compact:
             footer_top, _, _, separator = _agent_layout(
                 stdscr.getmaxyx()[0], footer_height, agent_entries,
-                state.agent_percentage, state.add_view == "search",
+                state.agent_percentage, state.add_view == "search", entries,
             )
             state.agent_scroll_offset = min(
                 state.agent_scroll_offset,
@@ -3542,7 +3684,7 @@ def run(stdscr: curses.window) -> None:
                             move_source_entry=move_src_entry, move_target_entry=move_tgt_entry,
                             pane_active=poller.pane_active, status_region=state.status_region,
                             agent_scroll_offset=state.agent_scroll_offset, compact=compact,
-                            active_agent_pane=active_agent_pane,
+                            active_agent_pane=active_agent_pane, sidebar_keys=sidebar_keys,
                         )
             except curses.error as error:
                 # A resize can invalidate the window midway through drawing.
@@ -3678,7 +3820,7 @@ def run(stdscr: curses.window) -> None:
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
                     h, footer_height, agent_entries, state.agent_percentage,
-                    state.add_view == "search",
+                    state.add_view == "search", entries,
                 )
                 if state.add_view is not None:
                     separator = footer_top
@@ -4041,7 +4183,7 @@ def run(stdscr: curses.window) -> None:
                 h = stdscr.getmaxyx()[0]
                 footer_top, session_top, _, separator = _agent_layout(
                     h, footer_height, agent_entries, state.agent_percentage,
-                    state.add_view == "search",
+                    state.add_view == "search", entries,
                 )
                 if state.add_view is not None:
                     separator = footer_top
@@ -4258,7 +4400,7 @@ def run(stdscr: curses.window) -> None:
                 if (
                     state.add_view is None
                     and row == 0
-                    and mouse_col == 1
+                    and 1 <= mouse_col <= _cell_width(_COLLAPSE[_ascii()])
                     and add_col is not None
                     and add_col > 1
                     and _mouse_activates(mouse_state)
@@ -4422,11 +4564,9 @@ def run(stdscr: curses.window) -> None:
                         entry = agent_entries[index]
                         state.selected_agent_key = (entry.pane_target, entry.agent_id) if entry.pane_target and entry.agent_id else None
                         if _mouse_activates(mouse_state) and entry.kind == "order":
-                            prefix = "> Order:  " if _ascii() else "›  "
-                            priority = "PRIORITY" if _ascii() else "Priority"
-                            session = "SESSION" if _ascii() else "Session"
-                            priority_start = _cell_width(prefix)
-                            session_start = priority_start + _cell_width(priority) + 2
+                            priority, session = _ORDER_WORDS["priority"], _ORDER_WORDS["session"]
+                            priority_start = 1 + len(_ORDER_GAP)  # one-cell pointer, see _entry_lines
+                            session_start = priority_start + _cell_width(priority) + len(_ORDER_GAP)
                             decision = "ignored_order_click"
                             if isinstance(mouse_col, int):
                                 if priority_start <= mouse_col < priority_start + _cell_width(priority):
@@ -4589,6 +4729,7 @@ def run(stdscr: curses.window) -> None:
                                     agent_entries,
                                     state.agent_percentage,
                                     state.add_view == "search",
+                                    entries,
                                 ),
                             )
                             rendered = None

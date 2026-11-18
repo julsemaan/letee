@@ -15,6 +15,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
+from letee import tui
 import letee.sessions as sessions
 from letee.config import Timing
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target, WindowTarget
@@ -1618,21 +1619,21 @@ class TmuxOverlayFileTest(unittest.TestCase):
     def test_new_window_button_is_prefixed_to_status_right_and_retains_existing_content(self):
         expected = (
             "set -gF status-right "
-            "'#[fg=#1e1e2e,bg=#a6e3a1,bold,range=user|letee-new] ＋ add "
+            "'#[fg=#1c1c1c,bg=#5fd7af,bold,range=user|letee-new] + window "
             "#[default,range=right] #{status-right}'"
         )
         self.assertIn(expected, self.overlay)
 
     def test_new_window_button_has_exact_clickable_range_and_restores_right_range(self):
         line = next(line for line in self.commands if line.strip().startswith("set -gF status-right "))
-        self.assertIn("fg=#1e1e2e,bg=#a6e3a1,bold", line)
-        self.assertIn("range=user|letee-new] ＋ add #[default,range=right]", line)
+        self.assertIn("fg=#1c1c1c,bg=#5fd7af,bold", line)
+        self.assertIn("range=user|letee-new] + window #[default,range=right]", line)
 
     def test_new_window_button_extends_status_right_length_and_preserves_unlimited(self):
         expected = (
             "set -gF status-right-length "
             "'#{?#{==:#{status-right-length},0},0,"
-            "#{e|+:#{status-right-length},9}}'"
+            "#{e|+:#{status-right-length},11}}'"
         )
         self.assertIn(expected, self.overlay)
 
@@ -1681,6 +1682,40 @@ class TmuxOverlayFileTest(unittest.TestCase):
             self.assertIn(expected, feature)
         for unexpected in ("window-status-format", "window-status-current-format"):
             self.assertNotIn(unexpected, feature)
+
+    def test_new_window_button_label_is_ascii_and_length_matches_label(self):
+        line = next(line for line in self.commands if line.strip().startswith("set -gF status-right "))
+        label = re.search(r"range=user\|letee-new\](.*?)#\[default", line).group(1)
+        self.assertTrue(label.isascii(), label)
+        # The button plus the space separating it from the user's status-right.
+        self.assertIn(f"#{{e|+:#{{status-right-length}},{len(label) + 1}}}", self.overlay)
+
+    def test_options_newer_than_tmux_3_3_are_version_gated(self):
+        feature_start = self.overlay.index('%if "#{>=:#{version},3.4}"')
+        feature_end = self.overlay.index("%endif", feature_start)
+        ungated = self.overlay[:feature_start] + self.overlay[feature_end:]
+        for option in ("menu-style", "menu-selected-style", "menu-border-style", "menu-border-lines"):
+            self.assertNotRegex(ungated, rf"(?m)^\s*set\s+-\S+\s+{option}\s", option)
+            self.assertIn(option, self.overlay[feature_start:feature_end])
+
+    def test_overlay_colors_come_from_the_sidebar_palette(self):
+        def xterm_hex(index):
+            levels = (0, 95, 135, 175, 215, 255)
+            if index >= 232:
+                value = 8 + (index - 232) * 10
+                return "#%02x%02x%02x" % (value, value, value)
+            index -= 16
+            return "#%02x%02x%02x" % (levels[index // 36], levels[index // 6 % 6], levels[index % 6])
+
+        palette = {xterm_hex(index) for index in tui.PALETTE_256.values()}
+        used = set(re.findall(r"#[0-9a-f]{6}", self.overlay.lower()))
+        self.assertTrue(used)
+        self.assertLessEqual(used, palette, used - palette)
+
+    def test_styles_on_the_terminal_background_keep_the_terminal_foreground(self):
+        # A fixed light foreground on the terminal background is unreadable on light themes.
+        for option in ("popup-style", "menu-style"):
+            self.assertIn(f'set -g {option} "fg=default,bg=default"', self.overlay)
 
     def test_shipped_overlay_does_not_assign_status_left(self):
         for line in self.commands:

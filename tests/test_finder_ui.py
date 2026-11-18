@@ -117,7 +117,7 @@ class FinderUITest(unittest.TestCase):
                         popup.finder.set_query(query)
                         popup.render()
                         self.assertIsNotNone(popup.finder.selected_row)
-                        selected_y = 4 + popup.finder.rows.index(popup.finder.selected_row) - popup.scroll
+                        selected_y = finder_ui.LIST_TOP + popup.finder.rows.index(popup.finder.selected_row) - popup.scroll
                         spans = [(text, attr) for y, _, text, attr in popup.screen.writes if y == selected_y]
                         self.assertTrue(spans)
                         for text, attr in spans:
@@ -126,7 +126,7 @@ class FinderUITest(unittest.TestCase):
                         self.assertTrue(any(attr & curses.A_UNDERLINE for _, attr in spans))
                         self.assertTrue(any("*" in text for text, _ in spans))
                         if scope != "Windows":
-                            self.assertTrue(any(text.strip() in ("BELL", "🔔") for text, _ in spans))
+                            self.assertTrue(any(text.strip() == "!" for text, _ in spans))
                         if not available:
                             self.assertTrue(any(tui.icons()["unavailable"] in text for text, _ in spans))
 
@@ -147,13 +147,13 @@ class FinderUITest(unittest.TestCase):
                         popup.render()
                         writes = popup.screen.writes
                         selected = [attr for y, _, text, attr in writes
-                                    if (y == 1 and text == "[All] ") or y in (3, 4 + index)]
+                                    if (y == 1 and text == "[All] ") or y == finder_ui.LIST_TOP + index or (y == 1 and text.startswith("Filters"))]
                         self.assertEqual(len(selected), 3)
                         for attr in selected:
                             self.assertEqual(attr & curses.A_COLOR, selection & curses.A_COLOR)
                             self.assertEqual(bool(attr & curses.A_REVERSE), not colored)
                         if index < len(finder_ui.FILTER_CATEGORIES):
-                            self.assertTrue(any(y == 4 + index and text.startswith("[x] " if checked else "[ ] ")
+                            self.assertTrue(any(y == finder_ui.LIST_TOP + index and text.startswith("[x] " if checked else "[ ] ")
                                                 for y, _, text, _ in writes))
                             self.assertTrue(any(text == "Clear filters" and attr == colors.get("create", 0) | curses.A_BOLD
                                                 for _, _, text, attr in writes))
@@ -205,8 +205,8 @@ class FinderUITest(unittest.TestCase):
     def test_filter_summary_and_keyboard_preserve_query_and_scope(self):
         popup = finder_ui._Popup(FakeWindow([]), self.workspace)
         popup.render()
-        self.assertEqual(popup.capacity, 8)
-        self.assertTrue(any(y == 3 and "Filters: none" in text for y, _, text, _ in popup.screen.writes))
+        self.assertEqual(popup.capacity, 9)
+        self.assertTrue(any(y == 1 and "Filters: none" in text for y, _, text, _ in popup.screen.writes))
         for key in ("e", "\x14", "\x06", " ", curses.KEY_DOWN, " ", "\n"):
             self.assertTrue(popup.key(key, lambda row: self.fail()))
         self.assertEqual(popup.finder.query, "e")
@@ -214,7 +214,7 @@ class FinderUITest(unittest.TestCase):
         self.assertEqual(popup.finder.scope, "Sessions")
         self.assertEqual(popup.finder.categories, frozenset(finder_ui.FILTER_CATEGORIES[:2]))
         popup.render()
-        self.assertTrue(any(y == 3 and "Needs attention, Running" in text
+        self.assertTrue(any(y == 1 and "Needs attention, Running" in text
                             for y, _, text, _ in popup.screen.writes))
         popup.key("\x06", lambda row: self.fail())
         self.assertTrue(popup.key("\n", lambda row: self.fail()))
@@ -300,7 +300,7 @@ class FinderUITest(unittest.TestCase):
                             if text.strip() in ("Ctrl-T", "Ctrl-F", "Tab", "Enter", "Ctrl-C", "Up/Down", "Space"):
                                 self.assertEqual(attr, palette.get("create", 0) | curses.A_BOLD)
                             else:
-                                self.assertEqual(attr, palette.get("hints", 0) | curses.A_DIM)
+                                self.assertEqual(attr, palette.get("hints", 0))
                         for width in range(1, len(expected) + 2):
                             screen.size = (14, width)
                             popup.render()  # FakeWindow asserts every write fits.
@@ -311,7 +311,7 @@ class FinderUITest(unittest.TestCase):
 
         def assert_labels():
             popup.render()
-            labels = [text for y, _, text, _ in popup.screen.writes if y >= 4]
+            labels = [text for y, _, text, _ in popup.screen.writes if y >= finder_ui.LIST_TOP]
             for category in finder_ui.FILTER_CATEGORIES:
                 checked = "x" if category in popup.finder.categories else " "
                 self.assertIn(f"[{checked}] {category} · {popup.finder.category_counts[category]}", labels)
@@ -368,14 +368,14 @@ class FinderUITest(unittest.TestCase):
                 popup.key(curses.KEY_MOUSE, lambda row: self.fail("checklist must not open destinations"))
             popup.render()
 
-        click(2, 3)
+        click(popup.filters_x, 1)
         self.assertTrue(popup.filters_open)
-        click(2, 4)
+        click(2, finder_ui.LIST_TOP)
         self.assertEqual(popup.finder.categories, frozenset({finder_ui.FILTER_CATEGORIES[0]}))
-        click(2, 5)
+        click(2, finder_ui.LIST_TOP + 1)
         self.assertEqual(popup.finder.categories, frozenset(finder_ui.FILTER_CATEGORIES[:2]))
         selected = popup.finder.selected
-        click(2, 5, curses.BUTTON5_PRESSED)
+        click(2, finder_ui.LIST_TOP + 1, curses.BUTTON5_PRESSED)
         self.assertGreater(popup.filter_scroll, 0)
         self.assertEqual(popup.finder.selected, selected)
         click(2, 5, curses.BUTTON4_PRESSED)
@@ -825,13 +825,20 @@ class FinderUITest(unittest.TestCase):
 
     def test_mouse_scope_disclosure_and_destination(self):
         clicks = iter([(0, 0, 1, 0, curses.BUTTON1_CLICKED),
-                       (0, 0, 4, 0, curses.BUTTON1_CLICKED),
-                       (0, 10, 5, 0, curses.BUTTON1_CLICKED)])
+                       (0, 0, 3, 0, curses.BUTTON1_CLICKED),
+                       (0, 10, 4, 0, curses.BUTTON1_CLICKED)])
         opened = []
         with patch.object(curses, "getmouse", side_effect=lambda: next(clicks)):
             window = FakeWindow([curses.KEY_MOUSE] * 3 + [-1] * 1000)
             self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: opened.append(row)))
         self.assertEqual(opened[0].kind, "window")
+
+    def test_selected_row_highlight_spans_the_row(self):
+        popup = finder_ui._Popup(FakeWindow([], (12, 50)), self.workspace)
+        popup.render()
+        y = finder_ui.LIST_TOP + popup.finder.rows.index(popup.finder.selected_row) - popup.scroll
+        ends = [x + tui.cell_width(text) for row, x, text, _ in popup.screen.writes if row == y]
+        self.assertEqual(max(ends), 49)
 
     def test_wheel_does_not_change_selection(self):
         opened = []
@@ -839,6 +846,13 @@ class FinderUITest(unittest.TestCase):
             window = FakeWindow([curses.KEY_MOUSE, "\n"] + [-1] * 1000, (7, 80))
             self.assertTrue(finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: opened.append(row)))
         self.assertEqual(opened[0].key, self.workspace.sessions[0].key)
+
+    def test_empty_query_shows_placeholder_until_typing(self):
+        window = FakeWindow(["l", "\x03"])
+        finder_ui.run(window, self.workspace, prepare_open=lambda row: lambda cancelled: None)
+        first, last = window.frames[0][0], window.frames[-1][0]
+        self.assertIn((0, 2, "Search sessions, windows, agents"), [(y, x, text) for y, x, text, _ in first])
+        self.assertFalse(any("Search sessions" in text for _, _, text, _ in last))
 
     def test_combining_mark_stays_with_highlighted_base(self):
         session = self.workspace.sessions[0]
@@ -856,13 +870,15 @@ class FinderUITest(unittest.TestCase):
         agent = replace(window.agents[0], alert=True)
         session = replace(session, bell=True, windows=(replace(window, agents=(agent,)),))
         workspace = replace(self.workspace, sessions=(session,))
-        for ascii_mode, indicator in ((True, " BELL"), (False, " 🔔")):
+        # The alert mark is narrow in both modes; ASCII mode must not change its column.
+        indicator = " !"
+        for ascii_mode in (True, False):
             with self.subTest(ascii=ascii_mode), patch.object(tui, "ascii_mode", return_value=ascii_mode), \
                     patch.object(tui, "color", side_effect=lambda name: curses.A_BLINK if name == "danger" else 0):
                 screen = FakeWindow(["\t", curses.KEY_DOWN, "\t", "\x03"])
                 finder_ui.run(screen, workspace, prepare_open=lambda row: lambda cancelled: None)
                 indicators = [(y, attr) for y, _, text, attr in screen.frames[-1][0] if text == indicator]
-                self.assertEqual([y for y, _ in indicators], [4, 6])
+                self.assertEqual([y for y, _ in indicators], [finder_ui.LIST_TOP, finder_ui.LIST_TOP + 2])
                 self.assertTrue(all(attr & curses.A_BLINK for _, attr in indicators))
 
     def test_render_highlights_and_current_are_distinct(self):
