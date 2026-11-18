@@ -22,6 +22,8 @@ make build-check   # build distributions and validate metadata
 make check         # all quality gates
 ```
 
+Unit tests are safe to run next to a live letee: `tests/__init__.py` points `TMUX_TMPDIR`, the config dir and the agent-status dir at a throwaway directory. That only works when tests load as the `tests` package, so use `make test` or `python -m unittest` from the repo root, not `discover -s tests` without `-t .`.
+
 ## Session coordination
 
 `letee.operations` owns server-scoped session transactions. CLI commands and sidebar workers submit intent there rather than acquire `sessions_lock` themselves. Reload tracking, validate automatic work, prepare attachments, and publish launches within one transaction. Never nest lock acquisitions or wait for a transaction on the curses thread. Status synchronization and startup-marker cleanup run in workers too.

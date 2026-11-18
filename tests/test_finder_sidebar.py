@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 from letee import sidebar, workspace
 from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
-from test_sidebar import FakeScreen, OperationTestCase, STOP
+from tests.test_sidebar import FakeScreen, OperationTestCase, STOP
 
 
 class FinderSidebarTest(OperationTestCase):

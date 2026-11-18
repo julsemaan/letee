@@ -1,7 +1,7 @@
 from dataclasses import FrozenInstanceError, replace
 import unittest
 
-from finder_fixtures import sample_workspace
+from tests.finder_fixtures import sample_workspace
 from letee.finder import FILTER_CATEGORIES, Finder, SCOPES
 from letee.names import Target
 from letee.workspace import Session, Window, Workspace

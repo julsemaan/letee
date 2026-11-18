@@ -4,13 +4,13 @@ PEXPECT_DIR ?= /tmp/pexpect-pkg
 .PHONY: test lint coverage fetch-tmux build-check check dev-install test-e2e test-e2e-docker bump-version
 
 test:
-	$(PYTHON) -m unittest discover -s tests
+	$(PYTHON) -m unittest discover -s tests -t .
 
 lint:
 	$(PYTHON) -m ruff check letee tests
 
 coverage:
-	$(PYTHON) -m coverage run -m unittest discover -s tests
+	$(PYTHON) -m coverage run -m unittest discover -s tests -t .
 	$(PYTHON) -m coverage report
 
 fetch-tmux:

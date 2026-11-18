@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from finder_fixtures import sample_workspace
+from tests.finder_fixtures import sample_workspace
 from letee import cockpit, config, finder_ui, operations, tmux
 from letee.finder import Finder
 from letee.names import WindowTarget

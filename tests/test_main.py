@@ -781,7 +781,7 @@ class MainDiagnosticsTest(unittest.TestCase):
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
         self.log_path = Path(tempdir.name) / "main.jsonl"
-        env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
+        env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)})
         env.start()
         self.addCleanup(env.stop)
         self.addCleanup(diagnostics.close)
