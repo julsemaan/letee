@@ -2316,7 +2316,7 @@ def _draw_text_field(
     column = _cell_width(prefix)
     if visible:
         stdscr.addnstr(row, column, visible, room, _fade(curses.A_BOLD) if dimmed else curses.A_BOLD)
-    elif placeholder:
+    elif placeholder and room:
         stdscr.addnstr(row, column, _truncate_cells(placeholder, room), room, _fade(label_attr) if dimmed else label_attr)
     return row, min(w - 1, column + _cell_width(visible))
 
