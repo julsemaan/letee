@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from finder_fixtures import sample_workspace
+from tests.finder_fixtures import sample_workspace
 from letee import cockpit, config, finder_ui, tmux, tui
 from letee.workspace import Workspace
 
