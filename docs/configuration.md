@@ -28,6 +28,7 @@ tmux_config_overlay = true
 [timing]
 ssh_connect_timeout = 2
 remote_command_timeout = 3
+remote_command_max_timeout = 10
 local_command_timeout = 2
 ssh_auth_timeout = 60
 ssh_master_check_timeout = 0.5
@@ -60,11 +61,11 @@ Configuration, hosts, prefix, dimensions, timeout, and SSH settings are shared b
 
 The optional `[timing]` table uses the defaults shown above. Omitted keys keep their defaults. Settings load once per process; restart letee, including its sidebar, after editing them.
 
-All values are seconds except `ssh_keepalive_count_max`, which counts unanswered keepalive messages. Durations must be positive and finite. `ssh_connect_timeout`, `ssh_keepalive_interval`, and `ssh_keepalive_count_max` must be positive integers. Booleans, unknown timing keys, and `retry_initial_delay` greater than `retry_max_delay` are rejected.
+All values are seconds except `ssh_keepalive_count_max`, which counts unanswered keepalive messages. Durations must be positive and finite. `ssh_connect_timeout`, `ssh_keepalive_interval`, and `ssh_keepalive_count_max` must be positive integers. Booleans, unknown timing keys, `retry_initial_delay` greater than `retry_max_delay`, and `remote_command_max_timeout` less than `remote_command_timeout` are rejected.
 
 `remote_command_timeout` limits automated remote commands and batch startup checks. Interactive startup authentication uses `ssh_auth_timeout` instead. `local_command_timeout` limits local tmux commands, SSH utilities, and agent probes/startup commands, including tmux and process queries in the remote kill-agent helper. `ssh_master_check_timeout` limits control-master checks. Deadlines apply to each subprocess, not the entire multi-command operation. Remote kill-agent gives the enclosing SSH process `remote_command_timeout + 2 * local_command_timeout` to cover both helper queries plus SSH overhead; each helper query still uses `local_command_timeout`. Attached sessions and interactive menus have no total runtime limit. Sidebar feedback still uses the separate `status_timeout` setting.
 
-Failed discovery requests retry independently per host. Automatic recreation of absent tracked sessions retries independently per target, including when overlay upload fails but discovery is healthy. Active-session restoration has separate retry state. Delays start after each attempt finishes and double up to `retry_max_delay`: by default, 1, 2, 4, then 5 seconds. Success resets the corresponding backoff. Explicit discovery refresh resets discovery backoff, and changing the active host can bypass its delay once. Explicit navigation bypasses automatic retry delays. Removing a target from tracking and leaving it inactive discards its recreation retry state. User-requested create, rename, kill, and authentication operations are not automatically retried.
+Failed discovery requests retry independently per host. Automatic recreation of absent tracked sessions retries independently per target, including when overlay upload fails but discovery is healthy. Active-session restoration has separate retry state. Delays start after each attempt finishes and double up to `retry_max_delay`: by default, 1, 2, 4, then 5 seconds. Success resets the corresponding backoff. Consecutive discovery failures for a host also double its discovery timeouts up to `remote_command_max_timeout`, so slow links get time to connect: by default 3, 6, then 10 seconds, with `ConnectTimeout` at 2, 4, then 7 seconds. Success resets them; refresh does not. Set `remote_command_max_timeout` equal to `remote_command_timeout` to turn this off. Explicit discovery refresh resets discovery backoff, and changing the active host can bypass its delay once. Explicit navigation bypasses automatic retry delays. Removing a target from tracking and leaving it inactive discards its recreation retry state. User-requested create, rename, kill, and authentication operations are not automatically retried.
 
 Healthy discovery still polls local and active hosts every 0.5 seconds and inactive hosts every 10 seconds.
 

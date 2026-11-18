@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -401,11 +402,11 @@ def _local_snapshot(request_id: str | None) -> SourceSnapshot:
         return replace(snapshot, agents=_read_local_agents(snapshot.panes, request_id=request_id), sampled_at=sampled_at)
 
 
-def _ssh_command(host: str, persistent_ssh: bool) -> tuple[str, ...]:
+def _ssh_command(host: str, persistent_ssh: bool, connect_timeout: int | None = None) -> tuple[str, ...]:
     return ssh_command(
         "-n", "-o", "BatchMode=yes",
         validate_host(host), REMOTE_COMMAND,
-        persistent_ssh=persistent_ssh,
+        persistent_ssh=persistent_ssh, connect_timeout=connect_timeout,
     )
 
 
@@ -500,6 +501,7 @@ class _Request:
     output: object
     errors: object
     master_preexisting: bool | None
+    timeout: float
     request_id: str | None = field(default=None, compare=False)
     diagnostic_started: float = field(default_factory=time.monotonic, compare=False)
     context: dict[str, object] = field(default_factory=dict, compare=False)
@@ -623,11 +625,15 @@ class DiscoveryPoller:
         self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
         self._retry_delay = dict.fromkeys(self.hosts, self._timing.retry_initial_delay)
+        # Scales discovery timeouts while a host keeps failing, so slow links get time to connect.
+        self._timeout_factor = dict.fromkeys(self.hosts, 1.0)
+        self._max_timeout_factor = self._timing.remote_command_max_timeout / self._timing.remote_command_timeout
         self._poll_states: dict[str, tuple[str, float]] = {}
         diagnostics.log(
             "discovery.poller_initialized", host_count=len(self.hosts), persistent_ssh=self._persistent_ssh,
             local_available=self.local.available, local_poll_interval=LOCAL_POLL_INTERVAL,
             success_poll_interval=SUCCESS_POLL_INTERVAL, remote_command_timeout=self._timing.remote_command_timeout,
+            remote_command_max_timeout=self._timing.remote_command_max_timeout,
             local_command_timeout=self._timing.local_command_timeout,
             ssh_master_check_timeout=self._timing.ssh_master_check_timeout,
             retry_initial_delay=self._timing.retry_initial_delay, retry_max_delay=self._timing.retry_max_delay,
@@ -640,15 +646,18 @@ class DiscoveryPoller:
     def _schedule(self, host: str, available: bool) -> None:
         if available:
             self._retry_delay[host] = self._timing.retry_initial_delay
+            self._timeout_factor[host] = 1.0
             interval = LOCAL_POLL_INTERVAL if host == self._active_remote_host else SUCCESS_POLL_INTERVAL
         else:
             interval = self._retry_delay[host]
             self._retry_delay[host] = min(interval * 2, self._timing.retry_max_delay)
+            self._timeout_factor[host] = min(self._timeout_factor[host] * 2, self._max_timeout_factor)
         self._next[host] = self._clock() + interval
         diagnostics.log(
             "discovery.scheduled", host=host, request_id=self.remotes[host].request_id if self.remotes[host] else None,
             available=available, interval=interval, next_deadline=self._next[host],
             next_retry_delay=self._retry_delay[host], active=host == self._active_remote_host,
+            timeout_factor=self._timeout_factor[host],
         )
 
     def _finish_request(self, host: str, request: _Request, returncode: int) -> bool:
@@ -658,10 +667,11 @@ class DiscoveryPoller:
             keep_group=not request.master_preexisting
             and _persistent_master_alive(host, self._persistent_ssh) is not False,
         )
-        if age > self._timing.remote_command_timeout:
+        if age > request.timeout:
             request.output.close()
             request.errors.close()
             del self._active[host]
+            self._timeout_factor[host] = min(self._timeout_factor[host] * 2, self._max_timeout_factor)
             self._next[host] = self._clock()
             diagnostics.log(
                 "discovery.request_finished", host=host, request_id=request.request_id,
@@ -696,7 +706,13 @@ class DiscoveryPoller:
         context = logger.context_values()
         started = time.monotonic()
         with _request_context(host, request_id, started, context, self.remotes[host]):
-            diagnostics.log("discovery.request_starting", host=host, request_id=request_id, timeout=self._timing.remote_command_timeout, persistent_ssh=self._persistent_ssh)
+            factor = self._timeout_factor[host]
+            timeout = self._timing.remote_command_timeout * factor
+            connect_timeout = math.ceil(self._timing.ssh_connect_timeout * factor)
+            diagnostics.log(
+                "discovery.request_starting", host=host, request_id=request_id, timeout=timeout,
+                connect_timeout=connect_timeout, timeout_factor=factor, persistent_ssh=self._persistent_ssh,
+            )
             master_preexisting = _persistent_master_alive(host, self._persistent_ssh)
             output = tempfile.TemporaryFile()
             try:
@@ -706,7 +722,7 @@ class DiscoveryPoller:
                 raise
             try:
                 process = self._popen(
-                    _ssh_command(host, self._persistent_ssh),
+                    _ssh_command(host, self._persistent_ssh, connect_timeout),
                     stdout=output,
                     stderr=errors,
                     start_new_session=True,
@@ -726,7 +742,7 @@ class DiscoveryPoller:
                 output.close()
                 errors.close()
                 raise
-            self._active[host] = _Request(process, self._clock(), output, errors, master_preexisting, request_id, started, context)
+            self._active[host] = _Request(process, self._clock(), output, errors, master_preexisting, timeout, request_id, started, context)
             diagnostics.log("discovery.request_started", host=host, request_id=request_id, process_pid=getattr(process, "pid", None), master_preexisting=master_preexisting)
             return False
 
@@ -760,11 +776,11 @@ class DiscoveryPoller:
             except BaseException:
                 with _request_context(host, request.request_id, request.diagnostic_started, request.context, self.remotes[host]):
                     raise
-            if returncode is None and self._clock() - request.started < self._timing.remote_command_timeout:
+            if returncode is None and self._clock() - request.started < request.timeout:
                 continue
             with _request_context(host, request.request_id, request.diagnostic_started, request.context, self.remotes[host]):
                 if returncode is None:
-                    diagnostics.error(handling="retry", operation="discovery.request", host=host, request_id=request.request_id, reason="timeout", timeout=self._timing.remote_command_timeout)
+                    diagnostics.error(handling="retry", operation="discovery.request", host=host, request_id=request.request_id, reason="timeout", timeout=request.timeout)
                     _stop_process(request.process, request_id=request.request_id, reason="timeout")
                     request.output.close()
                     request.errors.close()

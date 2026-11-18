@@ -427,8 +427,8 @@ class DiscoveryDiagnosticFaultTest(unittest.TestCase):
         self.assertEqual(len(states), 1)
         self.assertEqual(states[0]["state"], "inflight")
         now[0] = 30
-        with patch.object(poller, "_timing", replace(load_timing(), remote_command_timeout=60)):
-            poller.tick()
+        poller._active["dev"].timeout = 60
+        poller.tick()
         self.assertEqual(len([r for r in self.records() if r["event"] == "discovery.poll_state"]), 2)
         process.returncode = 0
         poller.tick()
@@ -1178,6 +1178,72 @@ class DiscoveryPollerTest(unittest.TestCase):
             poller.tick()
             self.assertEqual(poller._next["dev"], 1)
         load.assert_called_once_with()
+
+    def _timeout_requests(self, poller, now, count):
+        limits = []
+        for _ in range(count):
+            now[0] = poller._next["dev"]
+            poller.tick()
+            request = poller._active["dev"]
+            limits.append(request.timeout)
+            now[0] = request.started + request.timeout
+            poller.tick()
+        return limits
+
+    @staticmethod
+    def _connect_timeouts(popen):
+        return [next(o for o in call.args[0] if o.startswith("ConnectTimeout=")) for call in popen.call_args_list]
+
+    def test_consecutive_failures_escalate_timeouts_until_cap(self):
+        now = [0.0]
+        popen = Mock(side_effect=lambda *args, **kwargs: FakeProcess())
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        self.assertEqual(self._timeout_requests(poller, now, 4), [3, 6, 10, 10])
+        self.assertEqual(self._connect_timeouts(popen), [f"ConnectTimeout={n}" for n in (2, 4, 7, 7)])
+
+    def test_expired_completions_escalate_timeouts_and_preserve_snapshot(self):
+        now = [0.0]
+        popen = Mock(side_effect=lambda *args, **kwargs: FakeProcess())
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        self.addCleanup(poller.close)
+        previous = SourceSnapshot(True, (Target("ssh", "work", "dev"),), frozenset())
+        poller.remotes["dev"] = previous
+        limits = []
+        for _ in range(4):
+            poller.tick()
+            request = poller._active["dev"]
+            limits.append(request.timeout)
+            request.process.returncode = 255
+            now[0] = request.started + request.timeout + 0.1
+            self.assertFalse(poller.tick())
+            self.assertIs(poller.remotes["dev"], previous)
+            self.assertNotIn("dev", poller._active)
+            self.assertEqual(poller._next["dev"], now[0])
+        self.assertEqual(limits, [3, 6, 10, 10])
+        self.assertEqual(self._connect_timeouts(popen), [f"ConnectTimeout={n}" for n in (2, 4, 7, 7)])
+
+    def test_success_resets_timeouts_but_refresh_keeps_them(self):
+        now = [0.0]
+        processes = [FakeProcess(), FakeProcess(), FakeProcess(0)]
+        popen = Mock(side_effect=lambda *args, **kwargs: processes.pop(0) if processes else FakeProcess())
+        poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        self._timeout_requests(poller, now, 1)
+        poller.refresh()
+        self.assertEqual(self._timeout_requests(poller, now, 1), [6])
+        now[0] = poller._next["dev"]
+        poller.tick()
+        poller.tick()
+        self.assertEqual(poller._timeout_factor["dev"], 1.0)
+        self.assertEqual(self._timeout_requests(poller, now, 1), [3])
+        self.assertEqual(self._connect_timeouts(popen)[-1], "ConnectTimeout=2")
+
+    def test_max_timeout_equal_to_base_disables_escalation(self):
+        now = [0.0]
+        popen = Mock(side_effect=lambda *args, **kwargs: FakeProcess())
+        with patch("letee.discovery.load_timing", return_value=replace(Timing(), remote_command_max_timeout=3)):
+            poller = self.make_poller(["dev"], popen=popen, clock=lambda: now[0])
+        self.assertEqual(self._timeout_requests(poller, now, 3), [3, 3, 3])
+        self.assertEqual(self._connect_timeouts(popen), ["ConnectTimeout=2"] * 3)
 
     def test_refresh_resets_backoff_without_duplicating_pending_request(self):
         now = [0.0]
