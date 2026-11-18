@@ -10508,8 +10508,13 @@ class SidebarDiagnosticsTest(OperationTestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.log_path = Path(self.tempdir.name) / "sidebar.jsonl"
-        self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
+        self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)})
         self.env.start()
+
+    @staticmethod
+    def _without_debug_log():
+        # Drop only the debug log; clearing os.environ would also drop the test sandbox.
+        return patch.dict(os.environ, {k: v for k, v in os.environ.items() if k != "LETEE_DEBUG_LOG"}, clear=True)
 
     def tearDown(self):
         sidebar.diagnostics.close()
@@ -11350,7 +11355,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
 
     def test_failed_mouse_release_recovers_without_debug_logging(self):
         with (
-            patch.dict(os.environ, {}, clear=True),
+            self._without_debug_log(),
             patch.object(sidebar, "_mouse_diagnostics") as mouse_diagnostics,
         ):
             switch = self._run_mouse_trace(
@@ -11455,7 +11460,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
                         pending_agent=None, pane_active=True,
                     )
                     with (
-                        patch.dict(os.environ, dict(os.environ) if debug_enabled else {}, clear=True),
+                        patch.dict(os.environ) if debug_enabled else self._without_debug_log(),
                         patch.object(sidebar, "_draw", return_value=(2, None)),
                     ):
                         switch = self._run_mouse_trace(
@@ -11494,7 +11499,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
         self.assertFalse(any(record["event"] == "effect_requested" for record in records))
 
     def test_tmux_click_signal_recovers_without_debug_logging(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with self._without_debug_log():
             switch = self._run_mouse_trace([
                 (0, 7, 2, 0, curses.REPORT_MOUSE_POSITION),
                 (0, 7, 2, 0, curses.BUTTON1_RELEASED),

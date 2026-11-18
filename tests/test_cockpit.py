@@ -1996,7 +1996,7 @@ class CockpitDiagnosticsTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.log_path = Path(self.tempdir.name) / "cockpit.jsonl"
-        self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)}, clear=True)
+        self.env = patch.dict(os.environ, {"LETEE_DEBUG_LOG": str(self.log_path)})
         self.env.start()
         # Open the async writer before tests replace os.open/os.close for TTY failures.
         diagnostics.log("test_started")
