@@ -130,7 +130,7 @@ def test_overlay_reinstall_does_not_accumulate_status_right_length(client: TmuxT
             "tmux", "-L", socket, "show-options", "-gqv", "status-right-length",
         )
 
-        assert first_length == second_length == third_length == "10"
+        assert first_length == second_length == third_length == "12"
         status_right = client.exec(
             "tmux", "-L", socket, "show-options", "-gqv", "status-right",
         )

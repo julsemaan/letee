@@ -1625,7 +1625,7 @@ class TmuxOverlayFileTest(unittest.TestCase):
         self.assertIn(expected, self.overlay)
 
     def test_new_window_button_has_exact_clickable_range_and_restores_right_range(self):
-        line = next(line for line in self.commands if line.strip().startswith("set -gF status-right "))
+        line = next(line for line in self.commands if line.strip().startswith("set -gF status-right '#["))
         self.assertIn("fg=#1c1c1c,bg=#5fd7af,bold", line)
         self.assertIn("range=user|letee-new] + window #[default,range=right]", line)
 
@@ -1638,7 +1638,7 @@ class TmuxOverlayFileTest(unittest.TestCase):
         self.assertIn(expected, self.overlay)
 
     def test_repeated_overlay_sourcing_does_not_duplicate_buttons(self):
-        self.assertEqual(self.overlay.count("set -gF status-right "), 1)
+        self.assertEqual(self.overlay.count("set -gF status-right '#["), 1)
         self.assertIn("if-shell -F '#{!=:#{m:*#\\[*range=user\\|letee-new]*,#{status-right}},1}' {", self.overlay)
 
     def test_status_right_length_guard_tracks_its_last_value(self):
@@ -1650,6 +1650,14 @@ class TmuxOverlayFileTest(unittest.TestCase):
             "set -gF @letee_status_right_length '#{status-right-length}'",
             self.overlay,
         )
+
+    def test_previous_add_button_is_migrated_before_install_guards(self):
+        migration = self.overlay.index("if-shell -F '#{m/r:^[^ ]*letee-new] ＋ add ,#{status-right}}' {")
+        self.assertIn("set -gF status-right '#{s/^[^ ]*letee-new] ＋ add [^ ]* //:status-right}'", self.overlay)
+        self.assertIn("#{e|-:#{status-right-length},9}", self.overlay)
+        self.assertIn("set -g @letee_status_right_length ''", self.overlay)
+        self.assertLess(migration, self.overlay.index("#{!=:#{status-right-length},#{@letee_status_right_length}}"))
+        self.assertLess(migration, self.overlay.index("#{m:*#\\[*range=user\\|letee-new]*"))
 
     def test_duplicate_guard_matches_range_marker_after_style_attributes(self):
         guard = next(
@@ -1684,7 +1692,7 @@ class TmuxOverlayFileTest(unittest.TestCase):
             self.assertNotIn(unexpected, feature)
 
     def test_new_window_button_label_is_ascii_and_length_matches_label(self):
-        line = next(line for line in self.commands if line.strip().startswith("set -gF status-right "))
+        line = next(line for line in self.commands if line.strip().startswith("set -gF status-right '#["))
         label = re.search(r"range=user\|letee-new\](.*?)#\[default", line).group(1)
         self.assertTrue(label.isascii(), label)
         # The button plus the space separating it from the user's status-right.
