@@ -2850,7 +2850,7 @@ def _draw(
     label = "AGENTS "
     section_attr = _color("section") or curses.A_BOLD
     stdscr.addnstr(separator, 0, label + rule * max(0, w - len(label)), w, section_attr)
-    if status_region == "agents" and status:
+    if status_region == "agents" and status and w > len(label):
         # Agent errors sit on the rule so they never cover part of an agent row.
         notice = _truncate_cells(message, max(0, w - len(label) - 1))
         stdscr.addnstr(separator, len(label), notice + " ", max(0, w - len(label)), _fade(message_attr) if dimmed else message_attr)
