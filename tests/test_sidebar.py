@@ -6444,6 +6444,56 @@ class SidebarDrawTest(OperationTestCase):
         )
         self.assertEqual(prompt, "Click to place " + "-" * 15)
 
+    def test_move_target_prompt_row_maps_to_target(self):
+        entries = [
+            Entry(name, "session", Target("local", name), tracked=True)
+            for name in ("one", "two", "three")
+        ]
+        cases = {
+            "downward": (0, {1: 0, 2: 1, 3: 1, 4: 2}),
+            "upward": (2, {1: 0, 2: 1, 3: 1, 4: 2}),
+        }
+        for name, (source, expected) in cases.items():
+            with self.subTest(name):
+                mapped = {
+                    row: _entry_at_row(entries, 0, row, 10, 1, move_target_entry=1)
+                    for row in expected
+                }
+                self.assertEqual(mapped, expected)
+
+                screen = FakeScreen(size=(10, 30))
+                sidebar._draw_entries(
+                    screen, entries, 0, 9, 30, set(), None,
+                    move_source_entry=source, move_target_entry=1,
+                )
+                prompt_row = next(
+                    call[1] for call in screen.calls
+                    if call[0] == "addnstr" and call[3].startswith("Click to place")
+                )
+                self.assertEqual(mapped[prompt_row], 1)
+
+    def test_viewport_budgets_move_target_prompt_row(self):
+        entries = [
+            Entry(str(i), "session", Target("local", str(i)), tracked=True) for i in range(6)
+        ]
+        # Five rows of body with a bottom marker leave room for four one-row sessions.
+        self.assertEqual(sidebar._viewport(entries, 0, 7), (0, 4))
+        self.assertEqual(sidebar._viewport(entries, 0, 7, move_target_entry=1), (0, 3))
+        self.assertEqual(sidebar._viewport(entries, 0, 7, 0, move_target_entry=1), (0, 3))
+
+        screen = FakeScreen(size=(8, 30))
+        sidebar._draw_entries(
+            screen, entries, 0, 7, 30, set(), None,
+            move_source_entry=0, move_target_entry=1,
+        )
+        drawn = {
+            call[1]: call[3].strip() for call in screen.calls
+            if call[0] == "addnstr" and call[3].strip() in {"0", "1", "2"}
+        }
+        for row, label in drawn.items():
+            index = _entry_at_row(entries, 0, row, 8, 1, move_target_entry=1)
+            self.assertEqual(entries[index].label, label)
+
     def test_entry_at_row_ignores_non_selectable_and_non_entry_areas(self):
         entries = [
             Entry("LOCAL", "header"),

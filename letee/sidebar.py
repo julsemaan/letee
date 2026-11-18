@@ -2027,6 +2027,14 @@ def _entry_height(entry: Entry) -> int:
     return 2 if entry.tracked and entry.unavailable_favorite else 1
 
 
+def _row_offsets(entries: list[Entry], move_target_entry: int | None = None) -> list[int]:
+    """Cumulative row starts; a move target is drawn as its first row plus a drop prompt."""
+    offsets = [0]
+    for index, entry in enumerate(entries):
+        offsets.append(offsets[-1] + (2 if index == move_target_entry else _entry_height(entry)))
+    return offsets
+
+
 def _alerted(
     entry: Entry, bell_targets: set[Target], current_target: Target | None,
     agent_alerts: set[tuple[PaneTarget, str]] | None,
@@ -2074,7 +2082,10 @@ def _host_tag(entry: Entry) -> str:
     return f"@{entry.host}" if entry.target is not None and entry.target.kind == "ssh" and entry.host else ""
 
 
-def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: int | None = None) -> tuple[int, int]:
+def _viewport(
+    entries: list[Entry], selected: int, height: int, scroll_offset: int | None = None,
+    move_target_entry: int | None = None,
+) -> tuple[int, int]:
     body = max(0, height - 2)
     if not entries or body <= 0:
         return selected, selected
@@ -2086,9 +2097,7 @@ def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: i
 
     if scroll_offset is not None:
         start = max(0, min(scroll_offset, len(entries) - 1))
-        row_offsets = [0]
-        for entry in entries:
-            row_offsets.append(row_offsets[-1] + _entry_height(entry))
+        row_offsets = _row_offsets(entries, move_target_entry)
         end = start + 1
         while end < len(entries):
             rows = row_offsets[end + 1] - row_offsets[start]
@@ -2100,9 +2109,7 @@ def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: i
 
     best = (selected, min(len(entries), selected + 1))
     best_score = (-1, -1, -1)
-    row_offsets = [0]
-    for entry in entries:
-        row_offsets.append(row_offsets[-1] + _entry_height(entry))
+    row_offsets = _row_offsets(entries, move_target_entry)
     for start in range(selected + 1):
         for end in range(selected + 1, len(entries) + 1):
             rows = row_offsets[end] - row_offsets[start]
@@ -2117,9 +2124,7 @@ def _viewport(entries: list[Entry], selected: int, height: int, scroll_offset: i
 
 def _max_scroll_offset(entries: list[Entry], viewport_height: int) -> int:
     body = max(1, viewport_height - 2)
-    row_offsets = [0]
-    for entry in entries:
-        row_offsets.append(row_offsets[-1] + _entry_height(entry))
+    row_offsets = _row_offsets(entries)
     total = row_offsets[-1]
     for offset in range(len(entries)):
         if total - row_offsets[offset] + int(offset > 0) <= body:
@@ -2129,19 +2134,21 @@ def _max_scroll_offset(entries: list[Entry], viewport_height: int) -> int:
 
 def _entry_at_row(
     entries: list[Entry], selected: int, row: int, height: int, footer_height: int, top: int = 1,
-    scroll_offset: int | None = None,
+    scroll_offset: int | None = None, move_target_entry: int | None = None,
 ) -> int | None:
     content_height = height - footer_height - top + 1
-    start, end = _viewport(entries, selected, content_height, scroll_offset)
+    start, end = _viewport(entries, selected, content_height, scroll_offset, move_target_entry)
     entry_row = row - top - int(start > 0)
     if entry_row < 0 or row >= height - footer_height:
         return None
+    # A move target's drop prompt maps to the target, so clicking it places the session there.
+    row_offsets = _row_offsets(entries, move_target_entry)
     for index in range(start, end):
-        if entry_row < _entry_height(entries[index]):
+        if entry_row < row_offsets[index + 1] - row_offsets[index]:
             return index if entries[index].kind in (
                 "session", "agent", "order", "create", "location"
             ) else None
-        entry_row -= _entry_height(entries[index])
+        entry_row -= row_offsets[index + 1] - row_offsets[index]
     return None
 
 
@@ -2444,7 +2451,7 @@ def _draw_entries(
     selection_pointer_visible: bool = True,
     pane_active: bool = True,
 ) -> None:
-    start, end = _viewport(entries, selected, h - top + 1, scroll_offset)
+    start, end = _viewport(entries, selected, h - top + 1, scroll_offset, move_target_entry)
     row = top
     if start:
         attr = _color("hints") or curses.A_DIM
@@ -3824,14 +3831,19 @@ def run(stdscr: curses.window) -> None:
                 )
                 if state.add_view is not None:
                     separator = footer_top
+                move_target_entry = _tracked_session_index(entries, state.move_target)
                 start, end = _viewport(
-                    entries, state.selected_index, separator - session_top + 2, state.scroll_offset
+                    entries, state.selected_index, separator - session_top + 2, state.scroll_offset,
+                    move_target_entry,
                 )
                 can_scroll = start > 0 if move_scroll_direction < 0 else end < len(entries)
                 if can_scroll:
                     state.scroll_offset = max(0, start + move_scroll_direction)
                     mark_layout_dirty()
-                    start, end = _viewport(entries, state.selected_index, separator - session_top + 2, state.scroll_offset)
+                    start, end = _viewport(
+                        entries, state.selected_index, separator - session_top + 2, state.scroll_offset,
+                        move_target_entry,
+                    )
                     edge = start if move_scroll_direction < 0 else end - 1
                     if entries[edge].tracked:
                         state.move_target = entries[edge].target
@@ -4251,9 +4263,10 @@ def run(stdscr: curses.window) -> None:
                         mark_input(False, "ignored_motion")
                         continue
                 if state.move_source is not None:
+                    move_target_entry = _tracked_session_index(entries, state.move_target)
                     start, end = _viewport(
                         entries, state.selected_index, separator - session_top + 2,
-                        state.scroll_offset,
+                        state.scroll_offset, move_target_entry,
                     )
                     top = session_top
                     bottom_marker_row = separator - 1
@@ -4263,7 +4276,7 @@ def run(stdscr: curses.window) -> None:
                         next_move_scroll = now + MOVE_SCROLL_INTERVAL if direction else None
                     index = _entry_at_row(
                         entries, state.selected_index, row, separator + 1, 0,
-                        session_top, state.scroll_offset,
+                        session_top, state.scroll_offset, move_target_entry,
                     )
                     state.move_target = (
                         entries[index].target
