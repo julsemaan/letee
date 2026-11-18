@@ -609,7 +609,11 @@ def _apply_overlay() -> None:
     # but its stderr is logged so an unsupported option is diagnosable.
     if not load_tmux_config_overlay():
         return
-    proc = tmux.tmux("source-file", str(sessions.OVERLAY_FILE), check=False, capture=True)
+    try:
+        proc = tmux.tmux("source-file", str(sessions.OVERLAY_FILE), check=False, capture=True)
+    except (OSError, SystemExit) as error:
+        diagnostics.error(error, handling="ignored", operation="cockpit_overlay")
+        return
     if proc.returncode:
         diagnostics.log("cockpit_overlay_failed", returncode=proc.returncode, stderr=proc.stderr.strip())
 

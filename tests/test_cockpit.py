@@ -591,6 +591,16 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit._apply_overlay()
         log.assert_called_once_with("cockpit_overlay_failed", returncode=1, stderr="unknown option: menu-style")
 
+    def test_apply_overlay_ignores_tmux_execution_failures(self):
+        for failure in (SystemExit("timed out"), OSError("tmux missing")):
+            with self.subTest(failure=type(failure).__name__), (
+                patch.object(cockpit, "load_tmux_config_overlay", return_value=True)
+            ), patch.object(cockpit.tmux, "tmux", side_effect=failure), (
+                patch.object(cockpit.diagnostics, "error")
+            ) as error:
+                cockpit._apply_overlay()
+            error.assert_called_once_with(failure, handling="ignored", operation="cockpit_overlay")
+
     def test_existing_cockpit_gets_layout_reapplied(self):
         with (
             patch.object(cockpit, "_valid", return_value=True),
