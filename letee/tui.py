@@ -30,6 +30,7 @@ PALETTE_256 = {
     "surface": 236,  # #303030 raised bars, current window
     "border": 238,  # #444444 inactive borders
     "muted": 244,  # #808080 secondary text
+    "bar_text": 244,  # #808080 text on charcoal bars
     "text": 252,  # #d0d0d0 body text in tmux
     "deep": 23,  # #005f5f search matches
     "teal": 30,  # #008787
@@ -43,7 +44,7 @@ PALETTE_256 = {
 # 8-color fallback: -1 is the terminal default; gray-less terminals dim it instead.
 PALETTE_8 = {
     "charcoal": curses.COLOR_BLACK, "surface": curses.COLOR_BLACK, "border": -1, "muted": -1,
-    "text": -1, "deep": curses.COLOR_CYAN, "teal": curses.COLOR_CYAN, "green": curses.COLOR_GREEN,
+    "bar_text": curses.COLOR_WHITE, "text": -1, "deep": curses.COLOR_CYAN, "teal": curses.COLOR_CYAN, "green": curses.COLOR_GREEN,
     "mint": curses.COLOR_CYAN, "orange": curses.COLOR_YELLOW, "amber": curses.COLOR_YELLOW,
     "red": curses.COLOR_RED, "magenta": curses.COLOR_MAGENTA,
 }
@@ -104,7 +105,7 @@ def init_colors() -> None:
             "agent_completed": (18, p["mint"], -1, 0),
             "agent_unknown": (19, p["amber"], -1, 0),
             "move": (20, p["teal"], -1, curses.A_BOLD),
-            "footer": (21, p["muted"], p["charcoal"], quiet),
+            "footer": (21, p["bar_text"], p["charcoal"], quiet),
         }
         for name, (pair, fg, bg, attr) in pairs.items():
             curses.init_pair(pair, fg, bg)

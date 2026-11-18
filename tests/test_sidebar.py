@@ -6032,7 +6032,7 @@ class SidebarColorTest(OperationTestCase):
                 call(14, curses.COLOR_RED, -1), call(15, curses.COLOR_MAGENTA, -1),
                 call(16, curses.COLOR_RED, -1), call(17, curses.COLOR_RED, -1),
                 call(18, curses.COLOR_CYAN, -1), call(19, curses.COLOR_YELLOW, -1),
-                call(20, curses.COLOR_CYAN, -1), call(21, -1, curses.COLOR_BLACK),
+                call(20, curses.COLOR_CYAN, -1), call(21, curses.COLOR_WHITE, curses.COLOR_BLACK),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
