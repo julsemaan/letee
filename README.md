@@ -21,6 +21,8 @@ It adds a persistent sidebar to an existing terminal. Your sessions remain ordin
 
 You need tmux and OpenSSH.
 
+Agent discovery for Claude Code or Codex also needs `python3` 3.10 or newer on PATH on every machine where those agents run. Letee's bundled Python is private, so it doesn't cover this.
+
 ## Install and launch
 
 Run the install script:
