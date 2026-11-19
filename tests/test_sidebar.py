@@ -9246,7 +9246,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
             captured.append((selected, scroll_offset))
             return (2, None)
 
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -9275,7 +9275,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
             captured.append((selected, scroll_offset))
             return (2, None)
 
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -9355,7 +9355,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
             (0, 0, 2, 0, curses.BUTTON4_PRESSED),
             (0, 0, 2, 0, curses.BUTTON5_PRESSED),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
             captured.append(args[11] if len(args) > 11 else None)
@@ -10123,6 +10123,43 @@ class AgentOrderingTest(OperationTestCase):
         ):
             run(screen)
         show_menu.assert_not_called()
+
+    def test_mouse_ignores_hidden_list_on_too_short_terminal(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        clicks = [
+            (0, 2, row, 0, button)
+            for button in (curses.BUTTON1_PRESSED, curses.BUTTON3_PRESSED, curses.BUTTON5_PRESSED)
+            for row in (6, 7)
+        ]
+        screen = FakeScreen([curses.KEY_F7, *([curses.KEY_MOUSE] * len(clicks)), STOP], size=(9, 40))
+        poller = unittest.mock.Mock(launch_id=None,
+            snapshot=data, current_target=None, bell_target=None,
+            current_agent=None, pending_agent=None, pane_active=True,
+        )
+        poller.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(sidebar.cockpit, "current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar, "_mouse_cleanup"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, None)) as draw,
+            patch.object(sidebar.curses, "getmouse", side_effect=clicks),
+            patch.object(sidebar.cockpit, "show_agent_menu") as show_menu,
+            patch.object(sidebar.cockpit, "switch") as switch,
+        ):
+            run(screen)
+        show_menu.assert_not_called()
+        switch.assert_not_called()
+        self.assertEqual(draw.call_args.kwargs.get("agent_scroll_offset"), None)
 
     def test_mouse_ordering_resets_agent_scroll_offset(self):
         target = Target("local", "work")

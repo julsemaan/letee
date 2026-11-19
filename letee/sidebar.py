@@ -1963,6 +1963,10 @@ def _agent_layout(
     return footer_top, session_top, minimum_agent_rows, separator
 
 
+def _list_too_short(footer_top: int, session_top: int, minimum_agent_rows: int) -> bool:
+    return footer_top - session_top < 2 + minimum_agent_rows
+
+
 def _agent_prompt_row(
     stdscr: curses.window,
     footer_height: int,
@@ -2861,7 +2865,7 @@ def _draw(
     footer_top, session_top, minimum_agent_rows, separator = _agent_layout(
         h, footer_height, agents, agent_percentage, name_input, entries
     )
-    if footer_top - session_top < 2 + minimum_agent_rows:
+    if _list_too_short(footer_top, session_top, minimum_agent_rows):
         stdscr.addnstr(session_top, 0, " Terminal too short; resize window", max(0, w - 1), _color("hints") or curses.A_DIM)
         _refresh_screen(stdscr)
         return footer_height, add_col
@@ -4219,10 +4223,19 @@ def run(stdscr: curses.window) -> None:
                 )
                 # Compute layout once for this mouse event
                 h = stdscr.getmaxyx()[0]
-                footer_top, session_top, _, separator = _agent_layout(
+                footer_top, session_top, minimum_agent_rows, separator = _agent_layout(
                     h, footer_height, agent_entries, state.agent_percentage,
                     state.add_view == "search", entries,
                 )
+                if (
+                    state.add_view is None
+                    and row < footer_top
+                    and _list_too_short(footer_top, session_top, minimum_agent_rows)
+                ):
+                    # The list is hidden behind the resize notice; don't hit-test hidden entries.
+                    trace_mouse_decision(mouse_input_id, "ignored_short_terminal", row, mouse_col)
+                    mark_input(False, "short_terminal")
+                    continue
                 if state.add_view is not None:
                     separator = footer_top
                 layout = {
