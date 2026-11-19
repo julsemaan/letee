@@ -1952,7 +1952,7 @@ def _agent_layout(
 ) -> tuple[int, int, int, int]:
     footer_top = height - footer_height
     session_top = 3 if name_input else 2
-    minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
+    minimum_agent_rows = 5 if any(entry.kind == "agent" for entry in agent_entries) else 3
     available = footer_top - session_top - 1
     wanted = max(minimum_agent_rows, round(available * agent_percentage / 100))
     # The percentage is the agents' minimum share: rows sessions would leave blank go to agents,
@@ -2024,7 +2024,8 @@ def _bell_targets(
 
 def _entry_height(entry: Entry) -> int:
     # Tracked sessions are one row; a second row explains why one is unavailable.
-    return 2 if entry.tracked and entry.unavailable_favorite else 1
+    # The agent order toggle gets a blank row so it does not crowd the first agent.
+    return 2 if (entry.tracked and entry.unavailable_favorite) or entry.kind == "order" else 1
 
 
 def _row_offsets(entries: list[Entry], move_target_entry: int | None = None) -> list[int]:
@@ -2145,6 +2146,8 @@ def _entry_at_row(
     row_offsets = _row_offsets(entries, move_target_entry)
     for index in range(start, end):
         if entry_row < row_offsets[index + 1] - row_offsets[index]:
+            if entries[index].kind == "order" and entry_row:
+                return None
             return index if entries[index].kind in (
                 "session", "agent", "order", "create", "location"
             ) else None
@@ -2232,6 +2235,38 @@ def _back_label(selected: bool = False) -> str:
     return "< back" if _ascii() else "‹ back"
 
 
+def _button_text(label: str) -> str:
+    # One cell of padding each side turns the label into a pill on the title bar.
+    return f" {label} "
+
+
+def _draw_button(
+    stdscr: curses.window, col: int, label: str, dimmed: bool,
+    selected: bool = False, style: str = "button",
+) -> None:
+    text = _button_text(label)
+    attr = (_color("active") | curses.A_REVERSE) if selected and not dimmed else (_color(style) or curses.A_REVERSE)
+    stdscr.addnstr(0, col, text, _cell_width(text), _fade(attr) if dimmed else attr)
+
+
+def _draw_title_actions(
+    stdscr: curses.window, width: int, left: str, attr: int, dimmed: bool, label: str, selected: bool, find: bool,
+) -> int | None:
+    """Draw the title text with right-aligned buttons; returns the primary button's column."""
+    action_col = width - _cell_width(_button_text(label))
+    find_bounds = _find_bounds(width, action_col) if find else None
+    main_width = find_bounds[0] if find_bounds else max(0, action_col)
+    title_attr = _fade(attr) if dimmed else attr
+    title = _truncate_cells(left, main_width)
+    stdscr.addnstr(0, 0, title + " " * max(0, width - _cell_width(title)), width, title_attr)
+    if action_col <= 0:
+        return None
+    if find_bounds:
+        _draw_button(stdscr, find_bounds[0], "Find", dimmed, style="button_secondary")
+    _draw_button(stdscr, action_col, label, dimmed, selected)
+    return action_col
+
+
 def _draw_back_title(
     stdscr: curses.window,
     width: int,
@@ -2240,29 +2275,17 @@ def _draw_back_title(
     dimmed: bool,
     selected: bool = False,
 ) -> int | None:
-    label = _back_label(selected)
-    label_width = _cell_width(label)
-    action_col = width - label_width
-    title_attr = _fade(attr) if dimmed else attr
-    button_attr = _color("active") if selected and not dimmed else attr
-    button_attr = _fade(button_attr) if dimmed else button_attr
-    if action_col < 0:
-        title = _truncate_cells(left, width)
-        stdscr.addnstr(0, 0, title + " " * max(0, width - _cell_width(title)), width, title_attr)
-        return None
-    title = _truncate_cells(left, action_col)
-    stdscr.addnstr(0, 0, title + " " * max(0, action_col - _cell_width(title)), action_col, title_attr)
-    stdscr.addnstr(0, action_col, label, label_width, button_attr)
-    return action_col
+    return _draw_title_actions(stdscr, width, left, attr, dimmed, _back_label(selected), selected, find=False)
 
 
 def _find_bounds(width: int, add_col: int | None) -> tuple[int, int] | None:
     if add_col is None:
         return None
-    start = add_col - 6
+    end = add_col - 1
+    start = end - _cell_width(_button_text("Find"))
     if start < 12 or add_col >= width:
         return None
-    return start, start + 4
+    return start, end
 
 
 def _draw_title(
@@ -2287,17 +2310,7 @@ def _draw_title(
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     if not adding:
         label = f"{_icons()['selected'] if add_button_selected else _icons()['create']} add"
-        add_col = width - _cell_width(label)
-        find_bounds = _find_bounds(width, add_col)
-        main_width = find_bounds[0] if find_bounds else max(0, add_col)
-        title_attr = _fade(attr) if dimmed else attr
-        stdscr.addnstr(0, 0, left[:main_width].ljust(main_width), main_width, title_attr)
-        if find_bounds:
-            stdscr.addnstr(0, find_bounds[0], "Find", 4, title_attr)
-            stdscr.addnstr(0, find_bounds[1], "  ", 2, title_attr)
-        if add_col > 0:
-            button_attr = _color("active") if add_button_selected and not dimmed else attr
-            stdscr.addnstr(0, add_col, label, _cell_width(label), _fade(button_attr) if dimmed else button_attr)
+        add_col = _draw_title_actions(stdscr, width, left, attr, dimmed, label, add_button_selected, find=True)
     else:
         add_col = _draw_back_title(stdscr, width, left, attr, dimmed, add_button_selected)
     stdscr.redrawln(0, 1)
@@ -2362,7 +2375,7 @@ def _entry_lines(
         return [_truncate_cells(f"{pointer} {location_icon} {entry.label}", width)]
     if entry.kind == "order":
         pointer = icon["selected"] if selected else (" " if _ascii() else "⇅")
-        return [_truncate_cells(f"{pointer}{_ORDER_GAP}{_ORDER_WORDS['priority']}{_ORDER_GAP}{_ORDER_WORDS['session']}", width)]
+        return [_truncate_cells(f"{pointer}{_ORDER_GAP}{_ORDER_WORDS['priority']}{_ORDER_GAP}{_ORDER_WORDS['session']}", width), ""]
     if entry.kind == "agent":
         return [_join_right(*_agent_row_parts(entry, pointer if selected else None, width, now, agent_alerts, spinner_frame), width)]
     if entry.kind == "session":

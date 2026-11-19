@@ -3604,8 +3604,8 @@ class AddFlowTest(OperationTestCase):
         )
 
         title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertIn("‹ back", title)
-        self.assertEqual(back_col, 40 - sidebar._cell_width("‹ back"))
+        self.assertIn(" ‹ back ", title)
+        self.assertEqual(back_col, 40 - sidebar._cell_width(" ‹ back "))
 
     def test_add_title_shows_the_chosen_host(self):
         screen = FakeScreen(size=(6, 40))
@@ -3651,8 +3651,8 @@ class AddFlowTest(OperationTestCase):
         back_col = sidebar._draw_name(screen, SidebarState(add_view="name", creation_host=""))
 
         title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
-        self.assertIn("‹ back", title)
-        self.assertEqual(back_col, 40 - sidebar._cell_width("‹ back"))
+        self.assertIn(" ‹ back ", title)
+        self.assertEqual(back_col, 40 - sidebar._cell_width(" ‹ back "))
 
     def test_selected_add_title_uses_selection_pointer_for_back(self):
         screen = FakeScreen(size=(6, 40))
@@ -3687,7 +3687,7 @@ class AddFlowTest(OperationTestCase):
         title = "".join(call[3] for call in screen.calls if call[0] == "addnstr" and call[1] == 0)
         self.assertIn("< back", title)
         self.assertNotIn("‹ back", title)
-        self.assertEqual(back_col, 40 - len("< back"))
+        self.assertEqual(back_col, 40 - len(" < back "))
 
     def test_narrow_add_title_has_no_invisible_back_target(self):
         screen = FakeScreen(size=(6, 5))
@@ -6023,7 +6023,7 @@ class SidebarColorTest(OperationTestCase):
                 call(9, 234, 79), call(10, 244, -1), call(11, 214, -1),
                 call(12, 36, -1), call(13, 30, -1), call(14, 167, -1),
                 call(15, 176, -1), call(16, 167, -1), call(17, 167, -1), call(18, 79, -1),
-                call(19, 179, -1), call(20, 30, -1), call(21, 244, 234),
+                call(19, 179, -1), call(20, 30, -1), call(21, 244, 234), call(22, 234, 30),
             ],
         )
         self.assertEqual(sidebar._COLOR["title"], (1 << 8) | curses.A_BOLD)
@@ -6063,6 +6063,7 @@ class SidebarColorTest(OperationTestCase):
                 call(16, curses.COLOR_RED, -1), call(17, curses.COLOR_RED, -1),
                 call(18, curses.COLOR_CYAN, -1), call(19, curses.COLOR_YELLOW, -1),
                 call(20, curses.COLOR_CYAN, -1), call(21, curses.COLOR_WHITE, curses.COLOR_BLACK),
+                call(22, curses.COLOR_BLACK, curses.COLOR_CYAN),
             ],
         )
         self.assertEqual(sidebar._COLOR["active"], (2 << 8) | curses.A_BOLD)
@@ -6106,7 +6107,7 @@ class SidebarDrawTest(OperationTestCase):
     def test_expanded_header_has_collapse_control_but_add_header_does_not(self):
         for ascii_mode in (False, True):
             with self.subTest(ascii=ascii_mode), patch.object(sidebar, "_ascii", return_value=ascii_mode):
-                for width, adding in ((8, False), (40, False), (40, True)):
+                for width, adding in ((10, False), (40, False), (40, True)):
                     screen = FakeScreen(size=(10, width))
                     sidebar._draw_title(screen, width, [], "", adding=adding)
                     header = next(item[3] for item in screen.calls if item[0] == "addnstr" and item[1] == 0)
@@ -6846,9 +6847,10 @@ class SidebarDrawTest(OperationTestCase):
         _draw(screen, [], 0, "ok", "")
 
         title_calls = [call for call in screen.calls if call[0] == "addnstr" and call[1] == 0]
+        # The title fills the row, then the Find-less add pill covers the last eight cells.
         self.assertEqual(len(title_calls), 2)
-        self.assertEqual(title_calls[0][4], 14)
-        self.assertEqual(title_calls[1][4], 6)
+        self.assertEqual(title_calls[0][4], 20)
+        self.assertEqual(title_calls[1][2:5], (12, " ＋ add ", 8))
 
     def test_title_uses_configured_style_and_dims_inactive_pane(self):
         screen = FakeScreen(size=(5, 20))
@@ -6858,7 +6860,7 @@ class SidebarDrawTest(OperationTestCase):
 
         title_calls = [call for call in screen.calls if call[0] == "addnstr" and call[1] == 0]
         main_title = title_calls[0]
-        self.assertEqual(main_title[4], 14)
+        self.assertEqual(main_title[4], 20)
         self.assertEqual(main_title[5], _fade(123))
 
     def test_title_monochrome_fallback_is_bold_reverse_video(self):
@@ -8829,7 +8831,7 @@ class SidebarBurstInputTest(OperationTestCase):
                 self.assertEqual([draw["compact"] for draw in draws], [initial, not initial])
 
     def test_header_collapse_activates_only_visible_control(self):
-        for width in (8, 40):
+        for width in (10, 40):
             for buttons in (curses.BUTTON1_PRESSED, curses.BUTTON1_CLICKED):
                 with self.subTest(width=width, buttons=buttons), patch.object(sidebar.cockpit, "toggle_sidebar") as toggle:
                     self._run(

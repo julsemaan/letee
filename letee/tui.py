@@ -106,11 +106,13 @@ def init_colors() -> None:
             "agent_unknown": (19, p["amber"], -1, 0),
             "move": (20, p["teal"], -1, curses.A_BOLD),
             "footer": (21, p["bar_text"], p["charcoal"], quiet),
+            "button_secondary": (22, p["charcoal"], p["teal"], curses.A_BOLD),
         }
         for name, (pair, fg, bg, attr) in pairs.items():
             curses.init_pair(pair, fg, bg)
             _COLOR[name] = curses.color_pair(pair) | attr
         _COLOR["section"] = _COLOR["create"] | curses.A_BOLD
+        _COLOR["button"] = _COLOR["add_entry"]
     except curses.error as error:
         diagnostics.error(error, operation="init_colors")
         _COLOR.clear()
