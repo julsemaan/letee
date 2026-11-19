@@ -34,7 +34,7 @@ Run the install script:
 curl -LsSf https://raw.githubusercontent.com/julsemaan/letee/main/install.sh | sh
 
 # Restart your shell or run the following:
-export PATH="/home/julien/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 
 # Now start letee
 letee
