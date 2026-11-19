@@ -2896,8 +2896,38 @@ class CompactSidebarTest(OperationTestCase):
     def test_session_numbers_continue_and_active_bells_are_acknowledged(self):
         target = Target("local", "work")
         entry = sidebar.Entry("work", "session", target, tracked=True)
-        self.assertEqual(sidebar._compact_line(entry, 12, sidebar._alerted(entry, {target}, None, set()), None), "12  !")
-        self.assertEqual(sidebar._compact_line(entry, 12, sidebar._alerted(entry, {target}, target, set()), None), "12   ")
+        self.assertEqual(sidebar._compact_line(entry, 12, sidebar._alerted(entry, {target}, None, set()), None), " 12 !")
+        self.assertEqual(sidebar._compact_line(entry, 12, sidebar._alerted(entry, {target}, target, set()), None), " 12  ")
+
+    def test_pointer_takes_session_gutter_or_agent_icon(self):
+        target = Target("local", "work")
+        session = sidebar.Entry("work", "session", target, tracked=True)
+        agent = sidebar.Entry("Pi", "agent", target, status="working")
+        self.assertEqual(sidebar._compact_line(session, 3, False, None, ">"), ">3   ")
+        self.assertEqual(sidebar._compact_line(agent, 3, True, "/", ">"), "> 3 !")
+
+    def test_draw_points_only_at_focused_section_while_pane_is_active(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux-test")
+        sessions = [sidebar.Entry("work", "session", target, tracked=True)]
+        agents = [sidebar.Entry("Pi", "agent", target, pane_target=pane, agent_id="a", status="idle")]
+        for focused_region, pane_active, expected in (
+            ("sessions", True, [">1   ", "o 1  "]),
+            ("agents", True, [" 1   ", "> 1  "]),
+            ("agents", False, [" 1   ", "o 1  "]),
+        ):
+            with self.subTest(focused_region=focused_region, pane_active=pane_active):
+                screen = FakeScreen(size=(10, 5))
+                with patch.object(sidebar, "_color", return_value=0), patch.object(sidebar, "_ascii", return_value=True):
+                    sidebar._draw(
+                        screen, sessions, 0, "", "", agent_entries=agents, focused_region=focused_region,
+                        pane_active=pane_active, compact=True,
+                    )
+                rows = [call for call in screen.calls if call[0] == "addnstr" and call[1] > 0 and "-" not in call[3]]
+                self.assertEqual([call[3] for call in rows], expected)
+                # The unfocused section is faded like the expanded view.
+                faded = [bool(call[5] & curses.A_DIM) for call in rows]
+                self.assertEqual(faded, [focused_region != "sessions", focused_region != "agents"])
 
     def test_geometry_filters_controls_and_maps_one_row_entries(self):
         entries = [sidebar.Entry("empty", "empty"), sidebar.Entry("one", "session"), sidebar.Entry("two", "session")]
@@ -2949,7 +2979,7 @@ class CompactSidebarTest(OperationTestCase):
         for active_pane in panes:
             with self.subTest(active_pane=active_pane):
                 screen = FakeScreen(size=(10, 5))
-                with patch.object(sidebar, "_entry_attr", side_effect=lambda entry, active: int(active)):
+                with patch.object(sidebar, "_entry_attr", side_effect=lambda entry, active, dimmed=False: int(active)):
                     sidebar._draw(
                         screen, [], 0, "", "", agent_entries=agents,
                         active_agent_id="shared", active_agent_pane=active_pane, compact=True,

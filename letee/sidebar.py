@@ -2676,13 +2676,18 @@ def _compact_rows(
     return [(index, top + row) for row, index in enumerate(indices[start:start + capacity])]
 
 
-def _compact_line(entry: Entry, number: int | None, alerted: bool, spinner_frame: str | None) -> str:
-    """Five columns: a session's number, or an agent's status icon and its session's number."""
+def _compact_line(
+    entry: Entry, number: int | None, alerted: bool, spinner_frame: str | None, pointer: str | None = None,
+) -> str:
+    """Five columns: a session's number, or an agent's status icon and its session's number.
+
+    Like the expanded rows, the selection pointer takes a session's gutter or an agent's icon.
+    """
     mark = "!" if alerted else " "
     if entry.kind == "session":
-        return str(number)[:4].ljust(4) + mark
+        return (pointer or " ") + str(number)[:3].ljust(3) + mark
     status = entry.status or "unknown"
-    indicator = spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic())
+    indicator = pointer or (spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic()))
     # Agents of sessions outside the strip fall back to the first two cells of their name.
     tag = str(number)[:2] if number is not None else ""
     if number is None:
@@ -2700,6 +2705,9 @@ def _draw_compact(
     active_agent_id: str | None, active_agent_pane: PaneTarget | None,
     agent_alerts: set[tuple[PaneTarget, str]],
     spinner_frame: str | None,
+    dimmed: bool = False,
+    focused_region: str = "sessions",
+    pane_active: bool = True,
 ) -> tuple[int, int | None]:
     height, width = stdscr.getmaxyx()
     top, separator, bottom = _compact_layout(height, agent_percentage)
@@ -2713,7 +2721,8 @@ def _draw_compact(
                 raise
 
     header = "  >> " if _ascii() else "  »  "
-    write_row(0, header[:width].ljust(width), _color("title") or (curses.A_BOLD | curses.A_REVERSE))
+    title_attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
+    write_row(0, header[:width].ljust(width), _fade(title_attr) if dimmed else title_attr)
     if 0 < separator < height:
         write_row(separator, ("-" if _ascii() else "─") * width, _color("section") or curses.A_BOLD)
     session_numbers: dict[Target | None, int] = {}
@@ -2724,24 +2733,35 @@ def _draw_compact(
         numbers = {index: number for number, index in enumerate((i for i, entry in enumerate(section) if entry.kind == kind), 1)}
         if kind == "session":
             session_numbers = {section[index].target: number for index, number in numbers.items()}
+        # As in the expanded view, the unfocused section fades and only the focused one shows a pointer.
+        faded = dimmed or focused_region != kind + "s"
         for index, row in _compact_rows(section, kind, selection, offset, start, end):
             entry = section[index]
             active = entry.target == current_target if kind == "session" else (
                 entry.pane_target == active_agent_pane and entry.agent_id == active_agent_id
             )
-            attr = _entry_attr(entry, active)
+            attr = _entry_attr(entry, active, faded)
             number = numbers[index] if kind == "session" else session_numbers.get(entry.target)
             alerted = _alerted(entry, bell_targets, current_target, agent_alerts)
-            line = _compact_line(entry, number, alerted, spinner_frame)
+            pointed = index == selection and not faded and pane_active
+            line = _compact_line(entry, number, alerted, spinner_frame, _icons()["selected"] if pointed else None)
             if diagnostics.get_diagnostics().enabled:
                 diagnostics.log("sidebar_entry_draw", **_trace_entry(entry, index), status=entry.status,
                                 row=row, row_count=1, viewport_top=start, viewport_bottom=end,
                                 compact=True)
             write_row(row, line, attr)
             if kind == "agent":
-                stdscr.chgat(row, 0, 1, _status_attr(entry.status or "unknown"))
+                status_attr = _status_attr(entry.status or "unknown")
+                stdscr.chgat(row, 0, 1, _fade(status_attr) if faded else status_attr)
+                if not active:
+                    # The session tag is location detail, muted like the expanded row's `session:window`.
+                    hint_attr = _color("hints") or curses.A_DIM
+                    stdscr.chgat(row, 2, 2, _fade(hint_attr) if faded else hint_attr)
+            elif pointed:
+                stdscr.chgat(row, 0, 1, (_color("create") or 0) | curses.A_BOLD)
             if alerted and row != height - 1:
-                stdscr.chgat(row, _cell_width(line) - 1, 1, (_color("danger") or 0) | curses.A_BOLD)
+                alert_attr = (_color("danger") or 0) | curses.A_BOLD
+                stdscr.chgat(row, _cell_width(line) - 1, 1, _fade(alert_attr) if faded else alert_attr)
     _refresh_screen(stdscr)
     return 0, None
 
@@ -2784,6 +2804,7 @@ def _draw(
             stdscr, entries, agent_entries or [], selected, agent_selected,
             scroll_offset, agent_scroll_offset, agent_percentage, bell_targets or set(),
             current_target, active_agent_id, active_agent_pane, agent_alerts or set(), spinner_frame,
+            dimmed, focused_region, pane_active,
         )
     h, w = stdscr.getmaxyx()
     cursor, add_col = _draw_title(

@@ -22,7 +22,7 @@ To document information for letee developers (for example: release instructions,
 
 ## Protecting the user's tmux servers
 
-The developer's live letee runs on the host while you work. Its sockets are `letee@v1*` (the cockpit) and `letee.inner` (every tracked session), under `${TMUX_TMPDIR:-/tmp}/tmux-$UID/`. Killing or reconfiguring either server destroys the user's sessions and running agents.
+The developer's live letee may run on the host while you work. Its sockets are `letee@v1*` (the cockpit) and `letee.inner` (every tracked session), under `${TMUX_TMPDIR:-/tmp}/tmux-$UID/`. Killing or reconfiguring either server destroys the user's sessions and running agents.
 
 - Never run `letee` or `python -m letee` on the host. `letee -L <name>` does not isolate you: every letee server shares `letee.inner`.
 - Never run `tmux -L letee…`, `tmux kill-server`, or any tmux command without an explicit socket. Never point `TMUX_TMPDIR` at the default directory.
