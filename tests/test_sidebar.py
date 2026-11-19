@@ -2772,7 +2772,7 @@ class CompactSidebarTest(OperationTestCase):
                 targets, agents, draws, effects, expansion, _, _ = self._run_compact(
                     [curses.KEY_MOUSE, curses.KEY_MOUSE],
                     [(0, column, 2, 0, curses.BUTTON1_PRESSED),
-                     (0, column, 8, 0, curses.BUTTON1_PRESSED)],
+                     (0, column, 5, 0, curses.BUTTON1_PRESSED)],
                 )
                 self.assertEqual(effects, [
                     Effect("switch", targets[1]),
@@ -2935,7 +2935,7 @@ class CompactSidebarTest(OperationTestCase):
         self.assertEqual(rows, [(1, 3), (2, 4)])
         self.assertEqual(sidebar._compact_rows(entries, "session", 2, 1, 3, 4), [(2, 3)])
         self.assertEqual(sidebar._compact_rows([], "agent", 0, None, 1, 3), [])
-        self.assertEqual(sidebar._compact_layout(10, 40), (1, 6, 10))
+        self.assertEqual(sidebar._compact_layout(10, 40, [sidebar.Entry(str(i), "session") for i in range(8)]), (1, 6, 10))
 
     def test_draw_preserves_alert_after_combining_mark(self):
         screen = FakeScreen(size=(10, 5))
@@ -2964,10 +2964,16 @@ class CompactSidebarTest(OperationTestCase):
                 sidebar._draw(screen, [], 0, "", "", agent_entries=[sidebar.Entry("Pi", "agent")], compact=True)
 
     def test_section_allocation_keeps_both_sections_at_percentage_limits(self):
+        sessions = [sidebar.Entry(str(i), "session") for i in range(8)]
         for percentage in (0, 100):
-            top, separator, bottom = sidebar._compact_layout(10, percentage)
+            top, separator, bottom = sidebar._compact_layout(10, percentage, sessions)
             self.assertGreater(separator, top)
             self.assertGreater(bottom, separator + 1)
+
+    def test_section_allocation_gives_agents_rows_sessions_leave_blank(self):
+        sessions = [sidebar.Entry("", "empty"), sidebar.Entry("one", "session"), sidebar.Entry("two", "session")]
+        # Two session rows; the 40% share alone would have given agents three of eight rows.
+        self.assertEqual(sidebar._compact_layout(10, 40, sessions), (1, 3, 10))
 
     def test_draw_only_highlights_exact_active_pane_with_shared_agent_id(self):
         target = Target("local", "work")
