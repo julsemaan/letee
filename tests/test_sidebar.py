@@ -3193,8 +3193,8 @@ class AgentSidebarTest(OperationTestCase):
     def test_agent_cursor_replaces_icon_only_while_focused(self):
         entry = Entry("pi", "agent", Target("local", "work"), status="completed")
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 40)[0].rstrip(" work"), "› pi · completed")
-            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[0].rstrip(" work"), "✓ pi · completed")
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40)[0], "› pi · completed")
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[0], "✓ pi · completed")
 
     def test_spinner_frames_progress_and_wrap(self):
         with patch("letee.sidebar._ascii", return_value=False):
@@ -3238,31 +3238,85 @@ class AgentSidebarTest(OperationTestCase):
         self.assertEqual(entry.pane_target, pane)
         self.assertEqual(entry.host, "dev")
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle" + " " * 18 + "work:editor"])
+            self.assertEqual(_entry_lines(entry, True, set(), None, 40), ["› pi · idle", "  └─ work · editor"])
 
     def test_agent_location_omits_host_and_truncates_safely(self):
         pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/tmux", "editor")
         entry = Entry("pi", "agent", pane.target, host="dev", pane_target=pane, agent_id="id")
 
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(_entry_lines(entry, False, set(), None, 40), ["? pi · unknown" + " " * 15 + "work:editor"])
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40), ["? pi · unknown", "  └─ work · editor"])
             lines = _entry_lines(entry, False, set(), None, 4)
 
         self.assertNotIn("dev", lines[0])
         self.assertTrue(all(sidebar._cell_width(line) <= 4 for line in lines))
 
-    def test_agent_location_skips_repeated_window_and_drops_it_before_clipping(self):
+    def test_agent_location_clips_independently_without_dropping_window(self):
         def location(session, window, width):
             pane = PaneTarget(Target("local", session), "@1", "%2", "/tmp/tmux", window)
             entry = Entry("pi", "agent", pane.target, pane_target=pane, agent_id="id", status="idle")
             return sidebar._agent_row_parts(entry, None, width, None, None, None)[1]
 
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertEqual(location("notes", "notes", 40), "notes")
-            self.assertEqual(location("infra", "terraform", 40), "infra:terraform")
-            self.assertEqual(location("infra", "terraform", 22), "infra")
-            self.assertEqual(location("infrastructure", "tf", 20), "infrast…")
-            self.assertEqual(location("infra", "terraform", 14), "")
+            self.assertEqual(location("notes", "notes", 40), "  └─ notes · notes")
+            self.assertEqual(location("infra", "terraform", 40), "  └─ infra · terraform")
+            self.assertEqual(location("infra", "terraform", 22), "  └─ infra · terraform")
+            self.assertEqual(location("infrastructure", "tf", 20), "  └─ infrastructure…")
+            self.assertEqual(location("infra", "terraform", 14), "  └─ infra · …")
+
+    def test_agent_locations_remain_visible_with_working_details(self):
+        now = datetime(2026, 6, 20, tzinfo=timezone.utc)
+        for session, window in (("cluster-kit", "terraform"), ("run_ai", "agents")):
+            pane = PaneTarget(Target("local", session), "@1", "%2", "/tmp/tmux", window)
+            entry = Entry("claude", "agent", pane.target, pane_target=pane, agent_id="id",
+                          status="working", task_status_timestamp=now - timedelta(minutes=3))
+            with self.subTest(session=session), patch("letee.sidebar._ascii", return_value=False):
+                self.assertEqual(_entry_lines(entry, False, set(), None, 32, now=now,
+                                             spinner_frame="⠋", agent_alerts={(pane, "id")}),
+                                 ["⠋ claude · working 3m !", f"  └─ {session} · {window}"])
+
+    def test_agent_unicode_and_ascii_location_clipping(self):
+        pane = PaneTarget(Target("local", "run_ai"), "@1", "%2", "/tmp/tmux", "界面e\u0301cole-terraform")
+        entry = Entry("a long agent name", "agent", pane.target, pane_target=pane, status="working")
+        for ascii_mode in (False, True):
+            with self.subTest(ascii=ascii_mode), patch("letee.sidebar._ascii", return_value=ascii_mode):
+                full = _entry_lines(entry, False, set(), None, 60)[1]
+                for width in (0, 1, 4, 14, 22):
+                    lines = _entry_lines(entry, False, set(), None, width)
+                    self.assertEqual(len(lines), 2)
+                    self.assertEqual(lines[1], sidebar._truncate_cells(full, width))
+                    self.assertTrue(all(sidebar._cell_width(line) <= width for line in lines))
+                self.assertTrue(full.startswith("  `- " if ascii_mode else "  └─ "))
+
+    def test_agent_scrolling_keeps_selected_location_and_click_targets(self):
+        entries = [Entry(f"agent-{index}", "agent", Target("local", f"session-{index}"), status="idle")
+                   for index in range(5)]
+        self.assertEqual(sidebar._row_offsets(entries), [0, 2, 4, 6, 8, 10])
+        self.assertEqual(sidebar._max_scroll_offset(entries, 8), 3)
+        for offset in (None, 3):
+            screen = FakeScreen(size=(9, 40))
+            sidebar._draw_entries(screen, entries, 4, 9, 40, set(), None, scroll_offset=offset)
+            location = next(call for call in screen.calls if call[0] == "addnstr" and call[3] == "  └─ session-4")
+            for row in (location[1] - 1, location[1]):
+                self.assertEqual(_entry_at_row(entries, 4, row, 9, 0, scroll_offset=offset), 4)
+
+    def test_active_agent_name_and_location_keep_active_color(self):
+        pane = PaneTarget(Target("local", "cluster-kit"), "@1", "%2", "/tmp/tmux", "terraform")
+        entry = Entry("claude", "agent", pane.target, pane_target=pane, agent_id="id", status="completed")
+        for dimmed in (False, True):
+            with self.subTest(dimmed=dimmed), patch.dict(sidebar._COLOR, {"active": 123, "agent_completed": 456, "danger": 789}, clear=True):
+                screen = FakeScreen(size=(8, 40))
+                sidebar._draw_entries(screen, [entry], 0, 8, 40, set(), None, dimmed=dimmed,
+                                      active_agent_id="id", agent_alerts={(pane, "id")})
+                calls = [call for call in screen.calls if call[0] == "addnstr"]
+                first = next(call for call in calls if "claude" in call[3])
+                location = next(call for call in calls if "terraform" in call[3])
+                self.assertEqual((first[5], location[5]), (_fade(123), _fade(123)) if dimmed else (123, 123))
+                status = next(call for call in calls if call[3] == "completed")
+                alert = next(call for call in calls if call[3] == " !")
+                self.assertEqual(status[5], _fade(456) if dimmed else 456)
+                danger = 789 | curses.A_BOLD
+                self.assertEqual(alert[5], _fade(danger) if dimmed else danger)
 
     def test_local_agent_location_uses_window_name(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux", "shell")
@@ -3274,7 +3328,7 @@ class AgentSidebarTest(OperationTestCase):
         entry = _agent_entries(data, [pane.target])[0]
 
         with patch("letee.sidebar._ascii", return_value=False):
-            self.assertTrue(_entry_lines(entry, False, set(), None, 40)[0].endswith(" work:shell"))
+            self.assertEqual(_entry_lines(entry, False, set(), None, 40)[1], "  └─ work · shell")
 
     def test_draw_shows_agent_divider_and_empty_state(self):
         screen = FakeScreen(size=(10, 40))
@@ -3320,22 +3374,32 @@ class AgentSidebarTest(OperationTestCase):
         self.assertEqual((message[1], message[2]), (3, len("AGENTS ")))
         self.assertLessEqual(len("AGENTS ") + sidebar._cell_width(message[3]), 30)
 
-    def test_short_height_keeps_first_agent_row_visible(self):
+    def test_short_height_keeps_complete_agent_visible(self):
         target = Target("local", "work")
         pane = PaneTarget(target, "@1", "%1", "/tmp/tmux", "shell")
         agent = Entry("pi", "agent", target, pane_target=pane, agent_id="id", status="idle")
-        screen = FakeScreen(size=(9, 40))
+        screen = FakeScreen(size=(10, 40))
 
         _draw(screen, [], 0, "", "", agent_entries=[agent])
 
         text = [item[3] for item in screen.calls if item[0] == "addnstr"]
-        self.assertIn("○ pi · idle" + " " * 19 + "work:shell", text)
+        self.assertIn("○ pi · idle", text)
+        self.assertIn("  └─ work · shell", text)
+
+    def test_too_short_terminal_shows_resize_notice_instead_of_partial_agent(self):
+        screen = FakeScreen(size=(9, 40))
+        _draw(screen, [], 0, "", "", agent_entries=[Entry("pi", "agent")])
+        text = [call[3] for call in screen.calls if call[0] == "addnstr"]
+        self.assertTrue(any("Terminal too short" in line for line in text))
+        self.assertFalse(any("pi" in line for line in text))
 
     def test_agent_entry_can_be_selected_with_mouse(self):
         pane = PaneTarget(Target("local", "work"), "@1", "%2", "/tmp/tmux")
         entries = [Entry("pi", "agent", pane.target, pane_target=pane, agent_id="id")]
 
+        self.assertEqual(sidebar._entry_height(entries[0]), 2)
         self.assertEqual(_entry_at_row(entries, 0, 4, 8, 0, top=4), 0)
+        self.assertEqual(_entry_at_row(entries, 0, 5, 8, 0, top=4), 0)
 
     def test_add_menu_entries_can_be_selected_with_mouse(self):
         for kind in ("create", "location"):
@@ -3449,9 +3513,9 @@ class AgentSidebarTest(OperationTestCase):
         with patch("letee.sidebar._ascii", return_value=False):
             lines = {entry.agent_id: _entry_lines(entry, False, set(), None, 40, now=now)[0] for entry in entries}
 
-        self.assertEqual(lines["working"][2:].removesuffix("work").rstrip(), "pi · working 12s")
-        self.assertEqual(lines["idle"].removesuffix("work").rstrip(), "○ pi · idle")
-        self.assertEqual(lines["future"].removesuffix("work").rstrip(), "? pi · input-required")
+        self.assertEqual(lines["working"][2:], "pi · working 12s")
+        self.assertEqual(lines["idle"], "○ pi · idle")
+        self.assertEqual(lines["future"], "? pi · input-required")
 
     def test_duration_formatter_covers_seconds_minutes_hours_and_days(self):
         self.assertEqual([sidebar._format_duration(seconds) for seconds in (12, 180, 7200, 345600)], ["12s", "3m", "2h", "4d"])
@@ -5060,7 +5124,7 @@ class SidebarStateTest(OperationTestCase):
             sidebar._draw_entries(screen, entries, 0, 7, 40, set(), None, active_agent_id="one")
 
         first_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 1 and "pi" in call[3])
-        second_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 2 and "pi" in call[3])
+        second_row = next(call for call in screen.calls if call[0] == "addnstr" and call[1] == 3 and "pi" in call[3])
         self.assertEqual(first_row[5], 123)
         self.assertNotEqual(second_row[5], 123)
 
@@ -6169,8 +6233,8 @@ class SidebarDrawTest(OperationTestCase):
         entries = [Entry("", "order"), Entry("pi", "agent")]
         footer_top, _, minimum_agent_rows, separator = sidebar._agent_layout(20, 1, entries, 0, False, MANY_SESSIONS)
 
-        self.assertEqual(minimum_agent_rows, 4)
-        self.assertGreaterEqual(footer_top - separator - 1, 4)
+        self.assertEqual(minimum_agent_rows, 5)
+        self.assertGreaterEqual(footer_top - separator - 1, 5)
 
     def test_agents_take_rows_sessions_leave_blank(self):
         agents = [Entry("", "order"), Entry("pi", "agent")]
@@ -7342,8 +7406,8 @@ class SidebarDrawTest(OperationTestCase):
             patch(
                 "letee.sidebar.curses.getmouse",
                 side_effect=[
-                    (0, 0, 8, 0, curses.BUTTON1_PRESSED),
-                    (0, 0, 8, 0, curses.BUTTON1_RELEASED),
+                    (0, 0, 9, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 9, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
             patch("letee.sidebar._init_colors"),
@@ -8055,7 +8119,7 @@ class SidebarDrawTest(OperationTestCase):
             patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
             patch(
                 "letee.sidebar.curses.getmouse",
-                return_value=(0, 7, 8, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+                return_value=(0, 7, 10, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
             ),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_hosts", return_value=[]),
@@ -8067,7 +8131,7 @@ class SidebarDrawTest(OperationTestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi-two", second, 7, 8, unittest.mock.ANY)
+        show_menu.assert_called_once_with("pi-two", second, 7, 10, unittest.mock.ANY)
         self.assertEqual(drawn[-1]["agent_selected"], 2)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
@@ -9188,7 +9252,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
             captured.append((selected, scroll_offset))
             return (2, None)
 
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -9217,7 +9281,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
             captured.append((selected, scroll_offset))
             return (2, None)
 
-        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE, curses.KEY_MOUSE, STOP], size=(12, 30))
         with (
             patch("letee.sidebar.curses.curs_set"),
             patch("letee.sidebar.curses.mousemask"),
@@ -9297,7 +9361,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
             (0, 0, 2, 0, curses.BUTTON4_PRESSED),
             (0, 0, 2, 0, curses.BUTTON5_PRESSED),
         ]
-        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(8, 30))
+        screen = FakeScreen([curses.KEY_MOUSE] * len(mouse_events) + [STOP], size=(12, 30))
 
         def draw_spy(*args, **kwargs):
             captured.append(args[11] if len(args) > 11 else None)
@@ -9497,7 +9561,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar.curses, "getmouse", side_effect=(
                 (0, 0, 16, 0, curses.BUTTON5_PRESSED),
-                (0, 0, 15, 0, curses.BUTTON1_PRESSED),
+                (0, 0, 16, 0, curses.BUTTON1_PRESSED),
             )),
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
@@ -9530,14 +9594,14 @@ class SidebarScrollOffsetTest(OperationTestCase):
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar.curses, "getmouse", side_effect=(
                 (0, 0, 16, 0, curses.BUTTON5_PRESSED),
-                (0, 7, 15, 0, curses.BUTTON3_PRESSED),
+                (0, 7, 17, 0, curses.BUTTON3_PRESSED),
             )),
             patch.object(sidebar.cockpit, "show_agent_menu") as show_menu,
             patch.object(sidebar.cockpit, "switch") as switch,
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi", second, 7, 15, unittest.mock.ANY)
+        show_menu.assert_called_once_with("pi", second, 7, 17, unittest.mock.ANY)
         switch.assert_not_called()
 
     def test_agent_keyboard_navigation_resets_agent_scroll_offset(self):
@@ -9642,7 +9706,7 @@ class SidebarScrollOffsetTest(OperationTestCase):
         self.assertEqual(captured, [None, 4, 0])
 
     def test_agent_panel_resize_clamps_agent_scroll_offset(self):
-        target, data = self._agent_data(12)
+        target, data = self._agent_data(6)
         captured = []
         draw_signature = inspect.signature(sidebar._draw)
         poller = unittest.mock.Mock(launch_id=None,
@@ -10065,6 +10129,47 @@ class AgentOrderingTest(OperationTestCase):
         ):
             run(screen)
         show_menu.assert_not_called()
+
+    def test_mouse_ignores_hidden_list_on_too_short_terminal(self):
+        target = Target("local", "work")
+        pane = PaneTarget(target, "@1", "%1", "/tmp/tmux")
+        data = SessionSnapshot(
+            SourceSnapshot(True, (target,), frozenset(), agents=(AgentEntry(pane, "id", "pi", "working"),)),
+            {},
+        )
+        clicks = [
+            (0, 2, row, 0, button)
+            for button in (curses.BUTTON1_PRESSED, curses.BUTTON3_PRESSED, curses.BUTTON5_PRESSED)
+            for row in (6, 7)
+        ]
+        clicks.append((0, 1, 0, 0, curses.BUTTON1_PRESSED))
+        screen = FakeScreen([curses.KEY_F7, *([curses.KEY_MOUSE] * len(clicks)), STOP], size=(9, 40))
+        poller = unittest.mock.Mock(launch_id=None,
+            snapshot=data, current_target=None, bell_target=None,
+            current_agent=None, pending_agent=None, pane_active=True,
+        )
+        poller.tick.return_value = False
+        with (
+            patch.object(sidebar, "AsyncStatusPoller", return_value=poller),
+            patch.object(sidebar, "load_hosts", return_value=[]),
+            patch.object(config, "load_sessions", return_value=[target]),
+            patch.object(sidebar.cockpit, "current_target", return_value=None),
+            patch.object(sidebar, "_init_colors"),
+            patch.object(sidebar, "_mouse_mask"),
+            patch.object(sidebar, "_mouse_cleanup"),
+            patch.object(sidebar.curses, "curs_set"),
+            patch.object(sidebar, "_draw", return_value=(1, 30)) as draw,
+            patch.object(sidebar.curses, "getmouse", side_effect=clicks),
+            patch.object(sidebar.cockpit, "show_agent_menu") as show_menu,
+            patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar.cockpit, "sidebar_compact", return_value=False),
+            patch.object(sidebar.cockpit, "toggle_sidebar") as toggle,
+        ):
+            run(screen)
+        show_menu.assert_not_called()
+        switch.assert_not_called()
+        toggle.assert_called_once()
+        self.assertEqual(draw.call_args.kwargs.get("agent_scroll_offset"), None)
 
     def test_mouse_ordering_resets_agent_scroll_offset(self):
         target = Target("local", "work")

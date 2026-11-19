@@ -71,7 +71,7 @@ Agents are discovered automatically, but only agents in tracked sessions appear.
 
 An agent row shows the agent name and a second line in the form `<session> · <window name>`. The host remains available for targeting but is not rendered. The active agent name and location stay orange independently of keyboard selection.
 
-Working agents show `for <duration>`. The duration uses `task.status_timestamp` when it is usable and falls back to `runtime.updated_at`. If neither optional timestamp is usable, letee omits the duration. Other states do not show a duration.
+Working agents show the duration after their status, such as `working 3m`. The duration uses `task.status_timestamp` when it is usable and falls back to `runtime.updated_at`. If neither optional timestamp is usable, letee omits the duration. Other states do not show a duration.
 
 The default Priority order groups known non-idle states before idle and unknown states. Within each group, the most recently observed state transition comes first, followed by tracked session order, numeric window and pane IDs, and agent ID. A bell uses the same recency event as the transition that produced it. Acknowledging the bell clears the marker without changing the order.
 
