@@ -1952,7 +1952,7 @@ def _agent_layout(
 ) -> tuple[int, int, int, int]:
     footer_top = height - footer_height
     session_top = 3 if name_input else 2
-    minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
+    minimum_agent_rows = 5 if any(entry.kind == "agent" for entry in agent_entries) else 3
     available = footer_top - session_top - 1
     wanted = max(minimum_agent_rows, round(available * agent_percentage / 100))
     # The percentage is the agents' minimum share: rows sessions would leave blank go to agents,
@@ -2025,7 +2025,7 @@ def _bell_targets(
 def _entry_height(entry: Entry) -> int:
     # Tracked sessions are one row; a second row explains why one is unavailable.
     # The agent order toggle gets a blank row so it does not crowd the first agent.
-    return 2 if (entry.tracked and entry.unavailable_favorite) or entry.kind == "order" else 1
+    return 2 if (entry.tracked and entry.unavailable_favorite) or entry.kind in ("order", "agent") else 1
 
 
 def _row_offsets(entries: list[Entry], move_target_entry: int | None = None) -> list[int]:
@@ -2052,7 +2052,7 @@ def _agent_row_parts(
     entry: Entry, pointer: str | None, width: int, now: datetime | None,
     agent_alerts: set[tuple[PaneTarget, str]] | None, spinner_frame: str | None,
 ) -> tuple[str, str]:
-    """An agent row's left text and its right-aligned `session:window`, which yields first when narrow."""
+    """Independently clipped status and session/window lines for an expanded agent."""
     status = entry.status or "unknown"
     indicator = pointer or (spinner_frame if status == "working" and spinner_frame else _status_icon(status, time.monotonic()))
     timestamp = entry.task_status_timestamp or entry.runtime_updated_at
@@ -2064,19 +2064,13 @@ def _agent_row_parts(
     window = entry.pane_target.window_name if entry.pane_target else ""
     room = width - _cell_width(prefix + suffix)
     name = _truncate_cells(entry.label, max(0, room))
-    # The location only gets what the full name leaves, and is dropped below a useful width.
-    leftover = room - _cell_width(name) - 1
     location = ""
-    if entry.target and leftover >= 4:
-        session = entry.target.session
-        full = session if window in ("", session) else f"{session}:{window}"
-        # Drop the window before clipping the session name.
-        location = full if _cell_width(full) <= leftover else _truncate_cells(session, leftover)
-    return _truncate_cells(prefix + name + suffix, width), location
-
-
-def _join_right(left: str, right: str, width: int) -> str:
-    return left + " " * (width - _cell_width(left) - _cell_width(right)) + right if right else left
+    if entry.target:
+        branch = "`-" if _ascii() else "└─"
+        location = f"  {branch} {entry.target.session}"
+        if window:
+            location += f"{_SEPARATOR[_ascii()]}{window}"
+    return _truncate_cells(prefix + name + suffix, width), _truncate_cells(location, width)
 
 
 def _host_tag(entry: Entry) -> str:
@@ -2382,7 +2376,7 @@ def _entry_lines(
         pointer = icon["selected"] if selected else (" " if _ascii() else "⇅")
         return [_truncate_cells(f"{pointer}{_ORDER_GAP}{_ORDER_WORDS['priority']}{_ORDER_GAP}{_ORDER_WORDS['session']}", width), ""]
     if entry.kind == "agent":
-        return [_join_right(*_agent_row_parts(entry, pointer if selected else None, width, now, agent_alerts, spinner_frame), width)]
+        return list(_agent_row_parts(entry, pointer if selected else None, width, now, agent_alerts, spinner_frame))
     if entry.kind == "session":
         kind = "unavailable" if entry.unavailable_favorite else ("remote" if entry.target and entry.target.kind == "ssh" else "local")
         bell = f" {icon['alert']}" if _alerted(entry, bell_targets, current_target, agent_alerts) else ""
@@ -2488,17 +2482,10 @@ def _draw_entries(
             if entry.tracked else w
         )
         cursor_visible = selected_entry and not dimmed and selection_pointer_visible and pane_active
-        agent_location = ""
-        if entry.kind == "agent":
-            agent_left, agent_location = _agent_row_parts(
-                entry, _icons()["selected"] if cursor_visible else None, entry_width, now, agent_alerts, spinner_frame,
-            )
-            lines = [_join_right(agent_left, agent_location, entry_width)]
-        else:
-            lines = _entry_lines(
-                entry, cursor_visible, bell_targets, current_target, entry_width,
-                now, agent_alerts, spinner_frame, agent_ordering,
-            )
+        lines = _entry_lines(
+            entry, cursor_visible, bell_targets, current_target, entry_width,
+            now, agent_alerts, spinner_frame, agent_ordering,
+        )
         # ponytail: cursor position indicated by pointer char, not color; only active pane agent gets orange
         is_move_source = move_source_entry is not None and idx == move_source_entry
         is_move_target = move_target_entry is not None and idx == move_target_entry
@@ -2555,7 +2542,7 @@ def _draw_entries(
                 tag = _host_tag(entry) if entry.tracked and not entry.unavailable_favorite else ""
                 accents = [(tag, _color("remote") or curses.A_BOLD)]
                 if entry.kind == "agent":
-                    accents = [(agent_location, _color("hints") or curses.A_DIM)]
+                    accents = []
                 if alerted:
                     accents.append((f" {ico['alert']}", (_color("danger") or 0) | curses.A_BOLD))
                 for text, accent_attr in accents:
@@ -2772,7 +2759,7 @@ def _draw_compact(
                 status_attr = _status_attr(entry.status or "unknown")
                 stdscr.chgat(row, 0, 1, _fade(status_attr) if faded else status_attr)
                 if not active:
-                    # The session tag is location detail, muted like the expanded row's `session:window`.
+                    # The session tag is location detail, muted like the expanded row's second line.
                     hint_attr = _color("hints") or curses.A_DIM
                     stdscr.chgat(row, 2, 2, _fade(hint_attr) if faded else hint_attr)
             elif pointed:
