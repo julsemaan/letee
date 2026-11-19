@@ -4229,7 +4229,7 @@ def run(stdscr: curses.window) -> None:
                 )
                 if (
                     state.add_view is None
-                    and row < footer_top
+                    and session_top <= row < footer_top
                     and _list_too_short(footer_top, session_top, minimum_agent_rows)
                 ):
                     # The list is hidden behind the resize notice; don't hit-test hidden entries.

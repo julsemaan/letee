@@ -10136,6 +10136,7 @@ class AgentOrderingTest(OperationTestCase):
             for button in (curses.BUTTON1_PRESSED, curses.BUTTON3_PRESSED, curses.BUTTON5_PRESSED)
             for row in (6, 7)
         ]
+        clicks.append((0, 1, 0, 0, curses.BUTTON1_PRESSED))
         screen = FakeScreen([curses.KEY_F7, *([curses.KEY_MOUSE] * len(clicks)), STOP], size=(9, 40))
         poller = unittest.mock.Mock(launch_id=None,
             snapshot=data, current_target=None, bell_target=None,
@@ -10151,14 +10152,17 @@ class AgentOrderingTest(OperationTestCase):
             patch.object(sidebar, "_mouse_mask"),
             patch.object(sidebar, "_mouse_cleanup"),
             patch.object(sidebar.curses, "curs_set"),
-            patch.object(sidebar, "_draw", return_value=(1, None)) as draw,
+            patch.object(sidebar, "_draw", return_value=(1, 30)) as draw,
             patch.object(sidebar.curses, "getmouse", side_effect=clicks),
             patch.object(sidebar.cockpit, "show_agent_menu") as show_menu,
             patch.object(sidebar.cockpit, "switch") as switch,
+            patch.object(sidebar.cockpit, "sidebar_compact", return_value=False),
+            patch.object(sidebar.cockpit, "toggle_sidebar") as toggle,
         ):
             run(screen)
         show_menu.assert_not_called()
         switch.assert_not_called()
+        toggle.assert_called_once()
         self.assertEqual(draw.call_args.kwargs.get("agent_scroll_offset"), None)
 
     def test_mouse_ordering_resets_agent_scroll_offset(self):
