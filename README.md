@@ -19,6 +19,8 @@ It adds a persistent sidebar to an existing terminal. Your sessions remain ordin
 
 ## Requirements
 
+You need tmux on every machine where letee runs sessions, local or remote. Letee's bundled tmux only runs the cockpit.
+
 If you want to connect to machines remotely, you need OpenSSH (or SSH equivalent on your machine)
 
 Claude Code and Codex agent discovery needs Python 3.10 or newer on PATH on every machine running those agents, local or remote. Letee's bundled Python is private, so installing it doesn't cover this. See [agent discovery](docs/agent-discovery.md).
