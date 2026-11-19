@@ -2673,9 +2673,11 @@ def _draw_name(stdscr: curses.window, state: SidebarState, dimmed: bool = False)
     return back_col
 
 
-def _compact_layout(height: int, agent_percentage: int) -> tuple[int, int, int]:
+def _compact_layout(height: int, agent_percentage: int, session_entries: list[Entry]) -> tuple[int, int, int]:
     available = max(0, height - 2)
-    agent_rows = min(max(0, available - 1), max(1, round(available * agent_percentage / 100)))
+    # As in `_agent_layout`, the percentage is the agents' minimum share and rows sessions leave blank go to agents.
+    unused = available - sum(entry.kind == "session" for entry in session_entries)
+    agent_rows = min(max(0, available - 1), max(1, round(available * agent_percentage / 100), unused))
     return 1, height - agent_rows - 1, height
 
 
@@ -2728,7 +2730,7 @@ def _draw_compact(
     pane_active: bool = True,
 ) -> tuple[int, int | None]:
     height, width = stdscr.getmaxyx()
-    top, separator, bottom = _compact_layout(height, agent_percentage)
+    top, separator, bottom = _compact_layout(height, agent_percentage, entries)
     def write_row(row: int, line: str, attr: int) -> None:
         try:
             stdscr.addnstr(row, 0, line, len(line), attr)
@@ -3543,7 +3545,7 @@ def run(stdscr: curses.window) -> None:
             compact = False
             mark_input(True, "expand_sidebar")
             return
-        top, separator, bottom = _compact_layout(height, state.agent_percentage)
+        top, separator, bottom = _compact_layout(height, state.agent_percentage, entries)
         if top <= row < separator:
             section, kind, selected, offset, start, end = entries, "session", state.selected_index, state.scroll_offset, top, separator
         elif separator < row < bottom:
