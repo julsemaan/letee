@@ -85,6 +85,8 @@ jobs:
         run: |
           ~/.local/bin/letee version
           ~/.local/bin/agent-status --help
+      - name: Login shell finds letee
+        run: "\"$SHELL\" -lic 'command -v letee'"
       - name: Upgrade
         run: sh install.sh
       - name: Uninstall

@@ -32,7 +32,7 @@ curl -LsSf https://raw.githubusercontent.com/julsemaan/letee/main/install.sh | s
 letee
 ```
 
-It installs letee, its own Python and `agent-status` under `~/.local/share/letee`, and links `letee` and `agent-status` into `~/.local/bin`. Run it again to upgrade. To uninstall:
+It installs letee, its own Python and `agent-status` under `~/.local/share/letee`, and links `letee` and `agent-status` into `~/.local/bin`. It also adds `~/.local/bin` to PATH in your shell config, so new terminals find letee. In the current shell, run the `export` line it prints or open a new terminal. Run it again to upgrade. To uninstall:
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/julsemaan/letee/main/install.sh | sh -s -- --uninstall

@@ -10,6 +10,7 @@
 # Environment:
 #   LETEE_VERSION  install this letee version instead of the latest
 #   LETEE_BIN_DIR  where to link letee and agent-status (default ~/.local/bin)
+#   LETEE_NO_MODIFY_PATH=1  don't add LETEE_BIN_DIR to PATH in your shell config
 
 set -eu
 
@@ -61,9 +62,14 @@ install() {
 		"letee${LETEE_VERSION:+==$LETEE_VERSION}"
 
 	case ":$PATH:" in
-	*":$BIN_DIR:"*) ;;
-	*) say "add $BIN_DIR to your PATH to run letee" ;;
+	*":$BIN_DIR:"*) return ;;
 	esac
+	# uv exits non-zero when it can't detect the shell or the config already
+	# has the line, which must not abort the install.
+	if [ -z "${LETEE_NO_MODIFY_PATH:-}" ]; then
+		"$tmp/uv/uv" tool update-shell || true
+	fi
+	say "to use letee in this shell, run: export PATH=\"$BIN_DIR:\$PATH\""
 }
 
 main() {
