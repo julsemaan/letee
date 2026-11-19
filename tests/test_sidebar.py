@@ -7336,8 +7336,8 @@ class SidebarDrawTest(OperationTestCase):
             patch(
                 "letee.sidebar.curses.getmouse",
                 side_effect=[
-                    (0, 0, 7, 0, curses.BUTTON1_PRESSED),
-                    (0, 0, 7, 0, curses.BUTTON1_RELEASED),
+                    (0, 0, 8, 0, curses.BUTTON1_PRESSED),
+                    (0, 0, 8, 0, curses.BUTTON1_RELEASED),
                 ],
             ),
             patch("letee.sidebar._init_colors"),
@@ -8049,7 +8049,7 @@ class SidebarDrawTest(OperationTestCase):
             patch("letee.sidebar._mouse_cleanup") as mouse_cleanup,
             patch(
                 "letee.sidebar.curses.getmouse",
-                return_value=(0, 7, 7, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
+                return_value=(0, 7, 8, 0, curses.REPORT_MOUSE_POSITION | curses.BUTTON3_PRESSED),
             ),
             patch("letee.sidebar._init_colors"),
             patch("letee.sidebar.load_hosts", return_value=[]),
@@ -8061,7 +8061,7 @@ class SidebarDrawTest(OperationTestCase):
         ):
             run(screen)
 
-        show_menu.assert_called_once_with("pi-two", second, 7, 7, unittest.mock.ANY)
+        show_menu.assert_called_once_with("pi-two", second, 7, 8, unittest.mock.ANY)
         self.assertEqual(drawn[-1]["agent_selected"], 2)
         self.assertEqual(mouse_cleanup.call_count, 2)
         self.assertEqual(mousemask.call_count, 2)
@@ -9813,12 +9813,13 @@ class AgentOrderingTest(OperationTestCase):
         _sync_agent_selection(state, [priority[0], priority[2], priority[1]])
         self.assertEqual((state.agent_selected_index, state.selected_agent_key), (1, (pane, "id")))
 
-    def test_ordering_row_is_one_row_and_mouse_selectable(self):
+    def test_ordering_row_has_blank_spacer_and_is_mouse_selectable(self):
         order = Entry("", "order")
-        self.assertEqual(_entry_height(order), 1)
+        self.assertEqual(_entry_height(order), 2)
         entries = [order, Entry("pi", "agent", Target("local", "work"), agent_id="id")]
         self.assertEqual(_entry_at_row(entries, 0, 4, 9, 0, top=4), 0)
-        self.assertEqual(_entry_at_row(entries, 0, 5, 9, 0, top=4), 1)
+        self.assertIsNone(_entry_at_row(entries, 0, 5, 9, 0, top=4))
+        self.assertEqual(_entry_at_row(entries, 0, 6, 9, 0, top=4), 1)
 
     def test_ordering_row_renders_in_unicode_and_ascii(self):
         screen = FakeScreen(size=(10, 40))
@@ -11606,7 +11607,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
     def test_first_click_after_idle_recovers_only_with_tmux_click_signal(self):
         target = Target("local", "one")
         pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
-        for region, row in (("sessions", 2), ("agents", 6)):
+        for region, row in (("sessions", 2), ("agents", 7)):
             with self.subTest(region=region):
                 poller = unittest.mock.Mock(
                     snapshot=SessionSnapshot(SourceSnapshot(
@@ -11647,7 +11648,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
     def test_tmux_click_signal_recovers_pure_release(self):
         target = Target("local", "one")
         pane = PaneTarget(target, "@1", "%2", "/tmp/tmux")
-        for region, row in (("sessions", 2), ("agents", 6)):
+        for region, row in (("sessions", 2), ("agents", 7)):
             for debug_enabled in (True, False):
                 with self.subTest(region=region, debug=debug_enabled):
                     poller = unittest.mock.Mock(

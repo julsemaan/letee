@@ -61,7 +61,7 @@ class FinderSidebarTest(OperationTestCase):
                 start, end = sidebar._find_bounds(40, add_col)
                 self.assertGreater(start, 1)
                 self.assertLess(end, add_col)
-                self.assertTrue(any(call[0] == "addnstr" and call[2] == start and call[3] == "Find"
+                self.assertTrue(any(call[0] == "addnstr" and call[2] == start and call[3] == " Find "
                                     for call in screen.calls))
                 self.assertIsNone(sidebar._find_bounds(12, 7))
                 screen.calls.clear()

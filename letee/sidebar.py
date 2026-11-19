@@ -1952,7 +1952,7 @@ def _agent_layout(
 ) -> tuple[int, int, int, int]:
     footer_top = height - footer_height
     session_top = 3 if name_input else 2
-    minimum_agent_rows = 5 if any(entry.kind == "agent" for entry in agent_entries) else 3
+    minimum_agent_rows = 4 if any(entry.kind == "agent" for entry in agent_entries) else 3
     available = footer_top - session_top - 1
     wanted = max(minimum_agent_rows, round(available * agent_percentage / 100))
     # The percentage is the agents' minimum share: rows sessions would leave blank go to agents,
@@ -2251,13 +2251,14 @@ def _draw_button(
 
 def _draw_title_actions(
     stdscr: curses.window, width: int, left: str, attr: int, dimmed: bool, label: str, selected: bool, find: bool,
+    clip: Callable[[str, int], str] | None = None,
 ) -> int | None:
     """Draw the title text with right-aligned buttons; returns the primary button's column."""
     action_col = width - _cell_width(_button_text(label))
     find_bounds = _find_bounds(width, action_col) if find else None
     main_width = find_bounds[0] if find_bounds else max(0, action_col)
     title_attr = _fade(attr) if dimmed else attr
-    title = _truncate_cells(left, main_width)
+    title = (clip or _truncate_cells)(left, main_width)
     stdscr.addnstr(0, 0, title + " " * max(0, width - _cell_width(title)), width, title_attr)
     if action_col <= 0:
         return None
@@ -2310,7 +2311,11 @@ def _draw_title(
     attr = _color("title") or (curses.A_BOLD | curses.A_REVERSE)
     if not adding:
         label = f"{_icons()['selected'] if add_button_selected else _icons()['create']} add"
-        add_col = _draw_title_actions(stdscr, width, left, attr, dimmed, label, add_button_selected, find=True)
+        # Plain slicing keeps the collapse control visible when the brand no longer fits.
+        add_col = _draw_title_actions(
+            stdscr, width, left, attr, dimmed, label, add_button_selected, find=True,
+            clip=lambda text, room: text[:room],
+        )
     else:
         add_col = _draw_back_title(stdscr, width, left, attr, dimmed, add_button_selected)
     stdscr.redrawln(0, 1)
