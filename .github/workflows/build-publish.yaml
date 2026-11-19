@@ -114,10 +114,10 @@ jobs:
         with:
           name: tmux-release-assets
           path: |
-            release-assets/tmux-3.6a-linux-x86_64.tar.gz
-            release-assets/tmux-3.6a-linux-arm64.tar.gz
-            release-assets/tmux-3.6a-macos-x86_64.tar.gz
-            release-assets/tmux-3.6a-macos-arm64.tar.gz
+            release-assets/tmux-*-linux-x86_64.tar.gz
+            release-assets/tmux-*-linux-arm64.tar.gz
+            release-assets/tmux-*-macos-x86_64.tar.gz
+            release-assets/tmux-*-macos-arm64.tar.gz
             release-assets/LICENSES.tar.gz
           if-no-files-found: error
 
@@ -160,8 +160,8 @@ jobs:
           target_commitish: ${{ github.event.pull_request.merge_commit_sha }}
           generate_release_notes: true
           body: |
-            This release bundles tmux 3.6a for letee's outer cockpit.
-            Upstream source: https://github.com/tmux/tmux-builds/releases/tag/v3.6a
+            This release bundles tmux 3.7c for letee's outer cockpit.
+            Upstream source: https://github.com/tmux/tmux-builds/releases/tag/v3.7c
           files: |
             dist/*
             release-assets/*
