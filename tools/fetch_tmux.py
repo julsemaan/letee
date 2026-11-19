@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 from urllib.request import urlopen
 
-TMUX_VERSION = "3.6a"
+TMUX_VERSION = "3.7c"
 UPSTREAM_REPOSITORY = "https://github.com/tmux/tmux-builds"
 RELEASE_URL = f"{UPSTREAM_REPOSITORY}/releases/tag/v{TMUX_VERSION}"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,36 +39,25 @@ class Artifact:
 
 
 _RELEASE_BASE = f"{UPSTREAM_REPOSITORY}/releases/download/v{TMUX_VERSION}"
+
+
+def _artifact(filename: str, sha256: str, vendor_path: str | None = None) -> Artifact:
+    return Artifact(filename, f"{_RELEASE_BASE}/{filename}", sha256, vendor_path)
+
+
+def _binary_artifact(platform: str, sha256: str) -> Artifact:
+    return _artifact(f"tmux-{TMUX_VERSION}-{platform}.tar.gz", sha256, f"{platform}/tmux")
+
+
 BINARY_ARTIFACTS = (
-    Artifact(
-        "tmux-3.6a-linux-x86_64.tar.gz",
-        f"{_RELEASE_BASE}/tmux-3.6a-linux-x86_64.tar.gz",
-        "c0a772a5e6ca8f129b0111d10029a52e02bcbc8352d5a8c0d3de8466a1e59c2e",
-        "linux-x86_64/tmux",
-    ),
-    Artifact(
-        "tmux-3.6a-linux-arm64.tar.gz",
-        f"{_RELEASE_BASE}/tmux-3.6a-linux-arm64.tar.gz",
-        "bb5afd9d646df54a7d7c66e198aa22c7d293c7453534f1670f7c540534db8b5e",
-        "linux-arm64/tmux",
-    ),
-    Artifact(
-        "tmux-3.6a-macos-x86_64.tar.gz",
-        f"{_RELEASE_BASE}/tmux-3.6a-macos-x86_64.tar.gz",
-        "b9b12eaeba43acf5671acf3857d947525440b544185a8db34ea557199a090251",
-        "macos-x86_64/tmux",
-    ),
-    Artifact(
-        "tmux-3.6a-macos-arm64.tar.gz",
-        f"{_RELEASE_BASE}/tmux-3.6a-macos-arm64.tar.gz",
-        "12b5b9f8696e1286897d946649c0a80d0169dd76e018d34476a1fbd34de89a0f",
-        "macos-arm64/tmux",
-    ),
+    _binary_artifact("linux-x86_64", "cc56bd1cc873eb6089c615f0496b072385bda8a6d944069f38564a5d49c128aa"),
+    _binary_artifact("linux-arm64", "29dcb978da2a4b0cf6790f9e004865dac239a3ba03bbf776dddacce23d03831b"),
+    _binary_artifact("macos-x86_64", "1c21f9ade964e4a539be05ffe3a4e95854ab76a0a9c4c05d0ffbe7fc6c4d783f"),
+    _binary_artifact("macos-arm64", "0a763dd0380aa980d239509654da1bc7455843706a3c050f6709c8cd2e13d12d"),
 )
-LICENSE_ARTIFACT = Artifact(
+LICENSE_ARTIFACT = _artifact(
     "LICENSES.tar.gz",
-    f"{_RELEASE_BASE}/LICENSES.tar.gz",
-    "8c2baf3d33c70512d1ee77ae2b337991a32eaae8e1cc47e597a2a77e78209ed6",
+    "094905d3ba42397c65fecd817dc29736dd14bd35e75600441403a365125f47d1",
 )
 ARTIFACTS = BINARY_ARTIFACTS + (LICENSE_ARTIFACT,)
 

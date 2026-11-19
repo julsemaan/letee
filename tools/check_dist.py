@@ -15,7 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-TMUX_VERSION = "3.6a"
+from tools.fetch_tmux import ARTIFACTS, TMUX_VERSION  # noqa: E402
+
 BINARY_PATHS = frozenset(
     {
         "letee/_vendor/tmux/linux-x86_64/tmux",
@@ -36,15 +37,7 @@ LICENSE_PATHS = frozenset(
 )
 PROVENANCE_PATH = "letee/_vendor/tmux/provenance.json"
 _SUPPORTED_ARCHITECTURES = frozenset({"x86_64", "amd64", "aarch64", "arm64"})
-RAW_ARCHIVES = frozenset(
-    {
-        "tmux-3.6a-linux-x86_64.tar.gz",
-        "tmux-3.6a-linux-arm64.tar.gz",
-        "tmux-3.6a-macos-x86_64.tar.gz",
-        "tmux-3.6a-macos-arm64.tar.gz",
-        "LICENSES.tar.gz",
-    }
-)
+RAW_ARCHIVES = frozenset(artifact.filename for artifact in ARTIFACTS)
 
 
 def _member_for_suffix(names: set[str], suffix: str) -> str:
