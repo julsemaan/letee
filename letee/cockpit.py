@@ -26,6 +26,7 @@ from .config import (
     load_sidebar_keybindings,
     load_sidebar_width,
     load_timing,
+    load_tmux_config_overlay,
 )
 from .names import INNER_SERVER_SOCKET, DEFAULT_SERVER, PaneTarget, Target, WindowTarget, parse_target
 from . import attachment, diagnostics, sessions, tmux
@@ -57,7 +58,7 @@ def _bind_key(key_value: str, *command: str) -> None:
 
 def help_command(prefix: str, keybindings: dict[str, str] | None = None, sidebar_keybindings: dict[str, str] | None = None) -> str:
     ascii_mode = os.environ.get("LETEE_ASCII") == "1" or "utf" not in locale.getpreferredencoding(False).lower()
-    move_handle = ":" if ascii_mode else "↕"
+    move_handle = "=" if ascii_mode else "↕"
     if keybindings is None:
         try:
             keybindings = load_keybindings()
@@ -602,6 +603,21 @@ def _install_right_pane_reset(left: str, right: str, prefix: str) -> None:
     tmux.tmux("set-hook", "-t", tmux.SESSION, "pane-died", command)
 
 
+def _apply_overlay() -> None:
+    # The Find popup, menus, and messages render on the outer server; theme them like inner sessions.
+    # Cosmetic only: a failure must not stop the cockpit or print onto the launching terminal,
+    # but its stderr is logged so an unsupported option is diagnosable.
+    if not load_tmux_config_overlay():
+        return
+    try:
+        proc = tmux.tmux("source-file", str(sessions.OVERLAY_FILE), check=False, capture=True)
+    except (OSError, SystemExit) as error:
+        diagnostics.error(error, handling="ignored", operation="cockpit_overlay")
+        return
+    if proc.returncode:
+        diagnostics.log("cockpit_overlay_failed", returncode=proc.returncode, stderr=proc.stderr.strip())
+
+
 @diagnostics.operation("cockpit.configure")
 def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -> None:
     _set_markers(left, right)
@@ -612,6 +628,7 @@ def _configure_cockpit(left: str, right: str, prefix: str, sidebar_width: int) -
     tmux.tmux("set-option", "-t", tmux.SESSION, "prefix", prefix)
     tmux.tmux("set-option", "-t", tmux.SESSION, "status", "off")
     tmux.tmux("set-option", "-s", "escape-time", "0")
+    _apply_overlay()
     _enable_mouse()
     _enable_clipboard()
     _enable_truecolor()
@@ -809,7 +826,7 @@ def find_work() -> int:
         "#{?#{e|>:#{client_height},37},30,#{e|/:#{e|*:#{client_height},80},100}}",
     ).split()
     return tmux.tmux(
-        "display-popup", "-E", "-w", width, "-h", height, "-x", "C", "-y", "C",
+        "display-popup", "-E", "-T", " Find ", "-w", width, "-h", height, "-x", "C", "-y", "C",
         _letee_command("finder"), timeout=None,
     ).returncode
 

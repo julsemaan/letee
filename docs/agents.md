@@ -118,7 +118,7 @@ When a tracked agent changes from `working` to one of these states, letee beeps 
 - `rejected`
 - `canceled`
 
-The marker is `🔔` in normal mode and `BELL` in ASCII mode. Initial discovery does not create an alert.
+The marker is a red `!` in both normal and ASCII mode. Initial discovery does not create an alert.
 
 The marker survives later state changes until one of these happens:
 

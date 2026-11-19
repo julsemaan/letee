@@ -167,7 +167,7 @@ class FinderTest(unittest.TestCase):
         self.assertEqual(SCOPES, ("All", "Sessions", "Windows", "Agents"))
         self.assertEqual([r.key for r in rows], [s.key for s in self.workspace.sessions])
         self.assertEqual(self.finder.selected, self.workspace.sessions[0].key)
-        self.assertEqual(rows[0].label, "letee [local]")
+        self.assertEqual(rows[0].label, "letee @localhost")
         self.assertTrue(rows[0].has_children)
         self.assertFalse(rows[0].expanded)
         self.assertTrue(rows[0].available)
@@ -177,7 +177,7 @@ class FinderTest(unittest.TestCase):
             rows[0].label = "changed"
         self.finder.toggle()
         self.assertEqual([r.label for r in self.finder.rows[:3]],
-                         ["letee [local]", "0: editor", "1: fix/123"])
+                         ["letee @localhost", "0: editor", "1: fix/123"])
         self.finder.toggle(self.workspace.sessions[0].key + ("@2",))
         agent = self.finder.rows[3]
         self.assertEqual(agent.key, self.workspace.current)
@@ -185,7 +185,7 @@ class FinderTest(unittest.TestCase):
         self.assertEqual(agent.label, "1: Claude [input-required]")
         self.assertEqual(agent.depth, 2)
         self.assertIsNotNone(agent.agent)
-        self.assertIn("letee [local]", agent.path)
+        self.assertIn("letee @localhost", agent.path)
         self.assertIn("1: fix/123", agent.path)
 
     def test_path_terms_in_either_order_and_abbreviations(self):
@@ -193,7 +193,7 @@ class FinderTest(unittest.TestCase):
             with self.subTest(query=query):
                 self.finder.set_query(query)
                 self.assertEqual([r.label for r in self.finder.rows],
-                                 ["letee [dev]", "0: fix/123", "1: Codex [working]"])
+                                 ["letee @dev", "0: fix/123", "1: Codex [working]"])
                 self.assertEqual(self.finder.selected_row.kind, "window")
                 self.assertEqual(self.finder.selected_row.session.target.host, "dev")
         self.finder.set_query("dev codex")
@@ -214,7 +214,7 @@ class FinderTest(unittest.TestCase):
         self.assertEqual([r.kind for r in self.finder.rows], ["session", "window", "agent"])
         self.assertEqual(self.finder.selected_row.kind, "session")
         self.finder.set_query("letee editor")
-        self.assertEqual([r.label for r in self.finder.rows], ["letee [local]", "0: editor"])
+        self.assertEqual([r.label for r in self.finder.rows], ["letee @localhost", "0: editor"])
         self.assertEqual(self.finder.selected_row.kind, "window")
 
     def test_exact_substring_gapped_ranking_and_tree_branch_sort(self):
@@ -228,9 +228,9 @@ class FinderTest(unittest.TestCase):
         finder.set_query("fix")
         self.assertEqual(finder.selected, sessions[1].key + ("@3",))
         self.assertEqual([r.label for r in finder.rows if r.kind == "session"],
-                         ["second [local]", "fix [local]", "first [local]"])
+                         ["second @localhost", "fix @localhost", "first @localhost"])
         self.assertEqual([r.label for r in finder.rows if r.session == sessions[1]],
-                         ["second [local]", "1: fix", "0: prefix"])
+                         ["second @localhost", "1: fix", "0: prefix"])
 
     def test_equal_independent_matches_use_tree_order_but_stronger_child_wins(self):
         session = Session(Target("local", "fix-project"), "$1", "/s", (
@@ -337,7 +337,7 @@ class FinderTest(unittest.TestCase):
         self.assertNotEqual(windows[0].key, windows[1].key)
         self.assertEqual(self.finder.selected, windows[0].key)
         self.assertEqual([r.label for r in self.finder.rows if r.kind == "session"],
-                         ["letee [local]", "letee [dev]"])
+                         ["letee @localhost", "letee @dev"])
 
     def test_new_matching_paths_are_revealed_on_update(self):
         session = self.workspace.sessions[0]
