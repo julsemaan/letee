@@ -19,20 +19,26 @@ It adds a persistent sidebar to an existing terminal. Your sessions remain ordin
 
 ## Requirements
 
-You need tmux and OpenSSH.
-
-Agent discovery for Claude Code or Codex also needs `python3` 3.10 or newer on PATH on every machine where those agents run. Letee's bundled Python is private, so it doesn't cover this.
+If you want to connect to machines remotely, you need OpenSSH (or SSH equivalent on your machine)
 
 ## Install and launch
 
 Run the install script:
 
 ```sh
+# Install letee
 curl -LsSf https://raw.githubusercontent.com/julsemaan/letee/main/install.sh | sh
+
+# Restart your shell or run the following:
+export PATH="/home/julien/.local/bin:$PATH"
+
+# Now start letee
 letee
 ```
 
-It installs letee, its own Python and `agent-status` under `~/.local/share/letee`, and links `letee` and `agent-status` into `~/.local/bin`. It also adds `~/.local/bin` to PATH in your shell config, so new terminals find letee. In the current shell, run the `export` line it prints or open a new terminal. Run it again to upgrade. To uninstall:
+To upgrade, run the same commands again.
+
+To uninstall:
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/julsemaan/letee/main/install.sh | sh -s -- --uninstall
