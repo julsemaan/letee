@@ -49,6 +49,8 @@ install() {
 	export UV_PYTHON_INSTALL_DIR="$LETEE_HOME/python"
 	export UV_TOOL_BIN_DIR="$BIN_DIR"
 	export UV_CACHE_DIR="$tmp/cache"
+	# The cache is deleted on exit, so installed files must not link into it.
+	export UV_LINK_MODE=copy
 	export UV_NO_CONFIG=1
 	export UV_PYTHON_INSTALL_BIN=0
 
