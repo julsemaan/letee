@@ -32,10 +32,8 @@ Issues = "https://github.com/julsemaan/letee/issues"
 [project.scripts]
 letee = "letee.__main__:run_cli"
 
-
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "build",
     "coverage[toml]",
     "ruff",
     "twine",

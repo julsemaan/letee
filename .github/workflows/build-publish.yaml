@@ -10,6 +10,9 @@ on:
     types:
       - closed
 
+env:
+  UV_LOCKED: "1"
+
 concurrency:
   group: release-${{ github.repository }}
   cancel-in-progress: false
@@ -33,18 +36,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          version: "0.13.9"
           python-version: "3.14"
-          cache: pip
 
       - name: Validate release
         id: validate-release
         env:
           RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           import os
           import re
           import subprocess
@@ -93,9 +96,6 @@ jobs:
               output.write(f"version={project_version}\n")
           print(f"Validated release {project_version}")
           PY
-
-      - name: Install quality tools
-        run: python -m pip install build coverage ruff twine
 
       - name: Run quality gate and build distributions
         run: make check
