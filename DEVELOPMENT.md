@@ -10,7 +10,7 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
 make dev-install
 ```
 
-This creates `.venv` with the dev tools and links the working copy's `letee` and `agent-status` into `~/.local/bin`. uv won't overwrite an existing `letee`, so remove an earlier install first with `sh install.sh --uninstall` or `pip uninstall letee`.
+This creates `.venv` with the dev tools and links the working copy's `letee` and `agent-status` into `~/.local/bin`. uv won't overwrite an existing `letee` or `agent-status`, so remove an earlier install first with `sh install.sh --uninstall` or `pip uninstall letee agent-status`.
 
 Dev dependencies live in the `dev` group in `pyproject.toml`. After changing dependencies, run `uv lock` and commit `uv.lock`. CI fails on a stale lock.
 
