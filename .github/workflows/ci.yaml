@@ -95,6 +95,14 @@ jobs:
           ~/.local/bin/agent-status --help
       - name: Login shell finds letee
         run: "\"$SHELL\" -lic 'command -v letee'"
+      - name: Re-run leaves a foreign letee alone
+        run: |
+          rm ~/.local/bin/letee
+          printf '#!/bin/sh\necho foreign\n' > ~/.local/bin/letee
+          chmod +x ~/.local/bin/letee
+          if sh install.sh; then echo "installer overwrote a foreign letee"; exit 1; fi
+          [ "$(~/.local/bin/letee)" = foreign ]
+          rm ~/.local/bin/letee
       - name: Upgrade
         run: sh install.sh
       - name: Uninstall

@@ -25,13 +25,20 @@ say() {
 	printf 'letee-install: %s\n' "$*"
 }
 
+# True if $1 is a link this script created.
+owned() {
+	[ -L "$1" ] || return 1
+	case "$(readlink "$1")" in
+	"$LETEE_HOME"/*) return 0 ;;
+	esac
+	return 1
+}
+
 uninstall() {
 	for cmd in $COMMANDS; do
 		link="$BIN_DIR/$cmd"
-		if [ -L "$link" ]; then
-			case "$(readlink "$link")" in
-			"$LETEE_HOME"/*) rm -f "$link" ;;
-			esac
+		if owned "$link"; then
+			rm -f "$link"
 		fi
 	done
 	rm -rf "$LETEE_HOME"
@@ -39,6 +46,21 @@ uninstall() {
 }
 
 install() {
+	# uv replaces whatever sits at the paths in its receipt on re-runs, so
+	# refuse to touch commands another tool put there.
+	conflict=
+	for cmd in $COMMANDS; do
+		link="$BIN_DIR/$cmd"
+		if { [ -e "$link" ] || [ -L "$link" ]; } && ! owned "$link"; then
+			say "$link was not installed by this script" >&2
+			conflict=1
+		fi
+	done
+	if [ -n "$conflict" ]; then
+		say "uninstall the existing letee first, then re-run" >&2
+		exit 1
+	fi
+
 	tmp="$(mktemp -d)"
 	trap 'rm -rf "$tmp"' EXIT
 
