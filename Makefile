@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= uv run python
 PEXPECT_DIR ?= /tmp/pexpect-pkg
 
 .PHONY: test lint coverage fetch-tmux build-check check dev-install test-e2e test-e2e-docker bump-version
@@ -18,7 +18,7 @@ fetch-tmux:
 
 build-check: fetch-tmux
 	rm -rf build dist
-	$(PYTHON) -m build
+	uv build
 	$(PYTHON) -m twine check dist/*
 	$(PYTHON) tools/check_dist.py dist
 
@@ -32,7 +32,8 @@ test-e2e-docker: fetch-tmux
 	PYTHONPATH=$(PEXPECT_DIR) $(PYTHON) -m pytest tests/e2e/ -v --docker
 
 dev-install: fetch-tmux
-	$(PYTHON) -m pip install -e ".[dev]" --break-system-packages
+	uv sync
+	uv tool install --editable . --with-executables-from agent-status
 
 bump-version:
-	$(PYTHON) tools/bump_version.py
+	uv run --no-project python tools/bump_version.py

@@ -4,11 +4,15 @@ This guide covers local development and manual integration testing for letee. Se
 
 ## Set up
 
-Install letee in editable mode with its development tools:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
 
 ```sh
 make dev-install
 ```
+
+This creates `.venv` with the dev tools and links the working copy's `letee` and `agent-status` into `~/.local/bin`. uv won't overwrite an existing `letee` or `agent-status`, so remove an earlier install first with `sh install.sh --uninstall` or `pip uninstall letee agent-status`.
+
+Dev dependencies live in the `dev` group in `pyproject.toml`. After changing dependencies, run `uv lock` and commit `uv.lock`. CI fails on a stale lock.
 
 ## Verify changes
 
@@ -26,7 +30,7 @@ Unit tests are safe to run next to a live letee: `tests/__init__.py` points `TMU
 
 ## Install script
 
-`install.sh` pins uv in `UV_VERSION`. To bump it, pick a release from [uv's releases](https://github.com/astral-sh/uv/releases) (0.8.5 or newer) and update the variable. CI's `installer` job runs shellcheck and an install, upgrade and uninstall on Linux and macOS.
+`install.sh` pins uv in `UV_VERSION`. To bump it, pick a release from [uv's releases](https://github.com/astral-sh/uv/releases) (0.8.5 or newer) and update the variable, plus the `setup-uv` `version` pins in `.github/workflows/`. CI's `installer` job runs shellcheck and an install, upgrade and uninstall on Linux and macOS.
 
 To smoke-test locally, use a container, never the host:
 
