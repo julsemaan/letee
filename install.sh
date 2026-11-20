@@ -56,7 +56,7 @@ install() {
 	export UV_PYTHON_INSTALL_BIN=0
 
 	say "installing letee${LETEE_VERSION:+ $LETEE_VERSION}"
-	"$tmp/uv/uv" tool install --upgrade --force --managed-python \
+	"$tmp/uv/uv" tool install --upgrade --managed-python \
 		--python "$PYTHON_VERSION" \
 		--with-executables-from agent-status \
 		"letee${LETEE_VERSION:+==$LETEE_VERSION}"

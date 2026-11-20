@@ -27,6 +27,8 @@ Claude Code and Codex agent discovery needs Python 3.10 or newer on PATH on ever
 
 ## Install and launch
 
+If you installed letee with pip or `uv tool install` before, uninstall it first (`pip uninstall letee agent-status` or `uv tool uninstall letee`). The script won't replace commands it didn't install.
+
 Run the install script:
 
 ```sh
