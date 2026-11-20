@@ -63,3 +63,51 @@ jobs:
       - run: python -m pip install build twine
       - name: Fetch and validate package distributions
         run: make build-check
+
+  installer:
+    name: installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh
+      - name: Install leaves a foreign letee alone
+        run: |
+          mkdir -p ~/.local/bin
+          printf '#!/bin/sh\necho foreign\n' > ~/.local/bin/letee
+          chmod +x ~/.local/bin/letee
+          if sh install.sh; then echo "installer overwrote a foreign letee"; exit 1; fi
+          [ "$(~/.local/bin/letee)" = foreign ]
+          rm ~/.local/bin/letee
+      - name: Install
+        run: sh install.sh
+      - name: Run installed commands
+        run: |
+          ~/.local/bin/letee version
+          ~/.local/bin/agent-status --help
+      - name: Login shell finds letee
+        run: "\"$SHELL\" -lic 'command -v letee'"
+      - name: Re-run leaves a foreign letee alone
+        run: |
+          rm ~/.local/bin/letee
+          printf '#!/bin/sh\necho foreign\n' > ~/.local/bin/letee
+          chmod +x ~/.local/bin/letee
+          if sh install.sh; then echo "installer overwrote a foreign letee"; exit 1; fi
+          [ "$(~/.local/bin/letee)" = foreign ]
+          rm ~/.local/bin/letee
+      - name: Upgrade
+        run: sh install.sh
+      - name: Uninstall
+        run: |
+          sh install.sh --uninstall
+          for path in ~/.local/bin/letee ~/.local/bin/agent-status ~/.local/share/letee; do
+            if [ -e "$path" ] || [ -L "$path" ]; then echo "left behind: $path"; exit 1; fi
+          done

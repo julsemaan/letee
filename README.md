@@ -19,14 +19,44 @@ It adds a persistent sidebar to an existing terminal. Your sessions remain ordin
 
 ## Requirements
 
-You need Python 3.11 or newer, tmux and OpenSSH.
+You need tmux on every machine where letee runs sessions, local or remote. Letee's bundled tmux only runs the cockpit.
+
+If you want to connect to machines remotely, you need OpenSSH (or SSH equivalent on your machine)
+
+Claude Code and Codex agent discovery needs Python 3.10 or newer on PATH on every machine running those agents, local or remote. Letee's bundled Python is private, so installing it doesn't cover this. See [agent discovery](docs/agent-discovery.md).
 
 ## Install and launch
 
+If you installed letee with pip or `uv tool install` before, uninstall it first (`pip uninstall letee agent-status` or `uv tool uninstall letee`). The script won't replace commands it didn't install.
+
+Run the install script:
+
 ```sh
-pip install letee
+# Install letee
+curl -LsSf https://raw.githubusercontent.com/julsemaan/letee/main/install.sh | sh
+
+# Restart your shell or run the following:
+export PATH="$HOME/.local/bin:$PATH"
+
+# Now start letee
 letee
 ```
+
+To upgrade, run the same commands again.
+
+To uninstall:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/julsemaan/letee/main/install.sh | sh -s -- --uninstall
+```
+
+If you already use [uv](https://docs.astral.sh/uv/) 0.8.5 or newer:
+
+```sh
+uv tool install letee --with-executables-from agent-status
+```
+
+Upgrade with `uv tool upgrade letee` and remove with `uv tool uninstall letee`.
 
 Letee opens an outer tmux cockpit with the sidebar on the left and the selected session, or a startup pane, on the right. The default outer prefix is `C-s`. Your tmux prefix and keybindings stay the same if you have any. Use your mouse if that's what you're most comfortable with.
 

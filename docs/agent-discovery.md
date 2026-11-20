@@ -1,12 +1,12 @@
 # Agent discovery
 
-Letee finds coding agents through JSON status files written by the `agent-status` plugin. Install the plugin in every agent you want to see. Claude Code and Codex also need the `agent-status` Python package, which `pip install letee` installs. For those agents on a remote machine without letee, install the package and plugin there.
+Letee finds coding agents through JSON status files written by the `agent-status` plugin. Install the plugin in every agent you want to see. The Claude Code and Codex plugin hooks run `python3` from PATH, so every machine running those agents, local or remote, needs Python 3.10 or newer on PATH. Letee's bundled Python is private, and installing the `agent-status` command alone isn't enough.
 
 ## Install the plugin
 
 ### Claude Code
 
-Claude Code needs Python 3.10 or newer on Linux or macOS.
+Claude Code needs `python3` 3.10 or newer on PATH, on Linux or macOS.
 
 ```sh
 claude plugin marketplace add julsemaan/agent-status
@@ -16,6 +16,8 @@ claude plugin install agent-status@agent-status
 Restart Claude Code.
 
 ### Codex
+
+Codex needs `python3` 3.10 or newer on PATH, on Linux or macOS.
 
 ```sh
 codex plugin marketplace add julsemaan/agent-status
