@@ -780,6 +780,7 @@ def cockpit() -> int:
         hosts = load_hosts()
         try:
             sessions.reset_ssh_masters(hosts)
+            sessions.forget_remote_tmux()
             _prepare_remote_hosts(hosts)
         except KeyboardInterrupt as error:
             operation.outcome = "cancelled"
@@ -1443,8 +1444,8 @@ def current_target(*, repair: bool = False) -> Target | None:
         deadline = startup_deadline(target)
         if deadline is not None and time.monotonic() < deadline:
             return target
-    attach = r"(?:^| )tmux(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s [A-Za-z0-9_.-]+|(?:.* )?attach-session(?: .*?)? -t [A-Za-z0-9_.-]+)"
-    inner_attach = rf"(?:^| )tmux (?:-L {re.escape(INNER_SERVER_SOCKET)}|-S (?:\S*/)?{re.escape(INNER_SERVER_SOCKET)})(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s|(?:.* )?attach-session(?: .*?)? -t) ([A-Za-z0-9_.-]+)"
+    attach = r"(?:^| )(?:\S*/)?tmux(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s [A-Za-z0-9_.-]+|(?:.* )?attach-session(?: .*?)? -t [A-Za-z0-9_.-]+)"
+    inner_attach = rf"(?:^| )(?:\S*/)?tmux (?:-L {re.escape(INNER_SERVER_SOCKET)}|-S (?:\S*/)?{re.escape(INNER_SERVER_SOCKET)})(?: -\S+(?: \S+)?)*+ (?:new-session(?: .*?)? -s|(?:.* )?attach-session(?: .*?)? -t) ([A-Za-z0-9_.-]+)"
     try:
         parts = shlex.split(command)
         parsed_command = command

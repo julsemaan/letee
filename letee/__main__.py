@@ -8,7 +8,7 @@ import stat
 import subprocess
 import sys
 
-from . import __version__, config, cockpit, diagnostics, operations, tmux
+from . import __version__, config, cockpit, diagnostics, operations, sessions, tmux
 from .config import ensure_config
 from .discovery import discover
 from .names import (
@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("version", help="show letee version")
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
     sub.add_parser("finder", help=argparse.SUPPRESS)
+    sub.add_parser("tmux-path", help=argparse.SUPPRESS)
     sub.add_parser("find-work", help="find a session, window, pane, or agent")
     attachment_exit = sub.add_parser("attachment-exited", help=argparse.SUPPRESS)
     for field in (
@@ -208,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "version":
         print(__version__)
+        return 0
+    if args.command == "tmux-path":
+        print(f"{sessions.TMUX_PATH_MARKER}{tmux.tmux_executable()}")
         return 0
     _configure_server(args.server)
     if args.command == "attachment-exited":

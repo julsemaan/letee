@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from letee import tui
+from tests import use_bare_inner_tmux
 import letee.sessions as sessions
 from letee.config import Timing
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target, WindowTarget
@@ -23,6 +24,7 @@ from letee.sessions import attach_command, create, kill, kill_agent, pane_attach
 
 
 def setUpModule():
+    use_bare_inner_tmux()
     timing_patch = patch("letee.sessions.load_timing", return_value=Timing())
     timing_patch.start()
     unittest.addModuleCleanup(timing_patch.stop)
@@ -152,7 +154,7 @@ class SessionOperationsTest(unittest.TestCase):
 
     def test_remote_helper_uses_supplied_local_deadline_for_both_subprocesses(self):
         with (
-            patch.object(sys, "argv", ["-c", "--", "/tmp/tmux", "%7", "0.25"]),
+            patch.object(sys, "argv", ["-c", "--", "/opt/letee/tmux", "/tmp/tmux", "%7", "0.25"]),
             patch("subprocess.run", side_effect=[Mock(stdout="123\t/dev/null"), Mock(stdout="456")]) as run,
             patch("os.getpgid", return_value=123),
             patch("os.killpg") as killpg,
@@ -161,6 +163,7 @@ class SessionOperationsTest(unittest.TestCase):
             exec(sessions._KILL_AGENT_HELPER, {})
         self.assertEqual(metadata.getvalue(), "LETEE_DIAG kill_agent done success 2 1\n")
         self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [0.25, 0.25])
+        self.assertEqual(run.call_args_list[0].args[0][:3], ("/opt/letee/tmux", "-S", "/tmp/tmux"))
         killpg.assert_called_once_with(456, signal.SIGTERM)
 
     def test_ssh_command_always_adds_keepalive_and_agent_option_and_optionally_adds_persistence(self):
@@ -322,6 +325,7 @@ class SessionOperationsTest(unittest.TestCase):
                     "-c",
                     sessions._KILL_AGENT_HELPER,
                     "--",
+                    "tmux",
                     "/tmp/tmux-test",
                     "%7",
                     "2",
@@ -351,7 +355,7 @@ class SessionOperationsTest(unittest.TestCase):
         self.assertEqual(command[-2], "dev")
         self.assertIn("python3 -c", command[-1])
         self.assertEqual(command[-1].count(" -- "), 1)
-        self.assertTrue(command[-1].endswith(" -- '/tmp/tmux socket; echo unsafe' %7 2"))
+        self.assertTrue(command[-1].endswith(" -- tmux '/tmp/tmux socket; echo unsafe' %7 2"))
         self.assertIn("/tmp/tmux socket; echo unsafe", command[-1])
         self.assertNotIn("kill-pane", command[-1])
         self.assertEqual(run.call_args.kwargs["timeout"], 7)
@@ -827,7 +831,7 @@ class SessionDiagnosticsTest(unittest.TestCase):
             stdout, stderr = io.StringIO(), io.StringIO()
             with (
                 self.subTest(stage=stage, category=category),
-                patch.object(sys, "argv", ["-c", "--", "/SECRET_SOCKET", "%7", "2"]),
+                patch.object(sys, "argv", ["-c", "--", "tmux", "/SECRET_SOCKET", "%7", "2"]),
                 patch("subprocess.run", side_effect=results),
                 patch("os.getpgid", return_value=123, side_effect=group_error),
                 patch("os.killpg", side_effect=signal_error),

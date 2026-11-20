@@ -20,3 +20,15 @@ os.environ.update(
     LETEE_CONFIG_DIR=os.path.join(_SANDBOX, "config"),
     AGENT_STATUS_DIR=os.path.join(_SANDBOX, "agent-status"),
 )
+
+
+def use_bare_inner_tmux() -> None:
+    """Call from setUpModule: inner tmux resolves to bare ``tmux``, so command
+    assertions carry no bundle PATH prefix and need no remote lookup."""
+    import unittest
+    from unittest import mock
+
+    for name in ("letee.tmux.tmux_executable", "letee.sessions.remote_tmux"):
+        patcher = mock.patch(name, return_value="tmux")
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)

@@ -10,13 +10,12 @@ import time
 import unittest
 from unittest.mock import Mock, call, patch
 
+from tests import use_bare_inner_tmux
 from letee.discovery import (
     AgentEntry,
     DiscoveryPoller,
-    REMOTE_COMMAND,
     SessionSnapshot,
     SourceSnapshot,
-    _clean_env,
     _parse_source_snapshot,
     _persistent_master_alive,
     _read_agents,
@@ -25,6 +24,7 @@ from letee.discovery import (
     _ssh_command,
     discover,
     local_snapshot,
+    remote_command,
     remote_snapshot,
 )
 from dataclasses import replace
@@ -74,6 +74,10 @@ def _read_child_info(read_fd):
     child_pid, process_group = (int(value) for value in line.split(":", 1))
     return pipe, child_pid, process_group
 
+
+
+def setUpModule():
+    use_bare_inner_tmux()
 
 class DiscoveryInstrumentationTest(unittest.TestCase):
     def setUp(self):
@@ -534,10 +538,6 @@ class DiscoveryDiagnosticFaultTest(unittest.TestCase):
 
 
 class DiscoverySnapshotTest(unittest.TestCase):
-    def test_clean_env_removes_current_tmux_socket(self):
-        with patch.dict("letee.discovery.os.environ", {"TMUX": "/tmp/tmux,1,0", "PATH": "x"}, clear=True):
-            self.assertEqual(_clean_env(), {"PATH": "x"})
-
     def test_source_parser_deduplicates_targets_and_collects_bells(self):
         snapshot = _parse_source_snapshot(
             "work:@1:%1:0:-:/tmp/tmux:dev\nwork:@1:%2:1:-:/tmp/tmux:dev\nchat:@2:%3:!:-:/tmp/tmux:dev\nbad name:@3:%4:1:!:/tmp/tmux\n",
@@ -587,7 +587,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2"])
         self.assertEqual(snapshot.focused_panes, frozenset({snapshot.panes[0]}))
         run.assert_called_once()
-        self.assertEqual(run.call_args.args[0][:4], ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes"])
+        self.assertEqual(run.call_args.args[0][:4], ("tmux", "-L", INNER_SERVER_SOCKET, "list-panes"))
 
     def test_configured_command_deadlines(self):
         timing = replace(load_timing(), local_command_timeout=0.25, remote_command_timeout=0.75, ssh_master_check_timeout=0.1)
@@ -708,14 +708,27 @@ class DiscoverySnapshotTest(unittest.TestCase):
             "-o", f"ServerAliveCountMax={timing.ssh_keepalive_count_max}",
             "-o", "AddKeysToAgent=yes",
         )
-        discovery = ("-n", "-o", "BatchMode=yes", "dev", REMOTE_COMMAND)
+        discovery = ("-n", "-o", "BatchMode=yes", "dev", remote_command("tmux"))
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
             "-o", "ControlPersist=10m",
         )
         self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
         self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
-        self.assertIn(f"tmux -L {INNER_SERVER_SOCKET} list-panes", REMOTE_COMMAND)
+        self.assertTrue(remote_command("tmux").startswith(f"tmux -L {INNER_SERVER_SOCKET} list-panes"))
+        self.assertTrue(remote_command("/opt/b/tmux").startswith(
+            f'PATH=/opt/b:"$PATH" /opt/b/tmux -L {INNER_SERVER_SOCKET} list-panes'))
+
+    def test_remote_snapshot_without_letee_is_unavailable_with_install_hint(self):
+        hint = "letee is not installed on dev (or not on its login PATH). Install it there with: ..."
+        with patch("letee.sessions.remote_tmux", side_effect=SystemExit(hint)), \
+                patch("letee.discovery.subprocess.Popen") as popen:
+            snapshot = remote_snapshot("dev")
+            poller = DiscoveryPoller(["dev"], popen=popen, local=lambda: EMPTY_LOCAL, persistent_ssh=False)
+            poller.tick()
+        popen.assert_not_called()
+        self.assertEqual((snapshot.available, snapshot.error), (False, hint))
+        self.assertEqual((poller.remotes["dev"].available, poller.remotes["dev"].error), (False, hint))
 
     def test_remote_result_keeps_panes_when_agent_reader_is_missing(self):
         pane_line = "work:@1:%2:0:-:/tmp/tmux"
