@@ -211,7 +211,7 @@ def _tmux_arguments(argv: list[str]) -> list[str] | None:
     argparse would reject tmux's own options, so this runs before parsing.
     """
     index = 0
-    while index < len(argv) and argv[index].startswith("-"):
+    while index < len(argv) and argv[index].startswith("-L"):
         index += 2 if argv[index] == "-L" else 1
     return argv[index + 1:] if index < len(argv) and argv[index] == "tmux" else None
 

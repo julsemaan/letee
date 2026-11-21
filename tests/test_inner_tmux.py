@@ -6,7 +6,7 @@ import os
 import shlex
 import subprocess
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from letee import cockpit, config, sessions
@@ -36,6 +36,7 @@ class TmuxCommandTest(unittest.TestCase):
         cases = (
             (["tmux", "-L", "letee.inner", "ls"], ["-L", "letee.inner", "ls"]),
             (["-L", "work", "tmux", "-V"], ["-V"]),
+            (["-Lwork", "tmux", "-V"], ["-V"]),
             (["tmux"], []),
         )
         for argv, expected in cases:
@@ -51,6 +52,15 @@ class TmuxCommandTest(unittest.TestCase):
         with patch("letee.__main__.os.execvpe") as execvpe, redirect_stdout(io.StringIO()):
             main(["version"])
         execvpe.assert_not_called()
+
+    def test_help_and_unknown_options_before_tmux_go_to_argparse(self):
+        for argv in (["--help", "tmux"], ["--bogus", "tmux"]):
+            with self.subTest(argv=argv), \
+                    patch("letee.__main__.os.execvpe") as execvpe, \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                main(argv)
+            execvpe.assert_not_called()
 
 
 class PathPrefixTest(unittest.TestCase):
