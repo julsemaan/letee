@@ -4,3 +4,4 @@ date: 2023-03-06
 patches:
   - scripts/helpers.sh: resurrect_file_path appends the save PID ($$) to the filename so two saves in the same second don't reuse the file `last` points to.
   - scripts/restore.sh: active pane and active/alternate window restore use session-qualified select-pane/select-window instead of switch-client, so restores work headless (no attached client).
+  - save_command_strategies/ps.sh: matches the complete PPID field (`^${PANE_PID} `) so a pane PID like 123 doesn't also capture children of 1234.
