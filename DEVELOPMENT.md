@@ -106,12 +106,69 @@ report to its live foreground owner even on the first poll and after replacement
 between polls, then validate ordinary Codex. Do not replace that requirement
 with a command-name heuristic or assume clean-exit clearing covers SIGKILL.
 
-The retained smoke check accepts a scratch build directory:
-`python3 julsemaan-tmp/osc7501-smoke.py /absolute/scratch`.
-The directory must contain `install/bin/tmux`. It reproduces the same-command
-replacement case without launching letee. Both isolated runs left the host
-socket listing unchanged. A scratch-installed uv allowed `make test` to pass
-all 1302 tests and `make lint` to pass. No E2E tests ran.
+To reproduce same-command replacement, set `TMUX_BUILD` to the absolute scratch
+build directory containing `install/bin/tmux` at the pinned revision above, then
+run this self-contained check. It requires Python 3 and Bash, never launches
+letee, and removes only its own disposable server and files.
+
+```sh
+TMUX_BUILD=/absolute/scratch python3 - <<'PY'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import tempfile
+import time
+
+host = Path(f"/tmp/tmux-{os.getuid()}")
+def sockets():
+    return sorted(p.name for p in host.iterdir()) if host.exists() else []
+
+before = sockets()
+tmux = Path(os.environ["TMUX_BUILD"]) / "install/bin/tmux"
+assert tmux.is_absolute() and tmux.is_file(), tmux
+with tempfile.TemporaryDirectory(prefix="letee-osc7501-") as directory:
+    root = Path(directory)
+    env = dict(os.environ, TMUX_TMPDIR=directory)
+    env.pop("TMUX", None)
+    command = [str(tmux), "-S", str(root / "sock")]
+    def tm(*args):
+        return subprocess.check_output(command + list(args), env=env, text=True).strip()
+    def send(text):
+        tm("send-keys", "-t", "smoke:0.0", text, "Enter")
+        time.sleep(0.5)
+    def fields():
+        return tm("display-message", "-p", "-t", "smoke:0.0",
+                  "#{pane_current_command}|#{pane_program_name}|#{pane_program_state}")
+
+    reporter = root / "report.py"
+    reporter.write_text(
+        "import os, time\n"
+        "print('\\x1b]7501;app=codex:state=working\\x1b\\\\', end='', flush=True)\n"
+        f"open({str(root / 'pid')!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(300)\n"
+    )
+    try:
+        tm("-f", "/dev/null", "new-session", "-d", "-s", "smoke",
+           "/bin/bash --noprofile --norc")
+        send(f"python3 {reporter}")
+        original = fields()
+        assert original.endswith("|codex|working"), original
+        os.kill(int((root / "pid").read_text()), signal.SIGKILL)
+        time.sleep(0.5)
+        send("python3 -c 'import time; time.sleep(300)'")
+        replacement = fields()
+        assert replacement == original, (original, replacement)
+        print("Same-command replacement retains stale report:", replacement)
+    finally:
+        subprocess.run(command + ["kill-server"], env=env, check=False)
+        assert sockets() == before, "Host socket listing changed"
+        print("Host socket listing unchanged")
+PY
+```
+
+A scratch-installed uv allowed the earlier `make test` to pass all 1302 tests
+and `make lint` to pass. No E2E tests ran.
 
 ## Install script
 
