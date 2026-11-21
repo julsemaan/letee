@@ -38,7 +38,11 @@ def scripts_dir() -> Path:
 
 
 def _lock(*, blocking: bool):
-    return file_lock(state_dir() / ".lock", blocking=blocking)
+    # Snapshots hold each pane's full argv, so keep the directory private to the user.
+    directory = state_dir()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    return file_lock(directory / ".lock", blocking=blocking)
 
 
 def _tmux(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:

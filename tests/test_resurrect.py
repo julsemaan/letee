@@ -220,6 +220,12 @@ class SaveTest(ResurrectTestCase):
         self.assertEqual(shlex.split(command[6]), ["bash", str(resurrect.scripts_dir() / "save.sh"), "quiet"])
         self.assertEqual(timeouts[-1], 42)
 
+    def test_save_makes_state_dir_private(self):
+        self.state.mkdir(parents=True)
+        self.state.chmod(0o755)
+        self.assertEqual(self.run_with(FakeTmux(running=True, ready=True), resurrect.save), "saved")
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
+
 
 class RemoteCommandTest(unittest.TestCase):
     def test_remote_command_uses_login_shell(self):
