@@ -1312,6 +1312,30 @@ class DiscoveryPollerTest(unittest.TestCase):
         self.assertTrue(process.communicated)
         self.assertEqual(poller._resolver_processes, {})
 
+    def test_close_before_spawn_stops_late_tmux_path_lookup(self):
+        process = FakeProcess()
+        entered = threading.Event()
+        closed = threading.Event()
+
+        def resolve(host, *, on_spawn, **timeouts):
+            entered.set()
+            closed.wait(5)
+            on_spawn(process)
+            return "/usr/bin/tmux"
+
+        with patch("letee.sessions.cached_remote_tmux", return_value=None), \
+                patch("letee.sessions.remote_tmux", side_effect=resolve):
+            poller = self.make_poller(["dev"], popen=Mock())
+            poller.tick()
+            self.assertTrue(entered.wait(5))
+            future = poller._resolving["dev"]
+            poller.close()
+            closed.set()
+            future.result(timeout=5)
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.communicated)
+        self.assertEqual(poller._resolver_processes, {})
+
     def test_success_resets_timeouts_but_refresh_keeps_them(self):
         now = [0.0]
         processes = [FakeProcess(), FakeProcess(), FakeProcess(0)]

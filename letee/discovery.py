@@ -15,6 +15,7 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 
 from . import diagnostics, tmux
@@ -635,6 +636,9 @@ class DiscoveryPoller:
         self._resolving: dict[str, Future[str]] = {}
         # In-flight resolver ssh processes, so close() can stop them instead of waiting out their timeout.
         self._resolver_processes: dict[str, object] = {}
+        # Guards _resolver_processes and _closed, since resolvers register from worker threads.
+        self._resolver_lock = threading.Lock()
+        self._closed = False
         self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
         self._retry_delay = dict.fromkeys(self.hosts, self._timing.retry_initial_delay)
@@ -722,6 +726,14 @@ class DiscoveryPoller:
         self._schedule(host, False)
         return changed
 
+    def _register_resolver(self, host: str, process: object) -> None:
+        """Track a resolver's ssh process, or stop it if close() already ran."""
+        with self._resolver_lock:
+            if not self._closed:
+                self._resolver_processes[host] = process
+                return
+        _stop_process(process, reason="close")
+
     def _start_request(self, host: str, resolved: Future[str] | None = None) -> bool:
         """Start discovery for host, first resolving its tmux path in the background on a cache miss."""
         factor = self._timeout_factor[host]
@@ -732,7 +744,7 @@ class DiscoveryPoller:
             self._resolving[host] = self._resolver.submit(
                 contextvars.copy_context().run, sessions.remote_tmux, host,
                 connect_timeout=connect_timeout, timeout=timeout,
-                on_spawn=lambda process: self._resolver_processes.__setitem__(host, process),
+                on_spawn=lambda process: self._register_resolver(host, process),
             )
             diagnostics.log("discovery.tmux_resolving", host=host)
             return False
@@ -800,7 +812,8 @@ class DiscoveryPoller:
         for host, future in list(self._resolving.items()):
             if future.done():
                 del self._resolving[host]
-                self._resolver_processes.pop(host, None)
+                with self._resolver_lock:
+                    self._resolver_processes.pop(host, None)
                 changed |= self._start_request(host, future)
         for host in self.hosts:
             if host not in self._active and host not in self._resolving and self._clock() >= self._next[host]:
@@ -894,9 +907,12 @@ class DiscoveryPoller:
         diagnostics.log("discovery.close", pending_count=len(self._active))
         self._resolver.shutdown(wait=False, cancel_futures=True)
         self._resolving.clear()
-        for process in list(self._resolver_processes.values()):
+        with self._resolver_lock:
+            self._closed = True
+            processes = list(self._resolver_processes.values())
+            self._resolver_processes.clear()
+        for process in processes:
             _stop_process(process, reason="close")
-        self._resolver_processes.clear()
         for host, request in self._active.items():
             with _request_context(host, request.request_id, request.diagnostic_started, request.context, self.remotes[host]):
                 _stop_process(request.process, request_id=request.request_id, reason="close")
