@@ -517,7 +517,7 @@ def cached_remote_tmux(host: str) -> str | None:
     return _load_remote_tmux().get(host)
 
 
-def remote_tmux(host: str) -> str:
+def remote_tmux(host: str, *, connect_timeout: int | None = None, timeout: float | None = None) -> str:
     """Return the tmux executable letee uses on host, asking its letee once."""
     host = validate_host(host)
     # Never log the remote path or output.
@@ -527,8 +527,9 @@ def remote_tmux(host: str) -> str:
             return path
         try:
             result = subprocess.run(
-                ssh_command("-n", "-o", "BatchMode=yes", host, _REMOTE_TMUX_PATH),
-                check=False, capture_output=True, text=True, timeout=load_timing().remote_command_timeout,
+                ssh_command("-n", "-o", "BatchMode=yes", host, _REMOTE_TMUX_PATH, connect_timeout=connect_timeout),
+                check=False, capture_output=True, text=True,
+                timeout=load_timing().remote_command_timeout if timeout is None else timeout,
             )
         except subprocess.TimeoutExpired as error:
             diagnostics.error(error, handling="raise", stage="remote_tmux")

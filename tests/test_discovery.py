@@ -738,7 +738,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
     def test_tick_does_not_wait_for_unresolved_tmux_paths(self):
         released = threading.Event()
 
-        def resolve(host):
+        def resolve(host, **timeouts):
             released.wait(5)
             return "tmux"
 
@@ -1266,6 +1266,16 @@ class DiscoveryPollerTest(unittest.TestCase):
             self.assertEqual(poller._next["dev"], now[0])
         self.assertEqual(limits, [3, 6, 10, 10])
         self.assertEqual(self._connect_timeouts(popen), [f"ConnectTimeout={n}" for n in (2, 4, 7, 7)])
+
+    def test_tmux_path_lookup_uses_escalated_timeouts(self):
+        with patch("letee.sessions.cached_remote_tmux", return_value=None), \
+                patch("letee.sessions.remote_tmux", side_effect=SystemExit("timed out")) as resolve:
+            poller = self.make_poller(["dev"], popen=Mock())
+            self.addCleanup(poller.close)
+            poller._timeout_factor["dev"] = 1.75
+            poller.tick()
+            poller._resolving["dev"].exception(timeout=5)
+        resolve.assert_called_once_with("dev", connect_timeout=4, timeout=5.25)
 
     def test_success_resets_timeouts_but_refresh_keeps_them(self):
         now = [0.0]

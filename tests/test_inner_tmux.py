@@ -115,6 +115,12 @@ class RemoteTmuxTest(unittest.TestCase):
         self.assertIn("BatchMode=yes", command)
         self.assertEqual(json.loads(config.remote_tmux_cache_path().read_text()), {"dev": REMOTE_TMUX})
 
+    def test_miss_honors_caller_timeouts(self):
+        with patch("letee.sessions.subprocess.run", return_value=ssh_result(f"LETEE_TMUX={REMOTE_TMUX}\n")) as run:
+            sessions.remote_tmux("dev", connect_timeout=7, timeout=12.5)
+        self.assertIn("ConnectTimeout=7", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["timeout"], 12.5)
+
     def test_missing_letee_raises_install_hint_and_caches_nothing(self):
         for result in (ssh_result("Welcome\n"), ssh_result("", 127, "sh: letee: not found")):
             with self.subTest(result=result), patch("letee.sessions.subprocess.run", return_value=result), \

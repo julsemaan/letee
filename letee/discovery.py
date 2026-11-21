@@ -722,9 +722,15 @@ class DiscoveryPoller:
 
     def _start_request(self, host: str, resolved: Future[str] | None = None) -> bool:
         """Start discovery for host, first resolving its tmux path in the background on a cache miss."""
+        factor = self._timeout_factor[host]
+        timeout = self._timing.remote_command_timeout * factor
+        connect_timeout = math.ceil(self._timing.ssh_connect_timeout * factor)
         tmux_path = sessions.cached_remote_tmux(host) if resolved is None else None
         if resolved is None and tmux_path is None:
-            self._resolving[host] = self._resolver.submit(contextvars.copy_context().run, sessions.remote_tmux, host)
+            self._resolving[host] = self._resolver.submit(
+                contextvars.copy_context().run, sessions.remote_tmux, host,
+                connect_timeout=connect_timeout, timeout=timeout,
+            )
             diagnostics.log("discovery.tmux_resolving", host=host)
             return False
         logger = diagnostics.get_diagnostics()
@@ -732,9 +738,6 @@ class DiscoveryPoller:
         context = logger.context_values()
         started = time.monotonic()
         with _request_context(host, request_id, started, context, self.remotes[host]):
-            factor = self._timeout_factor[host]
-            timeout = self._timing.remote_command_timeout * factor
-            connect_timeout = math.ceil(self._timing.ssh_connect_timeout * factor)
             diagnostics.log(
                 "discovery.request_starting", host=host, request_id=request_id, timeout=timeout,
                 connect_timeout=connect_timeout, timeout_factor=factor, persistent_ssh=self._persistent_ssh,
