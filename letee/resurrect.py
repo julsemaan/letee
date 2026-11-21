@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 READY_OPTION = "@letee-resurrect-ready"
 _DIR_OPTION = "@resurrect-dir"
+# Stops resurrect from replacing live panes when it mistakes a one-pane server for a fresh one.
+_NEVER_OVERWRITE_OPTION = "@resurrect-never-overwrite"
 # Resurrect restores "from scratch" into a server holding only this session, then kills it.
 _PLACEHOLDER_SESSION = "0"
 
@@ -92,9 +94,16 @@ def _ensure_restored() -> str:
             if running:
                 _mark_ready()
             return "nothing"
-        if not running:
+        protect = running and not _tmux("show", "-gqv", _NEVER_OVERWRITE_OPTION).stdout.strip()
+        if protect:
+            _tmux("set", "-g", _NEVER_OVERWRITE_OPTION, "on")
+        elif not running:
             _tmux("new-session", "-d", "-s", _PLACEHOLDER_SESSION)
-        result = _tmux(*_script("restore.sh"), timeout=load_timing().session_restore_timeout)
+        try:
+            result = _tmux(*_script("restore.sh"), timeout=load_timing().session_restore_timeout)
+        finally:
+            if protect:
+                _tmux("set", "-gu", _NEVER_OVERWRITE_OPTION)
         if result.returncode != 0:
             diagnostics.log("resurrect.restore.script", returncode=result.returncode)
             return "failed"

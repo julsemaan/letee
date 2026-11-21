@@ -24,8 +24,9 @@ def setUpModule():
 class FakeTmux:
     """letee.inner as seen by resurrect: running, ready, and the calls it got."""
 
-    def __init__(self, *, running=False, ready=False, script_rc=0):
+    def __init__(self, *, running=False, ready=False, script_rc=0, never_overwrite=""):
         self.running, self.ready, self.script_rc = running, ready, script_rc
+        self.never_overwrite = never_overwrite
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, argv, **kwargs):
@@ -35,7 +36,10 @@ class FakeTmux:
         rc, stdout = 0, ""
         if args[0] == "show":
             rc = 0 if self.running else 1
-            stdout = "1\n" if self.ready else ""
+            if args[2] == resurrect._NEVER_OVERWRITE_OPTION:
+                stdout = f"{self.never_overwrite}\n" if self.never_overwrite else ""
+            else:
+                stdout = "1\n" if self.ready else ""
         elif args[0] == "new-session":
             self.running = True
         elif args[:3] == ("set", "-g", resurrect.READY_OPTION):
@@ -94,17 +98,46 @@ class EnsureRestoredTest(ResurrectTestCase):
         self.assertEqual(self.run_with(fake, resurrect.ensure_restored), "restored")
         self.assertEqual(fake.commands(), ["show", "show", "new-session", "script", "set"])
         self.assertEqual(fake.calls[2], ("new-session", "-d", "-s", "0"))
+        self.assertFalse(any(resurrect._NEVER_OVERWRITE_OPTION in call for call in fake.calls))
         script = fake.calls[3]
         self.assertEqual(script[:5], ("set", "-g", "@resurrect-dir", str(self.state), ";"))
         self.assertEqual(script[5], "run-shell")
         self.assertEqual(shlex.split(script[6]), ["bash", str(resurrect.scripts_dir() / "restore.sh")])
         self.assertTrue(fake.ready)
 
-    def test_restore_into_running_server_skips_placeholder(self):
+    def test_restore_into_running_server_forces_never_overwrite(self):
+        self.save_exists()
+        option = resurrect._NEVER_OVERWRITE_OPTION
+        for script_rc, outcome in ((0, "restored"), (1, "failed")):
+            with self.subTest(script_rc=script_rc):
+                fake = FakeTmux(running=True, script_rc=script_rc)
+                self.assertEqual(self.run_with(fake, resurrect.ensure_restored), outcome)
+                self.assertNotIn("new-session", fake.commands())
+                self.assertEqual(fake.calls[2:6], [
+                    ("show", "-gqv", option), ("set", "-g", option, "on"),
+                    fake.calls[4], ("set", "-gu", option),
+                ])
+                self.assertEqual(fake.commands()[4], "script")
+
+    def test_never_overwrite_is_unset_when_script_times_out(self):
         self.save_exists()
         fake = FakeTmux(running=True)
+
+        def timing_out(argv, **kwargs):
+            result = fake(argv)
+            if "run-shell" in argv:
+                raise subprocess.TimeoutExpired("tmux", 30)
+            return result
+
+        self.assertEqual(self.run_with(timing_out, resurrect.ensure_restored), "failed")
+        self.assertEqual(fake.calls[-1], ("set", "-gu", resurrect._NEVER_OVERWRITE_OPTION))
+
+    def test_user_never_overwrite_is_left_alone(self):
+        self.save_exists()
+        fake = FakeTmux(running=True, never_overwrite="on")
         self.assertEqual(self.run_with(fake, resurrect.ensure_restored), "restored")
-        self.assertEqual(fake.commands(), ["show", "show", "script", "set"])
+        self.assertEqual(fake.commands(), ["show", "show", "show", "script", "set"])
+        self.assertFalse(any(resurrect._NEVER_OVERWRITE_OPTION in call[:3] for call in fake.calls if call[0] == "set"))
 
     def test_restore_waits_with_its_own_timeout(self):
         self.save_exists()
@@ -155,8 +188,8 @@ class SaveTest(ResurrectTestCase):
         self.save_exists()
         fake = FakeTmux(running=True)
         self.assertEqual(self.run_with(fake, resurrect.save), "started")
-        self.assertEqual(fake.commands(), ["show", "show", "show", "script", "set", "script"])
-        self.assertIn("restore.sh", fake.calls[3][-1])
+        self.assertEqual(fake.commands(), ["show", "show", "show", "show", "set", "script", "set", "set", "script"])
+        self.assertIn("restore.sh", fake.calls[5][-1])
         self.assertIn("save.sh", fake.calls[-1][-1])
 
     def test_failed_restore_check_prevents_save(self):
