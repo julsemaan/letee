@@ -4,10 +4,11 @@ import io
 import json
 import os
 import shlex
+import signal
 import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from letee import cockpit, config, sessions
 from letee.__main__ import main
@@ -18,7 +19,17 @@ REMOTE_TMUX = "/home/me/.local/share/letee/tmux"
 
 
 def ssh_result(stdout="", returncode=0, stderr=""):
-    return subprocess.CompletedProcess(("ssh",), returncode, stdout, stderr)
+    """Fake the remote_tmux ssh Popen: write output to its files and exit with returncode."""
+    process = Mock(pid=None)
+    process.wait.return_value = returncode
+
+    def popen(args, **kwargs):
+        kwargs["stdout"].write(stdout)
+        kwargs["stderr"].write(stderr)
+        process.args = args
+        return process
+    popen.process = process
+    return popen
 
 
 class TmuxPathCommandTest(unittest.TestCase):
@@ -106,7 +117,7 @@ class RemoteTmuxTest(unittest.TestCase):
 
     def test_miss_resolves_through_login_shell_and_caches(self):
         noise = "Welcome to dev\nLETEE_TMUX=/stale/tmux\nmotd\n"
-        with patch("letee.sessions.subprocess.run", return_value=ssh_result(f"{noise}LETEE_TMUX={REMOTE_TMUX}\n")) as run:
+        with patch("letee.sessions.subprocess.Popen", side_effect=ssh_result(f"{noise}LETEE_TMUX={REMOTE_TMUX}\n")) as run:
             self.assertEqual(sessions.remote_tmux("dev"), REMOTE_TMUX)
             self.assertEqual(sessions.remote_tmux("dev"), REMOTE_TMUX)
         run.assert_called_once()
@@ -116,14 +127,14 @@ class RemoteTmuxTest(unittest.TestCase):
         self.assertEqual(json.loads(config.remote_tmux_cache_path().read_text()), {"dev": REMOTE_TMUX})
 
     def test_miss_honors_caller_timeouts(self):
-        with patch("letee.sessions.subprocess.run", return_value=ssh_result(f"LETEE_TMUX={REMOTE_TMUX}\n")) as run:
+        with patch("letee.sessions.subprocess.Popen", side_effect=ssh_result(f"LETEE_TMUX={REMOTE_TMUX}\n")) as run:
             sessions.remote_tmux("dev", connect_timeout=7, timeout=12.5)
         self.assertIn("ConnectTimeout=7", run.call_args.args[0])
-        self.assertEqual(run.call_args.kwargs["timeout"], 12.5)
+        run.side_effect.process.wait.assert_called_once_with(timeout=12.5)
 
     def test_missing_letee_raises_install_hint_and_caches_nothing(self):
         for result in (ssh_result("Welcome\n"), ssh_result("", 127, "sh: letee: not found")):
-            with self.subTest(result=result), patch("letee.sessions.subprocess.run", return_value=result), \
+            with self.subTest(result=result), patch("letee.sessions.subprocess.Popen", side_effect=result), \
                     self.assertRaises(SystemExit) as raised:
                 sessions.remote_tmux("dev")
             self.assertIn("letee is not installed on dev", str(raised.exception))
@@ -131,13 +142,33 @@ class RemoteTmuxTest(unittest.TestCase):
         self.assertFalse(config.remote_tmux_cache_path().exists())
 
     def test_unreachable_host_reports_ssh_error(self):
-        with patch("letee.sessions.subprocess.run", return_value=ssh_result("", 255, "ssh: connect to host dev: Connection refused\n")), \
+        with patch("letee.sessions.subprocess.Popen", side_effect=ssh_result("", 255, "ssh: connect to host dev: Connection refused\n")), \
                 self.assertRaises(SystemExit) as raised:
             sessions.remote_tmux("dev")
         self.assertEqual(str(raised.exception), "ssh: connect to host dev: Connection refused")
 
+    def test_hands_ssh_process_to_on_spawn(self):
+        fake = ssh_result(f"LETEE_TMUX={REMOTE_TMUX}\n")
+        on_spawn = Mock()
+        with patch("letee.sessions.subprocess.Popen", side_effect=fake) as popen:
+            self.assertEqual(sessions.remote_tmux("dev", on_spawn=on_spawn), REMOTE_TMUX)
+        on_spawn.assert_called_once_with(fake.process)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    def test_timeout_kills_and_reaps_ssh(self):
+        fake = ssh_result()
+        fake.process.pid = 4242
+        fake.process.wait.side_effect = [subprocess.TimeoutExpired(("ssh",), 3), -9]
+        with patch("letee.sessions.subprocess.Popen", side_effect=fake), \
+                patch("letee.sessions.os.killpg") as killpg, self.assertRaises(SystemExit) as raised:
+            sessions.remote_tmux("dev", timeout=3)
+        self.assertEqual(str(raised.exception), "dev: timed out")
+        killpg.assert_called_once_with(4242, signal.SIGKILL)
+        self.assertEqual(fake.process.wait.call_count, 2)
+        self.assertFalse(config.remote_tmux_cache_path().exists())
+
     def test_forget_clears_cache(self):
-        with patch("letee.sessions.subprocess.run", return_value=ssh_result(f"LETEE_TMUX={REMOTE_TMUX}\n")) as run:
+        with patch("letee.sessions.subprocess.Popen", side_effect=ssh_result(f"LETEE_TMUX={REMOTE_TMUX}\n")) as run:
             sessions.remote_tmux("dev")
             sessions.forget_remote_tmux()
             sessions.remote_tmux("dev")

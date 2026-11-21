@@ -633,6 +633,8 @@ class DiscoveryPoller:
         # Resolving a host's tmux path may block on SSH, so it runs off the tick loop.
         self._resolver = ThreadPoolExecutor(thread_name_prefix="letee-tmux-resolve")
         self._resolving: dict[str, Future[str]] = {}
+        # In-flight resolver ssh processes, so close() can stop them instead of waiting out their timeout.
+        self._resolver_processes: dict[str, object] = {}
         self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
         self._retry_delay = dict.fromkeys(self.hosts, self._timing.retry_initial_delay)
@@ -730,6 +732,7 @@ class DiscoveryPoller:
             self._resolving[host] = self._resolver.submit(
                 contextvars.copy_context().run, sessions.remote_tmux, host,
                 connect_timeout=connect_timeout, timeout=timeout,
+                on_spawn=lambda process: self._resolver_processes.__setitem__(host, process),
             )
             diagnostics.log("discovery.tmux_resolving", host=host)
             return False
@@ -797,6 +800,7 @@ class DiscoveryPoller:
         for host, future in list(self._resolving.items()):
             if future.done():
                 del self._resolving[host]
+                self._resolver_processes.pop(host, None)
                 changed |= self._start_request(host, future)
         for host in self.hosts:
             if host not in self._active and host not in self._resolving and self._clock() >= self._next[host]:
@@ -890,6 +894,9 @@ class DiscoveryPoller:
         diagnostics.log("discovery.close", pending_count=len(self._active))
         self._resolver.shutdown(wait=False, cancel_futures=True)
         self._resolving.clear()
+        for process in list(self._resolver_processes.values()):
+            _stop_process(process, reason="close")
+        self._resolver_processes.clear()
         for host, request in self._active.items():
             with _request_context(host, request.request_id, request.diagnostic_started, request.context, self.remotes[host]):
                 _stop_process(request.process, request_id=request.request_id, reason="close")

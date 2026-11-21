@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 import unittest
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 
 from tests import use_bare_inner_tmux
 from letee.discovery import (
@@ -1275,7 +1275,42 @@ class DiscoveryPollerTest(unittest.TestCase):
             poller._timeout_factor["dev"] = 1.75
             poller.tick()
             poller._resolving["dev"].exception(timeout=5)
-        resolve.assert_called_once_with("dev", connect_timeout=4, timeout=5.25)
+        resolve.assert_called_once_with("dev", connect_timeout=4, timeout=5.25, on_spawn=ANY)
+
+    def test_close_stops_in_flight_tmux_path_lookup(self):
+        class HangingProcess(FakeProcess):
+            def __init__(self):
+                super().__init__()
+                self.stopped = threading.Event()
+
+            def terminate(self):
+                super().terminate()
+                self.stopped.set()
+
+            def wait(self, timeout=None):
+                self.stopped.wait()
+                return super().wait(timeout)
+
+        process = HangingProcess()
+        spawned = threading.Event()
+
+        def resolve(host, *, on_spawn, **timeouts):
+            on_spawn(process)
+            spawned.set()
+            process.wait()
+            raise SystemExit(f"{host}: ssh exited {process.returncode}")
+
+        with patch("letee.sessions.cached_remote_tmux", return_value=None), \
+                patch("letee.sessions.remote_tmux", side_effect=resolve):
+            poller = self.make_poller(["dev"], popen=Mock())
+            poller.tick()
+            self.assertTrue(spawned.wait(5))
+            future = poller._resolving["dev"]
+            poller.close()
+            self.assertIsInstance(future.exception(timeout=1), SystemExit)
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.communicated)
+        self.assertEqual(poller._resolver_processes, {})
 
     def test_success_resets_timeouts_but_refresh_keeps_them(self):
         now = [0.0]

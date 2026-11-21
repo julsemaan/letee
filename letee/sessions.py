@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import copy_context
 import fcntl
 from functools import wraps
@@ -16,6 +16,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -517,28 +518,45 @@ def cached_remote_tmux(host: str) -> str | None:
     return _load_remote_tmux().get(host)
 
 
-def remote_tmux(host: str, *, connect_timeout: int | None = None, timeout: float | None = None) -> str:
-    """Return the tmux executable letee uses on host, asking its letee once."""
+def remote_tmux(
+    host: str, *, connect_timeout: int | None = None, timeout: float | None = None,
+    on_spawn: Callable[[subprocess.Popen], None] | None = None,
+) -> str:
+    """Return the tmux executable letee uses on host, asking its letee once.
+
+    on_spawn receives the ssh process so a caller can stop an in-flight lookup.
+    """
     host = validate_host(host)
     # Never log the remote path or output.
     with diagnostics.operation("sessions.remote_tmux", host=host) as span:
         if path := cached_remote_tmux(host):
             span.outcome = "cached"
             return path
-        try:
-            result = subprocess.run(
-                ssh_command("-n", "-o", "BatchMode=yes", host, _REMOTE_TMUX_PATH, connect_timeout=connect_timeout),
-                check=False, capture_output=True, text=True,
-                timeout=load_timing().remote_command_timeout if timeout is None else timeout,
-            )
-        except subprocess.TimeoutExpired as error:
-            diagnostics.error(error, handling="raise", stage="remote_tmux")
-            span.outcome = "unreachable"
-            raise SystemExit(f"{host}: timed out") from None
-        except OSError as error:
-            diagnostics.error(error, handling="raise", stage="remote_tmux")
-            span.outcome = "unreachable"
-            raise SystemExit(f"{host}: {error.strerror or error}") from None
+        # Output goes to files so this thread only waits on the process and another thread can reap it.
+        with tempfile.TemporaryFile("w+") as stdout, tempfile.TemporaryFile("w+") as stderr:
+            try:
+                process = subprocess.Popen(
+                    ssh_command("-n", "-o", "BatchMode=yes", host, _REMOTE_TMUX_PATH, connect_timeout=connect_timeout),
+                    stdout=stdout, stderr=stderr, text=True, start_new_session=True,
+                )
+            except OSError as error:
+                diagnostics.error(error, handling="raise", stage="remote_tmux")
+                span.outcome = "unreachable"
+                raise SystemExit(f"{host}: {error.strerror or error}") from None
+            if on_spawn is not None:
+                on_spawn(process)
+            try:
+                returncode = process.wait(timeout=load_timing().remote_command_timeout if timeout is None else timeout)
+            except subprocess.TimeoutExpired as error:
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                diagnostics.error(error, handling="raise", stage="remote_tmux")
+                span.outcome = "unreachable"
+                raise SystemExit(f"{host}: timed out") from None
+            stdout.seek(0)
+            stderr.seek(0)
+            result = subprocess.CompletedProcess(process.args, returncode, stdout.read(), stderr.read())
         span.fields["returncode"] = result.returncode
         if result.returncode == 255:
             span.outcome = "unreachable"
