@@ -221,7 +221,7 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None, req
             sessions.append(target)
         panes.append(pane)
         if enabled and program_name == "codex" and program_state not in ("", "clear"):
-            native.append(AgentEntry(pane, f"native-codex:{socket_path}:{pane_id}", "Codex",
+            native.append(AgentEntry(pane, f"native-codex:{target.kind}:{target.host or ''}:{socket_path}:{pane_id}", "Codex",
                                      NATIVE_CODEX_STATES.get(program_state, "unknown")))
         if pane_active == "1" and window_active == "1":
             focused_panes.add(pane)

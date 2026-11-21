@@ -39,6 +39,16 @@ class NativeCodexTests(unittest.TestCase):
         self.assertEqual(len({a.agent_id for a in snapshot.agents}), 2)
 
     @patch.object(d, "load_experimental_native_codex", return_value=True)
+    def test_identity_is_unique_and_stable_across_sources(self, _):
+        ids = set()
+        for kind, host in (("local", None), ("ssh", "host-a"), ("ssh", "host-b")):
+            agent, = d._parse_source_snapshot(report(), kind=kind, host=host).agents
+            repeated, = d._parse_source_snapshot(report("idle"), kind=kind, host=host).agents
+            self.assertEqual(agent.agent_id, repeated.agent_id)
+            ids.add(agent.agent_id)
+        self.assertEqual(len(ids), 3)
+
+    @patch.object(d, "load_experimental_native_codex", return_value=True)
     def test_clear_legacy_and_remote_without_python(self, _):
         for text in (report("", ""), report("clear"), "work:@1:%2:0::/scratch/sock\tlegacy:with\ttabs", "work:@1:%2:0::1:1:/scratch/sock\t$1:0:0\tlegacy:with\ttabs"):
             snapshot = d._parse_source_snapshot(text, kind="local")
