@@ -1481,6 +1481,22 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
         )
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_external_attachment_failure_lets_discovery_restore_letee_missing_overlay(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        bare = replace(source("ssh", host="dev", available=False, error="letee is not installed"), status="letee missing")
+        retry = sidebar.RestorationRetry()
+        retry.overlay = "letee missing"
+        marker = sidebar._reconcile_attachment_failure(target, target, (target, "launch"), retry, 1)
+        submitted = []
+        sidebar._sync_active_session(
+            target, snapshot(remotes={"dev": bare}), marker,
+            lambda effect: submitted.append(effect) or True, retry=retry, now=retry.deadline,
+        )
+        self.assertEqual(
+            [(effect.kind, effect.message) for effect in submitted], [("show_reconnecting", "letee missing")]
+        )
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
     def test_restoration_backoff_uses_completion_time_and_healthy_discovery_does_not_reset(self, _load_timing):
         target = Target("local", "work")
         healthy = snapshot(local=("work",))

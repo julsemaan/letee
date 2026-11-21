@@ -571,6 +571,8 @@ def _reconcile_attachment_failure(
         return interrupted
     retry.failed(failure[0], now)
     retry.last_failure = failure
+    # Every failure path replaces the pane with the unavailable view, never the install hint.
+    retry.overlay = None
     return target
 
 
