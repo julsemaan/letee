@@ -40,7 +40,7 @@ docker run --rm -v "$PWD:/src:ro" debian:stable-slim sh -c 'apt-get update -qq &
 
 ## Vendored tmux-resurrect
 
-`letee/_vendor/tmux_resurrect/` is an unmodified copy of [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) at the commit in its `PROVENANCE` file. It holds only `scripts/`, `strategies/`, `save_command_strategies/` and `LICENSE.md`; letee runs the scripts by path and never loads `resurrect.tmux`. To update it, check out the new commit in a scratch directory, replace those four entries with `cp -a` so the executable bits survive, update `PROVENANCE`, and run `make test build-check`. `tools/check_dist.py` fails if a script is missing or loses its executable bit in the wheel or sdist.
+`letee/_vendor/tmux_resurrect/` is a copy of [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) at the commit in its `PROVENANCE` file, plus the patches listed there. Re-apply those patches after every update. It holds only `scripts/`, `strategies/`, `save_command_strategies/` and `LICENSE.md`; letee runs the scripts by path and never loads `resurrect.tmux`. To update it, check out the new commit in a scratch directory, replace those four entries with `cp -a` so the executable bits survive, update `PROVENANCE`, and run `make test build-check`. `tools/check_dist.py` fails if a script is missing or loses its executable bit in the wheel or sdist.
 
 ## Session coordination
 
