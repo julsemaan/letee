@@ -1464,6 +1464,22 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
         self.assertEqual(overlays, [("show_reconnecting", "connecting…"), ("show_reconnecting", "letee missing")])
         self.assertEqual((marker, retry.overlay), (target, "letee missing"))
 
+    def test_failed_manual_switch_lets_discovery_restore_letee_missing_overlay(self):
+        target = Target("ssh", "work", "dev")
+        bare = replace(source("ssh", host="dev", available=False, error="letee is not installed"), status="letee missing")
+        retry = sidebar.RestorationRetry()
+        retry.overlay = "letee missing"
+        failed = sidebar.EffectResult(sidebar.Effect("switch", target), (), error="letee is not installed")
+        marker = sidebar._reconcile_active_session_effect(target, failed, retry=retry, now=1)
+        submitted = []
+        sidebar._sync_active_session(
+            target, snapshot(remotes={"dev": bare}), marker,
+            lambda effect: submitted.append(effect) or True, retry=retry, now=1,
+        )
+        self.assertEqual(
+            [(effect.kind, effect.message) for effect in submitted], [("show_reconnecting", "letee missing")]
+        )
+
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
     def test_restoration_backoff_uses_completion_time_and_healthy_discovery_does_not_reset(self, _load_timing):
         target = Target("local", "work")

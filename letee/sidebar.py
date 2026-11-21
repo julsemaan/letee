@@ -677,6 +677,9 @@ def _reconcile_active_session_effect(
         if not result.error and (navigation or result.effect.kind in ("show_reconnecting", "show_unavailable")):
             # Record which status the screen shows so _sync_active_session can refresh it.
             retry.overlay = result.effect.message if result.effect.kind == "show_reconnecting" else None
+        elif result.error and navigation and not result.effect.automatic:
+            # A failed manual switch replaces the screen with the unavailable view.
+            retry.overlay = None
     if not result.error and navigation:
         return None
     if (
