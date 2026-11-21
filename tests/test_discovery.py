@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import select
+import threading
 import signal
 import subprocess
 import sys
@@ -713,8 +714,8 @@ class DiscoverySnapshotTest(unittest.TestCase):
             "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
             "-o", "ControlPersist=10m",
         )
-        self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
-        self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
+        self.assertEqual(_ssh_command("dev", "tmux", True), ("ssh", *keepalive, *persistence, *discovery))
+        self.assertEqual(_ssh_command("dev", "tmux", False), ("ssh", *keepalive, *discovery))
         self.assertTrue(remote_command("tmux").startswith(f"tmux -L {INNER_SERVER_SOCKET} list-panes"))
         self.assertTrue(remote_command("/opt/b/tmux").startswith(
             f'PATH=/opt/b:"$PATH" /opt/b/tmux -L {INNER_SERVER_SOCKET} list-panes'))
@@ -722,13 +723,44 @@ class DiscoverySnapshotTest(unittest.TestCase):
     def test_remote_snapshot_without_letee_is_unavailable_with_install_hint(self):
         hint = "letee is not installed on dev (or not on its login PATH). Install it there with: ..."
         with patch("letee.sessions.remote_tmux", side_effect=SystemExit(hint)), \
+                patch("letee.sessions.cached_remote_tmux", return_value=None), \
                 patch("letee.discovery.subprocess.Popen") as popen:
             snapshot = remote_snapshot("dev")
             poller = DiscoveryPoller(["dev"], popen=popen, local=lambda: EMPTY_LOCAL, persistent_ssh=False)
             poller.tick()
+            poller._resolving["dev"].exception(timeout=5)
+            poller.tick()
+            poller.close()
         popen.assert_not_called()
         self.assertEqual((snapshot.available, snapshot.error), (False, hint))
         self.assertEqual((poller.remotes["dev"].available, poller.remotes["dev"].error), (False, hint))
+
+    def test_tick_does_not_wait_for_unresolved_tmux_paths(self):
+        released = threading.Event()
+
+        def resolve(host):
+            released.wait(5)
+            return "tmux"
+
+        process = FakeProcess(0, stdout="work:@1:%1:0:-:/tmp/tmux\n")
+        popen = Mock(return_value=process)
+        with patch("letee.sessions.cached_remote_tmux", side_effect=lambda host: "tmux" if host == "healthy" else None), \
+                patch("letee.sessions.remote_tmux", side_effect=resolve):
+            poller = DiscoveryPoller(["slow", "healthy"], popen=popen, local=lambda: EMPTY_LOCAL, persistent_ssh=False)
+            self.addCleanup(poller.close)
+            started = time.monotonic()
+            poller.tick()
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertIn("slow", poller._resolving)
+            self.assertTrue(poller.remotes["healthy"].available)
+            self.assertEqual(popen.call_count, 1)
+
+            released.set()
+            poller._resolving["slow"].result(timeout=5)
+            poller.tick()
+        self.assertNotIn("slow", poller._resolving)
+        self.assertEqual(popen.call_count, 2)
+        self.assertTrue(poller.remotes["slow"].available)
 
     def test_remote_result_keeps_panes_when_agent_reader_is_missing(self):
         pane_line = "work:@1:%2:0:-:/tmp/tmux"

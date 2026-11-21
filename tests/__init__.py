@@ -28,7 +28,7 @@ def use_bare_inner_tmux() -> None:
     import unittest
     from unittest import mock
 
-    for name in ("letee.tmux.tmux_executable", "letee.sessions.remote_tmux"):
+    for name in ("letee.tmux.tmux_executable", "letee.sessions.remote_tmux", "letee.sessions.cached_remote_tmux"):
         patcher = mock.patch(name, return_value="tmux")
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)

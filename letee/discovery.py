@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
+import contextvars
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
@@ -403,11 +405,10 @@ def _local_snapshot(request_id: str | None) -> SourceSnapshot:
         return replace(snapshot, agents=_read_local_agents(snapshot.panes, request_id=request_id), sampled_at=sampled_at)
 
 
-def _ssh_command(host: str, persistent_ssh: bool, connect_timeout: int | None = None) -> tuple[str, ...]:
-    """Raise SystemExit, carrying the install hint, when host lacks letee."""
+def _ssh_command(host: str, tmux_path: str, persistent_ssh: bool, connect_timeout: int | None = None) -> tuple[str, ...]:
     return ssh_command(
         "-n", "-o", "BatchMode=yes",
-        validate_host(host), remote_command(sessions.remote_tmux(host)),
+        validate_host(host), remote_command(tmux_path),
         persistent_ssh=persistent_ssh, connect_timeout=connect_timeout,
     )
 
@@ -444,7 +445,7 @@ def _remote_snapshot(host: str, request_id: str | None) -> SourceSnapshot:
     timing = load_timing()
     with diagnostics.operation("discovery.remote_snapshot", host=host, request_id=request_id, timeout=timing.remote_command_timeout, persistent_ssh=persistent_ssh) as operation:
         try:
-            command = _ssh_command(host, persistent_ssh)
+            command = _ssh_command(host, sessions.remote_tmux(host), persistent_ssh)
         except SystemExit as error:
             operation.outcome = "unavailable"
             return SourceSnapshot(False, (), frozenset(), str(error), request_id=request_id)
@@ -629,6 +630,9 @@ class DiscoveryPoller:
         self._clock = clock
         self._next_local_poll = self._clock() + LOCAL_POLL_INTERVAL
         self._active: dict[str, _Request] = {}
+        # Resolving a host's tmux path may block on SSH, so it runs off the tick loop.
+        self._resolver = ThreadPoolExecutor(thread_name_prefix="letee-tmux-resolve")
+        self._resolving: dict[str, Future[str]] = {}
         self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
         self._retry_delay = dict.fromkeys(self.hosts, self._timing.retry_initial_delay)
@@ -716,7 +720,13 @@ class DiscoveryPoller:
         self._schedule(host, False)
         return changed
 
-    def _start_request(self, host: str) -> bool:
+    def _start_request(self, host: str, resolved: Future[str] | None = None) -> bool:
+        """Start discovery for host, first resolving its tmux path in the background on a cache miss."""
+        tmux_path = sessions.cached_remote_tmux(host) if resolved is None else None
+        if resolved is None and tmux_path is None:
+            self._resolving[host] = self._resolver.submit(contextvars.copy_context().run, sessions.remote_tmux, host)
+            diagnostics.log("discovery.tmux_resolving", host=host)
+            return False
         logger = diagnostics.get_diagnostics()
         request_id = logger.new_id("discovery")
         context = logger.context_values()
@@ -730,7 +740,9 @@ class DiscoveryPoller:
                 connect_timeout=connect_timeout, timeout_factor=factor, persistent_ssh=self._persistent_ssh,
             )
             try:
-                command = _ssh_command(host, self._persistent_ssh, connect_timeout)
+                if resolved is not None:
+                    tmux_path = resolved.result()
+                command = _ssh_command(host, tmux_path, self._persistent_ssh, connect_timeout)
             except SystemExit as error:
                 return self._fail_request(host, request_id, started, str(error), "tmux_unresolved")
             master_preexisting = _persistent_master_alive(host, self._persistent_ssh)
@@ -779,8 +791,12 @@ class DiscoveryPoller:
             changed = snapshot != self.local
             self.local = snapshot
             self._next_local_poll = now + LOCAL_POLL_INTERVAL
+        for host, future in list(self._resolving.items()):
+            if future.done():
+                del self._resolving[host]
+                changed |= self._start_request(host, future)
         for host in self.hosts:
-            if host not in self._active and self._clock() >= self._next[host]:
+            if host not in self._active and host not in self._resolving and self._clock() >= self._next[host]:
                 changed |= self._start_request(host)
 
         for host, request in list(self._active.items()):
@@ -808,7 +824,7 @@ class DiscoveryPoller:
                 else:
                     changed |= self._finish_request(host, request, returncode)
         for host in self.hosts:
-            state = "inflight" if host in self._active else "not_due"
+            state = "inflight" if host in self._active else "resolving" if host in self._resolving else "not_due"
             previous_state, logged_at = self._poll_states.get(host, (None, 0.0))
             if state != previous_state or now - logged_at >= DIAGNOSTIC_HEARTBEAT_INTERVAL:
                 diagnostics.log("discovery.poll_state", host=host, state=state, next_deadline=self._next[host], request_id=self._active[host].request_id if host in self._active else None)
@@ -869,6 +885,8 @@ class DiscoveryPoller:
 
     def close(self) -> None:
         diagnostics.log("discovery.close", pending_count=len(self._active))
+        self._resolver.shutdown(wait=False, cancel_futures=True)
+        self._resolving.clear()
         for host, request in self._active.items():
             with _request_context(host, request.request_id, request.diagnostic_started, request.context, self.remotes[host]):
                 _stop_process(request.process, request_id=request.request_id, reason="close")

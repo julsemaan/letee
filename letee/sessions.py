@@ -512,12 +512,17 @@ def forget_remote_tmux() -> None:
     remote_tmux_cache_path().unlink(missing_ok=True)
 
 
+def cached_remote_tmux(host: str) -> str | None:
+    """Return host's tmux executable if already known, without contacting it."""
+    return _load_remote_tmux().get(host)
+
+
 def remote_tmux(host: str) -> str:
     """Return the tmux executable letee uses on host, asking its letee once."""
     host = validate_host(host)
     # Never log the remote path or output.
     with diagnostics.operation("sessions.remote_tmux", host=host) as span:
-        if path := _load_remote_tmux().get(host):
+        if path := cached_remote_tmux(host):
             span.outcome = "cached"
             return path
         try:
