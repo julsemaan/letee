@@ -494,6 +494,8 @@ LETEE_MISSING = "letee missing"
 TMUX_PATH_MARKER = "LETEE_TMUX="
 # Non-interactive SSH often lacks ~/.local/bin on PATH; a login shell has it.
 _REMOTE_TMUX_PATH = 'exec "${SHELL:-/bin/sh}" -lc "letee tmux-path"'
+# Serializes the cache's read-merge-write so parallel lookups don't drop each other's entries.
+_REMOTE_TMUX_CACHE_LOCK = threading.Lock()
 
 
 def _load_remote_tmux() -> dict[str, str]:
@@ -573,7 +575,8 @@ def remote_tmux(
             span.outcome = "missing"
             raise RemoteLeteeMissing(f"letee is not installed on {host} (or not on its login PATH). "
                                      f"Install it there with: {INSTALL_COMMAND}")
-        _save_remote_tmux(_load_remote_tmux() | {host: path})
+        with _REMOTE_TMUX_CACHE_LOCK:
+            _save_remote_tmux(_load_remote_tmux() | {host: path})
         span.outcome = "resolved"
         return path
 

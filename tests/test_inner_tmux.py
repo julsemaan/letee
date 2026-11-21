@@ -6,6 +6,8 @@ import os
 import shlex
 import signal
 import subprocess
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
@@ -158,6 +160,26 @@ class RemoteTmuxTest(unittest.TestCase):
 
         with patch("letee.sessions.remote_tmux", side_effect=resolve):
             self.assertEqual(sessions.missing_letee(["ok", "bare", "down"]), ["bare"])
+
+    def test_missing_letee_caches_every_host_resolved_in_parallel(self):
+        hosts = ["a", "b", "c"]
+        barrier = threading.Barrier(len(hosts), timeout=5)
+        load = sessions._load_remote_tmux
+
+        def popen(args, **kwargs):
+            barrier.wait()
+            return ssh_result(f"LETEE_TMUX=/{args[-2]}/tmux\n")(args, **kwargs)
+
+        def slow_load():
+            cache = load()
+            time.sleep(0.05)
+            return cache
+
+        with patch("letee.sessions.subprocess.Popen", side_effect=popen), \
+                patch("letee.sessions._load_remote_tmux", side_effect=slow_load):
+            self.assertEqual(sessions.missing_letee(hosts), [])
+        self.assertEqual(json.loads(config.remote_tmux_cache_path().read_text()),
+                         {host: f"/{host}/tmux" for host in hosts})
 
     def test_unreachable_host_reports_ssh_error(self):
         with patch("letee.sessions.subprocess.Popen", side_effect=ssh_result("", 255, "ssh: connect to host dev: Connection refused\n")), \
