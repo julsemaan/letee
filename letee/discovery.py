@@ -16,14 +16,14 @@ import tempfile
 import time
 
 from . import diagnostics
-from .config import load_hosts, load_persistent_ssh, load_timing
+from .config import load_experimental_native_codex, load_hosts, load_persistent_ssh, load_timing
 from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, validate_host
 from .sessions import ssh_command
 
 
-# After the legacy colon header: TAB session_id:window_index:pane_index TAB
-# window_name. The final name is unescaped and may contain tabs and colons.
-PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}\t#{session_id}:#{window_index}:#{pane_index}\t#{window_name}"
+# After the legacy colon header: TAB session_id:window_index:pane_index
+# :osc7501:program_name:program_state TAB window_name. The final name is unescaped and may contain tabs and colons.
+PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}\t#{session_id}:#{window_index}:#{pane_index}:osc7501:#{pane_program_name}:#{pane_program_state}\t#{window_name}"
 PANES_COMMAND = f'tmux -L {shlex.quote(INNER_SERVER_SOCKET)} list-panes -a -F "{PANES_FORMAT}"'
 REMOTE_SEPARATOR = "__LETEE_AGENT_STATUS__"
 # Remote record read/parse errors are aggregated in allowlisted counters.
@@ -160,12 +160,28 @@ def _agent_sort_key(agent: AgentEntry) -> tuple[str, str, int, int, str]:
     return (target.host or "", target.session, int(agent.pane_target.window_id[1:]), int(agent.pane_target.pane_id[1:]), agent.agent_id)
 
 
+NATIVE_CODEX_STATES = {
+    "working": "working", "blocked": "input-required", "idle": "idle",
+    "done": "completed", "error": "failed",
+}
+
+
+def _merge_agents(native: tuple[AgentEntry, ...], plugin: tuple[AgentEntry, ...]) -> tuple[AgentEntry, ...]:
+    # Only actual reports override plugin Codex. Empty fields do not prove support.
+    reported = {agent.pane_target for agent in native}
+    return tuple(sorted((*native, *(agent for agent in plugin
+                        if agent.pane_target not in reported or agent.agent_name.lower() != "codex")),
+                        key=_agent_sort_key))
+
+
 def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None, request_id: str | None = None) -> SourceSnapshot:
     sessions: list[Target] = []
     bells: set[Target] = set()
     panes: list[PaneTarget] = []
     focused_panes: set[PaneTarget] = set()
     rejected = 0
+    native = []
+    enabled = load_experimental_native_codex()
     for line in text.splitlines():
         parts = line.split(":", 7)
         if len(parts) == 8 and parts[5] in ("0", "1") and parts[6] in ("0", "1"):
@@ -179,11 +195,16 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None, req
             pane_active = window_active = "0"
         socket_path, _, window_name = socket_path.partition("\t")
         session_id = ""
+        program_name = program_state = ""
         window_index = pane_index = 0
         try:
             metadata, separator, final_name = window_name.partition("\t")
             if separator and metadata.startswith("$"):
-                session_id, window_index_text, pane_index_text = metadata.split(":")
+                fields = metadata.split(":", 5)
+                if len(fields) == 6 and fields[3] == "osc7501":
+                    program_name, program_state = fields[4:]
+                    fields = fields[:3]
+                session_id, window_index_text, pane_index_text = fields
                 if not SESSION_ID_RE.fullmatch(session_id):
                     continue
                 window_index, pane_index = int(window_index_text), int(pane_index_text)
@@ -199,6 +220,9 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None, req
         if target not in sessions:
             sessions.append(target)
         panes.append(pane)
+        if enabled and program_name == "codex" and program_state not in ("", "clear"):
+            native.append(AgentEntry(pane, f"native-codex:{socket_path}:{pane_id}", "Codex",
+                                     NATIVE_CODEX_STATES.get(program_state, "unknown")))
         if pane_active == "1" and window_active == "1":
             focused_panes.add(pane)
         if bell_flag in ("1", "!") or "!" in window_flags:
@@ -208,7 +232,7 @@ def _parse_source_snapshot(text: str, *, kind: str, host: str | None = None, req
         session_count=len(sessions), rejected_count=rejected, bell_count=len(bells),
         focused_pane_count=len(focused_panes),
     )
-    return SourceSnapshot(True, tuple(sessions), frozenset(bells), panes=tuple(panes), focused_panes=frozenset(focused_panes), request_id=request_id)
+    return SourceSnapshot(True, tuple(sessions), frozenset(bells), panes=tuple(panes), agents=tuple(native), focused_panes=frozenset(focused_panes), request_id=request_id)
 
 
 def _status_dir() -> Path:
@@ -361,7 +385,7 @@ def _source_result(
             diagnostics.error(handling="fallback", operation="discovery.source_result", reason="remote_reader_missing", request_id=request_id)
         if malformed or remote_counts.get("failed_count"):
             diagnostics.error(handling="skip", operation="discovery.source_result", reason="invalid_agent_records", request_id=request_id, malformed_count=malformed)
-        return replace(snapshot, agents=agents, request_id=request_id)
+        return replace(snapshot, agents=_merge_agents(snapshot.agents, agents), request_id=request_id)
     diagnostics.log("discovery.source_result", kind=kind, host=host, request_id=request_id, outcome="unavailable", returncode=returncode, stderr_present=bool(stderr))
     diagnostics.error(handling="fallback", operation="discovery.source_result", reason="command_failed", request_id=request_id, returncode=returncode)
     return SourceSnapshot(False, (), frozenset(), stderr.strip() or f"remote command exited {returncode}", request_id=request_id)
@@ -399,7 +423,7 @@ def _local_snapshot(request_id: str | None) -> SourceSnapshot:
         if not snapshot.available:
             operation.outcome = "unavailable"
             return snapshot
-        return replace(snapshot, agents=_read_local_agents(snapshot.panes, request_id=request_id), sampled_at=sampled_at)
+        return replace(snapshot, agents=_merge_agents(snapshot.agents, _read_local_agents(snapshot.panes, request_id=request_id)), sampled_at=sampled_at)
 
 
 def _ssh_command(host: str, persistent_ssh: bool, connect_timeout: int | None = None) -> tuple[str, ...]:

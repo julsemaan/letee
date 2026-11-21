@@ -2,11 +2,33 @@
 
 ## Requirement
 
-Letee discovers coding agents by reading JSON status files written by the `agent-status` plugin. The plugin is required for detection. Install it in every coding agent you want letee to discover.
+Letee discovers coding agents by reading JSON status files written by the `agent-status` plugin. The plugin is required by default. Experimental native Codex discovery is an opt-in exception described below. Install it in every coding agent you want letee to discover.
 
 The Claude Code and Codex plugin hooks run `python3` from PATH. Every machine running those agents, local or remote, needs Python 3.10 or newer on PATH plus the plugin. Letee's bundled Python is private, and installing the `agent-status` command alone isn't enough.
 
 For a concise setup and discovery checklist, see the local [agent discovery guide](https://github.com/julsemaan/letee/blob/main/docs/agent-discovery.md). The rest of this file documents how discovered agents are displayed and controlled.
+
+## Experimental native Codex
+
+Set `experimental_native_codex = true` in letee's TOML config to try native
+OSC 7501 reports. The default is `false`. This requires an experimental tmux
+build on each reporting machine, tested at revision
+`b2a01282069146476ceca974ff255437ff00865e`, and a Codex that emits OSC 7501.
+It does not require Python or the plugin for native entries.
+
+Reports can remain stale indefinitely after exit, suspension, forced termination,
+or replacement by another foreground process. Real Codex shared-daemon,
+clean-exit and editor-handoff lifecycle behavior remains unverified.
+Native entries have no timestamps or working-duration estimate.
+The kill action targets the pane's current foreground job, not a verified Codex
+process. Check the pane before killing a native entry: a stale entry may refer
+to an unrelated replacement job.
+
+Native reports override plugin Codex only in the reporting pane. Other agents
+and unsupported servers retain plugin discovery. There is no reliable empty-pane
+capability probe, so clearing a report restores plugin fallback, which may show
+old plugin status. Unknown native states display as unknown, not idle.
+See [agent discovery](agent-discovery.md#experimental-native-codex) for mappings.
 
 ## Set up a supported agent
 

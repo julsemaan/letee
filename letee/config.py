@@ -22,7 +22,7 @@ DEFAULT_STATUS_TIMEOUT = 5
 DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
 DEFAULT_TMUX_CONFIG_OVERLAY = True
-CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nsidebar_collapse_mode = "{DEFAULT_SIDEBAR_COLLAPSE_MODE}"\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\n'
+CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nsidebar_collapse_mode = "{DEFAULT_SIDEBAR_COLLAPSE_MODE}"\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\nexperimental_native_codex = false\n'
 
 
 @dataclass(frozen=True)
@@ -388,6 +388,15 @@ def load_agent_panel_resize_step() -> int:
             f"Invalid config {cfg}: agent_panel_resize_step must be an integer from 1 through 100"
         )
     return step
+
+
+def load_experimental_native_codex() -> bool:
+    cfg, data = _load_config()
+    enabled = data.get("experimental_native_codex", False)
+    if not isinstance(enabled, bool):
+        diagnostics.error(handling="exit", reason="invalid_experimental_native_codex")
+        raise SystemExit(f"Invalid config {cfg}: experimental_native_codex must be a boolean")
+    return enabled
 
 
 def load_persistent_ssh() -> bool:

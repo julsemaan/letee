@@ -28,6 +28,91 @@ make check         # all quality gates
 
 Unit tests are safe to run next to a live letee: `tests/__init__.py` points `TMUX_TMPDIR`, the config dir and the agent-status dir at a throwaway directory. That only works when tests load as the `tests` package, so use `make test` or `python -m unittest` from the repo root, not `discover -s tests` without `-t .`.
 
+## OSC 7501 discovery investigation
+
+Historical gate: native Codex discovery was blocked on lifecycle validation.
+The investigation below is retained as evidence, not a claim of accurate discovery.
+
+The user subsequently explicitly approved an experimental opt-in implementation
+with stale status and real Codex validation outstanding, superseding the original
+lifecycle gate for this limited scope. `experimental_native_codex` defaults to
+false. Native reports override plugin Codex only on reporting panes; without a
+reliable empty-pane capability probe, clear restores plugin fallback. Reports
+can remain stale indefinitely, including across foreground replacement. There
+are no fabricated timestamps, ownership heuristics, new services or polling
+changes. Accurate lifecycle discovery still requires the validation below.
+
+Implementation checks: `make test` passed 1307 tests and `make lint` passed using
+`PATH=/tmp/letee-osc7501.W1NzHp/venv/bin:$PATH`. No host app, manual tmux run or
+E2E test was used for implementation validation.
+
+Tested tmux master revision `b2a01282069146476ceca974ff255437ff00865e`
+from https://github.com/tmux/tmux, built with `sh autogen.sh`,
+`./configure --prefix=<scratch>/install`, `make -j4`, and `make install`.
+System tmux was not replaced. Every tmux invocation used an absolute scratch
+socket with `-S`, scratch `TMUX_TMPDIR`, and no inherited `TMUX`.
+The server started with `-f /dev/null`; its panes ran
+`/bin/bash --noprofile --norc`, without OSC 133 integration.
+
+Results from synthetic TUI reports, repeated in a fresh disposable server:
+
+- `ESC ] 7501 ; app=codex:state=<state> ESC \\` exposes the name and state
+  through `pane_program_name` and `pane_program_state` independently per pane.
+- `working`, `blocked`, `idle`, `done`, and `error` round-trip correctly.
+  `state=clear` empties both fields.
+- A reporting command that exits without clearing leaves `codex|working`.
+  A long-running Python reporter also leaves `codex|working` after SIGSTOP
+  and SIGKILL, including after the shell regains the foreground.
+- Starting an unrelated `sleep` afterward still exposes `codex|working`.
+  Its foreground PGID differs from the shell PGID. The check used by
+  `sessions._foreground_pgid` therefore cannot establish report ownership.
+- `display-message -a` lists the populated state but omits it after clearing.
+  It is not a capability probe for an empty pane.
+
+To reproduce the stale-report case, run a foreground process in an isolated
+pane that writes `\x1b]7501;app=codex:state=working\x1b\\`, then sleeps.
+SIGKILL that process from outside the pane, query the two format fields,
+and start an unrelated foreground job. Both queries still return the old
+report. Always stop only the scratch server and verify the original host
+sockets afterward. The host sockets `letee.inner` and `letee@v1` were unchanged.
+
+A foreground-job existence check alone is insufficient. A future attempt
+needs verified ownership of the reporting foreground job, including across
+job replacement between polls, plus a capability check independent of field
+contents. Codex was not installed in the validation environment, so ordinary
+shared-daemon Codex and external-editor lifecycle behavior remain unverified.
+Do not describe this prototype as accurate discovery until these gates pass.
+
+Follow-up in the `osc7501-codex` worktree rebuilt the same pinned revision
+under `/tmp/letee-osc7501.W1NzHp` and reproduced these results. An additional
+check replaced the killed Python reporter with a nonreporting Python foreground
+job. Both `pane_current_command=python3` and `codex|working` remained visible.
+Checking the foreground command name therefore does not establish ownership
+either. Saving a PID after observing a report cannot fix the first-sample case:
+the report may already belong to a previous process. PID changes between later
+polls can reject some stale reports, but cannot associate the initial report
+with its writer. This does not rule out a future ownership mechanism.
+
+Source inspection of this revision confirms that `input_program_status` stores
+name, state and message on the pane, without a reporter PID or generation.
+`input_osc_7501` receives terminal bytes, not writer identity. The `?` response
+is a terminal-side capability handshake, not a discovery-side format probe.
+Neither field presence nor foreground process existence passes the gate.
+
+Decision: stop before native discovery implementation. No reliable ownership
+check was established, and Codex remains unavailable for shared-daemon,
+clean-exit and editor-handoff validation. Reopen after a mechanism can tie a
+report to its live foreground owner even on the first poll and after replacement
+between polls, then validate ordinary Codex. Do not replace that requirement
+with a command-name heuristic or assume clean-exit clearing covers SIGKILL.
+
+The retained smoke check accepts a scratch build directory:
+`python3 julsemaan-tmp/osc7501-smoke.py /absolute/scratch`.
+The directory must contain `install/bin/tmux`. It reproduces the same-command
+replacement case without launching letee. Both isolated runs left the host
+socket listing unchanged. A scratch-installed uv allowed `make test` to pass
+all 1302 tests and `make lint` to pass. No E2E tests ran.
+
 ## Install script
 
 `install.sh` pins uv in `UV_VERSION`. To bump it, pick a release from [uv's releases](https://github.com/astral-sh/uv/releases) (0.8.5 or newer) and update the variable, plus the `setup-uv` `version` pins in `.github/workflows/`. CI's `installer` job runs shellcheck and an install, upgrade and uninstall on Linux and macOS.
