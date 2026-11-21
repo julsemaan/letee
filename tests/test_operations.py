@@ -9,9 +9,14 @@ from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import patch
 
+from tests import use_bare_inner_tmux
 from letee import config, cockpit, operations
 from letee.names import PaneTarget, Target
 
+
+
+def setUpModule():
+    use_bare_inner_tmux()
 
 class OperationsTest(unittest.TestCase):
     def setUp(self):

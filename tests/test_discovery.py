@@ -3,20 +3,20 @@ import json
 import os
 import tempfile
 import select
+import threading
 import signal
 import subprocess
 import sys
 import time
 import unittest
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 
+from tests import use_bare_inner_tmux
 from letee.discovery import (
     AgentEntry,
     DiscoveryPoller,
-    REMOTE_COMMAND,
     SessionSnapshot,
     SourceSnapshot,
-    _clean_env,
     _parse_source_snapshot,
     _persistent_master_alive,
     _read_agents,
@@ -25,6 +25,7 @@ from letee.discovery import (
     _ssh_command,
     discover,
     local_snapshot,
+    remote_command,
     remote_snapshot,
 )
 from dataclasses import replace
@@ -74,6 +75,10 @@ def _read_child_info(read_fd):
     child_pid, process_group = (int(value) for value in line.split(":", 1))
     return pipe, child_pid, process_group
 
+
+
+def setUpModule():
+    use_bare_inner_tmux()
 
 class DiscoveryInstrumentationTest(unittest.TestCase):
     def setUp(self):
@@ -534,10 +539,6 @@ class DiscoveryDiagnosticFaultTest(unittest.TestCase):
 
 
 class DiscoverySnapshotTest(unittest.TestCase):
-    def test_clean_env_removes_current_tmux_socket(self):
-        with patch.dict("letee.discovery.os.environ", {"TMUX": "/tmp/tmux,1,0", "PATH": "x"}, clear=True):
-            self.assertEqual(_clean_env(), {"PATH": "x"})
-
     def test_source_parser_deduplicates_targets_and_collects_bells(self):
         snapshot = _parse_source_snapshot(
             "work:@1:%1:0:-:/tmp/tmux:dev\nwork:@1:%2:1:-:/tmp/tmux:dev\nchat:@2:%3:!:-:/tmp/tmux:dev\nbad name:@3:%4:1:!:/tmp/tmux\n",
@@ -587,7 +588,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
         self.assertEqual([pane.pane_id for pane in snapshot.panes], ["%1", "%2"])
         self.assertEqual(snapshot.focused_panes, frozenset({snapshot.panes[0]}))
         run.assert_called_once()
-        self.assertEqual(run.call_args.args[0][:4], ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes"])
+        self.assertEqual(run.call_args.args[0][:4], ("tmux", "-L", INNER_SERVER_SOCKET, "list-panes"))
 
     def test_configured_command_deadlines(self):
         timing = replace(load_timing(), local_command_timeout=0.25, remote_command_timeout=0.75, ssh_master_check_timeout=0.1)
@@ -708,14 +709,58 @@ class DiscoverySnapshotTest(unittest.TestCase):
             "-o", f"ServerAliveCountMax={timing.ssh_keepalive_count_max}",
             "-o", "AddKeysToAgent=yes",
         )
-        discovery = ("-n", "-o", "BatchMode=yes", "dev", REMOTE_COMMAND)
+        discovery = ("-n", "-o", "BatchMode=yes", "dev", remote_command("tmux"))
         persistence = (
             "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/letee-%C",
             "-o", "ControlPersist=10m",
         )
-        self.assertEqual(_ssh_command("dev", True), ("ssh", *keepalive, *persistence, *discovery))
-        self.assertEqual(_ssh_command("dev", False), ("ssh", *keepalive, *discovery))
-        self.assertIn(f"tmux -L {INNER_SERVER_SOCKET} list-panes", REMOTE_COMMAND)
+        self.assertEqual(_ssh_command("dev", "tmux", True), ("ssh", *keepalive, *persistence, *discovery))
+        self.assertEqual(_ssh_command("dev", "tmux", False), ("ssh", *keepalive, *discovery))
+        self.assertTrue(remote_command("tmux").startswith(f"tmux -L {INNER_SERVER_SOCKET} list-panes"))
+        self.assertTrue(remote_command("/opt/b/tmux").startswith(
+            f'PATH=/opt/b:"$PATH" /opt/b/tmux -L {INNER_SERVER_SOCKET} list-panes'))
+
+    def test_remote_snapshot_without_letee_is_unavailable_with_install_hint(self):
+        hint = "letee is not installed on dev (or not on its login PATH). Install it there with: ..."
+        with patch("letee.sessions.remote_tmux", side_effect=SystemExit(hint)), \
+                patch("letee.sessions.cached_remote_tmux", return_value=None), \
+                patch("letee.discovery.subprocess.Popen") as popen:
+            snapshot = remote_snapshot("dev")
+            poller = DiscoveryPoller(["dev"], popen=popen, local=lambda: EMPTY_LOCAL, persistent_ssh=False)
+            poller.tick()
+            poller._resolving["dev"].exception(timeout=5)
+            poller.tick()
+            poller.close()
+        popen.assert_not_called()
+        self.assertEqual((snapshot.available, snapshot.error), (False, hint))
+        self.assertEqual((poller.remotes["dev"].available, poller.remotes["dev"].error), (False, hint))
+
+    def test_tick_does_not_wait_for_unresolved_tmux_paths(self):
+        released = threading.Event()
+
+        def resolve(host, **timeouts):
+            released.wait(5)
+            return "tmux"
+
+        process = FakeProcess(0, stdout="work:@1:%1:0:-:/tmp/tmux\n")
+        popen = Mock(return_value=process)
+        with patch("letee.sessions.cached_remote_tmux", side_effect=lambda host: "tmux" if host == "healthy" else None), \
+                patch("letee.sessions.remote_tmux", side_effect=resolve):
+            poller = DiscoveryPoller(["slow", "healthy"], popen=popen, local=lambda: EMPTY_LOCAL, persistent_ssh=False)
+            self.addCleanup(poller.close)
+            started = time.monotonic()
+            poller.tick()
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertIn("slow", poller._resolving)
+            self.assertTrue(poller.remotes["healthy"].available)
+            self.assertEqual(popen.call_count, 1)
+
+            released.set()
+            poller._resolving["slow"].result(timeout=5)
+            poller.tick()
+        self.assertNotIn("slow", poller._resolving)
+        self.assertEqual(popen.call_count, 2)
+        self.assertTrue(poller.remotes["slow"].available)
 
     def test_remote_result_keeps_panes_when_agent_reader_is_missing(self):
         pane_line = "work:@1:%2:0:-:/tmp/tmux"
@@ -1221,6 +1266,75 @@ class DiscoveryPollerTest(unittest.TestCase):
             self.assertEqual(poller._next["dev"], now[0])
         self.assertEqual(limits, [3, 6, 10, 10])
         self.assertEqual(self._connect_timeouts(popen), [f"ConnectTimeout={n}" for n in (2, 4, 7, 7)])
+
+    def test_tmux_path_lookup_uses_escalated_timeouts(self):
+        with patch("letee.sessions.cached_remote_tmux", return_value=None), \
+                patch("letee.sessions.remote_tmux", side_effect=SystemExit("timed out")) as resolve:
+            poller = self.make_poller(["dev"], popen=Mock())
+            self.addCleanup(poller.close)
+            poller._timeout_factor["dev"] = 1.75
+            poller.tick()
+            poller._resolving["dev"].exception(timeout=5)
+        resolve.assert_called_once_with("dev", connect_timeout=4, timeout=5.25, on_spawn=ANY)
+
+    def test_close_stops_in_flight_tmux_path_lookup(self):
+        class HangingProcess(FakeProcess):
+            def __init__(self):
+                super().__init__()
+                self.stopped = threading.Event()
+
+            def terminate(self):
+                super().terminate()
+                self.stopped.set()
+
+            def wait(self, timeout=None):
+                self.stopped.wait()
+                return super().wait(timeout)
+
+        process = HangingProcess()
+        spawned = threading.Event()
+
+        def resolve(host, *, on_spawn, **timeouts):
+            on_spawn(process)
+            spawned.set()
+            process.wait()
+            raise SystemExit(f"{host}: ssh exited {process.returncode}")
+
+        with patch("letee.sessions.cached_remote_tmux", return_value=None), \
+                patch("letee.sessions.remote_tmux", side_effect=resolve):
+            poller = self.make_poller(["dev"], popen=Mock())
+            poller.tick()
+            self.assertTrue(spawned.wait(5))
+            future = poller._resolving["dev"]
+            poller.close()
+            self.assertIsInstance(future.exception(timeout=1), SystemExit)
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.communicated)
+        self.assertEqual(poller._resolver_processes, {})
+
+    def test_close_before_spawn_stops_late_tmux_path_lookup(self):
+        process = FakeProcess()
+        entered = threading.Event()
+        closed = threading.Event()
+
+        def resolve(host, *, on_spawn, **timeouts):
+            entered.set()
+            closed.wait(5)
+            on_spawn(process)
+            return "/usr/bin/tmux"
+
+        with patch("letee.sessions.cached_remote_tmux", return_value=None), \
+                patch("letee.sessions.remote_tmux", side_effect=resolve):
+            poller = self.make_poller(["dev"], popen=Mock())
+            poller.tick()
+            self.assertTrue(entered.wait(5))
+            future = poller._resolving["dev"]
+            poller.close()
+            closed.set()
+            future.result(timeout=5)
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.communicated)
+        self.assertEqual(poller._resolver_processes, {})
 
     def test_success_resets_timeouts_but_refresh_keeps_them(self):
         now = [0.0]

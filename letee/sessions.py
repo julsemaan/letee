@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import copy_context
 import fcntl
 from functools import wraps
+import json
 import os
 from pathlib import Path
 import shlex
@@ -15,10 +16,12 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 
-from . import diagnostics
-from .config import load_persistent_ssh, load_timing, load_tmux_config_overlay
+from . import diagnostics, tmux
+from .config import load_persistent_ssh, load_timing, load_tmux_config_overlay, remote_tmux_cache_path
 from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, WindowTarget, validate_host, validate_session_name
 
 
@@ -62,13 +65,13 @@ category = "success"
 query_count = 0
 signal_count = 0
 try:
-    socket_path, pane_id, timeout = sys.argv[2:]
+    tmux_path, socket_path, pane_id, timeout = sys.argv[2:]
     timeout = float(timeout)
     stage = "pane_lookup"
     query_count += 1
     result = subprocess.run(
         (
-            "tmux",
+            tmux_path,
             "-S",
             socket_path,
             "display-message",
@@ -485,13 +488,137 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: boo
     )
 
 
-INNER_TMUX = f"tmux -L {shlex.quote(INNER_SERVER_SOCKET)}"
+INSTALL_URL = "https://raw.githubusercontent.com/julsemaan/letee/main/install.sh"
+TMUX_PATH_MARKER = "LETEE_TMUX="
+# Non-interactive SSH often lacks ~/.local/bin on PATH; a login shell has it.
+_REMOTE_TMUX_PATH = 'exec "${SHELL:-/bin/sh}" -lc "letee tmux-path"'
+
+
+def _load_remote_tmux() -> dict[str, str]:
+    try:
+        return json.loads(remote_tmux_cache_path().read_text())
+    except FileNotFoundError:
+        return {}
+
+
+def _save_remote_tmux(cache: dict[str, str]) -> None:
+    path = remote_tmux_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temporary.write_text(json.dumps(cache))
+    os.replace(temporary, path)
+
+
+def forget_remote_tmux() -> None:
+    remote_tmux_cache_path().unlink(missing_ok=True)
+
+
+def cached_remote_tmux(host: str) -> str | None:
+    """Return host's tmux executable if already known, without contacting it."""
+    return _load_remote_tmux().get(host)
+
+
+def remote_tmux(
+    host: str, *, connect_timeout: int | None = None, timeout: float | None = None,
+    on_spawn: Callable[[subprocess.Popen], None] | None = None,
+) -> str:
+    """Return the tmux executable letee uses on host, asking its letee once.
+
+    on_spawn receives the ssh process so a caller can stop an in-flight lookup.
+    """
+    host = validate_host(host)
+    # Never log the remote path or output.
+    with diagnostics.operation("sessions.remote_tmux", host=host) as span:
+        if path := cached_remote_tmux(host):
+            span.outcome = "cached"
+            return path
+        # Output goes to files so this thread only waits on the process and another thread can reap it.
+        with tempfile.TemporaryFile("w+") as stdout, tempfile.TemporaryFile("w+") as stderr:
+            try:
+                process = subprocess.Popen(
+                    ssh_command("-n", "-o", "BatchMode=yes", host, _REMOTE_TMUX_PATH, connect_timeout=connect_timeout),
+                    stdout=stdout, stderr=stderr, text=True, start_new_session=True,
+                )
+            except OSError as error:
+                diagnostics.error(error, handling="raise", stage="remote_tmux")
+                span.outcome = "unreachable"
+                raise SystemExit(f"{host}: {error.strerror or error}") from None
+            if on_spawn is not None:
+                on_spawn(process)
+            try:
+                returncode = process.wait(timeout=load_timing().remote_command_timeout if timeout is None else timeout)
+            except subprocess.TimeoutExpired as error:
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                diagnostics.error(error, handling="raise", stage="remote_tmux")
+                span.outcome = "unreachable"
+                raise SystemExit(f"{host}: timed out") from None
+            stdout.seek(0)
+            stderr.seek(0)
+            result = subprocess.CompletedProcess(process.args, returncode, stdout.read(), stderr.read())
+        span.fields["returncode"] = result.returncode
+        if result.returncode == 255:
+            span.outcome = "unreachable"
+            raise SystemExit(result.stderr.strip() or f"{host}: ssh exited 255")
+        path = next((line.removeprefix(TMUX_PATH_MARKER) for line in reversed(result.stdout.splitlines())
+                     if line.startswith(TMUX_PATH_MARKER)), "")
+        if result.returncode != 0 or not path:
+            span.outcome = "missing"
+            raise SystemExit(f"letee is not installed on {host} (or not on its login PATH). "
+                             f"Install it there with: curl -LsSf {INSTALL_URL} | sh")
+        _save_remote_tmux(_load_remote_tmux() | {host: path})
+        span.outcome = "resolved"
+        return path
+
+
+def inner_tmux(host: str | None) -> str:
+    return tmux.tmux_executable() if host is None else remote_tmux(host)
+
+
+def server_argv(tmux_path: str, *args: str) -> tuple[str, ...]:
+    return (tmux_path, "-L", INNER_SERVER_SOCKET, *args)
+
+
+def inner_argv(host: str | None, *args: str) -> tuple[str, ...]:
+    return server_argv(inner_tmux(host), *args)
+
+
+def socket_argv(host: str | None, socket_path: str, *args: str) -> tuple[str, ...]:
+    return (inner_tmux(host), "-S", socket_path, *args)
+
+
+def _bundle_dir(executable: str) -> str | None:
+    """Inner servers start with their tmux's directory first on PATH, so panes
+    and plugins get a matching client. Bare `tmux` has no bundle to expose."""
+    return os.path.dirname(executable) if os.path.isabs(executable) else None
+
+
+def shell_join(argv: tuple[str, ...]) -> str:
+    """Join an inner tmux argv for a shell, with the bundle dir first on PATH."""
+    directory = _bundle_dir(argv[0])
+    prefix = f'PATH={shlex.quote(directory + ":")}"$PATH" ' if directory else ""
+    return prefix + shlex.join(argv)
+
+
+def bundle_env() -> dict[str, str]:
+    """The current environment with the local tmux's bundle dir first on PATH."""
+    env = os.environ.copy()
+    if directory := _bundle_dir(tmux.tmux_executable()):
+        env["PATH"] = os.pathsep.join(filter(None, (directory, env.get("PATH"))))
+    return env
 
 
 def _inner_server_env() -> dict[str, str]:
-    env = os.environ.copy()
+    env = bundle_env()
     env.pop("TMUX", None)
     return env
+
+
+def _run_inner(operation: str, target: Target, argv: tuple[str, ...], **kwargs: object) -> str:
+    if target.kind == "local":
+        return _run(operation, target, argv, env=_inner_server_env(), **kwargs)
+    return _run(operation, target, ssh_command(target.host or "", shell_join(argv)), **kwargs)
 
 
 @_session_operation("sessions.overlay_install")
@@ -519,7 +646,7 @@ def attach_command(target: Target, *, overlay: bool | None = None, attach_only: 
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     action = (f"attach-session -t {shlex.quote('=' + target.session)}" if attach_only
               else f"new-session -A -s {shlex.quote(target.session)}")
-    command = f"{INNER_TMUX} -T clipboard {action}"
+    command = f"{shell_join(inner_argv(target.host, '-T', 'clipboard'))} {action}"
     if overlay:
         command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
@@ -539,7 +666,7 @@ def pane_attach_command(pane_target: PaneTarget, *, overlay: bool | None = None)
         f"select-pane -t {shlex.quote(pane_target.pane_id)}",
         f"attach-session -t {shlex.quote(target.session)}",
     )
-    command = f"tmux -S {shlex.quote(pane_target.socket_path)} " + " \\; ".join(parts)
+    command = f"{shell_join(socket_argv(target.host, pane_target.socket_path))} " + " \\; ".join(parts)
     if target.kind == "local":
         return f"env -u TMUX {command}"
     return _remote_attach_command(target, command, overlay=overlay)
@@ -553,20 +680,15 @@ def _existing_attach_command(
         raise SystemExit(f"Invalid session ID: {session_id!r}")
     if not socket_path:
         raise SystemExit("Invalid socket path: must not be empty")
-    query = ("tmux", "-S", socket_path, "list-panes", "-a", "-F",
-             "#{session_id}\t#{window_id}\t#{pane_id}")
-    output = _run(
-        "find", target,
-        ssh_command(target.host or "", shlex.join(query)) if target.kind == "ssh" else query,
-        **({"env": _inner_server_env()} if target.kind == "local" else {}),
-    )
+    base = socket_argv(target.host, socket_path)
+    output = _run_inner("find", target, (*base, "list-panes", "-a", "-F", "#{session_id}\t#{window_id}\t#{pane_id}"))
     expected = (session_id, window_id, pane_id) if pane_id else (session_id, window_id) if window_id else (session_id,)
     if not any(len(fields := line.split("\t")) == 3 and tuple(fields[:len(expected)]) == expected
                for line in output.splitlines()):
         raise SystemExit(f"find {target.format()} failed: target no longer exists")
 
     overlay = load_tmux_config_overlay() if overlay is None else overlay
-    prefix = f"tmux -S {shlex.quote(socket_path)}"
+    prefix = shell_join(base)
     if target.kind == "local":
         prefix = f"env -u TMUX {prefix}"
     parts = []
@@ -588,13 +710,10 @@ def validate_destination(
     target: Target, session_id: str, socket_path: str, *, window_id: str = "", pane_id: str = "",
 ) -> None:
     """Check live identity and name before publishing prepared navigation."""
-    query = ("tmux", "-S", socket_path, "list-panes", "-a", "-F",
-             "#{session_id}\t#{window_id}\t#{pane_id}\t#{session_name}")
-    output = _run(
-        "find", target,
-        ssh_command(target.host or "", shlex.join(query)) if target.kind == "ssh" else query,
-        **({"env": _inner_server_env()} if target.kind == "local" else {}),
-    )
+    output = _run_inner("find", target, socket_argv(
+        target.host, socket_path, "list-panes", "-a", "-F",
+        "#{session_id}\t#{window_id}\t#{pane_id}\t#{session_name}",
+    ))
     for line in output.splitlines():
         fields = line.split("\t")
         if (len(fields) == 4 and fields[0] == session_id and fields[3] == target.session
@@ -689,16 +808,16 @@ def _run(
 def create(target: Target, *, overlay: bool | None = None) -> None:
     validate_session_name(target.session)
     overlay = load_tmux_config_overlay() if overlay is None else overlay
+    command = inner_argv(target.host, "new-session", "-d", "-s", target.session)
     if target.kind == "local":
-        command = ("tmux", "-L", INNER_SERVER_SOCKET, "new-session", "-d", "-s", target.session)
-        _run("create", target, command, env=_inner_server_env())
+        _run_inner("create", target, command)
         if overlay:
             # Best effort: tmux pre-3.4 rejects newer overlay options, and
             # timeout/OSError here must not fail the create itself either.
             with diagnostics.operation("sessions.overlay_source", target_kind="local") as span:
                 try:
                     result = subprocess.run(
-                        ("tmux", "-L", INNER_SERVER_SOCKET, "source-file", str(OVERLAY_FILE)),
+                        inner_argv(None, "source-file", str(OVERLAY_FILE)),
                         check=False,
                         capture_output=True,
                         timeout=load_timing().local_command_timeout,
@@ -712,22 +831,16 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
     else:
         if overlay:
             _install_overlay(target)
-        command = f"{INNER_TMUX} new-session -d -s {shlex.quote(target.session)}"
+        shell = shell_join(command)
         if overlay:
-            command += (f" && {{ {INNER_TMUX} source-file {REMOTE_OVERLAY_PATH}; "
-                        "letee_overlay_rc=$?; printf 'LETEE_DIAG overlay %s\\n' \"$letee_overlay_rc\"; true; }")
-        _run("create", target, ssh_command(target.host or "", command))
+            shell += (f" && {{ {shell_join(inner_argv(target.host, 'source-file'))} {REMOTE_OVERLAY_PATH}; "
+                      "letee_overlay_rc=$?; printf 'LETEE_DIAG overlay %s\\n' \"$letee_overlay_rc\"; true; }")
+        _run("create", target, ssh_command(target.host or "", shell))
 
 
 def require_existing(target: Target) -> None:
     """Reject missing legacy destinations before navigation changes state."""
-    if target.kind == "local":
-        command = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=" + target.session)
-        kwargs = {"env": _inner_server_env()}
-    else:
-        command = ssh_command(target.host or "", f"{INNER_TMUX} has-session -t {shlex.quote('=' + target.session)}")
-        kwargs = {}
-    _run("find", target, command, **kwargs)
+    _run_inner("find", target, inner_argv(target.host, "has-session", "-t", "=" + target.session))
 
 
 def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
@@ -749,40 +862,24 @@ def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
             raise
         # Another creator may have won the race. Never use -A here: it can
         # attach to an existing session even when combined with -d.
-        if target.kind == "local":
-            command = ("tmux", "-L", INNER_SERVER_SOCKET, "has-session", "-t", "=" + target.session)
-            kwargs = {"env": _inner_server_env()}
-        else:
-            command = ssh_command(
-                target.host or "", f"{INNER_TMUX} has-session -t {shlex.quote('=' + target.session)}",
-            )
-            kwargs = {}
         try:
-            _run("create", target, command, **kwargs)
+            _run_inner("create", target, inner_argv(target.host, "has-session", "-t", "=" + target.session))
         except SystemExit:
             raise error
 
 
 @_session_operation("sessions.kill")
 def kill(target: Target) -> None:
-    if target.kind == "local":
-        _run("kill", target, ("tmux", "-L", INNER_SERVER_SOCKET, "kill-session", "-t", target.session), env=_inner_server_env())
-    else:
-        _run("kill", target, ssh_command(target.host or "", f"{INNER_TMUX} kill-session -t {shlex.quote(target.session)}"))
+    _run_inner("kill", target, inner_argv(target.host, "kill-session", "-t", target.session))
 
 
 @_session_operation("sessions.pane_process_info")
 def _pane_process_info(pane_target: PaneTarget) -> tuple[int, str]:
     target = pane_target.target
-    output = _run(
-        "kill agent",
-        target,
-        (
-            "tmux", "-S", pane_target.socket_path, "display-message", "-p",
-            "-t", pane_target.pane_id, "#{pane_pid}\t#{pane_tty}",
-        ),
-        env=_inner_server_env(),
-    )
+    output = _run_inner("kill agent", target, socket_argv(
+        target.host, pane_target.socket_path, "display-message", "-p",
+        "-t", pane_target.pane_id, "#{pane_pid}\t#{pane_tty}",
+    ))
     fields = output.strip().split("\t", 1)
     if len(fields) != 2 or not fields[1]:
         diagnostics.log("sessions.kill_agent.rejected", reason="invalid_pane_information")
@@ -843,7 +940,7 @@ def kill_agent(pane_target: PaneTarget) -> None:
     timing = load_timing()
     command = (
         "python3 -c "
-        f"{shlex.quote(_KILL_AGENT_HELPER)} -- "
+        f"{shlex.quote(_KILL_AGENT_HELPER)} -- {shlex.quote(remote_tmux(target.host or ''))} "
         f"{shlex.quote(pane_target.socket_path)} {shlex.quote(pane_target.pane_id)} "
         f"{timing.local_command_timeout}"
     )
@@ -857,20 +954,7 @@ def kill_agent(pane_target: PaneTarget) -> None:
 def rename(target: Target, new_name: str) -> Target:
     validate_session_name(new_name)
     renamed = Target(target.kind, new_name, target.host)
-    if target.kind == "local":
-        _run(
-            "rename",
-            target,
-            ("tmux", "-L", INNER_SERVER_SOCKET, "rename-session", "-t", target.session, "--", renamed.session),
-            env=_inner_server_env(),
-        )
-    else:
-        _run(
-            "rename",
-            target,
-            ssh_command(
-                target.host or "",
-                f"{INNER_TMUX} rename-session -t {shlex.quote(target.session)} -- {shlex.quote(renamed.session)}",
-            ),
-        )
+    _run_inner("rename", target, inner_argv(
+        target.host, "rename-session", "-t", target.session, "--", renamed.session,
+    ))
     return renamed

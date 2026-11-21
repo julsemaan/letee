@@ -802,6 +802,7 @@ _ERROR_REASONS = (
     ("host key verification failed", "host key changed"),
     ("tmux: command not found", "tmux missing"),
     ("tmux: not found", "tmux missing"),
+    ("letee is not installed", "letee not installed"),
 )
 
 

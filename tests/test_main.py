@@ -743,6 +743,7 @@ class MainTest(unittest.TestCase):
     def test_create_flows_overlay_setting_into_session_commands(self):
         with (
             patch("letee.sessions.load_tmux_config_overlay", return_value=False) as overlay,
+            patch("letee.tmux.tmux_executable", return_value="tmux"),
             patch("letee.sessions.subprocess.run") as run,
             patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.cockpit.switch") as switch,
@@ -760,6 +761,7 @@ class MainTest(unittest.TestCase):
     def test_create_sources_packaged_overlay_when_enabled(self):
         with (
             patch("letee.sessions.load_tmux_config_overlay", return_value=True),
+            patch("letee.tmux.tmux_executable", return_value="tmux"),
             patch("letee.sessions.subprocess.run") as run,
             patch("letee.cockpit.right_pane", return_value="pane"),
             patch("letee.cockpit.switch") as switch,

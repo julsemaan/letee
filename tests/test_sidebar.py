@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import ANY, call, patch
 
 import letee.sidebar as sidebar
+from tests import use_bare_inner_tmux
 from letee import config, operations
 from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
@@ -33,6 +34,7 @@ class OperationTestCase(unittest.TestCase):
 
 
 def setUpModule():
+    use_bare_inner_tmux()
     # Exact-command assertions assume the overlay is off; overlay tests enable it locally.
     global _overlay_patch, _publisher_patch
     _overlay_patch = patch.object(sidebar.sessions, "load_tmux_config_overlay", return_value=False)

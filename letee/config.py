@@ -138,6 +138,11 @@ def ensure_config() -> tuple[Path, Path]:
     return cfg, wrapper
 
 
+def remote_tmux_cache_path() -> Path:
+    """Per-host remote tmux paths, shared by every named cockpit."""
+    return config_dir() / "remote-tmux.json"
+
+
 def sessions_path(server: str | None = None) -> Path:
     name = normalize_server(_CURRENT_SERVER if server is None else server)
     if name == DEFAULT_SERVER:

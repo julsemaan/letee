@@ -19,7 +19,7 @@ It adds a persistent sidebar to an existing terminal. Your sessions remain ordin
 
 ## Requirements
 
-You need tmux on every machine where letee runs sessions, local or remote. Letee's bundled tmux only runs the cockpit.
+Install letee on every machine where letee runs sessions, local or remote. Letee runs those sessions on its bundled tmux. Platforms without a bundle need tmux on PATH.
 
 If you want to connect to machines remotely, you need OpenSSH (or SSH equivalent on your machine)
 
@@ -42,7 +42,7 @@ export PATH="$HOME/.local/bin:$PATH"
 letee
 ```
 
-To upgrade, run the same commands again.
+Run the same install command on each remote host you connect to. To upgrade, run the same commands again.
 
 To uninstall:
 

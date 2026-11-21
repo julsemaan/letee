@@ -7,11 +7,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from tests import use_bare_inner_tmux
 from letee import cockpit, sessions
 from letee import names
 from letee.discovery import SessionSnapshot, SourceSnapshot, _parse_source_snapshot
 from letee.names import PaneTarget, Target
 
+
+
+def setUpModule():
+    use_bare_inner_tmux()
 
 class FinderMetadataTest(unittest.TestCase):
     def test_metadata_updates_snapshot_without_changing_alert_identity(self):

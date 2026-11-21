@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
+import contextvars
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
@@ -13,18 +15,19 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 
-from . import diagnostics
+from . import diagnostics, tmux
 from .config import load_hosts, load_persistent_ssh, load_timing
-from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, validate_host
-from .sessions import ssh_command
+from .names import SESSION_ID_RE, PaneTarget, Target, validate_host
+from . import sessions
+from .sessions import _inner_server_env, server_argv, shell_join, ssh_command
 
 
 # After the legacy colon header: TAB session_id:window_index:pane_index TAB
 # window_name. The final name is unescaped and may contain tabs and colons.
 PANES_FORMAT = "#{session_name}:#{window_id}:#{pane_id}:#{window_bell_flag}:#{window_flags}:#{pane_active}:#{window_active}:#{socket_path}\t#{session_id}:#{window_index}:#{pane_index}\t#{window_name}"
-PANES_COMMAND = f'tmux -L {shlex.quote(INNER_SERVER_SOCKET)} list-panes -a -F "{PANES_FORMAT}"'
 REMOTE_SEPARATOR = "__LETEE_AGENT_STATUS__"
 # Remote record read/parse errors are aggregated in allowlisted counters.
 # Exception text, filenames, and record contents never enter the summary.
@@ -42,11 +45,18 @@ for path in sorted(glob.glob(os.path.join(root,'*.json'))):
   failed+=1
 print(json.dumps({'_letee_discovery':{'file_count':min(files,1048576),'loaded_count':min(loaded,1048576),'failed_count':min(failed,1048576)}}))
 """
-REMOTE_COMMAND = (
-    f"{PANES_COMMAND}; rc=$?; printf '\\n{REMOTE_SEPARATOR}\\n'; "
-    f"python3 -c {shlex.quote(_REMOTE_READER)}; letee_reader_rc=$?; "
-    "printf '{\"_letee_reader_exit\": %s}\\n' \"$letee_reader_rc\"; exit $rc"
-)
+
+
+def panes_argv(tmux_path: str) -> tuple[str, ...]:
+    return server_argv(tmux_path, "list-panes", "-a", "-F", PANES_FORMAT)
+
+
+def remote_command(tmux_path: str) -> str:
+    return (
+        f"{shell_join(panes_argv(tmux_path))}; rc=$?; printf '\\n{REMOTE_SEPARATOR}\\n'; "
+        f"python3 -c {shlex.quote(_REMOTE_READER)}; letee_reader_rc=$?; "
+        "printf '{\"_letee_reader_exit\": %s}\\n' \"$letee_reader_rc\"; exit $rc"
+    )
 # Diagnostic trailers have a separate fixed budget, preserving the payload limit.
 _DIAGNOSTIC_TRAILER_LIMIT = 512
 _DIAGNOSTIC_TRAILERS = re.compile(
@@ -147,12 +157,6 @@ class SessionSnapshot:
 
 
 UNAVAILABLE = SourceSnapshot(False, (), frozenset())
-
-
-def _clean_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("TMUX", None)
-    return env
 
 
 def _agent_sort_key(agent: AgentEntry) -> tuple[str, str, int, int, str]:
@@ -380,11 +384,11 @@ def _local_snapshot(request_id: str | None) -> SourceSnapshot:
     with diagnostics.operation("discovery.local_snapshot", request_id=request_id, timeout=timeout) as operation:
         try:
             proc = subprocess.run(
-                ["tmux", "-L", INNER_SERVER_SOCKET, "list-panes", "-a", "-F", PANES_FORMAT],
+                panes_argv(tmux.tmux_executable()),
                 text=True,
                 capture_output=True,
                 timeout=timeout,
-                env=_clean_env(),
+                env=_inner_server_env(),
             )
         except subprocess.TimeoutExpired:
             operation.outcome = "timed_out"
@@ -402,10 +406,10 @@ def _local_snapshot(request_id: str | None) -> SourceSnapshot:
         return replace(snapshot, agents=_read_local_agents(snapshot.panes, request_id=request_id), sampled_at=sampled_at)
 
 
-def _ssh_command(host: str, persistent_ssh: bool, connect_timeout: int | None = None) -> tuple[str, ...]:
+def _ssh_command(host: str, tmux_path: str, persistent_ssh: bool, connect_timeout: int | None = None) -> tuple[str, ...]:
     return ssh_command(
         "-n", "-o", "BatchMode=yes",
-        validate_host(host), REMOTE_COMMAND,
+        validate_host(host), remote_command(tmux_path),
         persistent_ssh=persistent_ssh, connect_timeout=connect_timeout,
     )
 
@@ -441,12 +445,17 @@ def _remote_snapshot(host: str, request_id: str | None) -> SourceSnapshot:
     persistent_ssh = load_persistent_ssh()
     timing = load_timing()
     with diagnostics.operation("discovery.remote_snapshot", host=host, request_id=request_id, timeout=timing.remote_command_timeout, persistent_ssh=persistent_ssh) as operation:
+        try:
+            command = _ssh_command(host, sessions.remote_tmux(host), persistent_ssh)
+        except SystemExit as error:
+            operation.outcome = "unavailable"
+            return SourceSnapshot(False, (), frozenset(), str(error), request_id=request_id)
         master_preexisting = _persistent_master_alive(host, persistent_ssh)
         operation.fields["master_preexisting"] = master_preexisting
         with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
             try:
                 proc = subprocess.Popen(
-                    _ssh_command(host, persistent_ssh),
+                    command,
                     stdout=output,
                     stderr=errors,
                     start_new_session=True,
@@ -622,6 +631,14 @@ class DiscoveryPoller:
         self._clock = clock
         self._next_local_poll = self._clock() + LOCAL_POLL_INTERVAL
         self._active: dict[str, _Request] = {}
+        # Resolving a host's tmux path may block on SSH, so it runs off the tick loop.
+        self._resolver = ThreadPoolExecutor(thread_name_prefix="letee-tmux-resolve")
+        self._resolving: dict[str, Future[str]] = {}
+        # In-flight resolver ssh processes, so close() can stop them instead of waiting out their timeout.
+        self._resolver_processes: dict[str, object] = {}
+        # Guards _resolver_processes and _closed, since resolvers register from worker threads.
+        self._resolver_lock = threading.Lock()
+        self._closed = False
         self._active_remote_host: str | None = None
         self._next = dict.fromkeys(self.hosts, 0.0)
         self._retry_delay = dict.fromkeys(self.hosts, self._timing.retry_initial_delay)
@@ -700,19 +717,52 @@ class DiscoveryPoller:
         self._schedule(host, snapshot.available)
         return changed
 
-    def _start_request(self, host: str) -> bool:
+    def _fail_request(self, host: str, request_id: str | None, started: float, error: str, outcome: str) -> bool:
+        snapshot = SourceSnapshot(False, (), frozenset(), error, request_id=request_id)
+        previous = self.remotes[host]
+        changed = snapshot != previous
+        diagnostics.log("discovery.request_finished", host=host, request_id=request_id, outcome=outcome, elapsed_seconds=time.monotonic() - started, **_availability_fields(previous, snapshot))
+        self.remotes[host] = snapshot
+        self._schedule(host, False)
+        return changed
+
+    def _register_resolver(self, host: str, process: object) -> None:
+        """Track a resolver's ssh process, or stop it if close() already ran."""
+        with self._resolver_lock:
+            if not self._closed:
+                self._resolver_processes[host] = process
+                return
+        _stop_process(process, reason="close")
+
+    def _start_request(self, host: str, resolved: Future[str] | None = None) -> bool:
+        """Start discovery for host, first resolving its tmux path in the background on a cache miss."""
+        factor = self._timeout_factor[host]
+        timeout = self._timing.remote_command_timeout * factor
+        connect_timeout = math.ceil(self._timing.ssh_connect_timeout * factor)
+        tmux_path = sessions.cached_remote_tmux(host) if resolved is None else None
+        if resolved is None and tmux_path is None:
+            self._resolving[host] = self._resolver.submit(
+                contextvars.copy_context().run, sessions.remote_tmux, host,
+                connect_timeout=connect_timeout, timeout=timeout,
+                on_spawn=lambda process: self._register_resolver(host, process),
+            )
+            diagnostics.log("discovery.tmux_resolving", host=host)
+            return False
         logger = diagnostics.get_diagnostics()
         request_id = logger.new_id("discovery")
         context = logger.context_values()
         started = time.monotonic()
         with _request_context(host, request_id, started, context, self.remotes[host]):
-            factor = self._timeout_factor[host]
-            timeout = self._timing.remote_command_timeout * factor
-            connect_timeout = math.ceil(self._timing.ssh_connect_timeout * factor)
             diagnostics.log(
                 "discovery.request_starting", host=host, request_id=request_id, timeout=timeout,
                 connect_timeout=connect_timeout, timeout_factor=factor, persistent_ssh=self._persistent_ssh,
             )
+            try:
+                if resolved is not None:
+                    tmux_path = resolved.result()
+                command = _ssh_command(host, tmux_path, self._persistent_ssh, connect_timeout)
+            except SystemExit as error:
+                return self._fail_request(host, request_id, started, str(error), "tmux_unresolved")
             master_preexisting = _persistent_master_alive(host, self._persistent_ssh)
             output = tempfile.TemporaryFile()
             try:
@@ -722,7 +772,7 @@ class DiscoveryPoller:
                 raise
             try:
                 process = self._popen(
-                    _ssh_command(host, self._persistent_ssh, connect_timeout),
+                    command,
                     stdout=output,
                     stderr=errors,
                     start_new_session=True,
@@ -731,13 +781,7 @@ class DiscoveryPoller:
                 output.close()
                 errors.close()
                 diagnostics.error(error, handling="retry", operation="discovery.request_spawn", host=host, request_id=request_id)
-                snapshot = SourceSnapshot(False, (), frozenset(), error.strerror or str(error), request_id=request_id)
-                previous = self.remotes[host]
-                changed = snapshot != previous
-                diagnostics.log("discovery.request_finished", host=host, request_id=request_id, outcome="spawn_failed", elapsed_seconds=time.monotonic() - started, **_availability_fields(previous, snapshot))
-                self.remotes[host] = snapshot
-                self._schedule(host, False)
-                return changed
+                return self._fail_request(host, request_id, started, error.strerror or str(error), "spawn_failed")
             except BaseException:
                 output.close()
                 errors.close()
@@ -765,8 +809,14 @@ class DiscoveryPoller:
             changed = snapshot != self.local
             self.local = snapshot
             self._next_local_poll = now + LOCAL_POLL_INTERVAL
+        for host, future in list(self._resolving.items()):
+            if future.done():
+                del self._resolving[host]
+                with self._resolver_lock:
+                    self._resolver_processes.pop(host, None)
+                changed |= self._start_request(host, future)
         for host in self.hosts:
-            if host not in self._active and self._clock() >= self._next[host]:
+            if host not in self._active and host not in self._resolving and self._clock() >= self._next[host]:
                 changed |= self._start_request(host)
 
         for host, request in list(self._active.items()):
@@ -794,7 +844,7 @@ class DiscoveryPoller:
                 else:
                     changed |= self._finish_request(host, request, returncode)
         for host in self.hosts:
-            state = "inflight" if host in self._active else "not_due"
+            state = "inflight" if host in self._active else "resolving" if host in self._resolving else "not_due"
             previous_state, logged_at = self._poll_states.get(host, (None, 0.0))
             if state != previous_state or now - logged_at >= DIAGNOSTIC_HEARTBEAT_INTERVAL:
                 diagnostics.log("discovery.poll_state", host=host, state=state, next_deadline=self._next[host], request_id=self._active[host].request_id if host in self._active else None)
@@ -855,6 +905,14 @@ class DiscoveryPoller:
 
     def close(self) -> None:
         diagnostics.log("discovery.close", pending_count=len(self._active))
+        self._resolver.shutdown(wait=False, cancel_futures=True)
+        self._resolving.clear()
+        with self._resolver_lock:
+            self._closed = True
+            processes = list(self._resolver_processes.values())
+            self._resolver_processes.clear()
+        for process in processes:
+            _stop_process(process, reason="close")
         for host, request in self._active.items():
             with _request_context(host, request.request_id, request.diagnostic_started, request.context, self.remotes[host]):
                 _stop_process(request.process, request_id=request.request_id, reason="close")
