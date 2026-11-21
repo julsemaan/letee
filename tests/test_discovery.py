@@ -31,6 +31,7 @@ from letee.discovery import (
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from letee import sessions
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target
 from letee.config import Timing, load_timing
 
@@ -722,7 +723,17 @@ class DiscoverySnapshotTest(unittest.TestCase):
 
     def test_remote_snapshot_without_letee_is_unavailable_with_install_hint(self):
         hint = "letee is not installed on dev (or not on its login PATH). Install it there with: ..."
-        with patch("letee.sessions.remote_tmux", side_effect=SystemExit(hint)), \
+        snapshot, remote = self._unresolved_snapshots(sessions.RemoteLeteeMissing(hint))
+        self.assertEqual((snapshot.available, snapshot.error, snapshot.status), (False, hint, "letee missing"))
+        self.assertEqual((remote.available, remote.error, remote.status), (False, hint, "letee missing"))
+
+    def test_unresolved_tmux_for_other_reasons_has_no_status(self):
+        snapshot, remote = self._unresolved_snapshots(SystemExit("dev: timed out"))
+        self.assertEqual((snapshot.error, snapshot.status), ("dev: timed out", None))
+        self.assertEqual((remote.error, remote.status), ("dev: timed out", None))
+
+    def _unresolved_snapshots(self, error):
+        with patch("letee.sessions.remote_tmux", side_effect=error), \
                 patch("letee.sessions.cached_remote_tmux", return_value=None), \
                 patch("letee.discovery.subprocess.Popen") as popen:
             snapshot = remote_snapshot("dev")
@@ -732,8 +743,7 @@ class DiscoverySnapshotTest(unittest.TestCase):
             poller.tick()
             poller.close()
         popen.assert_not_called()
-        self.assertEqual((snapshot.available, snapshot.error), (False, hint))
-        self.assertEqual((poller.remotes["dev"].available, poller.remotes["dev"].error), (False, hint))
+        return snapshot, poller.remotes["dev"]
 
     def test_tick_does_not_wait_for_unresolved_tmux_paths(self):
         released = threading.Event()

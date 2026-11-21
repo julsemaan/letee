@@ -97,6 +97,8 @@ class SourceSnapshot:
     panes: tuple[PaneTarget, ...] = ()
     agents: tuple[AgentEntry, ...] = ()
     focused_panes: frozenset[PaneTarget] = frozenset()
+    # Short reason shown instead of "reconnecting…" while unavailable.
+    status: str | None = None
     sampled_at: float = field(default_factory=time.monotonic, compare=False)
     request_id: str | None = field(default=None, compare=False)
     _pane_metadata: tuple = field(init=False, repr=False)
@@ -440,6 +442,10 @@ def remote_snapshot(host: str) -> SourceSnapshot:
         return _remote_snapshot(host, request_id)
 
 
+def _unavailable_status(error: SystemExit) -> str | None:
+    return sessions.LETEE_MISSING if isinstance(error, sessions.RemoteLeteeMissing) else None
+
+
 def _remote_snapshot(host: str, request_id: str | None) -> SourceSnapshot:
     host = validate_host(host)
     persistent_ssh = load_persistent_ssh()
@@ -449,7 +455,7 @@ def _remote_snapshot(host: str, request_id: str | None) -> SourceSnapshot:
             command = _ssh_command(host, sessions.remote_tmux(host), persistent_ssh)
         except SystemExit as error:
             operation.outcome = "unavailable"
-            return SourceSnapshot(False, (), frozenset(), str(error), request_id=request_id)
+            return SourceSnapshot(False, (), frozenset(), str(error), status=_unavailable_status(error), request_id=request_id)
         master_preexisting = _persistent_master_alive(host, persistent_ssh)
         operation.fields["master_preexisting"] = master_preexisting
         with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
@@ -717,8 +723,8 @@ class DiscoveryPoller:
         self._schedule(host, snapshot.available)
         return changed
 
-    def _fail_request(self, host: str, request_id: str | None, started: float, error: str, outcome: str) -> bool:
-        snapshot = SourceSnapshot(False, (), frozenset(), error, request_id=request_id)
+    def _fail_request(self, host: str, request_id: str | None, started: float, error: str, outcome: str, status: str | None = None) -> bool:
+        snapshot = SourceSnapshot(False, (), frozenset(), error, status=status, request_id=request_id)
         previous = self.remotes[host]
         changed = snapshot != previous
         diagnostics.log("discovery.request_finished", host=host, request_id=request_id, outcome=outcome, elapsed_seconds=time.monotonic() - started, **_availability_fields(previous, snapshot))
@@ -762,7 +768,7 @@ class DiscoveryPoller:
                     tmux_path = resolved.result()
                 command = _ssh_command(host, tmux_path, self._persistent_ssh, connect_timeout)
             except SystemExit as error:
-                return self._fail_request(host, request_id, started, str(error), "tmux_unresolved")
+                return self._fail_request(host, request_id, started, str(error), "tmux_unresolved", _unavailable_status(error))
             master_preexisting = _persistent_master_alive(host, self._persistent_ssh)
             output = tempfile.TemporaryFile()
             try:

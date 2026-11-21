@@ -4,7 +4,7 @@
 
 `letee` creates or attaches to a dedicated outer tmux server. The outer server uses the `letee@v1` socket and `letee` session by default. A named cockpit uses the `letee@v1-<name>` socket. Reopening the same name runs `attach -d`, moving that cockpit to the newest terminal.
 
-The cockpit and the inner sessions use letee's bundled tmux, so remote hosts need letee installed. Inside letee sessions, `tmux` resolves to the bundled binary. Platforms without a bundle use tmux from PATH.
+The cockpit and the inner sessions use letee's bundled tmux, so remote hosts need letee installed. If a host lacks it, its sessions show `letee missing` with the install command, and they connect once letee is installed. Inside letee sessions, `tmux` resolves to the bundled binary. Platforms without a bundle use tmux from PATH.
 
 The outer server owns the layout only:
 

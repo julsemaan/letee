@@ -13,9 +13,10 @@ from letee.names import PaneTarget, Target
 
 
 def setUpModule():
-    reset = patch.object(cockpit.sessions, "reset_ssh_masters")
-    reset.start()
-    unittest.addModuleCleanup(reset.stop)
+    for name, value in (("reset_ssh_masters", None), ("missing_letee", [])):
+        patcher = patch.object(cockpit.sessions, name, return_value=value)
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
 
 
 class SidebarCollapseTest(unittest.TestCase):
@@ -355,6 +356,24 @@ class CockpitStartupTest(unittest.TestCase):
         self.assertIn("SSH check complete: 1 ready, 1 failed.", text)
         self.assertIn("ssh prod", text)
         self.assertIn("Starting letee...", text)
+
+    def test_hosts_without_letee_are_reported_with_install_command(self):
+        output = []
+        with (
+            patch.object(cockpit.sessions, "ensure_ssh_agent", return_value=None),
+            patch.object(cockpit.sessions, "group_hosts", return_value=[["dev"], ["prod"]]),
+            patch.object(cockpit.sessions, "prepare_host", return_value=True),
+            patch.object(cockpit.sessions, "missing_letee", return_value=["prod"]) as missing_letee,
+            patch("builtins.print", side_effect=lambda *args, **kwargs: output.append(str(args[0]))),
+            patch.object(cockpit.sys.stdin, "isatty", return_value=True),
+        ):
+            cockpit._prepare_remote_hosts(["dev", "prod"])
+
+        missing_letee.assert_called_once_with(["dev", "prod"])
+        self.assertIn("[1/2] dev — ready", output)
+        self.assertIn("[2/2] prod — letee missing", output)
+        self.assertIn("SSH check complete: 1 ready, 0 failed, 1 letee missing.", output)
+        self.assertIn(f"Install letee on prod: {cockpit.sessions.INSTALL_COMMAND}", output)
 
     def test_only_failed_probes_retry_sequentially_after_agent_setup(self):
         order = []
@@ -1532,6 +1551,15 @@ class CockpitLayoutTest(unittest.TestCase):
             cockpit.switch_reconnecting(target)
         respawn = next(item.args[4] for item in command.call_args_list if item.args[0] == "respawn-pane")
         self.assertEqual(respawn, cockpit._reconnecting_command(target))
+        with (
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "tmux") as command,
+            patch.object(cockpit, "_respawn_attachment") as attach,
+        ):
+            cockpit.switch_reconnecting(target, cockpit.sessions.LETEE_MISSING)
+        respawn = next(item.args[4] for item in command.call_args_list if item.args[0] == "respawn-pane")
+        self.assertEqual(respawn, cockpit._reconnecting_command(target, cockpit.sessions.LETEE_MISSING))
+        attach.assert_not_called()
 
     def test_deferred_switch_shows_spinner_before_preparing_and_attaches(self):
         target = Target("ssh", "work", "dev")
@@ -1756,6 +1784,15 @@ class CockpitLayoutTest(unittest.TestCase):
         self.assertNotIn("letee", command[4])
         self.assertNotIn("ssh:dev:work", command[4])
         self.assertNotIn("tail -f", command[4])
+
+    def test_letee_missing_screen_shows_host_and_install_command(self):
+        command = cockpit._reconnecting_command(cockpit.Target("ssh", "work", "dev"), cockpit.sessions.LETEE_MISSING)
+        text = shlex.split(command)[2]
+        self.assertIn("letee not installed", text)
+        self.assertIn("Install letee on dev", text)
+        self.assertIn(cockpit.sessions.INSTALL_COMMAND, text)
+        self.assertIn("Waiting for letee", command)
+        self.assertNotIn("Connection interrupted", command)
 
     def test_reconnecting_uses_ascii_spinner_when_requested(self):
         with patch.dict(cockpit.os.environ, {"LETEE_ASCII": "1"}):

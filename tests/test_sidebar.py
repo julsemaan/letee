@@ -1032,7 +1032,7 @@ class ReconciliationLoopTest(OperationTestCase):
             sidebar.run(FakeScreen([-1] * 8 + [STOP], size=(16, 60)))
         effects = [item.args[0] for item in actions.submit.call_args_list]
         self.assertEqual(effects, [
-            sidebar.Effect("show_reconnecting", active, automatic=True),
+            sidebar.Effect("show_reconnecting", active, automatic=True, message="reconnecting…"),
             sidebar.Effect("ensure_created", missing, automatic=True),
         ])
         clear_startup.assert_called_once_with(active, 71, None)
@@ -1398,10 +1398,10 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
     def test_pending_startup_overlays_do_not_starve_local_favorite(self):
         active = Target("ssh", "work", "dev")
         missing = Target("local", "other")
-        for remotes, overlay in (
-            ({"dev": None}, "show_reconnecting"),
-            ({"dev": source("ssh", host="dev", available=False)}, "show_reconnecting"),
-            ({}, "show_unavailable"),
+        for remotes, overlay, message in (
+            ({"dev": None}, "show_reconnecting", "connecting…"),
+            ({"dev": source("ssh", host="dev", available=False)}, "show_reconnecting", "reconnecting…"),
+            ({}, "show_unavailable", ""),
         ):
             for marker in (None, active):
                 with self.subTest(remotes=remotes, marker=marker):
@@ -1438,8 +1438,31 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                     )
                     self.assertEqual(
                         submitted,
-                        [] if marker == active else [Effect(overlay, active, automatic=True)],
+                        [] if marker == active else [Effect(overlay, active, automatic=True, message=message)],
                     )
+
+    def test_overlay_refreshes_once_when_host_turns_out_to_lack_letee(self):
+        target = Target("ssh", "work", "dev")
+        bare = replace(source("ssh", host="dev", available=False, error="letee is not installed"), status="letee missing")
+        retry = sidebar.RestorationRetry()
+        submitted = []
+
+        def submit(effect):
+            submitted.append(effect)
+            return True
+
+        marker = None
+        overlays = []
+        for data in (snapshot(remotes={"dev": None}), *[snapshot(remotes={"dev": bare})] * 3):
+            marker = sidebar._sync_active_session(target, data, marker, submit, retry=retry, now=1)
+            while submitted:
+                effect = submitted.pop(0)
+                overlays.append((effect.kind, effect.message))
+                marker = sidebar._reconcile_active_session_effect(
+                    marker, sidebar.EffectResult(effect, ()), retry=retry, now=1,
+                )
+        self.assertEqual(overlays, [("show_reconnecting", "connecting…"), ("show_reconnecting", "letee missing")])
+        self.assertEqual((marker, retry.overlay), (target, "letee missing"))
 
     @patch.object(sidebar, "load_timing", return_value=config.Timing())
     def test_restoration_backoff_uses_completion_time_and_healthy_discovery_does_not_reset(self, _load_timing):
@@ -2218,7 +2241,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
                 target, snapshot(remotes={"dev": source("ssh", sessions=("work",), host="dev")}), pending
             )
 
-        show_reconnecting.assert_called_once_with(target)
+        show_reconnecting.assert_called_once_with(target, "reconnecting…")
         switch.assert_called_once_with(target, sidebar.sessions.attach_command(target, attach_only=True), launch_id=ANY)
         self.assertEqual(pending, target)
         self.assertIsNone(restored)
@@ -2383,7 +2406,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar, "_draw", return_value=(2, None)),
             patch.object(sidebar, "_bell_targets", return_value=set()),
-            patch.object(sidebar.cockpit, "show_reconnecting", side_effect=lambda _: events.append("reconnecting")),
+            patch.object(sidebar.cockpit, "show_reconnecting", side_effect=lambda *_: events.append("reconnecting")),
             patch.object(sidebar.cockpit, "switch", side_effect=lambda *_, **kwargs: events.append("switch")) as switch,
         ):
             sidebar.run(screen)
@@ -2394,7 +2417,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
         self.assertEqual(
             observed,
             [
-                Effect("show_reconnecting", target, automatic=True),
+                Effect("show_reconnecting", target, automatic=True, message="reconnecting…"),
                 Effect("switch", target, automatic=True),
             ],
         )
@@ -2578,7 +2601,7 @@ class ActiveSessionAvailabilityTest(OperationTestCase):
             patch.object(sidebar.curses, "curs_set"),
             patch.object(sidebar, "_draw", return_value=(2, None)),
             patch.object(sidebar, "_bell_targets", return_value=set()),
-            patch.object(sidebar.cockpit, "show_reconnecting", side_effect=lambda _: events.append(("reconnecting", actions.busy))),
+            patch.object(sidebar.cockpit, "show_reconnecting", side_effect=lambda *_: events.append(("reconnecting", actions.busy))),
             patch.object(sidebar.cockpit, "switch", side_effect=switch),
         ):
             sidebar.run(screen)
@@ -3046,6 +3069,15 @@ class SidebarViewModeTest(OperationTestCase):
         self.assertEqual(entry.status, "reconnecting…")
         self.assertIn("reconnecting…", _entry_lines(entry, False, set(), None, 40)[1])
 
+    def test_tracked_remote_favorite_shows_letee_missing(self):
+        target = Target("ssh", "work", "dev")
+        bare = replace(source("ssh", host="dev", available=False, error="letee is not installed"), status="letee missing")
+
+        entry = next(entry for entry in _entries(snapshot(remotes={"dev": bare}), [target]) if entry.target == target)
+
+        self.assertEqual(entry.status, "letee missing")
+        self.assertIn("└─ letee missing", _entry_lines(entry, False, set(), None, 40)[1])
+
     def test_tracked_reachable_sessions_have_no_missing_label_when_absent(self):
         targets = (Target("local", "work"), Target("ssh", "work", "dev"))
         data = snapshot(local=("other",), remotes={"dev": source("ssh", ("other",), host="dev")})
@@ -3111,10 +3143,14 @@ class ReconnectingSelectionTest(OperationTestCase):
                     self.assertIsNone(sidebar.cockpit.startup_deadline(target))
 
     def test_enter_on_reconnecting_session_shows_progress_without_attaching(self):
+        failed = source("ssh", host="dev", available=False, error="connection refused")
+        for remote, status in ((failed, "reconnecting…"), (replace(failed, status="letee missing"), "letee missing")):
+            with self.subTest(status=status):
+                self._assert_enter_shows_progress(remote, status)
+
+    def _assert_enter_shows_progress(self, remote, status):
         target = Target("ssh", "work", "dev")
-        data = snapshot(
-            remotes={"dev": source("ssh", host="dev", available=False, error="connection refused")}
-        )
+        data = snapshot(remotes={"dev": remote})
         poller = unittest.mock.Mock(launch_id=None,
             snapshot=data,
             current_target=None,
@@ -3156,9 +3192,11 @@ class ReconnectingSelectionTest(OperationTestCase):
 
         self.assertEqual(
             [call.args[0] for call in actions.submit.call_args_list],
-            [Effect("show_reconnecting", target)],
+            [Effect("show_reconnecting", target, message=status)],
         )
-        switch.assert_called_once_with(target, sidebar.cockpit._reconnecting_command(target), launch_id=ANY)
+        switch.assert_called_once_with(
+            target, sidebar.cockpit._reconnecting_command(target, status), launch_id=ANY, placeholder=True,
+        )
         show_reconnecting.assert_not_called()
         attach_command.assert_not_called()
 
@@ -10285,11 +10323,11 @@ class PrefixActionTest(OperationTestCase):
         missing = Target("local", "missing")
         remote = Target("ssh", "remote", "host")
         cases = (
-            ({}, "switch"),
-            ({"host": None}, "show_reconnecting"),
-            ({"host": source("ssh", host="host", available=False)}, "show_reconnecting"),
+            ({}, "switch", ""),
+            ({"host": None}, "show_reconnecting", "connecting…"),
+            ({"host": source("ssh", host="host", available=False)}, "show_reconnecting", "reconnecting…"),
         )
-        for remotes, kind in cases:
+        for remotes, kind, message in cases:
             with self.subTest(remotes=remotes):
                 data = snapshot(local=("active",), remotes=remotes)
                 actions = unittest.mock.Mock(busy=True, blocks_favorite_changes=False)
@@ -10299,7 +10337,7 @@ class PrefixActionTest(OperationTestCase):
                     self._run([curses.KEY_F4, curses.KEY_F4, STOP], [active, missing, remote], active, data)
                 self.assertEqual(
                     [call.args[0] for call in actions.submit.call_args_list],
-                    [Effect("switch", missing), Effect(kind, remote)],
+                    [Effect("switch", missing), Effect(kind, remote, message=message)],
                 )
 
     def test_cycle_sessions_empty_and_single_lists(self):
@@ -11345,7 +11383,7 @@ class SidebarDiagnosticsTest(OperationTestCase):
                 [], keys=[*([-1] * 24), STOP], poller=poller, current_target=target,
                 switch_side_effect=[OSError("PRIVATE"), None],
             )
-        overlay.assert_called_once_with(target)
+        overlay.assert_called_once_with(target, "reconnecting…")
         heartbeat = next(r for r in records if r["event"] == "sidebar_heartbeat")
         self.assertEqual(heartbeat["restoration_defer_reason"], "refresh_pending")
         requests = [r for r in records if r["event"] == "restoration_requested"]

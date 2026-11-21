@@ -293,7 +293,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(target.format())
         for host, source in snapshot.remotes.items():
             if not source or not source.available:
-                print(f"ssh:{host} unavailable")
+                reason = f": {source.error}" if source and source.error else ""
+                print(f"ssh:{host} unavailable{reason}")
             else:
                 for target in source.sessions:
                     print(target.format())

@@ -440,9 +440,11 @@ def _unavailable_command(target: Target | None = None) -> str:
     return f"printf %s {shlex.quote(text)}; exec sh"
 
 
-def _animated_command(target: Target, title: str, progress: str) -> str:
+def _animated_command(target: Target, title: str, progress: str, note: str = "") -> str:
     text, animation_states = attachment.animation_data(target, title)
     indent = "    "
+    if note:
+        text += "".join(f"{indent}{line}\n" for line in note.splitlines()) + "\n"
     states = " ".join(shlex.quote(f"{color}:{frame}:{dots}") for color, frame, dots in animation_states)
     save_cursor = shlex.quote("\0337")
     spinner = shlex.quote(f"\0338\033[2K{indent}\033[38;5;%sm%s\033[0m {progress}%s")
@@ -509,7 +511,10 @@ def _missing_command(target: Target) -> str:
     return _animated_command(target, "Session missing", "Waiting for session")
 
 
-def _reconnecting_command(target: Target) -> str:
+def _reconnecting_command(target: Target, status: str = "") -> str:
+    if status == sessions.LETEE_MISSING:
+        note = f"Install letee on {target.host}; letee connects once it's there:\n  {sessions.INSTALL_COMMAND}"
+        return _animated_command(target, "letee not installed", "Waiting for letee", note)
     return _animated_command(target, "Connection interrupted", "Reconnecting")
 
 
@@ -742,25 +747,34 @@ def _prepare_remote_hosts(hosts: list[str]) -> None:
             probe_results = sessions.probe_hosts(probe_hosts)
         results.update(zip(probe_hosts, probe_results))
 
-    ready = 0
-    failed: list[str] = []
     for index, host in enumerate(hosts, 1):
-        host_ready = results.get(host, False)
-        if host in probe_host_set and not host_ready:
+        if host in probe_host_set and not results[host]:
             print(f"[{index}/{len(hosts)}] {host} — retrying interactively...", flush=True)
             diagnostics.log("ssh_preparation_host", host=host, outcome="retrying", reason="batch_failed")
             with diagnostics.get_diagnostics().context(host=host, origin="startup_retry"):
-                host_ready = sessions.prepare_host(host)
-            results[host] = host_ready
-        diagnostics.log("ssh_preparation_host", host=host, outcome="ready" if host_ready else "failed")
-        if host_ready:
+                results[host] = sessions.prepare_host(host)
+
+    # Fills the tmux-path cache that startup just cleared, so discovery skips this round trip.
+    missing = set(sessions.missing_letee([host for host in hosts if results.get(host, False)]))
+    ready = 0
+    failed: list[str] = []
+    for index, host in enumerate(hosts, 1):
+        if host in missing:
+            outcome = sessions.LETEE_MISSING
+        elif results.get(host, False):
+            outcome = "ready"
             ready += 1
-            print(f"[{index}/{len(hosts)}] {host} — ready", flush=True)
         else:
+            outcome = "failed"
             failed.append(host)
-            print(f"[{index}/{len(hosts)}] {host} — failed", flush=True)
-    diagnostics.log("ssh_preparation", outcome="completed", ready_count=ready, failed_count=len(failed))
-    print(f"SSH check complete: {ready} ready, {len(failed)} failed.", flush=True)
+        diagnostics.log("ssh_preparation_host", host=host, outcome=outcome)
+        print(f"[{index}/{len(hosts)}] {host} — {outcome}", flush=True)
+    diagnostics.log("ssh_preparation", outcome="completed", ready_count=ready, failed_count=len(failed), letee_missing_count=len(missing))
+    summary = f"SSH check complete: {ready} ready, {len(failed)} failed"
+    print(f"{summary}, {len(missing)} letee missing." if missing else f"{summary}.", flush=True)
+    for host in hosts:
+        if host in missing:
+            print(f"Install letee on {host}: {sessions.INSTALL_COMMAND}", flush=True)
     if failed:
         print(f"Failed hosts remain unavailable. Run `ssh {failed[0]}` to diagnose.", flush=True)
     print("Starting letee...", flush=True)
@@ -1001,7 +1015,9 @@ def switch(
     action_id: str | None = None,
     input_id: str | None = None,
     launch_id: str | None = None,
+    placeholder: bool = False,
 ) -> None:
+    """Show attach_command for target; placeholder marks a status screen rather than an attachment."""
     debug = diagnostics.get_diagnostics(server=tmux.SERVER)
     switch_id = None
     if debug.enabled:
@@ -1125,7 +1141,7 @@ def switch(
     if target.kind == "ssh" and parts and parts[0] == "ssh":
         attach_command = attachment.command(target, attach_command)
     attachment_id = None
-    if debug.enabled and attach_command != _reconnecting_command(target):
+    if debug.enabled and not placeholder:
         attachment_id = uuid.uuid4().hex
     if attachment_id:
         diagnostics.log(
@@ -1136,7 +1152,7 @@ def switch(
         "respawn",
         "right_pane_respawn",
         lambda: _respawn_attachment(pane, attach_command, target)
-        if attach_command != _reconnecting_command(target)
+        if not placeholder
         else tmux.tmux("respawn-pane", "-k", "-t", pane, attach_command),
     )
     replaced()
@@ -1378,16 +1394,16 @@ def show_missing(target: Target) -> None:
 
 
 @diagnostics.operation("cockpit.show_reconnecting")
-def show_reconnecting(target: Target) -> None:
+def show_reconnecting(target: Target, status: str = "") -> None:
     pane = _require_right_pane()
     replacement = _record_attachment_replacement(pane, reason="reconnecting")
-    tmux.tmux("respawn-pane", "-k", "-t", pane, _reconnecting_command(target))
+    tmux.tmux("respawn-pane", "-k", "-t", pane, _reconnecting_command(target, status))
     if replacement:
         diagnostics.log("attachment_replaced", **replacement)
 
 
-def switch_reconnecting(target: Target, *, launch_id: str | None = None) -> None:
-    switch(target, _reconnecting_command(target), launch_id=launch_id)
+def switch_reconnecting(target: Target, status: str = "", *, launch_id: str | None = None) -> None:
+    switch(target, _reconnecting_command(target, status), launch_id=launch_id, placeholder=True)
 
 
 def _parse_target_option(text: str) -> Target | None:
