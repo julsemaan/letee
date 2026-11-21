@@ -233,8 +233,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{sessions.TMUX_PATH_MARKER}{shutil.which(executable) or executable}")
         return 0
     if args.command == "resurrect":
-        resurrect.ensure_restored() if args.action == "restore" else resurrect.save()
-        return 0
+        if args.action == "restore":
+            return 1 if resurrect.ensure_restored() == "failed" else 0
+        return 0 if resurrect.save() == "started" else 1
     _configure_server(args.server)
     if args.command == "attachment-exited":
         diagnostics.log(

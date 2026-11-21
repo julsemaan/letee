@@ -185,12 +185,22 @@ class MainTest(unittest.TestCase):
             with (
                 self.subTest(action=action),
                 patch("letee.__main__._configure_server") as configure_server,
-                patch("letee.__main__.resurrect.ensure_restored") as restore,
-                patch("letee.__main__.resurrect.save") as save,
+                patch("letee.__main__.resurrect.ensure_restored", return_value="restored") as restore,
+                patch("letee.__main__.resurrect.save", return_value="started") as save,
             ):
                 self.assertEqual(main(["resurrect", action]), 0)
             self.assertEqual((restore.call_count, save.call_count), (action == "restore", action == "save"))
             configure_server.assert_not_called()
+
+    def test_resurrect_exits_nonzero_for_unsuccessful_outcomes(self):
+        cases = [("restore", "failed"), ("save", "busy"), ("save", "no_server"), ("save", "failed")]
+        for action, outcome in cases:
+            with (
+                self.subTest(action=action, outcome=outcome),
+                patch("letee.__main__.resurrect.ensure_restored", return_value=outcome),
+                patch("letee.__main__.resurrect.save", return_value=outcome),
+            ):
+                self.assertEqual(main(["resurrect", action]), 1)
 
     def test_socket_dir_matches_tmux_default_when_tmpdir_is_unset(self):
         with (
