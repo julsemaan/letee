@@ -318,8 +318,7 @@ restore_all_pane_processes() {
 restore_active_pane_for_each_window() {
 	awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $9 == 1 { print $2, $3, $6; }' $(last_resurrect_file) |
 		while IFS=$d read session_name window_number active_pane; do
-			tmux switch-client -t "${session_name}:${window_number}"
-			tmux select-pane -t "$active_pane"
+			tmux select-pane -t "${session_name}:${window_number}.${active_pane}"
 		done
 }
 
@@ -343,7 +342,7 @@ restore_active_and_alternate_windows() {
 	awk 'BEGIN { FS="\t"; OFS="\t" } /^window/ && $6 ~ /[*-]/ { print $2, $5, $3; }' $(last_resurrect_file) |
 		sort -u |
 		while IFS=$d read session_name active_window window_number; do
-			tmux switch-client -t "${session_name}:${window_number}"
+			tmux select-window -t "${session_name}:${window_number}"
 		done
 }
 
