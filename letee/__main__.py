@@ -9,7 +9,7 @@ import stat
 import subprocess
 import sys
 
-from . import __version__, config, cockpit, diagnostics, operations, sessions, tmux
+from . import __version__, config, cockpit, diagnostics, operations, resurrect, sessions, tmux
 from .config import ensure_config
 from .discovery import discover
 from .names import (
@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
     sub.add_parser("finder", help=argparse.SUPPRESS)
     sub.add_parser("tmux-path", help=argparse.SUPPRESS)
+    sub.add_parser("resurrect", help=argparse.SUPPRESS).add_argument("action", choices=("restore", "save"))
     sub.add_parser("tmux", help="run letee's tmux with the given arguments", add_help=False)
     sub.add_parser("find-work", help="find a session, window, pane, or agent")
     attachment_exit = sub.add_parser("attachment-exited", help=argparse.SUPPRESS)
@@ -230,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "tmux-path":
         executable = tmux.tmux_executable()
         print(f"{sessions.TMUX_PATH_MARKER}{shutil.which(executable) or executable}")
+        return 0
+    if args.command == "resurrect":
+        resurrect.ensure_restored() if args.action == "restore" else resurrect.save()
         return 0
     _configure_server(args.server)
     if args.command == "attachment-exited":

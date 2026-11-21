@@ -45,6 +45,11 @@ letee = [
     "_vendor/tmux/*/tmux",
     "_vendor/tmux/licenses/*",
     "_vendor/tmux/provenance.json",
+    "_vendor/tmux_resurrect/LICENSE.md",
+    "_vendor/tmux_resurrect/PROVENANCE",
+    "_vendor/tmux_resurrect/scripts/*",
+    "_vendor/tmux_resurrect/strategies/*",
+    "_vendor/tmux_resurrect/save_command_strategies/*",
 ]
 
 [tool.coverage.run]

@@ -24,6 +24,7 @@ status_timeout = 5
 agent_panel_resize_step = 5
 persistent_ssh = true
 tmux_config_overlay = true
+session_restore = true
 
 [timing]
 ssh_connect_timeout = 2
@@ -36,6 +37,8 @@ ssh_keepalive_interval = 5
 ssh_keepalive_count_max = 3
 retry_initial_delay = 1
 retry_max_delay = 5
+session_save_interval = 60
+session_restore_timeout = 30
 ```
 
 The `LETEE_CONFIG_DIR` environment variable can override `~/.config/letee` when you need a different configuration directory.
@@ -52,6 +55,7 @@ The `LETEE_CONFIG_DIR` environment variable can override `~/.config/letee` when 
 | `agent_panel_resize_step` | `5` | Percentage points changed by `[` and `]`. It must be an integer from 1 through 100. |
 | `persistent_ssh` | `true` | Enables letee's OpenSSH connection reuse options. |
 | `tmux_config_overlay` | `true` | Sources letee's tmux settings on managed local and remote tmux servers. |
+| `session_restore` | `true` | Saves `letee.inner` sessions and restores them after a restart. See [restore after a restart](https://github.com/julsemaan/letee/blob/main/docs/usage.md#restore-after-a-restart). The local cockpit's setting applies to remote hosts too. |
 
 `agent_panel_resize_step` affects the current sidebar process only. With the default, `[` and `]` change the Agents share from `40%` to `45%` to `50%`. Rerun `letee` after changing configuration.
 
@@ -68,6 +72,8 @@ All values are seconds except `ssh_keepalive_count_max`, which counts unanswered
 Failed discovery requests retry independently per host. Automatic recreation of absent tracked sessions retries independently per target, including when overlay upload fails but discovery is healthy. Active-session restoration has separate retry state. Delays start after each attempt finishes and double up to `retry_max_delay`: by default, 1, 2, 4, then 5 seconds. Success resets the corresponding backoff. Consecutive discovery failures for a host also double its discovery timeouts up to `remote_command_max_timeout`, so slow links get time to connect: by default 3, 6, then 10 seconds, with `ConnectTimeout` at 2, 4, then 7 seconds. Success resets them; refresh does not. Set `remote_command_max_timeout` equal to `remote_command_timeout` to turn this off. Explicit discovery refresh resets discovery backoff, and changing the active host can bypass its delay once. Explicit navigation bypasses automatic retry delays. Removing a target from tracking and leaving it inactive discards its recreation retry state. User-requested create, rename, kill, and authentication operations are not automatically retried.
 
 Healthy discovery still polls local and active hosts every 0.5 seconds and inactive hosts every 10 seconds.
+
+`session_save_interval` is the longest a running sidebar waits between saves of a host whose panes haven't changed, and how long it waits after a failed save. `session_restore_timeout` limits a restore, which can take longer than other remote commands.
 
 ## Prefix and terminal flow control
 

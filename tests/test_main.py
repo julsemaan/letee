@@ -15,6 +15,11 @@ from letee import __version__, diagnostics
 from letee.__main__ import _tmux_socket_dir, main
 from letee.discovery import SessionSnapshot, SourceSnapshot
 from letee.names import Target
+from tests import disable_session_restore
+
+
+def setUpModule():
+    disable_session_restore()
 
 
 MAIN_MODULE = importlib.import_module("letee.__main__")
@@ -174,6 +179,18 @@ class MainTest(unittest.TestCase):
         self.assertEqual(output.getvalue(), f"{__version__}\n")
         configure_server.assert_not_called()
         cockpit.assert_not_called()
+
+    def test_resurrect_dispatches_without_configuring_a_server(self):
+        for action in ("restore", "save"):
+            with (
+                self.subTest(action=action),
+                patch("letee.__main__._configure_server") as configure_server,
+                patch("letee.__main__.resurrect.ensure_restored") as restore,
+                patch("letee.__main__.resurrect.save") as save,
+            ):
+                self.assertEqual(main(["resurrect", action]), 0)
+            self.assertEqual((restore.call_count, save.call_count), (action == "restore", action == "save"))
+            configure_server.assert_not_called()
 
     def test_socket_dir_matches_tmux_default_when_tmpdir_is_unset(self):
         with (
