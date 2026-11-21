@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -227,7 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     if args.command == "tmux-path":
-        print(f"{sessions.TMUX_PATH_MARKER}{tmux.tmux_executable()}")
+        executable = tmux.tmux_executable()
+        print(f"{sessions.TMUX_PATH_MARKER}{shutil.which(executable) or executable}")
         return 0
     _configure_server(args.server)
     if args.command == "attachment-exited":

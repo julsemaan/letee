@@ -33,13 +33,20 @@ def ssh_result(stdout="", returncode=0, stderr=""):
 
 
 class TmuxPathCommandTest(unittest.TestCase):
-    def test_prints_marker_with_bundled_or_bare_tmux(self):
-        for executable in (LOCAL_TMUX, "tmux"):
-            with self.subTest(executable=executable), \
+    def test_prints_marker_with_resolved_tmux(self):
+        cases = (
+            (LOCAL_TMUX, LOCAL_TMUX, LOCAL_TMUX),
+            ("tmux", "/opt/homebrew/bin/tmux", "/opt/homebrew/bin/tmux"),
+            ("tmux", None, "tmux"),
+        )
+        for executable, resolved, expected in cases:
+            with self.subTest(executable=executable, resolved=resolved), \
                     patch("letee.tmux.tmux_executable", return_value=executable), \
+                    patch("letee.__main__.shutil.which", return_value=resolved) as which, \
                     redirect_stdout(io.StringIO()) as stdout:
                 self.assertEqual(main(["tmux-path"]), 0)
-            self.assertEqual(stdout.getvalue(), f"LETEE_TMUX={executable}\n")
+            which.assert_called_once_with(executable)
+            self.assertEqual(stdout.getvalue(), f"LETEE_TMUX={expected}\n")
 
 
 class TmuxCommandTest(unittest.TestCase):
