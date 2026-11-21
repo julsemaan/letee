@@ -235,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "resurrect":
         if args.action == "restore":
             return 1 if resurrect.ensure_restored() == "failed" else 0
-        return 0 if resurrect.save() == "started" else 1
+        return 0 if resurrect.save() == "saved" else 1
     _configure_server(args.server)
     if args.command == "attachment-exited":
         diagnostics.log(

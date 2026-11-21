@@ -186,7 +186,7 @@ class MainTest(unittest.TestCase):
                 self.subTest(action=action),
                 patch("letee.__main__._configure_server") as configure_server,
                 patch("letee.__main__.resurrect.ensure_restored", return_value="restored") as restore,
-                patch("letee.__main__.resurrect.save", return_value="started") as save,
+                patch("letee.__main__.resurrect.save", return_value="saved") as save,
             ):
                 self.assertEqual(main(["resurrect", action]), 0)
             self.assertEqual((restore.call_count, save.call_count), (action == "restore", action == "save"))
