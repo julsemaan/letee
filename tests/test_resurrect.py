@@ -187,7 +187,7 @@ class SaveTest(ResurrectTestCase):
     def test_unchecked_server_runs_restore_check_first(self):
         self.save_exists()
         fake = FakeTmux(running=True)
-        self.assertEqual(self.run_with(fake, resurrect.save), "started")
+        self.assertEqual(self.run_with(fake, resurrect.save), "saved")
         self.assertEqual(fake.commands(), ["show", "show", "show", "show", "set", "script", "set", "set", "script"])
         self.assertIn("restore.sh", fake.calls[5][-1])
         self.assertIn("save.sh", fake.calls[-1][-1])
@@ -205,12 +205,20 @@ class SaveTest(ResurrectTestCase):
             self.assertEqual(self.run_with(fake, resurrect.save), "busy")
         self.assertEqual(fake.commands(), ["show"])
 
-    def test_save_runs_in_background_with_letee_dir(self):
+    def test_save_blocks_under_lock_with_letee_dir(self):
         fake = FakeTmux(running=True, ready=True)
-        self.assertEqual(self.run_with(fake, resurrect.save), "started")
+        timeouts = []
+
+        def recording(argv, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            return fake(argv)
+
+        with patch("letee.resurrect.load_timing", return_value=Timing(session_restore_timeout=42)):
+            self.assertEqual(self.run_with(recording, resurrect.save), "saved")
         command = fake.calls[-1]
-        self.assertEqual(command[:7], ("set", "-g", "@resurrect-dir", str(self.state), ";", "run-shell", "-b"))
-        self.assertEqual(shlex.split(command[7]), ["bash", str(resurrect.scripts_dir() / "save.sh"), "quiet"])
+        self.assertEqual(command[:6], ("set", "-g", "@resurrect-dir", str(self.state), ";", "run-shell"))
+        self.assertEqual(shlex.split(command[6]), ["bash", str(resurrect.scripts_dir() / "save.sh"), "quiet"])
+        self.assertEqual(timeouts[-1], 42)
 
 
 class RemoteCommandTest(unittest.TestCase):
@@ -299,7 +307,7 @@ class SessionSaverTest(unittest.TestCase):
         self.assertEqual(self.queued(), [None])
 
     def test_local_save_runs_in_process(self):
-        with patch.object(resurrect, "save", return_value="started") as save:
+        with patch.object(resurrect, "save", return_value="saved") as save:
             self.assertTrue(resurrect.SessionSaver._save(None))
         save.assert_called_once_with()
         with patch.object(resurrect, "save", return_value="busy"):
@@ -312,7 +320,7 @@ class SessionSaverTest(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[-2:], ("dev", resurrect.remote_command("save")))
         self.assertIn("BatchMode=yes", command)
-        self.assertEqual(run.call_args.kwargs["timeout"], Timing().remote_command_timeout)
+        self.assertEqual(run.call_args.kwargs["timeout"], Timing().session_restore_timeout)
         self.assertFalse(run.call_args.kwargs["check"])
 
     def test_remote_save_failures_report_false(self):

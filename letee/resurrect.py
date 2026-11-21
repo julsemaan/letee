@@ -49,14 +49,13 @@ def _tmux(*args: str, timeout: float | None = None) -> subprocess.CompletedProce
     )
 
 
-def _script(name: str, *args: str, background: bool = False) -> tuple[str, ...]:
+def _script(name: str, *args: str) -> tuple[str, ...]:
     """Point resurrect at letee's save dir, then run one of its scripts.
 
-    run-shell without -b blocks until the script finishes.
+    run-shell blocks until the script finishes, so callers can hold the lock for its whole run.
     """
     command = shlex.join(("bash", str(scripts_dir() / name), *args))
-    return ("set", "-g", _DIR_OPTION, str(state_dir()), ";",
-            "run-shell", *(("-b",) if background else ()), command)
+    return ("set", "-g", _DIR_OPTION, str(state_dir()), ";", "run-shell", command)
 
 
 def _server_state() -> tuple[bool, bool]:
@@ -112,9 +111,9 @@ def _ensure_restored() -> str:
 
 
 def save() -> str:
-    """Start a background save. Never saves a server that skipped the restore check.
+    """Save and wait for it to finish. Never saves a server that skipped the restore check.
 
-    Returns `no_server`, `busy`, `failed` or `started`.
+    Returns `no_server`, `busy`, `failed` or `saved`.
     """
     with diagnostics.operation("resurrect.save") as span:
         try:
@@ -134,8 +133,8 @@ def _save() -> str:
     with _lock(blocking=False) as acquired:
         if not acquired:
             return "busy"
-        result = _tmux(*_script("save.sh", "quiet", background=True))
-        return "started" if result.returncode == 0 else "failed"
+        result = _tmux(*_script("save.sh", "quiet"), timeout=load_timing().session_restore_timeout)
+        return "saved" if result.returncode == 0 else "failed"
 
 
 def remote_command(action: str) -> str:
@@ -196,18 +195,18 @@ class SessionSaver:
     @staticmethod
     def _save(host: str | None) -> bool:
         if host is None:
-            return save() == "started"
+            return save() == "saved"
         with diagnostics.operation("resurrect.remote_save", host=host) as span:
             try:
                 result = subprocess.run(
                     sessions.ssh_command("-n", "-o", "BatchMode=yes", host, remote_command("save")),
                     check=False, capture_output=True, text=True,
-                    timeout=load_timing().remote_command_timeout,
+                    timeout=load_timing().session_restore_timeout,
                 )
             except (OSError, subprocess.SubprocessError) as error:
                 diagnostics.error(error, handling="fallback", stage="resurrect_remote_save")
                 span.outcome = "failed"
                 return False
             span.fields["returncode"] = result.returncode
-            span.outcome = "started" if result.returncode == 0 else "failed"
+            span.outcome = "saved" if result.returncode == 0 else "failed"
             return result.returncode == 0

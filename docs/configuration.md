@@ -73,7 +73,7 @@ Failed discovery requests retry independently per host. Automatic recreation of 
 
 Healthy discovery still polls local and active hosts every 0.5 seconds and inactive hosts every 10 seconds.
 
-`session_save_interval` is the longest a running sidebar waits between saves of a host whose panes haven't changed, and how long it waits after a failed save. `session_restore_timeout` limits a restore, which can take longer than other remote commands.
+`session_save_interval` is the longest a running sidebar waits between saves of a host whose panes haven't changed, and how long it waits after a failed save. `session_restore_timeout` limits a restore or save, which can take longer than other remote commands.
 
 ## Prefix and terminal flow control
 
