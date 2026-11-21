@@ -7,6 +7,11 @@ from letee import sidebar, workspace
 from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
 from tests.test_sidebar import FakeScreen, OperationTestCase, STOP
+from tests import disable_session_restore
+
+
+def setUpModule():
+    disable_session_restore()
 
 
 class FinderSidebarTest(OperationTestCase):

@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from letee import tui
-from tests import use_bare_inner_tmux
+from tests import disable_session_restore, use_bare_inner_tmux
 import letee.sessions as sessions
 from letee.config import Timing
 from letee.names import INNER_SERVER_SOCKET, PaneTarget, Target, WindowTarget
@@ -25,6 +25,7 @@ from letee.sessions import attach_command, create, kill, kill_agent, pane_attach
 
 def setUpModule():
     use_bare_inner_tmux()
+    disable_session_restore()
     timing_patch = patch("letee.sessions.load_timing", return_value=Timing())
     timing_patch.start()
     unittest.addModuleCleanup(timing_patch.stop)

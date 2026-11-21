@@ -22,7 +22,8 @@ DEFAULT_STATUS_TIMEOUT = 5
 DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
 DEFAULT_TMUX_CONFIG_OVERLAY = True
-CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nsidebar_collapse_mode = "{DEFAULT_SIDEBAR_COLLAPSE_MODE}"\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\n'
+DEFAULT_SESSION_RESTORE = True
+CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nsidebar_collapse_mode = "{DEFAULT_SIDEBAR_COLLAPSE_MODE}"\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\nsession_restore = true\n'
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,8 @@ class Timing:
     ssh_keepalive_count_max: int = 3
     retry_initial_delay: float = 1
     retry_max_delay: float = 5
+    session_save_interval: float = 60
+    session_restore_timeout: float = 30
 
 
 CONFIG_TEXT += "\n[timing]\n" + "".join(f"{key} = {value}\n" for key, value in asdict(Timing()).items())
@@ -150,10 +153,14 @@ def sessions_path(server: str | None = None) -> Path:
     return config_dir() / "servers" / name / "sessions"
 
 
-@contextmanager
 def sessions_lock(*, blocking: bool = True):
     """Serialize CLI mutations and sidebar restoration for this server."""
-    path = sessions_path().with_suffix(".lock")
+    return file_lock(sessions_path().with_suffix(".lock"), blocking=blocking)
+
+
+@contextmanager
+def file_lock(path: Path, *, blocking: bool = True):
+    """Hold an exclusive flock on path; yield False if non-blocking and held."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as lock:
         try:
@@ -411,6 +418,15 @@ def load_tmux_config_overlay() -> bool:
         diagnostics.error(handling="exit", reason="invalid_tmux_config_overlay")
         raise SystemExit(f"Invalid config {cfg}: tmux_config_overlay must be a boolean")
     return overlay
+
+
+def load_session_restore() -> bool:
+    cfg, data = _load_config()
+    restore = data.get("session_restore", DEFAULT_SESSION_RESTORE)
+    if not isinstance(restore, bool):
+        diagnostics.error(handling="exit", reason="invalid_session_restore")
+        raise SystemExit(f"Invalid config {cfg}: session_restore must be a boolean")
+    return restore
 
 
 def load_hosts() -> list[str]:

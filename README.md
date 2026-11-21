@@ -66,6 +66,8 @@ Letee creates or attaches to a dedicated outer tmux server. Bare `letee` uses th
 
 Inner local and remote sessions use `letee.inner`, one shared server per host. Named outer cockpits on the same host share those inner sessions. The ordinary tmux default server is outside letee's scope. Sessions there stay running but are not discovered or changed.
 
+After a reboot or a crash of `letee.inner`, letee brings its sessions back with their windows, layout and working directories. See [restore after a restart](https://github.com/julsemaan/letee/blob/main/docs/usage.md#restore-after-a-restart).
+
 ## Open or add a local tmux session
 
 1. Use your mouse and click "+ add" or use the keyboard equivalent:

@@ -26,6 +26,20 @@ The compact strip shows session numbers, including numbers beyond 9, and agents 
 
 Managed local and remote sessions run on a dedicated tmux server named `letee.inner` on each host. Named outer cockpits on the same host share those inner sessions. The ordinary tmux default server is outside letee's scope. Sessions there keep running but are not discovered or changed.
 
+## Restore after a restart
+
+Letee saves every session on `letee.inner` with a bundled copy of [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect). A running sidebar saves a host when its windows or panes change, and at least once a minute otherwise. When that host's `letee.inner` starts again after a reboot or crash, the next session letee opens or creates there brings back every saved session: windows, pane layout, working directories, and the programs resurrect restarts by default (`vim`, `less`, `htop` and a few others). This works for local and SSH hosts. A remote host needs letee installed, just like for attaching.
+
+To restart more programs, set `@resurrect-processes` in your `~/.tmux.conf`, which `letee.inner` loads. For example, to resume Claude Code sessions:
+
+```tmux
+set -g @resurrect-processes '"~claude->claude --continue"'
+```
+
+To bring back pane contents too, add `set -g @resurrect-capture-pane-contents on`.
+
+Saves live in `${XDG_STATE_HOME:-~/.local/state}/letee/resurrect` on each host. Changes made while no sidebar runs for a host are not saved. Don't enable `@continuum-restore` on `letee.inner`; letee already decides when to restore. Turn the feature off with `session_restore = false` in the [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md).
+
 ## Named cockpits
 
 Use `-L <name>` to run independent outer tmux servers:

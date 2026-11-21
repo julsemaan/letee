@@ -1,4 +1,4 @@
-"""Check that Python distributions contain the pinned tmux bundle."""
+"""Check that Python distributions contain the pinned tmux and tmux-resurrect bundles."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ LICENSE_PATHS = frozenset(
     )
 )
 PROVENANCE_PATH = "letee/_vendor/tmux/provenance.json"
+RESURRECT_DIR = "letee/_vendor/tmux_resurrect"
 _SUPPORTED_ARCHITECTURES = frozenset({"x86_64", "amd64", "aarch64", "arm64"})
 RAW_ARCHIVES = frozenset(artifact.filename for artifact in ARTIFACTS)
 
@@ -98,6 +99,22 @@ def _check_license(content: bytes, suffix: str, distribution: str) -> None:
     _check_staged_file(content, suffix, distribution, "license notice")
 
 
+def _resurrect_files() -> dict[str, bool]:
+    """Map each staged resurrect file to whether it must stay executable."""
+    root = PROJECT_ROOT / RESURRECT_DIR
+    return {
+        path.relative_to(PROJECT_ROOT).as_posix(): bool(path.stat().st_mode & 0o111)
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+
+
+def _check_resurrect_file(content: bytes, executable: bool, staged_executable: bool,
+                          suffix: str, distribution: str) -> None:
+    if staged_executable and not executable:
+        raise ValueError(f"resurrect script is not executable in {distribution}: {suffix}")
+    _check_staged_file(content, suffix, distribution, "resurrect file")
+
+
 def _check_wheel(path: Path) -> None:
     try:
         with ZipFile(path) as archive:
@@ -117,6 +134,11 @@ def _check_wheel(path: Path) -> None:
                 if archive.getinfo(name).is_dir():
                     raise ValueError(f"license notice is a directory in wheel: {name}")
                 _check_license(archive.read(name), suffix, "wheel")
+            for suffix, staged_executable in _resurrect_files().items():
+                name = _member_for_exact_name(names, suffix)
+                info = archive.getinfo(name)
+                _check_resurrect_file(archive.read(name), bool((info.external_attr >> 16) & 0o111),
+                                      staged_executable, suffix, "wheel")
             _check_provenance(
                 archive.read(_member_for_exact_name(names, PROVENANCE_PATH)), str(path)
             )
@@ -150,6 +172,13 @@ def _check_sdist(path: Path) -> None:
                 if extracted is None:
                     raise ValueError(f"cannot read license notice in {path}: {name}")
                 _check_license(extracted.read(), suffix, "source distribution")
+            for suffix, staged_executable in _resurrect_files().items():
+                member = members[_member_for_suffix(set(members), suffix)]
+                extracted = archive.extractfile(member) if member.isreg() else None
+                if extracted is None:
+                    raise ValueError(f"cannot read resurrect file in {path}: {suffix}")
+                _check_resurrect_file(extracted.read(), bool(member.mode & 0o111),
+                                      staged_executable, suffix, "source distribution")
             name = _member_for_suffix(set(members), PROVENANCE_PATH)
             extracted = archive.extractfile(members[name])
             if extracted is None:
@@ -193,7 +222,7 @@ def check_dist(directory: Path) -> None:
     _check_wheel(wheels[0])
     _check_sdist(sdists[0])
     _check_host_binary()
-    print(f"Validated tmux {TMUX_VERSION} in {wheels[0].name} and {sdists[0].name}")
+    print(f"Validated tmux {TMUX_VERSION} and tmux-resurrect in {wheels[0].name} and {sdists[0].name}")
 
 
 def main(argv: list[str] | None = None) -> int:

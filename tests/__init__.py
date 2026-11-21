@@ -32,3 +32,15 @@ def use_bare_inner_tmux() -> None:
         patcher = mock.patch(name, return_value="tmux")
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
+
+
+def disable_session_restore() -> None:
+    """Call from setUpModule: keep resurrect calls out of command assertions
+    and stop sidebars from starting a save worker."""
+    import unittest
+    from unittest import mock
+
+    for name in ("letee.config.load_session_restore", "letee.sessions.load_session_restore"):
+        patcher = mock.patch(name, return_value=False)
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)

@@ -13,6 +13,12 @@ from unittest.mock import Mock, patch
 from letee import cockpit, config, sessions
 from letee.__main__ import main
 from letee.names import PaneTarget, Target
+from tests import disable_session_restore
+
+
+def setUpModule():
+    disable_session_restore()
+
 
 LOCAL_TMUX = "/opt/letee/bundle/tmux"
 REMOTE_TMUX = "/home/me/.local/share/letee/tmux"
