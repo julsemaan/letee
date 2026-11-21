@@ -522,7 +522,7 @@ wheels = [
 
 [[package]]
 name = "letee"
-version = "0.2.25"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-status" },
