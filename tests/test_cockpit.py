@@ -1832,6 +1832,32 @@ class CockpitLayoutTest(unittest.TestCase):
         ):
             self.assertEqual(cockpit.current_target(), cockpit.Target("local", "work"))
 
+    def test_current_target_recovers_from_quoted_bundled_tmux_path(self):
+        payload = "PATH='/opt/letee bundle:'\"$PATH\" '/opt/letee bundle/tmux' -L letee.inner -T clipboard new-session -A -s work"
+        cases = (
+            (f"env -u TMUX {payload}", cockpit.Target("local", "work")),
+            (shlex.join(["ssh", "-t", "dev", payload]), cockpit.Target("ssh", "work", "dev")),
+        )
+        for command, expected in cases:
+            with (
+                self.subTest(command=command),
+                patch.object(cockpit, "_option", return_value=""),
+                patch.object(cockpit, "right_pane", return_value="%2"),
+                patch.object(cockpit.tmux, "out", return_value=command),
+            ):
+                self.assertEqual(cockpit.current_target(), expected)
+
+    def test_current_target_clears_stale_marker_for_quoted_bundled_legacy_attach(self):
+        command = "env -u TMUX '/opt/letee bundle/tmux' -L letee -T clipboard new-session -A -s other"
+        with (
+            patch.object(cockpit, "_option", return_value="local:work"),
+            patch.object(cockpit, "right_pane", return_value="%2"),
+            patch.object(cockpit.tmux, "out", return_value=command),
+            patch.object(cockpit.tmux, "tmux") as tmux_call,
+        ):
+            self.assertIsNone(cockpit.current_target(repair=True))
+            tmux_call.assert_called_once()
+
     def test_current_target_recovers_from_remote_inner_attach_command(self):
         command = "ssh -t dev 'tmux -L letee.inner -T clipboard new-session -A -s work'"
         with (
