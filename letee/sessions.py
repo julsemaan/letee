@@ -577,11 +577,17 @@ def shell_join(argv: tuple[str, ...]) -> str:
     return prefix + shlex.join(argv)
 
 
-def _inner_server_env() -> dict[str, str]:
+def bundle_env() -> dict[str, str]:
+    """The current environment with the local tmux's bundle dir first on PATH."""
     env = os.environ.copy()
-    env.pop("TMUX", None)
     if directory := _bundle_dir(tmux.tmux_executable()):
         env["PATH"] = os.pathsep.join(filter(None, (directory, env.get("PATH"))))
+    return env
+
+
+def _inner_server_env() -> dict[str, str]:
+    env = bundle_env()
+    env.pop("TMUX", None)
     return env
 
 

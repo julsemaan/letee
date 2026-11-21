@@ -31,6 +31,28 @@ class TmuxPathCommandTest(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), f"LETEE_TMUX={executable}\n")
 
 
+class TmuxCommandTest(unittest.TestCase):
+    def test_execs_letee_tmux_with_verbatim_arguments_and_bundle_path(self):
+        cases = (
+            (["tmux", "-L", "letee.inner", "ls"], ["-L", "letee.inner", "ls"]),
+            (["-L", "work", "tmux", "-V"], ["-V"]),
+            (["tmux"], []),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv), \
+                    patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True), \
+                    patch("letee.tmux.tmux_executable", return_value=LOCAL_TMUX), \
+                    patch("letee.__main__.os.execvpe", side_effect=SystemExit(0)) as execvpe, \
+                    self.assertRaises(SystemExit):
+                main(argv)
+            execvpe.assert_called_once_with(LOCAL_TMUX, [LOCAL_TMUX, *expected], {"PATH": "/opt/letee/bundle:/usr/bin"})
+
+    def test_other_commands_do_not_exec_tmux(self):
+        with patch("letee.__main__.os.execvpe") as execvpe, redirect_stdout(io.StringIO()):
+            main(["version"])
+        execvpe.assert_not_called()
+
+
 class PathPrefixTest(unittest.TestCase):
     def test_local_env_puts_bundle_dir_first_only_for_absolute_tmux(self):
         with patch.dict(os.environ, {"PATH": "/usr/bin", "TMUX": "x"}, clear=True):

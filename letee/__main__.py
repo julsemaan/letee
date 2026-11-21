@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
     sub.add_parser("finder", help=argparse.SUPPRESS)
     sub.add_parser("tmux-path", help=argparse.SUPPRESS)
+    sub.add_parser("tmux", help="run letee's tmux with the given arguments", add_help=False)
     sub.add_parser("find-work", help="find a session, window, pane, or agent")
     attachment_exit = sub.add_parser("attachment-exited", help=argparse.SUPPRESS)
     for field in (
@@ -204,8 +205,23 @@ def _configure_server(server: str | None) -> None:
     tmux.set_server(selected)
 
 
+def _tmux_arguments(argv: list[str]) -> list[str] | None:
+    """Arguments after a `tmux` subcommand, passed to tmux verbatim.
+
+    argparse would reject tmux's own options, so this runs before parsing.
+    """
+    index = 0
+    while index < len(argv) and argv[index].startswith("-"):
+        index += 2 if argv[index] == "-L" else 1
+    return argv[index + 1:] if index < len(argv) and argv[index] == "tmux" else None
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if (tmux_args := _tmux_arguments(argv)) is not None:
+        executable = tmux.tmux_executable()
+        diagnostics.flush()
+        os.execvpe(executable, [executable, *tmux_args], sessions.bundle_env())
     args = build_parser().parse_args(argv)
     if args.command == "version":
         print(__version__)

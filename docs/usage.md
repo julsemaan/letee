@@ -59,6 +59,7 @@ The default prefix for these examples is `C-s`. `-L <name>` selects a named oute
 | `letee kill <target>` | Kill a target tmux session and remove it from the selected server's tracked list. |
 | `letee rename <target> <new-session>` | Rename a tracked target and update that target in the selected server. |
 | `letee kill-server` | Kill the selected outer letee server. |
+| `letee tmux [args...]` | Run letee's tmux with the arguments unchanged, for example `letee tmux -L letee.inner ls`. `-L` after `tmux` goes to tmux. |
 
 The optional `region` for `focus-sidebar` is `sessions`, `agents`, `add`, `remove`, `kill`, `alert`, `previous_agent`, `next_agent`, `previous_session`, or `next_session`.
 
