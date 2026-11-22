@@ -29,7 +29,7 @@ is_line_type() {
 
 check_saved_session_exists() {
 	local resurrect_file="$(last_resurrect_file)"
-	if [ ! -f $resurrect_file ]; then
+	if [ ! -f "$resurrect_file" ]; then
 		display_message "Tmux resurrect file not found!"
 		return 1
 	fi
@@ -271,7 +271,7 @@ restore_all_panes() {
 		if is_line_type "pane" "$line"; then
 			restore_pane "$line"
 		fi
-	done < $(last_resurrect_file)
+	done < "$(last_resurrect_file)"
 }
 
 handle_session_0() {
@@ -286,7 +286,7 @@ handle_session_0() {
 
 restore_window_properties() {
 	local window_name
-	\grep '^window' $(last_resurrect_file) |
+	\grep '^window' "$(last_resurrect_file)" |
 		while IFS=$d read line_type session_name window_number window_name window_active window_flags window_layout automatic_rename; do
 			tmux select-layout -t "${session_name}:${window_number}" "$window_layout"
 
@@ -306,7 +306,7 @@ restore_window_properties() {
 restore_all_pane_processes() {
 	if restore_pane_processes_enabled; then
 		local pane_full_command
-		awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $11 !~ "^:$" { print $2, $3, $6, $8, $11; }' $(last_resurrect_file) |
+		awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $11 !~ "^:$" { print $2, $3, $6, $8, $11; }' "$(last_resurrect_file)" |
 			while IFS=$d read -r session_name window_number pane_index dir pane_full_command; do
 				dir="$(remove_first_char "$dir")"
 				pane_full_command="$(remove_first_char "$pane_full_command")"
@@ -316,14 +316,14 @@ restore_all_pane_processes() {
 }
 
 restore_active_pane_for_each_window() {
-	awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $9 == 1 { print $2, $3, $6; }' $(last_resurrect_file) |
+	awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $9 == 1 { print $2, $3, $6; }' "$(last_resurrect_file)" |
 		while IFS=$d read session_name window_number active_pane; do
 			tmux select-pane -t "${session_name}:${window_number}.${active_pane}"
 		done
 }
 
 restore_zoomed_windows() {
-	awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $5 ~ /Z/ && $9 == 1 { print $2, $3; }' $(last_resurrect_file) |
+	awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $5 ~ /Z/ && $9 == 1 { print $2, $3; }' "$(last_resurrect_file)" |
 		while IFS=$d read session_name window_number; do
 			tmux resize-pane -t "${session_name}:${window_number}" -Z
 		done
@@ -335,11 +335,11 @@ restore_grouped_sessions() {
 			restore_grouped_session "$line"
 			restore_active_and_alternate_windows_for_grouped_sessions "$line"
 		fi
-	done < $(last_resurrect_file)
+	done < "$(last_resurrect_file)"
 }
 
 restore_active_and_alternate_windows() {
-	awk 'BEGIN { FS="\t"; OFS="\t" } /^window/ && $6 ~ /[*-]/ { print $2, $5, $3; }' $(last_resurrect_file) |
+	awk 'BEGIN { FS="\t"; OFS="\t" } /^window/ && $6 ~ /[*-]/ { print $2, $5, $3; }' "$(last_resurrect_file)" |
 		sort -u |
 		while IFS=$d read session_name active_window window_number; do
 			tmux select-window -t "${session_name}:${window_number}"
@@ -351,7 +351,7 @@ restore_active_and_alternate_sessions() {
 		if is_line_type "state" "$line"; then
 			restore_state "$line"
 		fi
-	done < $(last_resurrect_file)
+	done < "$(last_resurrect_file)"
 }
 
 # A cleanup that happens after 'restore_all_panes' seems to fix fish shell

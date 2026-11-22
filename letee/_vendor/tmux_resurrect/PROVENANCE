@@ -6,5 +6,6 @@ patches:
   - scripts/save.sh: save_all runs the pane and window dumps with pipefail. If `list-panes` or `list-windows` fails, it deletes the new file, leaves `last` alone, and save.sh exits 1.
   - scripts/restore.sh: active pane and active/alternate window restore use session-qualified select-pane/select-window instead of switch-client, so restores work headless (no attached client).
   - scripts/restore.sh: session/window/pane existence probes use exact `=session` targets so a missing saved session (e.g. work) isn't mistaken for a live prefix match (e.g. work-old).
+  - scripts/restore.sh: quotes the snapshot path so restores work when the resurrect dir contains spaces.
   - save_command_strategies/ps.sh: matches the complete PPID field (`^${PANE_PID} `) so a pane PID like 123 doesn't also capture children of 1234.
   - save_command_strategies/ps.sh: saves an empty command when it has any character outside `[:alnum:]`, space and `_@%+=:,./-` (checked with LC_ALL=C), because restore replays the flat `ps args` string into the pane's shell. Arguments with spaces still split on restore; `ps` output can't preserve argv boundaries, but splitting only opens the wrong files and runs nothing.
