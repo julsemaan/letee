@@ -1,7 +1,7 @@
 """Save and restore every session on letee.inner with the bundled tmux-resurrect.
 
 The host-side functions run in-process for local targets and as
-`letee resurrect restore|save` over SSH for remote ones.
+`letee resurrect restore|save|forget` over SSH for remote ones.
 """
 
 from __future__ import annotations
@@ -139,6 +139,28 @@ def _save() -> str:
             return "busy"
         result = _tmux(*_script("save.sh", "quiet"), timeout=load_timing().session_restore_timeout)
         return "saved" if result.returncode == 0 else "failed"
+
+
+def forget() -> str:
+    """Drop the last save once the server has no sessions left.
+
+    Call this only after a deliberate kill. An empty server cannot be saved,
+    so the next start would otherwise restore the killed sessions.
+    Returns `forgotten`, `kept` or `failed`.
+    """
+    with diagnostics.operation("resurrect.forget") as span:
+        try:
+            with _lock(blocking=True):
+                result = _tmux("list-sessions", "-F", "#{session_name}")
+                if result.returncode == 0 and result.stdout.strip():
+                    span.outcome = "kept"
+                else:
+                    (state_dir() / "last").unlink(missing_ok=True)
+                    span.outcome = "forgotten"
+        except (OSError, subprocess.SubprocessError) as error:
+            diagnostics.error(error, handling="fallback", stage="resurrect_forget")
+            span.outcome = "failed"
+        return span.outcome
 
 
 def remote_command(action: str) -> str:

@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("sidebar", help=argparse.SUPPRESS)
     sub.add_parser("finder", help=argparse.SUPPRESS)
     sub.add_parser("tmux-path", help=argparse.SUPPRESS)
-    sub.add_parser("resurrect", help=argparse.SUPPRESS).add_argument("action", choices=("restore", "save"))
+    sub.add_parser("resurrect", help=argparse.SUPPRESS).add_argument("action", choices=("restore", "save", "forget"))
     sub.add_parser("tmux", help="run letee's tmux with the given arguments", add_help=False)
     sub.add_parser("find-work", help="find a session, window, pane, or agent")
     attachment_exit = sub.add_parser("attachment-exited", help=argparse.SUPPRESS)
@@ -235,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "resurrect":
         if args.action == "restore":
             return 1 if resurrect.ensure_restored() == "failed" else 0
+        if args.action == "forget":
+            return 1 if resurrect.forget() == "failed" else 0
         return 0 if resurrect.save() == "saved" else 1
     _configure_server(args.server)
     if args.command == "attachment-exited":

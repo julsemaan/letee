@@ -893,6 +893,17 @@ def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
 @_session_operation("sessions.kill")
 def kill(target: Target) -> None:
     _run_inner("kill", target, inner_argv(target.host, "kill-session", "-t", target.session))
+    if not load_session_restore():
+        return
+    if target.kind == "local":
+        resurrect.forget()
+        return
+    # Best effort: an old remote letee lacks `forget`, and the kill already succeeded.
+    try:
+        _run("forget", target, ssh_command("-n", "-o", "BatchMode=yes", target.host or "",
+                                           resurrect.remote_command("forget")))
+    except SystemExit as error:
+        diagnostics.error(error, handling="ignore", stage="remote_forget")
 
 
 @_session_operation("sessions.pane_process_info")

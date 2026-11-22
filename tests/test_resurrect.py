@@ -227,6 +227,33 @@ class SaveTest(ResurrectTestCase):
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
 
 
+class ForgetTest(ResurrectTestCase):
+    def list_sessions(self, rc, stdout=""):
+        return patch("letee.resurrect.subprocess.run",
+                     return_value=subprocess.CompletedProcess((), rc, stdout, ""))
+
+    def test_empty_or_missing_server_drops_last_save(self):
+        for rc, stdout in ((0, ""), (1, "")):
+            with self.subTest(rc=rc):
+                self.save_exists()
+                with self.list_sessions(rc, stdout) as run:
+                    self.assertEqual(resurrect.forget(), "forgotten")
+                self.assertEqual(tuple(run.call_args.args[0][3:]), ("list-sessions", "-F", "#{session_name}"))
+                self.assertFalse((self.state / "last").exists())
+
+    def test_remaining_sessions_keep_last_save(self):
+        self.save_exists()
+        with self.list_sessions(0, "other\n"):
+            self.assertEqual(resurrect.forget(), "kept")
+        self.assertTrue((self.state / "last").exists())
+
+    def test_restore_finds_nothing_after_forget(self):
+        self.save_exists()
+        with self.list_sessions(1):
+            resurrect.forget()
+        self.assertEqual(self.run_with(FakeTmux(), resurrect.ensure_restored), "nothing")
+
+
 class RemoteCommandTest(unittest.TestCase):
     def test_remote_command_uses_login_shell(self):
         self.assertEqual(resurrect.remote_command("save"), '"${SHELL:-/bin/sh}" -lc "letee resurrect save"')
@@ -430,6 +457,34 @@ class SessionsGateTest(unittest.TestCase):
         with patch.object(sessions, "load_session_restore", return_value=True):
             command = shlex.split(sessions.attach_command(Target("ssh", "work", "dev"), overlay=True))[-1]
         self.assertIn(f") && {{ {{ {resurrect.remote_guard('dev')}; }}", command)
+
+    def test_local_kill_forgets_save(self):
+        with patch.object(sessions, "load_session_restore", return_value=True), \
+             patch.object(resurrect, "forget") as forget, \
+             patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0, stdout="")):
+            sessions.kill(Target("local", "work"))
+        forget.assert_called_once_with()
+
+    def test_remote_kill_forgets_save_best_effort(self):
+        failure = subprocess.CalledProcessError(2, "ssh", stderr="letee: invalid choice: 'forget'")
+        for outcome in (Mock(returncode=0, stdout=""), failure):
+            with self.subTest(outcome=outcome), \
+                 patch.object(sessions, "load_session_restore", return_value=True), \
+                 patch("letee.sessions.subprocess.run",
+                       side_effect=[Mock(returncode=0, stdout=""), outcome]) as run:
+                sessions.kill(Target("ssh", "work", "dev"))
+            command = run.call_args.args[0]
+            self.assertEqual(command[-2:], ("dev", resurrect.remote_command("forget")))
+            self.assertIn("BatchMode=yes", command)
+
+    def test_kill_skips_forget_when_disabled(self):
+        with patch.object(sessions, "load_session_restore", return_value=False), \
+             patch.object(resurrect, "forget") as forget, \
+             patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0, stdout="")) as run:
+            sessions.kill(Target("local", "work"))
+            sessions.kill(Target("ssh", "work", "dev"))
+        forget.assert_not_called()
+        self.assertEqual(run.call_count, 2)
 
     def test_nothing_added_when_disabled_or_attach_only(self):
         for enabled, attach_only in ((False, False), (True, True)):
