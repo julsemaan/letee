@@ -259,6 +259,30 @@ class RemoteCommandTest(unittest.TestCase):
                 result = subprocess.run(["bash", str(script), "42"], env=env, capture_output=True, text=True, check=True)
                 self.assertEqual(result.stdout, expected)
 
+    def test_failed_pane_query_keeps_last_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_dir = Path(tmp) / "saves"
+            save_dir.mkdir()
+            (save_dir / "good.txt").write_text("pane\twork\n")
+            (save_dir / "last").symlink_to("good.txt")
+            fake_tmux = Path(tmp) / "tmux"
+            fake_tmux.write_text(
+                "#!/bin/sh\n"
+                'case "$1" in\n'
+                "  -V) echo 'tmux 3.4' ;;\n"
+                f'  show-option) [ "$3" = @resurrect-dir ] && echo {shlex.quote(str(save_dir))} ;;\n'
+                "  list-panes) exit 1 ;;\n"
+                "esac\n"
+            )
+            fake_tmux.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"}
+            result = subprocess.run(
+                ["bash", str(resurrect.scripts_dir() / "save.sh"), "quiet"], env=env, capture_output=True, text=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(os.readlink(save_dir / "last"), "good.txt")
+            self.assertEqual(sorted(p.name for p in save_dir.iterdir()), ["good.txt", "last"])
+
 
 def pane(host, session="work", pane_id="%1"):
     target = Target("ssh", session, host) if host else Target("local", session)

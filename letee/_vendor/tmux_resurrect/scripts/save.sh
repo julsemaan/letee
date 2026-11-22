@@ -240,8 +240,10 @@ save_all() {
 	local last_resurrect_file="$(last_resurrect_file)"
 	mkdir -p "$(resurrect_dir)"
 	fetch_and_dump_grouped_sessions > "$resurrect_file_path"
-	dump_panes   >> "$resurrect_file_path"
-	dump_windows >> "$resurrect_file_path"
+	if ! (set -o pipefail; dump_panes >> "$resurrect_file_path" && dump_windows >> "$resurrect_file_path"); then
+		rm -f "$resurrect_file_path"
+		return 1
+	fi
 	dump_state   >> "$resurrect_file_path"
 	execute_hook "post-save-layout" "$resurrect_file_path"
 	if files_differ "$resurrect_file_path" "$last_resurrect_file"; then
@@ -268,7 +270,7 @@ main() {
 		if show_output; then
 			start_spinner "Saving..." "Tmux environment saved!"
 		fi
-		save_all
+		save_all || exit 1
 		if show_output; then
 			stop_spinner
 			display_message "Tmux environment saved!"
