@@ -463,6 +463,9 @@ class SessionReconciler:
             self._failed_launch = shared_launch_id
             self._awaiting_discovery.pop(active, None)
             self._retries.setdefault(active, RestorationRetry()).failed(active, now)
+            if restoration_retry is not None:
+                # A failed launch replaces the screen even without a pane-exit tuple.
+                restoration_retry.overlay = None
         # Retain successful clears while their marker is cached, and all pending clears.
         for key, (worker, succeeded) in list(self._startup_clears.items()):
             if not worker.is_alive() and (

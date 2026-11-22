@@ -358,6 +358,28 @@ class SessionReconcilerTest(OperationTestCase):
         self.assertEqual(self.submit.call_args.args[0].kind, "switch")
         self.assertEqual(self.submit.call_args.args[0].target, target)
 
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_failed_launch_clears_letee_missing_overlay_once(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        bare = replace(source("ssh", host="dev", available=False, error="letee is not installed"), status="letee missing")
+        data = snapshot(remotes={"dev": bare})
+        retry = sidebar.RestorationRetry()
+        retry.overlay = "letee missing"
+        self.reconciler.reconcile((target,), target, data, self.submit, 1, shared_launch_id="L1",
+                                  attachment_failed=True, restoration_retry=retry)
+        self.assertIsNone(retry.overlay)
+        submitted = []
+        sidebar._sync_active_session(
+            target, data, target, lambda effect: submitted.append(effect) or True, retry=retry, now=1,
+        )
+        self.assertEqual(
+            [(effect.kind, effect.message) for effect in submitted], [("show_reconnecting", "letee missing")]
+        )
+        retry.overlay = "letee missing"
+        self.reconciler.reconcile((target,), target, data, self.submit, 2, shared_launch_id="L1",
+                                  attachment_failed=True, restoration_retry=retry)
+        self.assertEqual(retry.overlay, "letee missing")
+
     @patch.object(sidebar.cockpit, "startup_deadline", return_value=None)
     def test_reconciliation_does_not_read_startup_marker(self, read_marker):
         target = Target("local", "work")
