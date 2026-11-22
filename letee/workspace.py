@@ -14,6 +14,10 @@ import time
 
 from .discovery import AgentEntry, SessionSnapshot
 from .names import PaneTarget, Target
+from .sessions import LETEE_MISSING
+
+# Statuses of a tracked session whose source discovery keeps retrying.
+RETRYING_STATUSES = ("connecting…", "reconnecting…", LETEE_MISSING)
 
 
 Identity = tuple[str, ...]
@@ -93,7 +97,7 @@ def target_status(target: Target, snapshot: SessionSnapshot) -> str | None:
     if source is None:
         return "connecting…"
     if not source.available:
-        return "reconnecting…"
+        return source.status or "reconnecting…"
     return "missing"
 
 

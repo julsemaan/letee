@@ -489,9 +489,13 @@ def ssh_command(*args: str, persistent_ssh: bool | None = None, interactive: boo
 
 
 INSTALL_URL = "https://raw.githubusercontent.com/julsemaan/letee/main/install.sh"
+INSTALL_COMMAND = f"curl -LsSf {INSTALL_URL} | sh"
+LETEE_MISSING = "letee missing"
 TMUX_PATH_MARKER = "LETEE_TMUX="
 # Non-interactive SSH often lacks ~/.local/bin on PATH; a login shell has it.
 _REMOTE_TMUX_PATH = 'exec "${SHELL:-/bin/sh}" -lc "letee tmux-path"'
+# Serializes the cache's read-merge-write so parallel lookups don't drop each other's entries.
+_REMOTE_TMUX_CACHE_LOCK = threading.Lock()
 
 
 def _load_remote_tmux() -> dict[str, str]:
@@ -507,6 +511,10 @@ def _save_remote_tmux(cache: dict[str, str]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     temporary.write_text(json.dumps(cache))
     os.replace(temporary, path)
+
+
+class RemoteLeteeMissing(SystemExit):
+    """letee is not installed on a remote host (or not on its login PATH)."""
 
 
 def forget_remote_tmux() -> None:
@@ -565,11 +573,30 @@ def remote_tmux(
                      if line.startswith(TMUX_PATH_MARKER)), "")
         if result.returncode != 0 or not path:
             span.outcome = "missing"
-            raise SystemExit(f"letee is not installed on {host} (or not on its login PATH). "
-                             f"Install it there with: curl -LsSf {INSTALL_URL} | sh")
-        _save_remote_tmux(_load_remote_tmux() | {host: path})
+            raise RemoteLeteeMissing(f"letee is not installed on {host} (or not on its login PATH). "
+                                     f"Install it there with: {INSTALL_COMMAND}")
+        with _REMOTE_TMUX_CACHE_LOCK:
+            _save_remote_tmux(_load_remote_tmux() | {host: path})
         span.outcome = "resolved"
         return path
+
+
+def _letee_missing(host: str) -> bool:
+    try:
+        remote_tmux(host)
+    except RemoteLeteeMissing:
+        return True
+    except SystemExit:
+        pass
+    return False
+
+
+def missing_letee(hosts: Iterable[str]) -> list[str]:
+    """Return the hosts where letee is not installed, resolving their tmux in parallel."""
+    hosts = list(hosts)
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(copy_context().run, _letee_missing, host) for host in hosts]
+        return [host for host, future in zip(hosts, futures) if future.result()]
 
 
 def inner_tmux(host: str | None) -> str:

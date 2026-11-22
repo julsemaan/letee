@@ -20,6 +20,7 @@ class Effect:
     ]
     target: Target | PaneTarget | None = None
     favorites: tuple[Target, ...] | None = None
+    # Free text: a status message, new session name, or show_reconnecting's target status.
     message: str = ""
     automatic: bool = False
     agent_id: str = ""
@@ -261,10 +262,10 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             deadline = cockpit.startup_deadline(target)
             if effect.kind == "show_reconnecting":
                 if effect.automatic:
-                    cockpit.show_reconnecting(target)
+                    cockpit.show_reconnecting(target, effect.message)
                 else:
                     _advance(state, explicit=target)
-                    cockpit.switch_reconnecting(target, launch_id=state["launch"])
+                    cockpit.switch_reconnecting(target, effect.message, launch_id=state["launch"])
                     deadline = cockpit.startup_deadline(target)
             else:
                 cockpit.show_unavailable(target)

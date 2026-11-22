@@ -564,7 +564,7 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(
             [call.args[0] for call in print_.call_args_list],
-            ["local unavailable: permission denied", "ssh:dev:work", "ssh:off unavailable"],
+            ["local unavailable: permission denied", "ssh:dev:work", "ssh:off unavailable: offline"],
         )
 
     def test_list_servers_shows_only_verified_servers_and_attachment_state(self):

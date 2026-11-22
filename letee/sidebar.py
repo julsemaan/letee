@@ -31,7 +31,7 @@ from .config import (
     load_timing,
 )
 from .names import PaneTarget, Target, validate_session_name
-from .workspace import AgentActivity, visible_agents
+from .workspace import RETRYING_STATUSES, AgentActivity, visible_agents
 from .runtime import _focused_agent_id as _focused_agent_id
 
 
@@ -385,7 +385,6 @@ class RestorationRetry:
         self.target = None
         self.delay = 0
         self.deadline = 0
-        self.overlay = None
         # Navigation resets backoff, not consumption of an already sampled exit.
         self._diagnostic_deferral = None
         self._diagnostic_deferred_at = 0
@@ -464,6 +463,9 @@ class SessionReconciler:
             self._failed_launch = shared_launch_id
             self._awaiting_discovery.pop(active, None)
             self._retries.setdefault(active, RestorationRetry()).failed(active, now)
+            if restoration_retry is not None:
+                # A failed launch replaces the screen even without a pane-exit tuple.
+                restoration_retry.overlay = None
         # Retain successful clears while their marker is cached, and all pending clears.
         for key, (worker, succeeded) in list(self._startup_clears.items()):
             if not worker.is_alive() and (
@@ -572,6 +574,8 @@ def _reconcile_attachment_failure(
         return interrupted
     retry.failed(failure[0], now)
     retry.last_failure = failure
+    # Every failure path replaces the pane with the unavailable view, never the install hint.
+    retry.overlay = None
     return target
 
 
@@ -615,13 +619,15 @@ def _sync_active_session(
 
     status = _target_status(target, snapshot)
     if (
-        status in ("connecting…", "reconnecting…", "unavailable")
+        status in (*RETRYING_STATUSES, "unavailable")
         and shared_deadline is not None
         and (time.monotonic() if now is None else now) < shared_deadline
     ):
         return interrupted
-    if status in ("connecting…", "reconnecting…"):
-        if interrupted != target and not run(Effect("show_reconnecting", target, automatic=True)):
+    if status in RETRYING_STATUSES:
+        # Startup moves a host from "connecting…" to "letee missing" under an overlay already on screen.
+        stale = retry is not None and (status == sessions.LETEE_MISSING) != (retry.overlay == sessions.LETEE_MISSING)
+        if (interrupted != target or stale) and not run(Effect("show_reconnecting", target, automatic=True, message=status)):
             return interrupted
         return marker_after_submit(target)
     if status is None and (interrupted == target or target not in snapshot.sessions):
@@ -673,6 +679,12 @@ def _reconcile_active_session_effect(
                 retry.failed(target, time.monotonic() if completed is None else completed)
         elif not result.effect.automatic and (navigation or result.effect.kind == "show_reconnecting"):
             retry.reset()
+        if not result.error and (navigation or result.effect.kind in ("show_reconnecting", "show_unavailable")):
+            # Record which status the screen shows so _sync_active_session can refresh it.
+            retry.overlay = result.effect.message if result.effect.kind == "show_reconnecting" else None
+        elif result.error and navigation and not result.effect.automatic:
+            # A failed manual switch replaces the screen with the unavailable view.
+            retry.overlay = None
     if not result.error and navigation:
         return None
     if (
@@ -766,7 +778,7 @@ def _search_entries(
     if source is None:
         return [Entry("connecting…", "unavailable", host=host)]
     if not source.available:
-        label = f"reconnecting…: {_unavailable_reason(source)}" if source.error else "reconnecting…"
+        label = source.status or (f"reconnecting…: {_unavailable_reason(source)}" if source.error else "reconnecting…")
         return [Entry(label, "unavailable", host=host)]
     needle = filter_text.lower()
     matches = [
@@ -802,7 +814,6 @@ _ERROR_REASONS = (
     ("host key verification failed", "host key changed"),
     ("tmux: command not found", "tmux missing"),
     ("tmux: not found", "tmux missing"),
-    ("letee is not installed", "letee not installed"),
 )
 
 
@@ -810,6 +821,8 @@ def _unavailable_reason(source: SourceSnapshot | None) -> str:
     """A few words on why a host is unavailable; discovery errors are raw ssh/tmux stderr."""
     if source is None:
         return "connecting…"
+    if source.status:
+        return source.status
     error = (source.error or "").strip()
     lowered = error.lower()
     reason = next((short for needle, short in _ERROR_REASONS if needle in lowered), None)
@@ -3483,8 +3496,8 @@ def run(stdscr: curses.window) -> None:
             mark_layout_dirty()
             if destination == target:
                 return None
-            if entries[index].status in ("connecting…", "reconnecting…"):
-                return Effect("show_reconnecting", destination)
+            if entries[index].status in RETRYING_STATUSES:
+                return Effect("show_reconnecting", destination, message=entries[index].status)
             return _transition(state, "switch", destination)
         if action in ("previous_agent", "next_agent"):
             candidates = [index for index, entry in enumerate(agent_entries) if entry.kind == "agent"]
@@ -4891,8 +4904,8 @@ def run(stdscr: curses.window) -> None:
                     mark_input(True, "open_session_search")
                     continue
                 elif entry.target:
-                    if entry.status in ("connecting…", "reconnecting…"):
-                        effect = Effect("show_reconnecting", target=entry.target)
+                    if entry.status in RETRYING_STATUSES:
+                        effect = Effect("show_reconnecting", target=entry.target, message=entry.status)
                     else:
                         effect = _transition(state, "add_switch" if state.add_view == "search" else "switch", entry.target)
             elif key == ord(sidebar_keys["kill"]):

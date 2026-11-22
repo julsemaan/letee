@@ -142,6 +142,20 @@ class OperationsTest(unittest.TestCase):
         self.assertFalse(result.partial_success)
         reset.assert_not_called()
 
+    def test_reconnecting_overlays_receive_target_status(self):
+        target = Target("ssh", "work", "dev")
+        config.save_sessions([target])
+        with patch.object(cockpit, "current_target", return_value=target), \
+             patch.object(cockpit, "startup_deadline", return_value=None), \
+             patch.object(cockpit, "show_reconnecting") as show, \
+             patch.object(cockpit, "switch_reconnecting") as switch:
+            automatic = operations.perform(operations.capture(
+                operations.Effect("show_reconnecting", target, automatic=True, message="letee missing")), ())
+            explicit = operations.perform(operations.Effect("show_reconnecting", target, message="letee missing"), ())
+        self.assertFalse(automatic.error or explicit.error)
+        show.assert_called_once_with(target, "letee missing")
+        self.assertEqual(switch.call_args.args, (target, "letee missing"))
+
     def test_same_target_relaunch_invalidates_old_overlay(self):
         with patch.object(cockpit, "current_target", return_value=self.work), patch.object(cockpit, "switch"), patch.object(cockpit, "show_unavailable") as overlay:
             first = operations.perform(operations.Effect("switch", self.work), ())

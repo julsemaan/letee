@@ -4,7 +4,7 @@ import unittest
 
 from letee.discovery import AgentEntry, SessionSnapshot, SourceSnapshot
 from letee.names import PaneTarget, Target
-from letee.workspace import AgentActivity, Session, Window, visible_agents
+from letee.workspace import AgentActivity, Session, Window, target_status, visible_agents
 
 
 class WorkspaceTest(unittest.TestCase):
@@ -26,6 +26,14 @@ class WorkspaceTest(unittest.TestCase):
         remote = replace(session, target=Target("ssh", "letee", "remote"))
         self.assertNotEqual(session.key, remote.key)
         self.assertNotEqual(session.key, replace(session, session_id="$2").key)
+
+    def test_unavailable_remote_status_uses_source_status(self):
+        target = Target("ssh", "work", "dev")
+        local = SourceSnapshot(True, (), frozenset())
+        for status, expected in (("letee missing", "letee missing"), (None, "reconnecting…")):
+            with self.subTest(status=status):
+                source = SourceSnapshot(False, (), frozenset(), "error", status=status)
+                self.assertEqual(target_status(target, SessionSnapshot(local, {"dev": source})), expected)
 
     def test_visibility_is_tracked_and_not_hidden(self):
         other = replace(self.agent, pane_target=replace(self.pane, target=Target("local", "other")))
