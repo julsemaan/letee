@@ -242,6 +242,23 @@ class RemoteCommandTest(unittest.TestCase):
         for name in ("save.sh", "restore.sh"):
             self.assertTrue(os.access(resurrect.scripts_dir() / name, os.X_OK))
 
+    def test_ps_strategy_drops_commands_with_shell_syntax(self):
+        script = resurrect.scripts_dir().parent / "save_command_strategies" / "ps.sh"
+        cases = {
+            "vim $(id)": "",
+            "less a;b": "",
+            "vim notes.txt": "vim notes.txt\n",
+            "claude --continue": "claude --continue\n",
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                fake_ps = Path(tmp) / "ps"
+                fake_ps.write_text(f"#!/bin/sh\nprintf '%s\\n' '  PPID ARGS' {shlex.quote('  42 ' + command)}\n")
+                fake_ps.chmod(0o755)
+                env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"}
+                result = subprocess.run(["bash", str(script), "42"], env=env, capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout, expected)
+
 
 def pane(host, session="work", pane_id="%1"):
     target = Target("ssh", session, host) if host else Target("local", session)
