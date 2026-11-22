@@ -39,7 +39,7 @@ pane_exists() {
 	local session_name="$1"
 	local window_number="$2"
 	local pane_index="$3"
-	tmux list-panes -t "${session_name}:${window_number}" -F "#{pane_index}" 2>/dev/null |
+	tmux list-panes -t "=${session_name}:${window_number}" -F "#{pane_index}" 2>/dev/null |
 		\grep -q "^$pane_index$"
 }
 
@@ -87,13 +87,13 @@ has_restored_session_0() {
 window_exists() {
 	local session_name="$1"
 	local window_number="$2"
-	tmux list-windows -t "$session_name" -F "#{window_index}" 2>/dev/null |
+	tmux list-windows -t "=${session_name}" -F "#{window_index}" 2>/dev/null |
 		\grep -q "^$window_number$"
 }
 
 session_exists() {
 	local session_name="$1"
-	tmux has-session -t "$session_name" 2>/dev/null
+	tmux has-session -t "=${session_name}" 2>/dev/null
 }
 
 first_window_num() {
