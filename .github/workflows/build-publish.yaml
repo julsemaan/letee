@@ -160,8 +160,8 @@ jobs:
           target_commitish: ${{ github.event.pull_request.merge_commit_sha }}
           generate_release_notes: true
           body: |
-            This release bundles tmux 3.7c for letee's outer cockpit.
-            Upstream source: https://github.com/tmux/tmux-builds/releases/tag/v3.7c
+            This release bundles tmux 3.8 for letee's outer cockpit.
+            Upstream source: https://github.com/tmux/tmux-builds/releases/tag/v3.8
           files: |
             dist/*
             release-assets/*

@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 from urllib.request import urlopen
 
-TMUX_VERSION = "3.7c"
+TMUX_VERSION = "3.8"
 UPSTREAM_REPOSITORY = "https://github.com/tmux/tmux-builds"
 RELEASE_URL = f"{UPSTREAM_REPOSITORY}/releases/tag/v{TMUX_VERSION}"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -50,14 +50,14 @@ def _binary_artifact(platform: str, sha256: str) -> Artifact:
 
 
 BINARY_ARTIFACTS = (
-    _binary_artifact("linux-x86_64", "cc56bd1cc873eb6089c615f0496b072385bda8a6d944069f38564a5d49c128aa"),
-    _binary_artifact("linux-arm64", "29dcb978da2a4b0cf6790f9e004865dac239a3ba03bbf776dddacce23d03831b"),
-    _binary_artifact("macos-x86_64", "1c21f9ade964e4a539be05ffe3a4e95854ab76a0a9c4c05d0ffbe7fc6c4d783f"),
-    _binary_artifact("macos-arm64", "0a763dd0380aa980d239509654da1bc7455843706a3c050f6709c8cd2e13d12d"),
+    _binary_artifact("linux-x86_64", "147849ff18b62a8aa3d5d8f75dd07c3f9fdfad529f932236afdec838fc1d15e1"),
+    _binary_artifact("linux-arm64", "f399311b1159705e69839eaf4f6f68c8b8540dc3a8538b87c30dedb9c3c7fc23"),
+    _binary_artifact("macos-x86_64", "e7b92e51d9e9610ce80d1c477da1e6ff6a6398ea6b6b4d4ff7b19cf60f594555"),
+    _binary_artifact("macos-arm64", "ec926bbf28ddf55d0dc7c9791d43e03e251ddab392d763f7fbb38d4b8408d051"),
 )
 LICENSE_ARTIFACT = _artifact(
     "LICENSES.tar.gz",
-    "094905d3ba42397c65fecd817dc29736dd14bd35e75600441403a365125f47d1",
+    "9c2c903970e8245e0c1abd20311534e6eb152bf2bde3e54af77821f09b81effc",
 )
 ARTIFACTS = BINARY_ARTIFACTS + (LICENSE_ARTIFACT,)
 
