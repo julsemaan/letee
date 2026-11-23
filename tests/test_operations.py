@@ -73,6 +73,35 @@ class OperationsTest(unittest.TestCase):
                 release.set()
                 runner.close()
 
+    def test_explicit_remote_switch_does_not_wait_for_background_restores(self):
+        from letee import sidebar
+
+        release = threading.Event()
+        restoring = [Target("ssh", f"work{index}", "a") for index in range(8)]
+        ready = Target("ssh", "ready", "b")
+        runner = sidebar.EffectRunner()
+        perform = sidebar._perform_effect
+
+        def blocked_perform(effect, favorites):
+            if effect.target.host == "a":
+                self.assertTrue(release.wait(5))
+            return perform(effect, favorites)
+
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(sidebar, "_perform_effect", side_effect=blocked_perform), \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch") as switch:
+            try:
+                for target in restoring:
+                    self.assertTrue(runner.submit(operations.Effect("ensure_created", target, automatic=True), ()))
+                self.assertTrue(runner.submit(operations.Effect("switch", ready), ()))
+                runner._recoveries[ready].result(timeout=2)
+                self.assertFalse(release.is_set())
+                self.assertEqual([call.args[0] for call in switch.call_args_list], [ready])
+            finally:
+                release.set()
+                runner.close()
+
     def test_explicit_remote_switch_has_no_preflight_commands(self):
         target = Target("ssh", "work", "dev")
         for kind in ("switch", "add_switch"):

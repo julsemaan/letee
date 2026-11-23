@@ -1386,6 +1386,8 @@ class EffectRunner:
     def __init__(self) -> None:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="letee-action")
         self._recovery_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="letee-recovery")
+        # Explicit navigation must not queue behind background restores waiting on one host.
+        self._navigation_recovery_executor = ThreadPoolExecutor(thread_name_prefix="letee-navigation-recovery")
         self._recoveries: dict[Target, Future[EffectResult]] = {}
         # Replaced recoveries still report back so the reconciler can clear their pending request.
         self._superseded_recoveries: list[Future[EffectResult]] = []
@@ -1610,7 +1612,8 @@ class EffectRunner:
         self._recovery_effects[effect.target] = effect
         if effect.target in self._recoveries:
             self._superseded_recoveries.append(self._recoveries[effect.target])
-        self._recoveries[effect.target] = self._recovery_executor.submit(
+        executor = self._recovery_executor if effect.automatic else self._navigation_recovery_executor
+        self._recoveries[effect.target] = executor.submit(
             copy_context().run, self._run_effect, effect, favorites, None, input_id)
 
     def poll(self) -> EffectResult | None:
@@ -1693,6 +1696,7 @@ class EffectRunner:
         with diagnostics.operation("effect_shutdown"):
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._recovery_executor.shutdown(wait=True, cancel_futures=True)
+            self._navigation_recovery_executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _current_target() -> Target | None:

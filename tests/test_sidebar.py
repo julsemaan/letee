@@ -5491,7 +5491,10 @@ class AsyncSidebarWorkTest(OperationTestCase):
             return sidebar.EffectResult(effect, favorites)
         reconciler = sidebar.SessionReconciler()
         runner = sidebar.EffectRunner()
-        submit = lambda effect: runner.submit(effect, (target,))
+
+        def submit(effect):
+            return runner.submit(effect, (target,))
+
         try:
             with patch.object(sidebar.operations.config, "load_session_restore", return_value=True), \
                  patch("letee.sidebar._perform_effect", side_effect=perform):
