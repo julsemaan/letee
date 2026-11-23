@@ -34,6 +34,7 @@ class Effect:
     launch_id: str | None = field(default=None, compare=False)
     target_revision: str | None = field(default=None, compare=False)
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex, compare=False)
+    track: bool = True
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,7 @@ def renamed_target(effect: Effect) -> Target | None:
 
 
 def planned_favorites(effect: Effect, favorites: tuple[Target, ...]) -> tuple[Target, ...]:
-    if effect.kind in ("add_switch", "create") and isinstance(effect.target, Target):
+    if (effect.kind == "add_switch" or (effect.kind == "create" and effect.track)) and isinstance(effect.target, Target):
         return favorites if effect.target in favorites else (*favorites, effect.target)
     if effect.kind == "kill" and isinstance(effect.target, Target):
         return tuple(target for target in favorites if target != effect.target)
@@ -410,9 +411,10 @@ def navigate(
 
 
 def create_and_switch(target: Target) -> None:
-    if needs_remote_recovery(Effect("create", target)):
+    effect = Effect("create", target, track=False)
+    if needs_remote_recovery(effect):
         cockpit.require_cockpit()
-        _report(perform(Effect("create", target), raise_errors=True))
+        _report(perform(effect, raise_errors=True))
         return
     with config.sessions_lock():
         sessions.create(target)

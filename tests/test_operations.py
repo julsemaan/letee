@@ -827,3 +827,16 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
         with patch.object(operations.sessions, "create"), patch.object(cockpit, "require_cockpit"), patch.object(cockpit, "switch"):
             operations.create_and_switch(Target("local", "new"))
         self.assertEqual(config.load_sessions(), [self.work])
+
+    def test_cli_remote_create_does_not_track(self):
+        target = Target("ssh", "new", "dev")
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote", return_value=operations.sessions.RestoreOutcome()), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "require_cockpit"), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch"):
+            operations.create_and_switch(target)
+        ensure.assert_called_once_with(target)
+        self.assertEqual(config.load_sessions(), [self.work])
