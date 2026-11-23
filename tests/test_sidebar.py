@@ -5517,6 +5517,30 @@ class AsyncSidebarWorkTest(OperationTestCase):
                 release.set()
             runner.close()
 
+    def test_rejected_switch_does_not_invalidate_accepted_create(self):
+        release = threading.Event()
+        create = Effect("create", Target("local", "new"))
+        current = []
+        def perform(effect, favorites):
+            release.wait(2)
+            current.append(effect.navigation_current())
+            return sidebar.EffectResult(effect, favorites, stale_navigation=not current[-1])
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(create, ()))
+                self.assertFalse(runner.submit(Effect("switch", Target("local", "other")), ()))
+                release.set()
+                deadline = time.monotonic() + 2
+                while (result := runner.poll()) is None and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                self.assertEqual(result.effect.kind, "create")
+                self.assertFalse(result.stale_navigation)
+                self.assertEqual(current, [True])
+        finally:
+            release.set()
+            runner.close()
+
     def test_effect_runner_submit_does_not_wait_for_action(self):
         started = threading.Event()
         release = threading.Event()

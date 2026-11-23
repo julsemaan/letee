@@ -1503,7 +1503,15 @@ class EffectRunner:
             and (not follow_up or effect.target in self._recovery_followups)
         )):
             return False
-        if not effect.automatic and effect.kind in ("switch", "switch_pane", "add_switch", "create", "show_reconnecting"):
+        # A request the busy runner rejects must not invalidate the work it already accepted.
+        rejected = not remote_recovery and self._future is not None and not (
+            self._effect is not None
+            and self._effect.kind in ("switch", "switch_pane", "show_reconnecting", "ensure_created")
+            and effect.kind in ("switch", "switch_pane", "show_reconnecting")
+        )
+        if not rejected and not effect.automatic and effect.kind in (
+            "switch", "switch_pane", "add_switch", "create", "show_reconnecting"
+        ):
             self._navigation_revision += 1
         if remote_recovery or (not effect.automatic and effect.kind in (
             "switch", "switch_pane", "add_switch", "create", "show_reconnecting"
@@ -1539,11 +1547,7 @@ class EffectRunner:
             **self._state_trace(),
         )
         if self._future is not None:
-            if (
-                self._effect is not None
-                and self._effect.kind in ("switch", "switch_pane", "show_reconnecting", "ensure_created")
-                and effect.kind in ("switch", "switch_pane", "show_reconnecting")
-            ):
+            if not rejected:
                 if self._pending_navigation is not None:
                     old_effect, _, old_action_id, old_input_id = self._pending_navigation
                     debug.emit(
