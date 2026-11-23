@@ -28,7 +28,7 @@ Managed local and remote sessions run on a dedicated tmux server named `letee.in
 
 ## Restore after a restart
 
-Letee saves every session on `letee.inner` with a bundled copy of [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect). A running sidebar saves a host when its windows or panes change, and at least once a minute otherwise. When that host's `letee.inner` starts again after a reboot or crash, the next session letee opens or creates there brings back every saved session: windows, pane layout, working directories, and the programs resurrect restarts by default (`vim`, `less`, `htop` and a few others). This works for local and SSH hosts. A remote host needs letee installed, just like for attaching.
+Letee saves every session on `letee.inner` with a bundled copy of [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect). A running sidebar saves a host when its windows or panes change, and at least once a minute otherwise. When that host's `letee.inner` starts again after a reboot or crash, the next session letee opens or creates there brings back every saved session: windows, pane layout, working directories, pane contents, and the programs resurrect restarts by default (`vim`, `less`, `htop` and a few others). Any other program that was running gets typed at the prompt, and runs only when you press Enter. On macOS only single-word commands are saved. This works for local and SSH hosts. A remote host needs letee installed, just like for attaching.
 
 To restart more programs, set `@resurrect-processes` in your `~/.tmux.conf`, which `letee.inner` loads. For example, to resume Claude Code sessions:
 
@@ -36,9 +36,9 @@ To restart more programs, set `@resurrect-processes` in your `~/.tmux.conf`, whi
 set -g @resurrect-processes '"~claude->claude --continue"'
 ```
 
-To bring back pane contents too, add `set -g @resurrect-capture-pane-contents on`.
+`set -g @resurrect-processes false` stops letee from restarting or typing any program.
 
-Saves live in `${XDG_STATE_HOME:-~/.local/state}/letee/resurrect` on each host. Changes made while no sidebar runs for a host are not saved. Don't enable `@continuum-restore` on `letee.inner`; letee already decides when to restore. Turn the feature off with `session_restore = false` in the [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md).
+Saves live in `${XDG_STATE_HOME:-~/.local/state}/letee/resurrect` on each host, readable only by you. They include each pane's scrollback, so anything printed in a pane ends up on disk. Set `session_restore_pane_contents = false` to skip it. Changes made while no sidebar runs for a host are not saved. Don't enable `@continuum-restore` on `letee.inner`; letee already decides when to restore. Turn the feature off with `session_restore = false` in the [configuration](https://github.com/julsemaan/letee/blob/main/docs/configuration.md).
 
 ## Named cockpits
 

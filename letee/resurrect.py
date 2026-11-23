@@ -15,13 +15,14 @@ import threading
 from typing import TYPE_CHECKING
 
 from . import diagnostics, sessions
-from .config import file_lock, load_timing
+from .config import file_lock, load_session_restore_pane_contents, load_timing
 
 if TYPE_CHECKING:
     from .discovery import SessionSnapshot
 
 READY_OPTION = "@letee-resurrect-ready"
 _DIR_OPTION = "@resurrect-dir"
+_PANE_CONTENTS_OPTION = "@resurrect-capture-pane-contents"
 # Stops resurrect from replacing live panes when it mistakes a one-pane server for a fresh one.
 _NEVER_OVERWRITE_OPTION = "@resurrect-never-overwrite"
 # Resurrect restores "from scratch" into a server holding only this session, then kills it.
@@ -53,13 +54,17 @@ def _tmux(*args: str, timeout: float | None = None) -> subprocess.CompletedProce
     )
 
 
-def _script(name: str, *args: str) -> tuple[str, ...]:
-    """Point resurrect at letee's save dir, then run one of its scripts.
+def _script(name: str, *args: str, pane_contents: bool) -> tuple[str, ...]:
+    """Point resurrect at letee's save dir and settings, then run one of its scripts.
 
     run-shell blocks until the script finishes, so callers can hold the lock for its whole run.
     """
     command = shlex.join(("bash", str(scripts_dir() / name), *args))
-    return ("set", "-g", _DIR_OPTION, str(state_dir()), ";", "run-shell", command)
+    return (
+        "set", "-g", _DIR_OPTION, str(state_dir()), ";",
+        "set", "-g", _PANE_CONTENTS_OPTION, "on" if pane_contents else "off", ";",
+        "run-shell", command,
+    )
 
 
 def _server_state() -> tuple[bool, bool]:
@@ -72,21 +77,21 @@ def _mark_ready() -> None:
     _tmux("set", "-g", READY_OPTION, "1")
 
 
-def ensure_restored() -> str:
+def ensure_restored(*, pane_contents: bool) -> str:
     """Restore the last save into a server that has not been checked yet.
 
     Returns `ready`, `nothing`, `restored` or `failed`.
     """
     with diagnostics.operation("resurrect.restore") as span:
         try:
-            span.outcome = _ensure_restored()
+            span.outcome = _ensure_restored(pane_contents)
         except (OSError, subprocess.SubprocessError) as error:
             diagnostics.error(error, handling="fallback", stage="resurrect_restore")
             span.outcome = "failed"
         return span.outcome
 
 
-def _ensure_restored() -> str:
+def _ensure_restored(pane_contents: bool) -> str:
     if _server_state()[1]:
         return "ready"
     with _lock(blocking=True):
@@ -103,7 +108,7 @@ def _ensure_restored() -> str:
         elif not running:
             _tmux("new-session", "-d", "-s", _PLACEHOLDER_SESSION)
         try:
-            result = _tmux(*_script("restore.sh"), timeout=load_timing().session_restore_timeout)
+            result = _tmux(*_script("restore.sh", pane_contents=pane_contents), timeout=load_timing().session_restore_timeout)
         finally:
             if protect:
                 _tmux("set", "-gu", _NEVER_OVERWRITE_OPTION)
@@ -114,30 +119,30 @@ def _ensure_restored() -> str:
         return "restored"
 
 
-def save() -> str:
+def save(*, pane_contents: bool) -> str:
     """Save and wait for it to finish. Never saves a server that skipped the restore check.
 
     Returns `no_server`, `busy`, `failed` or `saved`.
     """
     with diagnostics.operation("resurrect.save") as span:
         try:
-            span.outcome = _save()
+            span.outcome = _save(pane_contents)
         except (OSError, subprocess.SubprocessError) as error:
             diagnostics.error(error, handling="fallback", stage="resurrect_save")
             span.outcome = "failed"
         return span.outcome
 
 
-def _save() -> str:
+def _save(pane_contents: bool) -> str:
     running, ready = _server_state()
     if not running:
         return "no_server"
-    if not ready and ensure_restored() == "failed":
+    if not ready and ensure_restored(pane_contents=pane_contents) == "failed":
         return "failed"
     with _lock(blocking=False) as acquired:
         if not acquired:
             return "busy"
-        result = _tmux(*_script("save.sh", "quiet"), timeout=load_timing().session_restore_timeout)
+        result = _tmux(*_script("save.sh", "quiet", pane_contents=pane_contents), timeout=load_timing().session_restore_timeout)
         return "saved" if result.returncode == 0 else "failed"
 
 
@@ -164,8 +169,12 @@ def forget() -> str:
 
 
 def remote_command(action: str) -> str:
-    """Run `letee resurrect <action>` in a login shell, like the tmux-path lookup."""
-    return f'"${{SHELL:-/bin/sh}}" -lc "letee resurrect {action}"'
+    """Run `letee resurrect <action>` in a login shell, like the tmux-path lookup.
+
+    The flag is only added when disabled, so remote letee versions without it keep working.
+    """
+    flag = "" if load_session_restore_pane_contents() else " --no-pane-contents"
+    return f'"${{SHELL:-/bin/sh}}" -lc "letee resurrect {action}{flag}"'
 
 
 def remote_guard(host: str) -> str:
@@ -221,7 +230,7 @@ class SessionSaver:
     @staticmethod
     def _save(host: str | None) -> bool:
         if host is None:
-            return save() == "saved"
+            return save(pane_contents=load_session_restore_pane_contents()) == "saved"
         with diagnostics.operation("resurrect.remote_save", host=host) as span:
             try:
                 result = subprocess.run(

@@ -9,3 +9,6 @@ patches:
   - scripts/restore.sh: quotes the snapshot path so restores work when the resurrect dir contains spaces.
   - scripts/helpers.sh, save.sh, spinner_helpers.sh, process_restore_helpers.sh: quote the paths of the scripts they execute, so an install path with spaces doesn't silently skip save and restore.
   - save_command_strategies/ps.sh: saves a command only when the pane PID has exactly one direct child (exact PPID match), because restore replays it into the pane's shell. With /proc it saves the child's argv quoted with `printf %q`; without /proc it keeps single-word `ps args` matching `[:alnum:]_@%+=:,./-` (LC_ALL=C), since `ps` can't preserve argv boundaries.
+  - scripts/helpers.sh: pane_contents_create_archive writes pane_contents.tar.gz.tmp and moves it into place, so an interrupted save keeps the previous archive.
+  - scripts/process_restore_helpers.sh: restore_pane_process checks eligibility (pane not pre-existing, pane exists, @resurrect-processes not `false`) apart from the restore list. Eligible commands off the list are typed at the prompt with `send-keys -l` and no Enter.
+  - scripts/process_restore_helpers.sh: before sending keys, waits until the pane's cursor_x is above 0 (prompt drawn), with one ~2s budget shared by all panes, so the tty doesn't echo the keys a second time.

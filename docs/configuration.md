@@ -25,6 +25,7 @@ agent_panel_resize_step = 5
 persistent_ssh = true
 tmux_config_overlay = true
 session_restore = true
+session_restore_pane_contents = true
 
 [timing]
 ssh_connect_timeout = 2
@@ -56,6 +57,7 @@ The `LETEE_CONFIG_DIR` environment variable can override `~/.config/letee` when 
 | `persistent_ssh` | `true` | Enables letee's OpenSSH connection reuse options. |
 | `tmux_config_overlay` | `true` | Sources letee's tmux settings on managed local and remote tmux servers. |
 | `session_restore` | `true` | Saves `letee.inner` sessions and restores them after a restart. See [restore after a restart](https://github.com/julsemaan/letee/blob/main/docs/usage.md#restore-after-a-restart). The local cockpit's setting applies to remote hosts too. |
+| `session_restore_pane_contents` | `true` | Saves and restores what each pane showed, including scrollback. Like `session_restore`, the local setting applies to remote hosts. |
 
 `agent_panel_resize_step` affects the current sidebar process only. With the default, `[` and `]` change the Agents share from `40%` to `45%` to `50%`. Rerun `letee` after changing configuration.
 

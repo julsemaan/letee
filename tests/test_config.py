@@ -68,6 +68,8 @@ class ConfigTest(unittest.TestCase):
             ({"persistent_ssh": "private"}, config.load_persistent_ssh, "invalid_persistent_ssh"),
             ({"tmux_config_overlay": "private"}, config.load_tmux_config_overlay, "invalid_tmux_config_overlay"),
             ({"session_restore": "private"}, config.load_session_restore, "invalid_session_restore"),
+            ({"session_restore_pane_contents": "private"}, config.load_session_restore_pane_contents,
+             "invalid_session_restore_pane_contents"),
             ({"hosts": "private"}, config.load_hosts, "invalid_hosts_list"),
             ({"hosts": ["private value"]}, config.load_hosts, "invalid_config_host"),
         )
@@ -335,6 +337,20 @@ class ConfigTest(unittest.TestCase):
                 self.write_config(f"session_restore = {value}\n")
                 with self.assertRaisesRegex(SystemExit, "session_restore must be a boolean"):
                     config.load_session_restore()
+
+    def test_session_restore_pane_contents_defaults_enabled_and_accepts_booleans(self):
+        self.write_config("hosts = []\n")
+        self.assertTrue(config.load_session_restore_pane_contents())
+        self.write_config("session_restore_pane_contents = false\n")
+        self.assertFalse(config.load_session_restore_pane_contents())
+        self.assertTrue(config.tomllib.loads(config.CONFIG_TEXT)["session_restore_pane_contents"])
+
+    def test_invalid_session_restore_pane_contents_fails_clearly(self):
+        for value in ('"true"', "1"):
+            with self.subTest(value=value):
+                self.write_config(f"session_restore_pane_contents = {value}\n")
+                with self.assertRaisesRegex(SystemExit, "session_restore_pane_contents must be a boolean"):
+                    config.load_session_restore_pane_contents()
 
     def test_session_timing_overrides(self):
         self.write_config("[timing]\nsession_save_interval = 15\nsession_restore_timeout = 2.5\n")

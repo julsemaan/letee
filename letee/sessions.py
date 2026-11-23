@@ -22,7 +22,8 @@ import time
 
 from . import diagnostics, resurrect, tmux
 from .config import (
-    load_persistent_ssh, load_session_restore, load_timing, load_tmux_config_overlay, remote_tmux_cache_path,
+    load_persistent_ssh, load_session_restore, load_session_restore_pane_contents, load_timing, load_tmux_config_overlay,
+    remote_tmux_cache_path,
 )
 from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, WindowTarget, validate_host, validate_session_name
 
@@ -677,7 +678,7 @@ def attach_command(target: Target, *, overlay: bool | None = None, attach_only: 
               else f"new-session -A -s {shlex.quote(target.session)}")
     restore = not attach_only and load_session_restore()
     if restore and target.kind == "local":
-        resurrect.ensure_restored()
+        resurrect.ensure_restored(pane_contents=load_session_restore_pane_contents())
     command = f"{shell_join(inner_argv(target.host, '-T', 'clipboard'))} {action}"
     if overlay:
         command += f" \\; source-file {_overlay_source(target)}"
@@ -856,7 +857,7 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
     command = inner_argv(target.host, "new-session", "-d", "-s", target.session)
     if target.kind == "local":
         if restore:
-            resurrect.ensure_restored()
+            resurrect.ensure_restored(pane_contents=load_session_restore_pane_contents())
         _run_inner("create", target, command)
         if overlay:
             # Best effort: tmux pre-3.4 rejects newer overlay options, and

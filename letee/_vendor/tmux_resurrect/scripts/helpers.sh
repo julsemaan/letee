@@ -81,8 +81,10 @@ is_session_grouped() {
 # pane content file helpers
 
 pane_contents_create_archive() {
+	local archive_file="$(pane_contents_archive_file)"
 	tar cf - -C "$(resurrect_dir)/save/" ./pane_contents/ |
-		gzip > "$(pane_contents_archive_file)"
+		gzip > "${archive_file}.tmp" &&
+		mv "${archive_file}.tmp" "$archive_file"
 }
 
 pane_content_files_restore_from_archive() {
