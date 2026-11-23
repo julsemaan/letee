@@ -258,13 +258,45 @@ class ForgetTest(ResurrectTestCase):
 
 class RemoteCommandTest(unittest.TestCase):
     def test_remote_command_uses_login_shell(self):
-        self.assertEqual(resurrect.remote_command("save"), '"${SHELL:-/bin/sh}" -lc "letee resurrect save"')
+        self.assertEqual(resurrect.remote_command("save"), sessions.remote_letee_command("resurrect", "save"))
+
+    def test_remote_actions_resolve_and_preserve_arguments(self):
+        with tempfile.TemporaryDirectory(prefix="remote home ' ") as directory:
+            home = Path(directory)
+            fallback = home / ".local/bin/letee"
+            fallback.parent.mkdir(parents=True)
+            path_bin = home / "path bin"
+            path_bin.mkdir()
+            shell = home / "login shell"
+            shell.write_text('#!/bin/sh\n[ "$1" = -lc ] || exit 99\nexec /bin/sh -c "$2"\n')
+            shell.chmod(0o755)
+            env = {"HOME": str(home), "PATH": str(path_bin), "SHELL": str(shell),
+                   "XDG_CONFIG_HOME": str(home / "config")}
+            fallback.write_text('#!/bin/sh\nprintf "fallback\\n"; printf "%s\\n" "$@"\n')
+            fallback.chmod(0o755)
+            for on_path in (False, True):
+                executable = path_bin / "letee"
+                if on_path:
+                    executable.write_text('#!/bin/sh\nprintf "path\\n"; printf "%s\\n" "$@"\n')
+                    executable.chmod(0o755)
+                for action in ("save", "restore", "forget", "space ' ; $HOME"):
+                    with self.subTest(on_path=on_path, action=action):
+                        result = subprocess.run(resurrect.remote_command(action), shell=True,
+                                                env=env, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        marker = "path" if on_path else "fallback"
+                        self.assertEqual(result.stdout, f"{marker}\nresurrect\n{action}\n")
+            executable.unlink()
+            fallback.unlink()
+            result = subprocess.run(resurrect.remote_command("save"), shell=True,
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 127)
 
     def test_guard_checks_marker_before_restoring(self):
         self.assertEqual(
             resurrect.remote_guard("dev"),
             '[ "$(tmux -L letee.inner show -gqv @letee-resurrect-ready 2>/dev/null)" = 1 ] || '
-            '"${SHELL:-/bin/sh}" -lc "letee resurrect restore"',
+            + resurrect.remote_command("restore"),
         )
 
     def test_vendored_scripts_are_executable(self):

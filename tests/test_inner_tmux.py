@@ -3,9 +3,11 @@
 import io
 import json
 import os
+from pathlib import Path
 import shlex
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -125,6 +127,42 @@ class PathPrefixTest(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][-1], "tmux -L letee.inner kill-session -t work")
 
 
+class RemoteLeteeCommandTest(unittest.TestCase):
+    def test_resolution_executes_path_first_then_default_and_reports_missing(self):
+        with tempfile.TemporaryDirectory(prefix="remote home ' ") as directory:
+            home = Path(directory)
+            fallback = home / ".local/bin/letee"
+            fallback.parent.mkdir(parents=True)
+            path_bin = home / "path bin"
+            path_bin.mkdir()
+            # Keep the test independent of host login profiles while checking -lc.
+            shell = home / "login shell"
+            shell.write_text('#!/bin/sh\n[ "$1" = -lc ] || exit 99\nexec /bin/sh -c "$2"\n')
+            shell.chmod(0o755)
+            env = {"HOME": str(home), "PATH": str(path_bin), "SHELL": str(shell),
+                   "XDG_CONFIG_HOME": str(home / "config")}
+
+            def install(path, marker):
+                path.write_text(f"#!/bin/sh\nprintf 'LETEE_TMUX=/{marker}/tmux\\n'\n")
+                path.chmod(0o755)
+
+            install(fallback, "fallback")
+            for on_path in (False, True):
+                with self.subTest(on_path=on_path):
+                    if on_path:
+                        install(path_bin / "letee", "path")
+                    result = subprocess.run(sessions._REMOTE_TMUX_PATH, shell=True,
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = "path" if on_path else "fallback"
+                    self.assertEqual(result.stdout, f"LETEE_TMUX=/{expected}/tmux\n")
+            (path_bin / "letee").unlink()
+            fallback.unlink()
+            result = subprocess.run(sessions._REMOTE_TMUX_PATH, shell=True,
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 127)
+
+
 class RemoteTmuxTest(unittest.TestCase):
     def setUp(self):
         sessions.forget_remote_tmux()
@@ -137,7 +175,7 @@ class RemoteTmuxTest(unittest.TestCase):
             self.assertEqual(sessions.remote_tmux("dev"), REMOTE_TMUX)
         run.assert_called_once()
         command = run.call_args.args[0]
-        self.assertEqual(command[-2:], ("dev", 'exec "${SHELL:-/bin/sh}" -lc "letee tmux-path"'))
+        self.assertEqual(command[-2:], ("dev", sessions._REMOTE_TMUX_PATH))
         self.assertIn("BatchMode=yes", command)
         self.assertEqual(json.loads(config.remote_tmux_cache_path().read_text()), {"dev": REMOTE_TMUX})
 

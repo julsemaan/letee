@@ -494,8 +494,18 @@ INSTALL_URL = "https://raw.githubusercontent.com/julsemaan/letee/main/install.sh
 INSTALL_COMMAND = f"curl -LsSf {INSTALL_URL} | sh"
 LETEE_MISSING = "letee missing"
 TMUX_PATH_MARKER = "LETEE_TMUX="
-# Non-interactive SSH often lacks ~/.local/bin on PATH; a login shell has it.
-_REMOTE_TMUX_PATH = 'exec "${SHELL:-/bin/sh}" -lc "letee tmux-path"'
+
+
+def remote_letee_command(*args: str) -> str:
+    """Resolve letee on the login PATH, then at the installer's default location."""
+    command = (
+        'letee=$(command -v letee) || letee="$HOME/.local/bin/letee"; '
+        f'exec "$letee" {shlex.join(args)}'
+    )
+    return f'"${{SHELL:-/bin/sh}}" -lc {shlex.quote(command)}'
+
+
+_REMOTE_TMUX_PATH = "exec " + remote_letee_command("tmux-path")
 # Serializes the cache's read-merge-write so parallel lookups don't drop each other's entries.
 _REMOTE_TMUX_CACHE_LOCK = threading.Lock()
 

@@ -165,7 +165,7 @@ def forget() -> str:
 
 def remote_command(action: str) -> str:
     """Run `letee resurrect <action>` in a login shell, like the tmux-path lookup."""
-    return f'"${{SHELL:-/bin/sh}}" -lc "letee resurrect {action}"'
+    return sessions.remote_letee_command("resurrect", action)
 
 
 def remote_guard(host: str) -> str:
