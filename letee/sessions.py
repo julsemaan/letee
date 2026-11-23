@@ -20,8 +20,10 @@ import tempfile
 import threading
 import time
 
-from . import diagnostics, tmux
-from .config import load_persistent_ssh, load_timing, load_tmux_config_overlay, remote_tmux_cache_path
+from . import diagnostics, resurrect, tmux
+from .config import (
+    load_persistent_ssh, load_session_restore, load_timing, load_tmux_config_overlay, remote_tmux_cache_path,
+)
 from .names import INNER_SERVER_SOCKET, SESSION_ID_RE, PaneTarget, Target, WindowTarget, validate_host, validate_session_name
 
 
@@ -673,11 +675,17 @@ def attach_command(target: Target, *, overlay: bool | None = None, attach_only: 
     overlay = load_tmux_config_overlay() if overlay is None else overlay
     action = (f"attach-session -t {shlex.quote('=' + target.session)}" if attach_only
               else f"new-session -A -s {shlex.quote(target.session)}")
+    restore = not attach_only and load_session_restore()
+    if restore and target.kind == "local":
+        resurrect.ensure_restored()
     command = f"{shell_join(inner_argv(target.host, '-T', 'clipboard'))} {action}"
     if overlay:
         command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
         return f"env -u TMUX {command}"
+    if restore:
+        # An old remote letee fails the guard; attachment must still run.
+        command = f"{{ {{ {resurrect.remote_guard(target.host or '')}; }} </dev/null >/dev/null 2>&1; {command}; }}"
     return _remote_attach_command(target, command, overlay=overlay)
 
 
@@ -831,12 +839,24 @@ def _run(
         return result.stdout or ""
 
 
+def _restore_remote(target: Target) -> None:
+    """Best effort: an old remote letee or a slow restore must not block creation."""
+    try:
+        _run("restore", target, ssh_command(target.host or "", resurrect.remote_guard(target.host or "")),
+             timeout=load_timing().session_restore_timeout)
+    except SystemExit as error:
+        diagnostics.error(error, handling="ignore", stage="remote_restore")
+
+
 @_session_operation("sessions.create")
 def create(target: Target, *, overlay: bool | None = None) -> None:
     validate_session_name(target.session)
     overlay = load_tmux_config_overlay() if overlay is None else overlay
+    restore = load_session_restore()
     command = inner_argv(target.host, "new-session", "-d", "-s", target.session)
     if target.kind == "local":
+        if restore:
+            resurrect.ensure_restored()
         _run_inner("create", target, command)
         if overlay:
             # Best effort: tmux pre-3.4 rejects newer overlay options, and
@@ -856,6 +876,8 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
                     diagnostics.error(error, handling="ignore", stage="overlay_source", target_kind="local")
                     span.outcome = "ignored"
     else:
+        if restore:
+            _restore_remote(target)
         if overlay:
             _install_overlay(target)
         shell = shell_join(command)
@@ -898,6 +920,17 @@ def ensure_created(target: Target, *, overlay: bool | None = None) -> None:
 @_session_operation("sessions.kill")
 def kill(target: Target) -> None:
     _run_inner("kill", target, inner_argv(target.host, "kill-session", "-t", target.session))
+    if not load_session_restore():
+        return
+    if target.kind == "local":
+        resurrect.forget()
+        return
+    # Best effort: an old remote letee lacks `forget`, and the kill already succeeded.
+    try:
+        _run("forget", target, ssh_command("-n", "-o", "BatchMode=yes", target.host or "",
+                                           resurrect.remote_command("forget")))
+    except SystemExit as error:
+        diagnostics.error(error, handling="ignore", stage="remote_forget")
 
 
 @_session_operation("sessions.pane_process_info")

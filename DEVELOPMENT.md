@@ -38,6 +38,10 @@ To smoke-test locally, use a container, never the host:
 docker run --rm -v "$PWD:/src:ro" debian:stable-slim sh -c 'apt-get update -qq && apt-get install -yqq curl ca-certificates >/dev/null && sh /src/install.sh && ~/.local/bin/letee version && sh /src/install.sh --uninstall'
 ```
 
+## Vendored tmux-resurrect
+
+`letee/_vendor/tmux_resurrect/` is a copy of [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) at the commit in its `PROVENANCE` file, plus the patches listed there. Re-apply those patches after every update. It holds only `scripts/`, `strategies/`, `save_command_strategies/` and `LICENSE.md`; letee runs the scripts by path and never loads `resurrect.tmux`. To update it, check out the new commit in a scratch directory, replace those four entries with `cp -a` so the executable bits survive, update `PROVENANCE`, and run `make test build-check`. `tools/check_dist.py` fails if a script is missing or loses its executable bit in the wheel or sdist.
+
 ## Session coordination
 
 `letee.operations` owns server-scoped session transactions. CLI commands and sidebar workers submit intent there rather than acquire `sessions_lock` themselves. Reload tracking, validate automatic work, prepare attachments, and publish launches within one transaction. Never nest lock acquisitions or wait for a transaction on the curses thread. Status synchronization and startup-marker cleanup run in workers too.

@@ -15,6 +15,11 @@ from letee import __version__, diagnostics
 from letee.__main__ import _tmux_socket_dir, main
 from letee.discovery import SessionSnapshot, SourceSnapshot
 from letee.names import Target
+from tests import disable_session_restore
+
+
+def setUpModule():
+    disable_session_restore()
 
 
 MAIN_MODULE = importlib.import_module("letee.__main__")
@@ -174,6 +179,35 @@ class MainTest(unittest.TestCase):
         self.assertEqual(output.getvalue(), f"{__version__}\n")
         configure_server.assert_not_called()
         cockpit.assert_not_called()
+
+    def test_resurrect_dispatches_without_configuring_a_server(self):
+        for action in ("restore", "save", "forget"):
+            with (
+                self.subTest(action=action),
+                patch("letee.__main__._configure_server") as configure_server,
+                patch("letee.__main__.resurrect.ensure_restored", return_value="restored") as restore,
+                patch("letee.__main__.resurrect.save", return_value="saved") as save,
+                patch("letee.__main__.resurrect.forget", return_value="kept") as forget,
+            ):
+                self.assertEqual(main(["resurrect", action]), 0)
+            self.assertEqual(
+                (restore.call_count, save.call_count, forget.call_count),
+                (action == "restore", action == "save", action == "forget"),
+            )
+            configure_server.assert_not_called()
+
+    def test_resurrect_exits_nonzero_for_unsuccessful_outcomes(self):
+        cases = [
+            ("restore", "failed"), ("save", "busy"), ("save", "no_server"), ("save", "failed"), ("forget", "failed"),
+        ]
+        for action, outcome in cases:
+            with (
+                self.subTest(action=action, outcome=outcome),
+                patch("letee.__main__.resurrect.ensure_restored", return_value=outcome),
+                patch("letee.__main__.resurrect.save", return_value=outcome),
+                patch("letee.__main__.resurrect.forget", return_value=outcome),
+            ):
+                self.assertEqual(main(["resurrect", action]), 1)
 
     def test_socket_dir_matches_tmux_default_when_tmpdir_is_unset(self):
         with (

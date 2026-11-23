@@ -1,0 +1,11 @@
+repository: https://github.com/tmux-plugins/tmux-resurrect
+commit: cff343cf9e81983d3da0c8562b01616f12e8d548
+date: 2023-03-06
+patches:
+  - scripts/helpers.sh: resurrect_file_path appends the save PID ($$) to the filename so two saves in the same second don't reuse the file `last` points to.
+  - scripts/save.sh: save_all runs the pane and window dumps with pipefail. If `list-panes` or `list-windows` fails, it deletes the new file, leaves `last` alone, and save.sh exits 1.
+  - scripts/restore.sh: active pane and active/alternate window restore use session-qualified select-pane/select-window instead of switch-client, so restores work headless (no attached client).
+  - scripts/restore.sh: session/window/pane existence probes use exact `=session` targets so a missing saved session (e.g. work) isn't mistaken for a live prefix match (e.g. work-old).
+  - scripts/restore.sh: quotes the snapshot path so restores work when the resurrect dir contains spaces.
+  - scripts/helpers.sh, save.sh, spinner_helpers.sh, process_restore_helpers.sh: quote the paths of the scripts they execute, so an install path with spaces doesn't silently skip save and restore.
+  - save_command_strategies/ps.sh: saves a command only when the pane PID has exactly one direct child (exact PPID match), because restore replays it into the pane's shell. With /proc it saves the child's argv quoted with `printf %q`; without /proc it keeps single-word `ps args` matching `[:alnum:]_@%+=:,./-` (LC_ALL=C), since `ps` can't preserve argv boundaries.

@@ -9,6 +9,18 @@ from zipfile import ZipFile, ZipInfo
 
 from tools import check_dist
 
+RESURRECT_FILES = {
+    f"{check_dist.RESURRECT_DIR}/scripts/save.sh": True,
+    f"{check_dist.RESURRECT_DIR}/scripts/helpers.sh": False,
+}
+
+
+def _resurrect_modes(overrides: dict[str, int | None] | None) -> dict[str, int]:
+    """Packaged modes for staged resurrect files; None leaves a file out."""
+    modes = {name: 0o755 if executable else 0o644 for name, executable in RESURRECT_FILES.items()}
+    modes.update(overrides or {})
+    return {name: mode for name, mode in modes.items() if mode is not None}
+
 
 class CheckDistWheelTest(unittest.TestCase):
     def _stage_binaries(self, root: Path, contents: dict[str, bytes]) -> None:
@@ -21,6 +33,11 @@ class CheckDistWheelTest(unittest.TestCase):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"license")
+        for name, executable in RESURRECT_FILES.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"resurrect")
+            path.chmod(0o755 if executable else 0o644)
         provenance = root / check_dist.PROVENANCE_PATH
         provenance.parent.mkdir(parents=True, exist_ok=True)
         source = "https://example.invalid/tmux-builds"
@@ -59,12 +76,18 @@ class CheckDistWheelTest(unittest.TestCase):
         provenance: bytes | None = None,
         member_prefix: str = "",
         license_contents: dict[str, bytes] | None = None,
+        resurrect_modes: dict[str, int] | None = None,
     ) -> None:
         if provenance is None:
             provenance = (path.parent / check_dist.PROVENANCE_PATH).read_bytes()
         if license_contents is None:
             license_contents = {name: b"license" for name in check_dist.LICENSE_PATHS}
+        resurrect_modes = _resurrect_modes(resurrect_modes)
         with ZipFile(path, "w") as archive:
+            for name, mode in resurrect_modes.items():
+                info = ZipInfo(f"{member_prefix}{name}")
+                info.external_attr = mode << 16
+                archive.writestr(info, b"resurrect")
             for name in check_dist.BINARY_PATHS:
                 info = ZipInfo(f"{member_prefix}{name}")
                 info.external_attr = 0o755 << 16
@@ -97,13 +120,20 @@ class CheckDistWheelTest(unittest.TestCase):
         duplicate_name: str | None = None,
         provenance: bytes | None = None,
         license_contents: dict[str, bytes] | None = None,
+        resurrect_modes: dict[str, int] | None = None,
     ) -> None:
         if provenance is None:
             provenance = (path.parent / check_dist.PROVENANCE_PATH).read_bytes()
         if license_contents is None:
             license_contents = {name: b"license" for name in check_dist.LICENSE_PATHS}
+        resurrect_modes = _resurrect_modes(resurrect_modes)
         with tarfile.open(path, "w:gz") as archive:
             root = "letee-0.0"
+            for name, mode in resurrect_modes.items():
+                info = tarfile.TarInfo(f"{root}/{name}")
+                info.mode = mode
+                info.size = len(b"resurrect")
+                archive.addfile(info, io.BytesIO(b"resurrect"))
             for name in check_dist.BINARY_PATHS:
                 content = contents[name]
                 info = tarfile.TarInfo(f"{root}/{name}")
@@ -253,6 +283,42 @@ class CheckDistWheelTest(unittest.TestCase):
                                 ValueError, "does not match staged provenance"
                             ):
                                 checker(path)
+
+
+    def _check(self, distribution: str, resurrect_modes: dict[str, int | None]) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            contents = {name: b"tmux" for name in check_dist.BINARY_PATHS}
+            self._stage_binaries(root, contents)
+            if distribution == "wheel":
+                path = root / "letee.whl"
+                self._write_wheel(path, contents, resurrect_modes=resurrect_modes)
+                checker = check_dist._check_wheel
+            else:
+                path = root / "letee.tar.gz"
+                self._write_sdist(path, contents, resurrect_modes=resurrect_modes)
+                checker = check_dist._check_sdist
+            with patch.object(check_dist, "PROJECT_ROOT", root):
+                checker(path)
+
+    def test_check_dist_accepts_resurrect_bundle(self):
+        for distribution in ("wheel", "sdist"):
+            with self.subTest(distribution=distribution):
+                self._check(distribution, {})
+
+    def test_check_dist_rejects_non_executable_resurrect_script(self):
+        script = f"{check_dist.RESURRECT_DIR}/scripts/save.sh"
+        for distribution in ("wheel", "sdist"):
+            with self.subTest(distribution=distribution):
+                with self.assertRaisesRegex(ValueError, "resurrect script is not executable"):
+                    self._check(distribution, {script: 0o644})
+
+    def test_check_dist_rejects_missing_resurrect_file(self):
+        helper = f"{check_dist.RESURRECT_DIR}/scripts/helpers.sh"
+        for distribution in ("wheel", "sdist"):
+            with self.subTest(distribution=distribution):
+                with self.assertRaisesRegex(ValueError, "missing or duplicates"):
+                    self._check(distribution, {helper: None})
 
 
 class CheckDistHostBinaryTest(unittest.TestCase):

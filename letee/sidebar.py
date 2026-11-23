@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Literal
 
-from . import __version__, cockpit, config, diagnostics, operations, runtime, tui, workspace
+from . import __version__, cockpit, config, diagnostics, operations, resurrect, runtime, tui, workspace
 from . import sessions as sessions
 from .operations import (
     Effect, EffectResult, perform as _perform_effect,
@@ -3003,6 +3003,7 @@ def run(stdscr: curses.window) -> None:
     unavailable_target_shown: Target | None = None
     restoration_retry = RestorationRetry()
     reconciler = SessionReconciler()
+    saver = resurrect.SessionSaver() if config.load_session_restore() else None
     awaiting_navigation_sample = False
     pending_navigation: tuple[Target, str | None, PaneTarget | None] | None = None
     rendered: tuple[object, ...] | None = None
@@ -3930,6 +3931,8 @@ def run(stdscr: curses.window) -> None:
                 )
             if not burst_count:
                 trace_transitions(poller.current_target)
+            if saver is not None:
+                saver.observe(poller.snapshot, now)
             if (
                 not burst_count
                 and not queued_input
