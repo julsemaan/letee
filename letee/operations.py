@@ -274,6 +274,8 @@ def _perform_unlocked(
             if effect.kind == "create":
                 if effect.recovery_launch is None:
                     sessions.create(target)
+                elif not remote_exists:
+                    sessions.ensure_created(target)
             if planned != favorites:
                 config.save_sessions(list(planned))
             # Ensure creation under the lock; delayed pane commands must not recreate renamed targets.
@@ -284,7 +286,7 @@ def _perform_unlocked(
             elif inline_remote:
                 command = sessions.attach_command(target, attach_only=True, require_ready=True)
             elif effect.automatic or effect.recovery_launch is not None:
-                if not remote_exists:
+                if not remote_exists and effect.kind != "create":
                     sessions.ensure_created(target)
                 command = (sessions.pane_attach_command(effect.target) if isinstance(effect.target, PaneTarget)
                            else sessions.attach_command(target, attach_only=True))

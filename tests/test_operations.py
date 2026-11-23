@@ -362,6 +362,18 @@ class OperationsTest(unittest.TestCase):
             self.assertIn("attach-session", switch.call_args.args[1])
             self.assertNotIn("new-session", switch.call_args.args[1])
 
+    def test_failed_remote_recovery_create_does_not_save_favorite(self):
+        target = Target("ssh", "work", "dev")
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote"), \
+             patch.object(operations.sessions, "ensure_created", side_effect=SystemExit("ssh failed")), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("create", target))
+        self.assertTrue(result.error)
+        self.assertNotIn(target, config.load_sessions())
+        switch.assert_not_called()
+
     def test_existing_legacy_navigation_uses_attach_only(self):
         for kind in ("switch", "add_switch"):
             for target in (Target("local", "work.one"), Target("ssh", "work.one", "dev")):
