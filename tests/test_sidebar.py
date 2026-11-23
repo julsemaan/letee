@@ -1332,6 +1332,21 @@ class AutomaticSessionEffectTest(OperationTestCase):
         self.assertEqual((state.selected_target, state.filter_text, state.selected_index),
                          (selected, "selected", 2))
 
+    def test_stale_manual_addition_is_not_applied(self):
+        existing, target = Target("local", "existing"), Target("ssh", "new", "devbox")
+        for kind in ("add_switch", "create"):
+            with self.subTest(kind=kind):
+                state = SidebarState(favorites=[existing], creation_text="new", creation_host="devbox")
+                poller = unittest.mock.Mock()
+                applied = sidebar._apply_effect(sidebar.EffectResult(
+                    sidebar.Effect(kind, target), (existing,), stale_navigation=True,
+                ), state, poller, 5)
+                self.assertFalse(applied)
+                self.assertEqual(state.favorites, [existing])
+                self.assertEqual((state.creation_text, state.creation_host), ("new", "devbox"))
+                self.assertIsNone(state.pending_selection)
+                self.assertEqual(state.status, "")
+
     def test_queued_creation_rechecks_tracking_before_recreating(self):
         target = Target("local", "removed")
         effect = sidebar.Effect("ensure_created", target, automatic=True)

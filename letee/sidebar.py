@@ -1247,6 +1247,11 @@ def _apply_effect(
     if effect.automatic and result.stale_navigation:
         _log_effect_applied(result, state)
         return False
+    if result.stale_navigation and effect.kind in ("add_switch", "create"):
+        # Manual additions only go stale when canceled before anything is saved.
+        state.favorites[:] = result.favorites
+        _log_effect_applied(result, state)
+        return False
     if result.error and not result.partial_success:
         if effect.kind == "save_favorites":
             state.favorites[:] = result.favorites
