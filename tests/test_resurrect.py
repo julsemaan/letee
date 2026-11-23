@@ -23,6 +23,20 @@ def setUpModule():
         unittest.addModuleCleanup(patcher.stop)
 
 
+class RemoteReadyTest(unittest.TestCase):
+    def test_probe_command_and_results(self):
+        target = Target("ssh", "work", "dev")
+        for output, ready in (("1\n", True), ("", False), ("0", False), ("11", False)):
+            with self.subTest(output=output), patch.object(sessions, "_run", return_value=output) as run:
+                self.assertEqual(sessions.remote_ready(target), ready)
+                command = sessions.shell_join(sessions.inner_argv("dev", "show", "-gqv", resurrect.READY_OPTION))
+                run.assert_called_once_with("restore_probe", target, sessions.ssh_command("dev", command),
+                                            timeout=Timing().session_restore_timeout)
+        for error in (RuntimeError("ssh failed"), SystemExit("failed")):
+            with patch.object(sessions, "_run", side_effect=error):
+                self.assertFalse(sessions.remote_ready(target))
+
+
 class FakeTmux:
     """letee.inner as seen by resurrect: running, ready, and the calls it got."""
 

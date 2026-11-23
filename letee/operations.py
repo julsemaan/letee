@@ -164,8 +164,6 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
                     return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
                 if not effect.automatic:
                     _advance(state, explicit=target)
-                    if effect.kind != "ensure_created":
-                        cockpit.switch_reconnecting(target, "restoring…", launch_id=state["launch"])
                 else:
                     revision = state.get("revisions", {}).get(target.format(), "")
                     if (effect.launch_id != state["launch"] or effect.target_revision != revision
@@ -178,11 +176,23 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
                         return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
                     if effect.kind == "ensure_created" and target not in config.load_sessions() and cockpit.current_target() != target:
                         return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
-                    if cockpit.current_target() == target:
-                        cockpit.show_reconnecting(target, "restoring…")
                 effect = replace(effect, recovery_launch=state["launch"],
                                  recovery_revision=state.get("revisions", {}).get(target.format(), ""))
-            restore_outcome = sessions.restore_remote(target)
+            ready = sessions.remote_ready(target)
+            with config.sessions_lock():
+                state = _state()
+                if (effect.recovery_launch != state["launch"]
+                        or effect.recovery_revision != state.get("revisions", {}).get(target.format(), "")
+                        or (effect.navigation_current is not None and not effect.navigation_current())
+                        or (effect.automatic and effect.kind != "ensure_created"
+                            and cockpit.current_target() != target)):
+                    return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
+                if not ready:
+                    if not effect.automatic and effect.kind != "ensure_created":
+                        cockpit.switch_reconnecting(target, "restoring…", launch_id=state["launch"])
+                    elif effect.automatic and cockpit.current_target() == target:
+                        cockpit.show_reconnecting(target, "restoring…")
+            restore_outcome = sessions.RestoreOutcome() if ready else sessions.restore_remote(target)
         with config.sessions_lock():
             favorites = tuple(config.load_sessions())
             fallback = favorites

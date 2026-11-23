@@ -26,6 +26,9 @@ class OperationsTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.directory.cleanup)
         self.addCleanup(self.env.stop)
+        readiness = patch.object(operations.sessions, "remote_ready", return_value=False, create=True)
+        self.ready = readiness.start()
+        self.addCleanup(readiness.stop)
         self.work = Target("local", "work")
         config.save_sessions([self.work])
 
@@ -67,6 +70,61 @@ class OperationsTest(unittest.TestCase):
             finally:
                 release.set()
                 runner.close()
+
+    def test_ready_remote_skips_restore_and_progress_without_caching(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.side_effect = [True, False]
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote", return_value=None) as restore, \
+             patch.object(operations.sessions, "ensure_created"), \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch_reconnecting") as progress, \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("switch", target))
+            self.assertFalse(result.error)
+            progress.assert_not_called()
+            restore.assert_not_called()
+            switch.assert_called_once()
+            operations.perform(operations.Effect("switch", target))
+            progress.assert_called_once()
+            restore.assert_called_once_with(target)
+
+    def test_ready_automatic_recovery_skips_progress_and_restore(self):
+        target = Target("ssh", "work", "dev")
+        config.save_sessions([target])
+        self.ready.return_value = True
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote") as restore, \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "current_target", return_value=target), \
+             patch.object(cockpit, "startup_deadline", return_value=None), \
+             patch.object(cockpit, "show_reconnecting") as progress, \
+             patch.object(cockpit, "switch"):
+            result = operations.perform(operations.Effect("switch", target, automatic=True))
+            self.assertFalse(result.error)
+            self.assertFalse(result.stale_navigation)
+            progress.assert_not_called()
+            restore.assert_not_called()
+            ensure.assert_called_once_with(target)
+
+    def test_probe_runs_outside_lock_and_stale_probe_does_not_show_progress(self):
+        target = Target("ssh", "work", "dev")
+        def probe(_target):
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertTrue(acquired)
+                operations._advance(config.load_operations(), explicit=self.work)
+            return False
+        self.ready.side_effect = probe
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote") as restore, \
+             patch.object(cockpit, "switch_reconnecting") as progress, \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("switch", target))
+            self.assertTrue(result.stale_navigation)
+            progress.assert_not_called()
+            restore.assert_not_called()
+            switch.assert_not_called()
 
     def test_restore_failure_is_reported_after_fallback(self):
         target = Target("ssh", "work", "dev")

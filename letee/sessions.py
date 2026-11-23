@@ -893,6 +893,17 @@ def restore_remote(target: Target) -> RestoreOutcome:
     return outcome
 
 
+def remote_ready(target: Target) -> bool:
+    """Probe the current inner server, without caching across navigation."""
+    try:
+        command = shell_join(inner_argv(target.host, "show", "-gqv", resurrect.READY_OPTION))
+        return _run("restore_probe", target, ssh_command(target.host or "", command),
+                    timeout=load_timing().session_restore_timeout).strip() == "1"
+    except (Exception, SystemExit) as error:
+        diagnostics.error(error, handling="fallback", stage="remote_restore_probe")
+        return False
+
+
 def _restore_remote(target: Target) -> RestoreOutcome:
     """Best effort: an old remote letee or a slow restore must not block creation."""
     try:
