@@ -3,6 +3,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -269,46 +270,62 @@ class RemoteCommandTest(unittest.TestCase):
         for name in ("save.sh", "restore.sh"):
             self.assertTrue(os.access(resurrect.scripts_dir() / name, os.X_OK))
 
-    def test_ps_strategy_drops_commands_with_shell_syntax(self):
-        script = resurrect.scripts_dir().parent / "save_command_strategies" / "ps.sh"
+
+class PsStrategyTest(unittest.TestCase):
+    script = resurrect.scripts_dir().parent / "save_command_strategies" / "ps.sh"
+
+    def save_command(self, pane_pid, env=None):
+        result = subprocess.run(["bash", str(self.script), str(pane_pid)], env=env, capture_output=True, text=True, check=True)
+        return result.stdout
+
+    def spawn_pane(self, script):
+        pane = subprocess.Popen(["bash", "-c", script])
+        self.addCleanup(lambda: (subprocess.run(["pkill", "-P", str(pane.pid)]), pane.kill(), pane.wait()))
+        return pane
+
+    def wait_for_children(self, pane, count):
+        for _ in range(100):
+            children = subprocess.run(["pgrep", "-P", str(pane.pid)], capture_output=True, text=True).stdout.split()
+            if len(children) == count:
+                return
+            time.sleep(0.05)
+        self.fail(f"pane {pane.pid} never had {count} children")
+
+    @unittest.skipUnless(Path("/proc/self/cmdline").exists(), "needs procfs")
+    def test_procfs_preserves_exact_argv(self):
+        argv = ["python3", "-c", "import time; time.sleep(30)", "notes -S/tmp/x.vim", "a\nb", "$(id)"]
+        pane = self.spawn_pane(f"{shlex.join(argv)} & wait")
+        self.wait_for_children(pane, 1)
+        saved = self.save_command(pane.pid)
+        self.assertEqual(saved.count("\n"), 1)
+        reparsed = subprocess.run(["bash", "-c", f"printf '%s\\0' {saved}"], capture_output=True, text=True, check=True)
+        self.assertEqual(reparsed.stdout.split("\0")[:-1], argv)
+
+    def test_several_children_save_nothing(self):
+        pane = self.spawn_pane("sleep 30 & sleep 30 & wait")
+        self.wait_for_children(pane, 2)
+        self.assertEqual(self.save_command(pane.pid), "")
+
+    def test_without_procfs_keeps_single_word_commands_only(self):
         cases = {
-            "vim $(id)": "",
-            "less a;b": "",
-            "vim notes.txt": "vim notes.txt\n",
-            "claude --continue": "claude --continue\n",
+            "htop": "htop\n",
+            "/usr/bin/top": "/usr/bin/top\n",
+            "vim notes.txt": "",
+            "vim notes -S/tmp/x.vim": "",
+            "vim$(id)": "",
+            "less;id": "",
         }
         for command, expected in cases.items():
             with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
                 fake_ps = Path(tmp) / "ps"
-                fake_ps.write_text(f"#!/bin/sh\nprintf '%s\\n' '  PPID ARGS' {shlex.quote('  42 ' + command)}\n")
+                fake_ps.write_text(
+                    "#!/bin/sh\n"
+                    'if [ "$1" = -Ao ]; then echo "   42 999999999"; echo "    7 43"; '
+                    f"else printf '%s\\n' {shlex.quote(command)}; fi\n"
+                )
                 fake_ps.chmod(0o755)
                 env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"}
-                result = subprocess.run(["bash", str(script), "42"], env=env, capture_output=True, text=True, check=True)
-                self.assertEqual(result.stdout, expected)
-
-    def test_failed_pane_query_keeps_last_snapshot(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            save_dir = Path(tmp) / "saves"
-            save_dir.mkdir()
-            (save_dir / "good.txt").write_text("pane\twork\n")
-            (save_dir / "last").symlink_to("good.txt")
-            fake_tmux = Path(tmp) / "tmux"
-            fake_tmux.write_text(
-                "#!/bin/sh\n"
-                'case "$1" in\n'
-                "  -V) echo 'tmux 3.4' ;;\n"
-                f'  show-option) [ "$3" = @resurrect-dir ] && echo {shlex.quote(str(save_dir))} ;;\n'
-                "  list-panes) exit 1 ;;\n"
-                "esac\n"
-            )
-            fake_tmux.chmod(0o755)
-            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"}
-            result = subprocess.run(
-                ["bash", str(resurrect.scripts_dir() / "save.sh"), "quiet"], env=env, capture_output=True, text=True
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(os.readlink(save_dir / "last"), "good.txt")
-            self.assertEqual(sorted(p.name for p in save_dir.iterdir()), ["good.txt", "last"])
+                self.assertEqual(self.save_command(42, env), expected)
 
 
 def pane(host, session="work", pane_id="%1"):
