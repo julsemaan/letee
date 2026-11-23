@@ -154,6 +154,7 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
         return EffectResult(effect, favorites)
     effect = capture(effect)
     fallback = effect.previous_favorites if effect.previous_favorites is not None else favorites
+    remote_exists = False
     try:
         if needs_remote_recovery(effect):
             target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
@@ -178,7 +179,8 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
                         return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
                 effect = replace(effect, recovery_launch=state["launch"],
                                  recovery_revision=state.get("revisions", {}).get(target.format(), ""))
-            ready = sessions.remote_ready(target)
+            remote = sessions.remote_state(target)
+            remote_exists = remote.ready and remote.session_exists
             with config.sessions_lock():
                 state = _state()
                 if (effect.recovery_launch != state["launch"]
@@ -187,12 +189,12 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
                         or (effect.automatic and effect.kind != "ensure_created"
                             and cockpit.current_target() != target)):
                     return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
-                if not ready:
+                if not remote.ready:
                     if not effect.automatic and effect.kind != "ensure_created":
                         cockpit.switch_reconnecting(target, "restoring…", launch_id=state["launch"])
                     elif effect.automatic and cockpit.current_target() == target:
                         cockpit.show_reconnecting(target, "restoring…")
-            restore_outcome = sessions.RestoreOutcome() if ready else sessions.restore_remote(target)
+            restore_outcome = sessions.RestoreOutcome() if remote.ready else sessions.restore_remote(target)
         with config.sessions_lock():
             favorites = tuple(config.load_sessions())
             fallback = favorites
@@ -206,7 +208,8 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
                     return EffectResult(effect, favorites, stale_navigation=True, launch_id=effect.recovery_launch)
                 token = sessions.remote_restore_prepared.set(True)
                 try:
-                    result = _perform_unlocked(effect, favorites, state, raise_errors=raise_errors)
+                    result = _perform_unlocked(effect, favorites, state, raise_errors=raise_errors,
+                                               remote_exists=remote_exists)
                     if result.error and cockpit.current_target() == target:
                         cockpit.show_unavailable(target)
                     if restore_outcome and restore_outcome.error and not result.error:
@@ -224,7 +227,10 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
         return EffectResult(effect, fallback, effect_error(effect, error), launch_id=launch_identity())
 
 
-def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict, *, raise_errors: bool = False) -> EffectResult:
+def _perform_unlocked(
+    effect: Effect, favorites: tuple[Target, ...], state: dict, *,
+    raise_errors: bool = False, remote_exists: bool = False,
+) -> EffectResult:
     target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
     planned = favorites
     partial = reset = False
@@ -271,7 +277,8 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             if legacy_attach:
                 command = sessions.attach_command(target, attach_only=True)
             elif effect.automatic or effect.recovery_launch is not None:
-                sessions.ensure_created(target)
+                if not remote_exists:
+                    sessions.ensure_created(target)
                 command = (sessions.pane_attach_command(effect.target) if isinstance(effect.target, PaneTarget)
                            else sessions.attach_command(target, attach_only=True))
             if effect.automatic and cockpit.current_target() != target:
@@ -283,7 +290,8 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             else:
                 cockpit.switch(target, command if command is not None else lambda: sessions.attach_command(target), launch_id=state["launch"])
         elif effect.kind == "ensure_created" and isinstance(target, Target):
-            sessions.ensure_created(target)
+            if not remote_exists:
+                sessions.ensure_created(target)
         elif effect.kind == "kill_agent" and isinstance(effect.target, PaneTarget):
             sessions.kill_agent(effect.target)
         elif effect.kind == "rename" and isinstance(target, Target):

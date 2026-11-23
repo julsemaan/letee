@@ -26,7 +26,8 @@ class OperationsTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.directory.cleanup)
         self.addCleanup(self.env.stop)
-        readiness = patch.object(operations.sessions, "remote_ready", return_value=False, create=True)
+        self.remote_state = operations.sessions.remote_state
+        readiness = patch.object(operations.sessions, "remote_state", return_value=operations.sessions.RemoteState())
         self.ready = readiness.start()
         self.addCleanup(readiness.stop)
         self.work = Target("local", "work")
@@ -71,12 +72,48 @@ class OperationsTest(unittest.TestCase):
                 release.set()
                 runner.close()
 
+    def test_existing_ready_remote_attaches_without_creation(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.return_value = operations.sessions.RemoteState(ready=True, session_exists=True)
+        for kind in ("switch", "add_switch", "switch_pane", "create", "ensure_created"):
+            with self.subTest(kind=kind), \
+                 patch.object(config, "load_session_restore", return_value=True), \
+                 patch.object(operations.sessions, "ensure_created") as ensure, \
+                 patch.object(operations.sessions, "restore_remote") as restore, \
+                 patch.object(operations.sessions, "attach_command", return_value="attach") as attach, \
+                 patch.object(cockpit, "switch_reconnecting") as progress, \
+                 patch.object(cockpit, "switch") as switch:
+                result = operations.perform(operations.Effect(kind, target))
+                self.assertFalse(result.error)
+                ensure.assert_not_called()
+                restore.assert_not_called()
+                progress.assert_not_called()
+                if kind != "ensure_created":
+                    attach.assert_called_once_with(target, attach_only=True)
+                    switch.assert_called_once()
+
+    def test_existing_ready_remote_uses_one_preflight_ssh_call(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.side_effect = self.remote_state
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "load_tmux_config_overlay", return_value=True), \
+             patch.object(operations.sessions, "_run", return_value="1\n1\n") as run, \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("switch", target))
+            self.assertFalse(result.error)
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0], "restore_probe")
+            command = switch.call_args.args[1]
+            self.assertIn("attach-session", command)
+            self.assertNotIn("new-session", command)
+            self.assertNotIn("resurrect", command)
+
     def test_ready_remote_skips_restore_and_progress_without_caching(self):
         target = Target("ssh", "work", "dev")
-        self.ready.side_effect = [True, False]
+        self.ready.side_effect = [operations.sessions.RemoteState(True, True), operations.sessions.RemoteState()]
         with patch.object(config, "load_session_restore", return_value=True), \
              patch.object(operations.sessions, "restore_remote", return_value=None) as restore, \
-             patch.object(operations.sessions, "ensure_created"), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
              patch.object(operations.sessions, "attach_command", return_value="attach"), \
              patch.object(cockpit, "switch_reconnecting") as progress, \
              patch.object(cockpit, "switch") as switch:
@@ -85,14 +122,32 @@ class OperationsTest(unittest.TestCase):
             progress.assert_not_called()
             restore.assert_not_called()
             switch.assert_called_once()
+            ensure.assert_not_called()
             operations.perform(operations.Effect("switch", target))
             progress.assert_called_once()
             restore.assert_called_once_with(target)
+            ensure.assert_called_once_with(target)
+
+    def test_ready_remote_with_missing_session_still_prepares_creation(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.return_value = operations.sessions.RemoteState(ready=True)
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "restore_remote") as restore, \
+             patch.object(operations.sessions, "attach_command", return_value="attach") as attach, \
+             patch.object(cockpit, "switch_reconnecting") as progress, \
+             patch.object(cockpit, "switch"):
+            result = operations.perform(operations.Effect("switch", target))
+            self.assertFalse(result.error)
+            ensure.assert_called_once_with(target)
+            attach.assert_called_once_with(target, attach_only=True)
+            restore.assert_not_called()
+            progress.assert_not_called()
 
     def test_ready_automatic_recovery_skips_progress_and_restore(self):
         target = Target("ssh", "work", "dev")
         config.save_sessions([target])
-        self.ready.return_value = True
+        self.ready.return_value = operations.sessions.RemoteState(ready=True)
         with patch.object(config, "load_session_restore", return_value=True), \
              patch.object(operations.sessions, "restore_remote") as restore, \
              patch.object(operations.sessions, "ensure_created") as ensure, \
@@ -114,7 +169,7 @@ class OperationsTest(unittest.TestCase):
             with config.sessions_lock(blocking=False) as acquired:
                 self.assertTrue(acquired)
                 operations._advance(config.load_operations(), explicit=self.work)
-            return False
+            return operations.sessions.RemoteState(ready=True, session_exists=True)
         self.ready.side_effect = probe
         with patch.object(config, "load_session_restore", return_value=True), \
              patch.object(operations.sessions, "restore_remote") as restore, \

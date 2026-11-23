@@ -893,15 +893,25 @@ def restore_remote(target: Target) -> RestoreOutcome:
     return outcome
 
 
-def remote_ready(target: Target) -> bool:
-    """Probe the current inner server, without caching across navigation."""
+@dataclass(frozen=True)
+class RemoteState:
+    ready: bool = False
+    session_exists: bool = False
+
+
+def remote_state(target: Target) -> RemoteState:
+    """Probe readiness and exact session existence in one SSH call, without caching."""
     try:
-        command = shell_join(inner_argv(target.host, "show", "-gqv", resurrect.READY_OPTION))
-        return _run("restore_probe", target, ssh_command(target.host or "", command),
-                    timeout=load_timing().session_restore_timeout).strip() == "1"
+        probe = shell_join(inner_argv(target.host, "show", "-gqv", resurrect.READY_OPTION))
+        exists = shell_join(inner_argv(target.host, "has-session", "-t", "=" + target.session))
+        command = f"{probe} && {{ if {exists} 2>/dev/null; then printf '1\\n'; else printf '0\\n'; fi; }}"
+        output = _run("restore_probe", target, ssh_command(target.host or "", command),
+                      timeout=load_timing().session_restore_timeout).splitlines()
+        if output in (["1", "1"], ["1", "0"]):
+            return RemoteState(ready=True, session_exists=output[1] == "1")
     except (Exception, SystemExit) as error:
         diagnostics.error(error, handling="fallback", stage="remote_restore_probe")
-        return False
+    return RemoteState()
 
 
 def _restore_remote(target: Target) -> RestoreOutcome:

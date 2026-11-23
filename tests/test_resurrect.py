@@ -23,18 +23,26 @@ def setUpModule():
         unittest.addModuleCleanup(patcher.stop)
 
 
-class RemoteReadyTest(unittest.TestCase):
+class RemoteStateTest(unittest.TestCase):
     def test_probe_command_and_results(self):
         target = Target("ssh", "work", "dev")
-        for output, ready in (("1\n", True), ("", False), ("0", False), ("11", False)):
+        for output, state in (("1\n1\n", sessions.RemoteState(True, True)),
+                              ("1\n0\n", sessions.RemoteState(True, False)),
+                              ("\n1\n", sessions.RemoteState()),
+                              ("0\n1\n", sessions.RemoteState()),
+                              ("", sessions.RemoteState()),
+                              ("1\n", sessions.RemoteState()),
+                              ("11\n1\n", sessions.RemoteState())):
             with self.subTest(output=output), patch.object(sessions, "_run", return_value=output) as run:
-                self.assertEqual(sessions.remote_ready(target), ready)
-                command = sessions.shell_join(sessions.inner_argv("dev", "show", "-gqv", resurrect.READY_OPTION))
+                self.assertEqual(sessions.remote_state(target), state)
+                probe = sessions.shell_join(sessions.inner_argv("dev", "show", "-gqv", resurrect.READY_OPTION))
+                exists = sessions.shell_join(sessions.inner_argv("dev", "has-session", "-t", "=work"))
+                command = f"{probe} && {{ if {exists} 2>/dev/null; then printf '1\\n'; else printf '0\\n'; fi; }}"
                 run.assert_called_once_with("restore_probe", target, sessions.ssh_command("dev", command),
                                             timeout=Timing().session_restore_timeout)
         for error in (RuntimeError("ssh failed"), SystemExit("failed")):
             with patch.object(sessions, "_run", side_effect=error):
-                self.assertFalse(sessions.remote_ready(target))
+                self.assertEqual(sessions.remote_state(target), sessions.RemoteState())
 
 
 class FakeTmux:
