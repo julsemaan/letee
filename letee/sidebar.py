@@ -1387,6 +1387,8 @@ class EffectRunner:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="letee-action")
         self._recovery_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="letee-recovery")
         self._recoveries: dict[Target, Future[EffectResult]] = {}
+        # Replaced recoveries still report back so the reconciler can clear their pending request.
+        self._superseded_recoveries: list[Future[EffectResult]] = []
         self._recovery_revisions: dict[Target | PaneTarget, int] = {}
         self._recovery_effects: dict[Target, Effect] = {}
         self._recovery_followups: dict[Target, tuple[Effect, tuple[Target, ...], str | None, int]] = {}
@@ -1606,10 +1608,16 @@ class EffectRunner:
     ) -> None:
         self._recovery_revisions[effect.target] = revision
         self._recovery_effects[effect.target] = effect
+        if effect.target in self._recoveries:
+            self._superseded_recoveries.append(self._recoveries[effect.target])
         self._recoveries[effect.target] = self._recovery_executor.submit(
             copy_context().run, self._run_effect, effect, favorites, None, input_id)
 
     def poll(self) -> EffectResult | None:
+        for future in self._superseded_recoveries:
+            if future.done():
+                self._superseded_recoveries.remove(future)
+                return future.result()
         for target, future in list(self._recoveries.items()):
             if future.done():
                 del self._recoveries[target]

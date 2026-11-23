@@ -5466,12 +5466,54 @@ class AsyncSidebarWorkTest(OperationTestCase):
                 self.assertTrue(runner.submit(remote, ()))
                 release.set()
                 deadline = time.monotonic() + 2
-                result = None
-                while result is None and time.monotonic() < deadline:
-                    result = runner.poll()
+                results = []
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if (result := runner.poll()) is not None:
+                        results.append(result)
                     time.sleep(0.001)
-                self.assertEqual(result.effect, remote)
-                self.assertTrue(result.effect.navigation_current())
+                # The superseded recovery still reports back, but as stale navigation.
+                self.assertEqual([result.effect.target for result in results], [remote.target] * 2)
+                self.assertEqual(
+                    sorted(result.effect.navigation_current() for result in results), [False, True]
+                )
+        finally:
+            release.set()
+            runner.close()
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_superseded_remote_recovery_clears_reconciler_pending(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        data = snapshot(remotes={"dev": source("ssh", host="dev")})
+        release = threading.Event()
+        def perform(effect, favorites):
+            if effect.target == target:
+                release.wait(2)
+            return sidebar.EffectResult(effect, favorites)
+        reconciler = sidebar.SessionReconciler()
+        runner = sidebar.EffectRunner()
+        submit = lambda effect: runner.submit(effect, (target,))
+        try:
+            with patch.object(sidebar.operations.config, "load_session_restore", return_value=True), \
+                 patch("letee.sidebar._perform_effect", side_effect=perform):
+                reconciler.reconcile((target,), target, data, submit, 0)
+                self.assertIn(target, reconciler._pending)
+                self.assertTrue(submit(Effect("switch", Target("local", "other"))))
+                self.assertTrue(submit(Effect("switch", target)))
+                release.set()
+                deadline = time.monotonic() + 2
+                results = []
+                while len(results) < 3 and time.monotonic() < deadline:
+                    if (result := runner.poll()) is not None:
+                        results.append(result)
+                    time.sleep(0.001)
+                self.assertEqual(len(results), 3)
+                for result in results:
+                    reconciler.observe(result)
+                self.assertNotIn(target, reconciler._pending)
+                resubmit = unittest.mock.Mock(return_value=True)
+                reconciler.reconcile((target,), target, data, resubmit, time.monotonic() + 1000)
+                self.assertEqual(resubmit.call_args.args[0].kind, "switch")
+                self.assertTrue(resubmit.call_args.args[0].automatic)
         finally:
             release.set()
             runner.close()
