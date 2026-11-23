@@ -23,7 +23,8 @@ DEFAULT_AGENT_PANEL_RESIZE_STEP = 5
 DEFAULT_PERSISTENT_SSH = True
 DEFAULT_TMUX_CONFIG_OVERLAY = True
 DEFAULT_SESSION_RESTORE = True
-CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nsidebar_collapse_mode = "{DEFAULT_SIDEBAR_COLLAPSE_MODE}"\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\nsession_restore = true\n'
+DEFAULT_SESSION_RESTORE_PANE_CONTENTS = True
+CONFIG_TEXT = f'hosts = []\nprefix = "{DEFAULT_PREFIX}"\nsidebar_width = {DEFAULT_SIDEBAR_WIDTH}\nsidebar_collapse_mode = "{DEFAULT_SIDEBAR_COLLAPSE_MODE}"\nstatus_timeout = {DEFAULT_STATUS_TIMEOUT}\nagent_panel_resize_step = {DEFAULT_AGENT_PANEL_RESIZE_STEP}\npersistent_ssh = true\ntmux_config_overlay = true\nsession_restore = true\nsession_restore_pane_contents = true\n'
 
 
 @dataclass(frozen=True)
@@ -402,31 +403,29 @@ def load_agent_panel_resize_step() -> int:
     return step
 
 
-def load_persistent_ssh() -> bool:
+def _load_bool(key: str, default: bool) -> bool:
     cfg, data = _load_config()
-    persistent = data.get("persistent_ssh", DEFAULT_PERSISTENT_SSH)
-    if not isinstance(persistent, bool):
-        diagnostics.error(handling="exit", reason="invalid_persistent_ssh")
-        raise SystemExit(f"Invalid config {cfg}: persistent_ssh must be a boolean")
-    return persistent
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        diagnostics.error(handling="exit", reason=f"invalid_{key}")
+        raise SystemExit(f"Invalid config {cfg}: {key} must be a boolean")
+    return value
+
+
+def load_persistent_ssh() -> bool:
+    return _load_bool("persistent_ssh", DEFAULT_PERSISTENT_SSH)
 
 
 def load_tmux_config_overlay() -> bool:
-    cfg, data = _load_config()
-    overlay = data.get("tmux_config_overlay", DEFAULT_TMUX_CONFIG_OVERLAY)
-    if not isinstance(overlay, bool):
-        diagnostics.error(handling="exit", reason="invalid_tmux_config_overlay")
-        raise SystemExit(f"Invalid config {cfg}: tmux_config_overlay must be a boolean")
-    return overlay
+    return _load_bool("tmux_config_overlay", DEFAULT_TMUX_CONFIG_OVERLAY)
 
 
 def load_session_restore() -> bool:
-    cfg, data = _load_config()
-    restore = data.get("session_restore", DEFAULT_SESSION_RESTORE)
-    if not isinstance(restore, bool):
-        diagnostics.error(handling="exit", reason="invalid_session_restore")
-        raise SystemExit(f"Invalid config {cfg}: session_restore must be a boolean")
-    return restore
+    return _load_bool("session_restore", DEFAULT_SESSION_RESTORE)
+
+
+def load_session_restore_pane_contents() -> bool:
+    return _load_bool("session_restore_pane_contents", DEFAULT_SESSION_RESTORE_PANE_CONTENTS)
 
 
 def load_hosts() -> list[str]:

@@ -196,6 +196,16 @@ class MainTest(unittest.TestCase):
             )
             configure_server.assert_not_called()
 
+    def test_resurrect_passes_pane_contents_setting(self):
+        for action, function in (("restore", "ensure_restored"), ("save", "save")):
+            for extra, expected in (([], True), (["--no-pane-contents"], False)):
+                with (
+                    self.subTest(action=action, extra=extra),
+                    patch(f"letee.__main__.resurrect.{function}", return_value="saved") as call,
+                ):
+                    main(["resurrect", action, *extra])
+                call.assert_called_once_with(pane_contents=expected)
+
     def test_resurrect_exits_nonzero_for_unsuccessful_outcomes(self):
         cases = [
             ("restore", "failed"), ("save", "busy"), ("save", "no_server"), ("save", "failed"), ("forget", "failed"),

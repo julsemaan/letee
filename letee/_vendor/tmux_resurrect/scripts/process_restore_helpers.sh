@@ -13,39 +13,46 @@ restore_pane_process() {
 	local window_number="$3"
 	local pane_index="$4"
 	local dir="$5"
+	local target="${session_name}:${window_number}.${pane_index}"
 	local command
-	if _process_should_be_restored "$pane_full_command" "$session_name" "$window_number" "$pane_index"; then
-		tmux switch-client -t "${session_name}:${window_number}"
-		tmux select-pane -t "$pane_index"
-
-		local inline_strategy="$(_get_inline_strategy "$pane_full_command")" # might not be defined
-		if [ -n "$inline_strategy" ]; then
-			# inline strategy exists
-			# check for additional "expansion" of inline strategy, e.g. `vim` to `vim -S`
-			if _strategy_exists "$inline_strategy"; then
-				local strategy_file="$(_get_strategy_file "$inline_strategy")"
-				local inline_strategy="$("$strategy_file" "$pane_full_command" "$dir")"
-			fi
-			command="$inline_strategy"
-		elif _strategy_exists "$pane_full_command"; then
-			local strategy_file="$(_get_strategy_file "$pane_full_command")"
-			local strategy_command="$("$strategy_file" "$pane_full_command" "$dir")"
-			command="$strategy_command"
-		else
-			# just invoke the raw command
-			command="$pane_full_command"
-		fi
-		tmux send-keys -t "${session_name}:${window_number}.${pane_index}" "$command" "C-m"
+	if ! _process_is_eligible "$session_name" "$window_number" "$pane_index"; then
+		return
 	fi
+	_wait_for_prompt "$target"
+	if ! _process_should_be_restored "$pane_full_command"; then
+		# Type the command at the prompt without running it; -l stops tmux reading words as key names.
+		tmux send-keys -t "$target" -l "$pane_full_command"
+		return
+	fi
+	tmux switch-client -t "${session_name}:${window_number}"
+	tmux select-pane -t "$pane_index"
+
+	local inline_strategy="$(_get_inline_strategy "$pane_full_command")" # might not be defined
+	if [ -n "$inline_strategy" ]; then
+		# inline strategy exists
+		# check for additional "expansion" of inline strategy, e.g. `vim` to `vim -S`
+		if _strategy_exists "$inline_strategy"; then
+			local strategy_file="$(_get_strategy_file "$inline_strategy")"
+			local inline_strategy="$("$strategy_file" "$pane_full_command" "$dir")"
+		fi
+		command="$inline_strategy"
+	elif _strategy_exists "$pane_full_command"; then
+		local strategy_file="$(_get_strategy_file "$pane_full_command")"
+		local strategy_command="$("$strategy_file" "$pane_full_command" "$dir")"
+		command="$strategy_command"
+	else
+		# just invoke the raw command
+		command="$pane_full_command"
+	fi
+	tmux send-keys -t "$target" "$command" "C-m"
 }
 
 # private functions below
 
-_process_should_be_restored() {
-	local pane_full_command="$1"
-	local session_name="$2"
-	local window_number="$3"
-	local pane_index="$4"
+_process_is_eligible() {
+	local session_name="$1"
+	local window_number="$2"
+	local pane_index="$3"
 	if is_pane_registered_as_existing "$session_name" "$window_number" "$pane_index"; then
 		# Scenario where pane existed before restoration, so we're not
 		# restoring the proces either.
@@ -53,13 +60,25 @@ _process_should_be_restored() {
 	elif ! pane_exists "$session_name" "$window_number" "$pane_index"; then
 		# pane number limit exceeded, pane does not exist
 		return 1
-	elif _restore_all_processes; then
-		return 0
-	elif _process_on_the_restore_list "$pane_full_command"; then
-		return 0
 	else
-		return 1
+		restore_pane_processes_enabled
 	fi
+}
+
+_process_should_be_restored() {
+	local pane_full_command="$1"
+	_restore_all_processes || _process_on_the_restore_list "$pane_full_command"
+}
+
+# Keys sent before the shell's line editor starts get echoed raw by the tty, so
+# wait for the prompt to move the cursor. All panes share one ~2s budget.
+_prompt_wait_polls=40
+_wait_for_prompt() {
+	local target="$1"
+	while [ "$_prompt_wait_polls" -gt 0 ] && [ "$(tmux display-message -p -t "$target" '#{cursor_x}')" = 0 ]; do
+		_prompt_wait_polls=$((_prompt_wait_polls - 1))
+		sleep 0.05
+	done
 }
 
 _restore_all_processes() {

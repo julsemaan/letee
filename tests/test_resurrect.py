@@ -21,6 +21,10 @@ def setUpModule():
         patcher = patch(target, return_value=Timing())
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
+    for target in ("letee.resurrect.load_session_restore_pane_contents", "letee.sessions.load_session_restore_pane_contents"):
+        patcher = patch(target, return_value=True)
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
 
 
 class FakeTmux:
@@ -71,9 +75,9 @@ class ResurrectTestCase(unittest.TestCase):
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state / "last").write_text("pane\n")
 
-    def run_with(self, fake, function):
+    def run_with(self, fake, function, pane_contents=True):
         with patch("letee.resurrect.subprocess.run", side_effect=fake):
-            return function()
+            return function(pane_contents=pane_contents)
 
 
 class EnsureRestoredTest(ResurrectTestCase):
@@ -103,9 +107,18 @@ class EnsureRestoredTest(ResurrectTestCase):
         self.assertFalse(any(resurrect._NEVER_OVERWRITE_OPTION in call for call in fake.calls))
         script = fake.calls[3]
         self.assertEqual(script[:5], ("set", "-g", "@resurrect-dir", str(self.state), ";"))
-        self.assertEqual(script[5], "run-shell")
-        self.assertEqual(shlex.split(script[6]), ["bash", str(resurrect.scripts_dir() / "restore.sh")])
+        self.assertEqual(script[10], "run-shell")
+        self.assertEqual(shlex.split(script[11]), ["bash", str(resurrect.scripts_dir() / "restore.sh")])
         self.assertTrue(fake.ready)
+
+    def test_restore_passes_pane_contents_setting(self):
+        self.save_exists()
+        for pane_contents, value in ((True, "on"), (False, "off")):
+            with self.subTest(pane_contents=pane_contents):
+                fake = FakeTmux(running=True, ready=False, never_overwrite="on")
+                self.run_with(fake, resurrect.ensure_restored, pane_contents)
+                script = next(call for call in fake.calls if "run-shell" in call)
+                self.assertEqual(script[5:10], ("set", "-g", "@resurrect-capture-pane-contents", value, ";"))
 
     def test_restore_into_running_server_forces_never_overwrite(self):
         self.save_exists()
@@ -151,7 +164,7 @@ class EnsureRestoredTest(ResurrectTestCase):
 
         with patch("letee.resurrect.load_timing", return_value=Timing(session_restore_timeout=42)), \
              patch("letee.resurrect.subprocess.run", side_effect=fake):
-            resurrect.ensure_restored()
+            resurrect.ensure_restored(pane_contents=True)
         self.assertIn(42, timeouts)
 
     def test_failed_script_leaves_server_unmarked(self):
@@ -163,7 +176,7 @@ class EnsureRestoredTest(ResurrectTestCase):
     def test_timeout_is_reported_as_failure(self):
         self.save_exists()
         with patch("letee.resurrect.subprocess.run", side_effect=subprocess.TimeoutExpired("tmux", 30)):
-            self.assertEqual(resurrect.ensure_restored(), "failed")
+            self.assertEqual(resurrect.ensure_restored(pane_contents=True), "failed")
 
     def test_server_marked_while_waiting_for_lock_is_not_restored(self):
         self.save_exists()
@@ -194,6 +207,17 @@ class SaveTest(ResurrectTestCase):
         self.assertIn("restore.sh", fake.calls[5][-1])
         self.assertIn("save.sh", fake.calls[-1][-1])
 
+    def test_save_passes_pane_contents_to_restore_check_and_save(self):
+        self.save_exists()
+        for pane_contents, value in ((True, "on"), (False, "off")):
+            with self.subTest(pane_contents=pane_contents):
+                fake = FakeTmux(running=True)
+                self.assertEqual(self.run_with(fake, resurrect.save, pane_contents), "saved")
+                scripts = [call for call in fake.calls if "run-shell" in call]
+                self.assertEqual(len(scripts), 2)
+                for script in scripts:
+                    self.assertEqual(script[5:9], ("set", "-g", "@resurrect-capture-pane-contents", value))
+
     def test_failed_restore_check_prevents_save(self):
         self.save_exists()
         fake = FakeTmux(running=True, script_rc=1)
@@ -218,8 +242,9 @@ class SaveTest(ResurrectTestCase):
         with patch("letee.resurrect.load_timing", return_value=Timing(session_restore_timeout=42)):
             self.assertEqual(self.run_with(recording, resurrect.save), "saved")
         command = fake.calls[-1]
-        self.assertEqual(command[:6], ("set", "-g", "@resurrect-dir", str(self.state), ";", "run-shell"))
-        self.assertEqual(shlex.split(command[6]), ["bash", str(resurrect.scripts_dir() / "save.sh"), "quiet"])
+        self.assertEqual(command[:5], ("set", "-g", "@resurrect-dir", str(self.state), ";"))
+        self.assertEqual(command[10], "run-shell")
+        self.assertEqual(shlex.split(command[11]), ["bash", str(resurrect.scripts_dir() / "save.sh"), "quiet"])
         self.assertEqual(timeouts[-1], 42)
 
     def test_save_makes_state_dir_private(self):
@@ -259,6 +284,14 @@ class ForgetTest(ResurrectTestCase):
 class RemoteCommandTest(unittest.TestCase):
     def test_remote_command_uses_login_shell(self):
         self.assertEqual(resurrect.remote_command("save"), '"${SHELL:-/bin/sh}" -lc "letee resurrect save"')
+
+    def test_remote_command_flags_disabled_pane_contents(self):
+        with patch("letee.resurrect.load_session_restore_pane_contents", return_value=False):
+            self.assertEqual(
+                resurrect.remote_command("restore"),
+                '"${SHELL:-/bin/sh}" -lc "letee resurrect restore --no-pane-contents"',
+            )
+            self.assertTrue(resurrect.remote_guard("dev").endswith('restore --no-pane-contents"'))
 
     def test_guard_checks_marker_before_restoring(self):
         self.assertEqual(
@@ -343,6 +376,88 @@ class PsStrategyTest(unittest.TestCase):
                 self.assertEqual(self.save_command(42, env), expected)
 
 
+class VendoredScriptTestCase(unittest.TestCase):
+    """Run vendored resurrect functions in bash against a fake tmux that logs its argv."""
+
+    def setUp(self):
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        self.tmp = Path(tempdir.name)
+        self.log = self.tmp / "tmux.log"
+        fake_tmux = self.tmp / "tmux"
+        fake_tmux.write_text(
+            "#!/bin/sh\n"
+            'printf "%s\\037" "$@" >> "$LOG"; echo >> "$LOG"\n'
+            'case "$1" in\n'
+            '  show-option) case "$3" in\n'
+            '    @resurrect-processes) printf "%s\\n" "$PROCESSES" ;;\n'
+            '    @resurrect-dir) printf "%s\\n" "$STATE" ;;\n'
+            '  esac ;;\n'
+            '  list-panes) echo 0 ;;\n'
+            '  display-message) echo 2 ;;\n'
+            "esac\n"
+            "exit 0\n"
+        )
+        fake_tmux.chmod(0o755)
+
+    def bash(self, script, *, path=None, **env):
+        scripts = resurrect.scripts_dir()
+        # restore.sh defines pane_exists and friends, then runs main; source it without the call.
+        prelude = f"CURRENT_DIR={shlex.quote(str(scripts))}; source <(sed -e '/^main$/d' -e '/^CURRENT_DIR=/d' \"$CURRENT_DIR/restore.sh\")"
+        env = {**os.environ, "PATH": f"{path or self.tmp}:{self.tmp}:{os.environ['PATH']}", "LOG": str(self.log),
+               "STATE": str(self.tmp / "state"), **env}
+        return subprocess.run(["bash", "-c", f"{prelude}\n{script}"], env=env, capture_output=True, text=True)
+
+    def tmux_calls(self):
+        if not self.log.exists():
+            return []
+        return [tuple(line.split("\x1f")[:-1]) for line in self.log.read_text().splitlines()]
+
+
+class RestorePaneProcessTest(VendoredScriptTestCase):
+    def restore(self, command, *, processes="", existing=""):
+        result = self.bash(
+            f"EXISTING_PANES_VAR={shlex.quote(existing)}; restore_pane_process {shlex.quote(command)} work 1 0 /tmp",
+            PROCESSES=processes,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return [call for call in self.tmux_calls() if call[0] == "send-keys"]
+
+    def test_allow_listed_command_runs(self):
+        self.assertEqual(self.restore("less notes.txt"), [("send-keys", "-t", "work:1.0", "less notes.txt", "C-m")])
+
+    def test_other_command_is_typed_without_enter(self):
+        self.assertEqual(self.restore("make Enter test"), [("send-keys", "-t", "work:1.0", "-l", "make Enter test")])
+
+    def test_processes_false_sends_nothing(self):
+        for command in ("less notes.txt", "make test"):
+            with self.subTest(command=command):
+                self.assertEqual(self.restore(command, processes="false"), [])
+
+    def test_pre_existing_pane_sends_nothing(self):
+        for command in ("less notes.txt", "make test"):
+            with self.subTest(command=command):
+                self.assertEqual(self.restore(command, existing=":work:1:0"), [])
+
+
+class PaneContentsArchiveTest(VendoredScriptTestCase):
+    def test_failed_gzip_keeps_previous_archive(self):
+        state = self.tmp / "state"
+        (state / "save" / "pane_contents").mkdir(parents=True)
+        (state / "save" / "pane_contents" / "pane-work:1.0").write_text("new\n")
+        archive = state / "pane_contents.tar.gz"
+        archive.write_bytes(b"previous")
+        failing = self.tmp / "failing"
+        failing.mkdir()
+        (failing / "gzip").write_text("#!/bin/sh\ncat >/dev/null\nexit 1\n")
+        (failing / "gzip").chmod(0o755)
+        self.assertNotEqual(self.bash("pane_contents_create_archive", path=failing).returncode, 0)
+        self.assertEqual(archive.read_bytes(), b"previous")
+        self.assertEqual(self.bash("pane_contents_create_archive").returncode, 0)
+        listing = subprocess.run(["tar", "tzf", str(archive)], capture_output=True, text=True, check=True).stdout
+        self.assertIn("pane-work:1.0", listing)
+
+
 def pane(host, session="work", pane_id="%1"):
     target = Target("ssh", session, host) if host else Target("local", session)
     return PaneTarget(target, "@1", pane_id, "/tmp/sock")
@@ -413,9 +528,12 @@ class SessionSaverTest(unittest.TestCase):
         self.assertEqual(self.queued(), [None])
 
     def test_local_save_runs_in_process(self):
-        with patch.object(resurrect, "save", return_value="saved") as save:
-            self.assertTrue(resurrect.SessionSaver._save(None))
-        save.assert_called_once_with()
+        for pane_contents in (True, False):
+            with self.subTest(pane_contents=pane_contents), \
+                 patch("letee.resurrect.load_session_restore_pane_contents", return_value=pane_contents), \
+                 patch.object(resurrect, "save", return_value="saved") as save:
+                self.assertTrue(resurrect.SessionSaver._save(None))
+            save.assert_called_once_with(pane_contents=pane_contents)
         with patch.object(resurrect, "save", return_value="busy"):
             self.assertFalse(resurrect.SessionSaver._save(None))
 
@@ -458,7 +576,7 @@ class SessionsGateTest(unittest.TestCase):
              patch("letee.sessions.subprocess.run", return_value=Mock(returncode=0, stdout="")):
             sessions.create(Target("local", "work"))
             sessions.attach_command(Target("local", "work"))
-        self.assertEqual(ensure.call_count, 2)
+        self.assertEqual(ensure.call_args_list, [unittest.mock.call(pane_contents=True)] * 2)
 
     def test_remote_create_runs_guard_with_restore_timeout(self):
         with patch.object(sessions, "load_session_restore", return_value=True), \
