@@ -109,7 +109,7 @@ pane_full_command() {
 	local pane_pid="$1"
 	local strategy_file="$(_save_command_strategy_file)"
 	# execute strategy script to get pane full command
-	$strategy_file "$pane_pid"
+	"$strategy_file" "$pane_pid"
 }
 
 number_nonempty_lines_on_screen() {

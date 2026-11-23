@@ -24,12 +24,12 @@ restore_pane_process() {
 			# check for additional "expansion" of inline strategy, e.g. `vim` to `vim -S`
 			if _strategy_exists "$inline_strategy"; then
 				local strategy_file="$(_get_strategy_file "$inline_strategy")"
-				local inline_strategy="$($strategy_file "$pane_full_command" "$dir")"
+				local inline_strategy="$("$strategy_file" "$pane_full_command" "$dir")"
 			fi
 			command="$inline_strategy"
 		elif _strategy_exists "$pane_full_command"; then
 			local strategy_file="$(_get_strategy_file "$pane_full_command")"
-			local strategy_command="$($strategy_file "$pane_full_command" "$dir")"
+			local strategy_command="$("$strategy_file" "$pane_full_command" "$dir")"
 			command="$strategy_command"
 		else
 			# just invoke the raw command

@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -270,6 +271,20 @@ class RemoteCommandTest(unittest.TestCase):
         for name in ("save.sh", "restore.sh"):
             self.assertTrue(os.access(resurrect.scripts_dir() / name, os.X_OK))
 
+
+    def test_vendored_scripts_run_from_path_with_spaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vendor = Path(tmp) / "with space"
+            shutil.copytree(resurrect.scripts_dir().parent, vendor)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            fake_tmux = bin_dir / "tmux"
+            fake_tmux.write_text('#!/bin/sh\n[ "$1" = -V ] && echo "tmux 3.4"\nexit 0\n')
+            fake_tmux.chmod(0o755)
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "SCRIPTS": str(vendor / "scripts")}
+            check = 'CURRENT_DIR="$SCRIPTS"; source "$SCRIPTS/variables.sh"; source "$SCRIPTS/helpers.sh"; supported_tmux_version_ok'
+            result = subprocess.run(["bash", "-c", check], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 class PsStrategyTest(unittest.TestCase):
     script = resurrect.scripts_dir().parent / "save_command_strategies" / "ps.sh"

@@ -52,7 +52,7 @@ display_message() {
 
 
 supported_tmux_version_ok() {
-	$CURRENT_DIR/check_tmux_version.sh "$SUPPORTED_VERSION"
+	"$CURRENT_DIR/check_tmux_version.sh" "$SUPPORTED_VERSION"
 }
 
 remove_first_char() {
