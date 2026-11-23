@@ -5425,6 +5425,42 @@ class AsyncSidebarWorkTest(OperationTestCase):
 
         self.assertEqual(state.favorites, [newer])
 
+    def test_remote_recovery_does_not_block_local_navigation(self):
+        started, release = threading.Event(), threading.Event()
+        remote = Effect("switch", Target("ssh", "work", "dev"))
+        local = Effect("switch", Target("local", "other"))
+        def perform(effect, favorites):
+            if effect.target.kind == "ssh":
+                started.set()
+                release.wait(2)
+            return sidebar.EffectResult(effect, favorites)
+        runner = sidebar.EffectRunner()
+        try:
+            with patch.object(sidebar.operations.config, "load_session_restore", return_value=True), \
+                 patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(remote, ()))
+                self.assertTrue(started.wait(1))
+                self.assertFalse(runner.submit(remote, ()))
+                self.assertTrue(runner.submit(local, ()))
+                deadline = time.monotonic() + 1
+                result = None
+                while result is None and time.monotonic() < deadline:
+                    result = runner.poll()
+                    time.sleep(0.001)
+                self.assertEqual(result.effect, local)
+                self.assertTrue(runner.submit(remote, ()))
+                release.set()
+                deadline = time.monotonic() + 2
+                result = None
+                while result is None and time.monotonic() < deadline:
+                    result = runner.poll()
+                    time.sleep(0.001)
+                self.assertEqual(result.effect, remote)
+                self.assertTrue(result.effect.navigation_current())
+        finally:
+            release.set()
+            runner.close()
+
     def test_effect_runner_submit_does_not_wait_for_action(self):
         started = threading.Event()
         release = threading.Event()

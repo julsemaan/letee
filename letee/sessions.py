@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
+from dataclasses import dataclass
 import fcntl
 from functools import wraps
 import json
@@ -849,13 +850,58 @@ def _run(
         return result.stdout or ""
 
 
-def _restore_remote(target: Target) -> None:
+remote_restore_prepared = ContextVar("remote_restore_prepared", default=False)
+_remote_restores: dict[str, Future] = {}
+_remote_restores_lock = threading.Lock()
+
+
+def remote_restoring(target: Target) -> bool:
+    with _remote_restores_lock:
+        return target.kind == "ssh" and target.host in _remote_restores
+
+
+@dataclass(frozen=True)
+class RestoreOutcome:
+    error: str = ""
+
+
+def restore_remote(target: Target) -> RestoreOutcome:
+    """Share an in-flight restore among requests for the same host."""
+    host = target.host or ""
+    with _remote_restores_lock:
+        future = _remote_restores.get(host)
+        owner = future is None
+        if owner:
+            future = Future()
+            _remote_restores[host] = future
+    if not owner:
+        return future.result()
+    try:
+        outcome = _restore_remote(target)
+    except (Exception, SystemExit) as error:
+        outcome = RestoreOutcome(str(error))
+    except BaseException as error:
+        future.set_exception(error)
+        raise
+    else:
+        outcome = outcome or RestoreOutcome()
+    finally:
+        with _remote_restores_lock:
+            if not future.done():
+                future.set_result(outcome)
+            del _remote_restores[host]
+    return outcome
+
+
+def _restore_remote(target: Target) -> RestoreOutcome:
     """Best effort: an old remote letee or a slow restore must not block creation."""
     try:
         _run("restore", target, ssh_command(target.host or "", resurrect.remote_guard(target.host or "")),
              timeout=load_timing().session_restore_timeout)
-    except SystemExit as error:
-        diagnostics.error(error, handling="ignore", stage="remote_restore")
+    except (Exception, SystemExit) as error:
+        diagnostics.error(error, handling="status", stage="remote_restore")
+        return RestoreOutcome(str(error))
+    return RestoreOutcome()
 
 
 @_session_operation("sessions.create")
@@ -886,8 +932,8 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
                     diagnostics.error(error, handling="ignore", stage="overlay_source", target_kind="local")
                     span.outcome = "ignored"
     else:
-        if restore:
-            _restore_remote(target)
+        if restore and not remote_restore_prepared.get():
+            restore_remote(target)
         if overlay:
             _install_overlay(target)
         shell = shell_join(command)

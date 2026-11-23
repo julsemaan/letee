@@ -23,6 +23,9 @@ class Effect:
     # Free text: a status message, new session name, or show_reconnecting's target status.
     message: str = ""
     automatic: bool = False
+    recovery_launch: str | None = field(default=None, compare=False)
+    recovery_revision: str = field(default="", compare=False)
+    navigation_current: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
     agent_id: str = ""
     attach_command: str | None = None
     favorite_move: tuple[Target, Target] | None = None
@@ -133,17 +136,78 @@ def effect_error(effect: Effect, error: BaseException) -> str:
     return message
 
 
+def needs_remote_recovery(effect: Effect) -> bool:
+    target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
+    if isinstance(target, Target) and effect.kind != "create":
+        try:
+            validate_session_name(target.session)
+        except SystemExit:
+            return False
+    return (effect.recovery_launch is None and isinstance(target, Target)
+            and target.kind == "ssh" and effect.attach_command is None
+            and effect.kind in ("switch", "switch_pane", "add_switch", "create", "ensure_created")
+            and config.load_session_restore())
+
+
 def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors: bool = False) -> EffectResult:
     if effect.kind == "status":
         return EffectResult(effect, favorites)
     effect = capture(effect)
     fallback = effect.previous_favorites if effect.previous_favorites is not None else favorites
     try:
+        if needs_remote_recovery(effect):
+            target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
+            validate_session_name(target.session)
+            with config.sessions_lock():
+                state = _state()
+                if effect.navigation_current is not None and not effect.navigation_current():
+                    return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
+                if not effect.automatic:
+                    _advance(state, explicit=target)
+                    if effect.kind != "ensure_created":
+                        cockpit.switch_reconnecting(target, "restoring…", launch_id=state["launch"])
+                else:
+                    revision = state.get("revisions", {}).get(target.format(), "")
+                    if (effect.launch_id != state["launch"] or effect.target_revision != revision
+                            or target.format() in state["invalidated"]
+                            or (effect.kind != "ensure_created" and cockpit.current_target() != target)):
+                        return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
+                    deadline = cockpit.startup_deadline(target)
+                    if (deadline is not None and time.monotonic() < deadline
+                            and not cockpit.attachment_failed(target, state["launch"])):
+                        return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
+                    if effect.kind == "ensure_created" and target not in config.load_sessions() and cockpit.current_target() != target:
+                        return EffectResult(effect, tuple(config.load_sessions()), stale_navigation=True)
+                    if cockpit.current_target() == target:
+                        cockpit.show_reconnecting(target, "restoring…")
+                effect = replace(effect, recovery_launch=state["launch"],
+                                 recovery_revision=state.get("revisions", {}).get(target.format(), ""))
+            restore_outcome = sessions.restore_remote(target)
         with config.sessions_lock():
             favorites = tuple(config.load_sessions())
             fallback = favorites
-            return _perform_unlocked(effect, favorites, _state(), raise_errors=raise_errors)
-    except (OSError, SystemExit, subprocess.SubprocessError) as error:
+            state = _state()
+            if effect.navigation_current is not None and not effect.navigation_current():
+                return EffectResult(effect, favorites, stale_navigation=True, launch_id=state["launch"])
+            if effect.recovery_launch is not None:
+                target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
+                if (effect.recovery_launch != state["launch"] or
+                        effect.recovery_revision != state.get("revisions", {}).get(target.format(), "")):
+                    return EffectResult(effect, favorites, stale_navigation=True, launch_id=effect.recovery_launch)
+                token = sessions.remote_restore_prepared.set(True)
+                try:
+                    result = _perform_unlocked(effect, favorites, state, raise_errors=raise_errors)
+                    if result.error and cockpit.current_target() == target:
+                        cockpit.show_unavailable(target)
+                    if restore_outcome and restore_outcome.error and not result.error:
+                        result = replace(result, error=f"Remote restore failed: {restore_outcome.error}", partial_success=True)
+                    return result
+                finally:
+                    sessions.remote_restore_prepared.reset(token)
+            return _perform_unlocked(effect, favorites, state, raise_errors=raise_errors)
+    except (Exception, SystemExit) as error:
+        if effect.recovery_launch is not None and cockpit.current_target() == target:
+            cockpit.show_unavailable(target)
         diagnostics.error(error, handling="reraise" if raise_errors else "status", operation="perform_effect", effect=effect.kind)
         if raise_errors:
             raise
@@ -187,7 +251,8 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
         planned = planned_favorites(effect, favorites)
         if effect.kind in ("switch", "add_switch", "switch_pane", "create") and isinstance(target, Target):
             if effect.kind == "create":
-                sessions.create(target)
+                if effect.recovery_launch is None:
+                    sessions.create(target)
             if planned != favorites:
                 config.save_sessions(list(planned))
             # Ensure creation under the lock; delayed pane commands must not recreate renamed targets.
@@ -195,9 +260,10 @@ def _perform_unlocked(effect: Effect, favorites: tuple[Target, ...], state: dict
             command = effect.attach_command
             if legacy_attach:
                 command = sessions.attach_command(target, attach_only=True)
-            elif effect.automatic:
+            elif effect.automatic or effect.recovery_launch is not None:
                 sessions.ensure_created(target)
-                command = sessions.attach_command(target, attach_only=True)
+                command = (sessions.pane_attach_command(effect.target) if isinstance(effect.target, PaneTarget)
+                           else sessions.attach_command(target, attach_only=True))
             if effect.automatic and cockpit.current_target() != target:
                 return result(stale=True)
             _advance(state, explicit=None if effect.automatic else target)
@@ -308,11 +374,19 @@ def navigate(
         effect = Effect("switch_pane" if isinstance(target, PaneTarget) else "switch", target,
                         attach_command=attach_command, agent_id=agent_id)
         favorites, state = tuple(config.load_sessions()), _state()
-        if cancelled is None or not cancelled():
+        if cancelled is not None and cancelled():
+            return
+        if not needs_remote_recovery(effect):
             _perform_unlocked(effect, favorites, state, raise_errors=True)
+            return
+    perform(effect, raise_errors=True)
 
 
 def create_and_switch(target: Target) -> None:
+    if needs_remote_recovery(Effect("create", target)):
+        cockpit.require_cockpit()
+        perform(Effect("create", target), raise_errors=True)
+        return
     with config.sessions_lock():
         sessions.create(target)
         cockpit.require_cockpit()

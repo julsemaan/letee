@@ -30,6 +30,8 @@ Managed local and remote sessions run on a dedicated tmux server named `letee.in
 
 Letee saves every session on `letee.inner` with a bundled copy of [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect). A running sidebar saves a host when its windows or panes change, and at least once a minute otherwise. When that host's `letee.inner` starts again after a reboot or crash, the next session letee opens or creates there brings back every saved session: windows, pane layout, working directories, and the programs resurrect restarts by default (`vim`, `less`, `htop` and a few others). This works for local and SSH hosts. A remote host needs letee installed, just like for attaching.
 
+Remote recovery runs in the background. The selected pane shows elapsed time and affected sidebar sessions show `restoring…`. You can switch sessions or hosts while it finishes. Recovery only attaches automatically if you are still waiting there; it never switches you back. If recovery fails, letee reports the failure and tries opening the selected session without restoring. Select it again to retry.
+
 To restart more programs, set `@resurrect-processes` in your `~/.tmux.conf`, which `letee.inner` loads. For example, to resume Claude Code sessions:
 
 ```tmux

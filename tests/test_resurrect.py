@@ -77,6 +77,15 @@ class ResurrectTestCase(unittest.TestCase):
 
 
 class EnsureRestoredTest(ResurrectTestCase):
+    def test_restore_diagnostics_separate_lock_wait_and_script(self):
+        self.save_exists()
+        fake = FakeTmux()
+        with patch("letee.resurrect.diagnostics.operation", wraps=resurrect.diagnostics.operation) as operation:
+            self.assertEqual(self.run_with(fake, resurrect.ensure_restored), "restored")
+        names = [call.args[0] for call in operation.call_args_list]
+        self.assertIn("resurrect.restore.lock_wait", names)
+        self.assertIn("resurrect.restore.script", names)
+
     def test_ready_server_needs_one_query(self):
         fake = FakeTmux(running=True, ready=True)
         self.assertEqual(self.run_with(fake, resurrect.ensure_restored), "ready")

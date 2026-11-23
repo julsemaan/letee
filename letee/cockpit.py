@@ -512,6 +512,12 @@ def _missing_command(target: Target) -> str:
 
 
 def _reconnecting_command(target: Target, status: str = "") -> str:
+    if status == "restoring…":
+        command = _animated_command(
+            target, f"Restoring sessions on {target.host}…", "Recovering saved windows and panes · ",
+            "You can switch to another session while this finishes.")
+        return command.replace("while :", "started=$(date +%s); while :").replace(
+            '"$dots"; sleep', '"$dots $(($(date +%s)-started))s"; sleep')
     if status == sessions.LETEE_MISSING:
         note = f"Install letee on {target.host}; letee connects once it's there:\n  {sessions.INSTALL_COMMAND}"
         return _animated_command(target, "letee not installed", "Waiting for letee", note)
