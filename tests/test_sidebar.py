@@ -5476,6 +5476,47 @@ class AsyncSidebarWorkTest(OperationTestCase):
             release.set()
             runner.close()
 
+    def test_manual_switch_waits_for_background_remote_restore(self):
+        target = Target("ssh", "work", "dev")
+        prepare = Effect("ensure_created", target, automatic=True)
+        switch = Effect("switch", target)
+        gates = {kind: (threading.Event(), threading.Event()) for kind in ("ensure_created", "switch")}
+        performed = []
+        def perform(effect, favorites):
+            performed.append(effect.kind)
+            started, release = gates[effect.kind]
+            started.set()
+            release.wait(2)
+            return sidebar.EffectResult(effect, favorites)
+        def wait_result():
+            deadline = time.monotonic() + 2
+            result = None
+            while result is None and time.monotonic() < deadline:
+                result = runner.poll()
+                time.sleep(0.001)
+            return result
+        runner = sidebar.EffectRunner()
+        try:
+            with patch.object(sidebar.operations.config, "load_session_restore", return_value=True), \
+                 patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(prepare, ()))
+                self.assertTrue(gates["ensure_created"][0].wait(1))
+                self.assertTrue(runner.submit(switch, ()))
+                self.assertFalse(runner.submit(switch, ()))
+                gates["ensure_created"][1].set()
+                self.assertEqual(wait_result().effect, prepare)
+                self.assertTrue(gates["switch"][0].wait(1))
+                self.assertFalse(runner.submit(switch, ()))
+                gates["switch"][1].set()
+                result = wait_result()
+                self.assertEqual(result.effect, switch)
+                self.assertTrue(result.effect.navigation_current())
+                self.assertEqual(performed, ["ensure_created", "switch"])
+        finally:
+            for _, release in gates.values():
+                release.set()
+            runner.close()
+
     def test_effect_runner_submit_does_not_wait_for_action(self):
         started = threading.Event()
         release = threading.Event()

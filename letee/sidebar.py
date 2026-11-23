@@ -1388,6 +1388,8 @@ class EffectRunner:
         self._recovery_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="letee-recovery")
         self._recoveries: dict[Target, Future[EffectResult]] = {}
         self._recovery_revisions: dict[Target | PaneTarget, int] = {}
+        self._recovery_effects: dict[Target, Effect] = {}
+        self._recovery_followups: dict[Target, tuple[Effect, tuple[Target, ...], str | None, int]] = {}
         self._navigation_revision = 0
         self._future: Future[EffectResult] | None = None
         self._effect: Effect | None = None
@@ -1490,9 +1492,17 @@ class EffectRunner:
     ) -> bool:
         effect = operations.capture(effect)
         remote_recovery = operations.needs_remote_recovery(effect)
-        if remote_recovery and effect.target in self._recoveries:
-            if effect.automatic or self._recovery_revisions[effect.target] == self._navigation_revision:
-                return False
+        running = self._recovery_effects.get(effect.target) if remote_recovery else None
+        # An explicit request that overlaps background preparation waits for it instead of being dropped.
+        follow_up = (
+            running is not None and not effect.automatic
+            and running.automatic and running.kind == "ensure_created"
+        )
+        if running is not None and (effect.automatic or (
+            self._recovery_revisions[effect.target] == self._navigation_revision
+            and (not follow_up or effect.target in self._recovery_followups)
+        )):
+            return False
         if not effect.automatic and effect.kind in ("switch", "switch_pane", "add_switch", "create", "show_reconnecting"):
             self._navigation_revision += 1
         if remote_recovery or (not effect.automatic and effect.kind in (
@@ -1501,7 +1511,6 @@ class EffectRunner:
             revision = self._navigation_revision
             effect = replace(effect, navigation_current=lambda: self._navigation_revision == revision)
         if remote_recovery:
-            self._recovery_revisions[effect.target] = revision
             if not effect.automatic and self._pending_navigation is not None:
                 old_effect, _, old_action_id, old_input_id = self._pending_navigation
                 self._pending_navigation = None
@@ -1514,8 +1523,11 @@ class EffectRunner:
                     stale_navigation=True,
                     **self._state_trace(),
                 )
-            self._recoveries[effect.target] = self._recovery_executor.submit(
-                copy_context().run, self._run_effect, effect, favorites, None, input_id)
+            if follow_up:
+                self._recovery_revisions[effect.target] = revision
+                self._recovery_followups[effect.target] = (effect, favorites, input_id, revision)
+            else:
+                self._start_recovery(effect, favorites, input_id, revision)
             return True
         debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         action_id = debug.new_action_id()
@@ -1581,11 +1593,27 @@ class EffectRunner:
         self._start(effect, favorites, action_id, input_id)
         return True
 
+    def _start_recovery(
+        self,
+        effect: Effect,
+        favorites: tuple[Target, ...],
+        input_id: str | None,
+        revision: int,
+    ) -> None:
+        self._recovery_revisions[effect.target] = revision
+        self._recovery_effects[effect.target] = effect
+        self._recoveries[effect.target] = self._recovery_executor.submit(
+            copy_context().run, self._run_effect, effect, favorites, None, input_id)
+
     def poll(self) -> EffectResult | None:
         for target, future in list(self._recoveries.items()):
             if future.done():
                 del self._recoveries[target]
                 del self._recovery_revisions[target]
+                del self._recovery_effects[target]
+                follow_up = self._recovery_followups.pop(target, None)
+                if follow_up is not None and follow_up[0].navigation_current():
+                    self._start_recovery(*follow_up)
                 return future.result()
         if self._future is None or not self._future.done():
             return None
