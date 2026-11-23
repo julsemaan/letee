@@ -1332,6 +1332,21 @@ class AutomaticSessionEffectTest(OperationTestCase):
         self.assertEqual((state.selected_target, state.filter_text, state.selected_index),
                          (selected, "selected", 2))
 
+    def test_stale_manual_addition_is_not_applied(self):
+        existing, target = Target("local", "existing"), Target("ssh", "new", "devbox")
+        for kind in ("add_switch", "create"):
+            with self.subTest(kind=kind):
+                state = SidebarState(favorites=[existing], creation_text="new", creation_host="devbox")
+                poller = unittest.mock.Mock()
+                applied = sidebar._apply_effect(sidebar.EffectResult(
+                    sidebar.Effect(kind, target), (existing,), stale_navigation=True,
+                ), state, poller, 5)
+                self.assertFalse(applied)
+                self.assertEqual(state.favorites, [existing])
+                self.assertEqual((state.creation_text, state.creation_host), ("new", "devbox"))
+                self.assertIsNone(state.pending_selection)
+                self.assertEqual(state.status, "")
+
     def test_queued_creation_rechecks_tracking_before_recreating(self):
         target = Target("local", "removed")
         effect = sidebar.Effect("ensure_created", target, automatic=True)
@@ -5424,6 +5439,152 @@ class AsyncSidebarWorkTest(OperationTestCase):
         )
 
         self.assertEqual(state.favorites, [newer])
+
+    def test_remote_recovery_does_not_block_local_navigation(self):
+        started, release = threading.Event(), threading.Event()
+        remote = Effect("switch", Target("ssh", "work", "dev"))
+        local = Effect("switch", Target("local", "other"))
+        def perform(effect, favorites):
+            if effect.target.kind == "ssh":
+                started.set()
+                release.wait(2)
+            return sidebar.EffectResult(effect, favorites)
+        runner = sidebar.EffectRunner()
+        try:
+            with patch.object(sidebar.operations.config, "load_session_restore", return_value=True), \
+                 patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(remote, ()))
+                self.assertTrue(started.wait(1))
+                self.assertFalse(runner.submit(remote, ()))
+                self.assertTrue(runner.submit(local, ()))
+                deadline = time.monotonic() + 1
+                result = None
+                while result is None and time.monotonic() < deadline:
+                    result = runner.poll()
+                    time.sleep(0.001)
+                self.assertEqual(result.effect, local)
+                self.assertTrue(runner.submit(remote, ()))
+                release.set()
+                deadline = time.monotonic() + 2
+                results = []
+                while len(results) < 2 and time.monotonic() < deadline:
+                    if (result := runner.poll()) is not None:
+                        results.append(result)
+                    time.sleep(0.001)
+                # The superseded recovery still reports back, but as stale navigation.
+                self.assertEqual([result.effect.target for result in results], [remote.target] * 2)
+                self.assertEqual(
+                    sorted(result.effect.navigation_current() for result in results), [False, True]
+                )
+        finally:
+            release.set()
+            runner.close()
+
+    @patch.object(sidebar, "load_timing", return_value=config.Timing())
+    def test_superseded_remote_recovery_clears_reconciler_pending(self, _load_timing):
+        target = Target("ssh", "work", "dev")
+        data = snapshot(remotes={"dev": source("ssh", host="dev")})
+        release = threading.Event()
+        def perform(effect, favorites):
+            if effect.target == target:
+                release.wait(2)
+            return sidebar.EffectResult(effect, favorites)
+        reconciler = sidebar.SessionReconciler()
+        runner = sidebar.EffectRunner()
+
+        def submit(effect):
+            return runner.submit(effect, (target,))
+
+        try:
+            with patch.object(sidebar.operations.config, "load_session_restore", return_value=True), \
+                 patch("letee.sidebar._perform_effect", side_effect=perform):
+                reconciler.reconcile((target,), target, data, submit, 0)
+                self.assertIn(target, reconciler._pending)
+                self.assertTrue(submit(Effect("switch", Target("local", "other"))))
+                self.assertTrue(submit(Effect("switch", target)))
+                release.set()
+                deadline = time.monotonic() + 2
+                results = []
+                while len(results) < 3 and time.monotonic() < deadline:
+                    if (result := runner.poll()) is not None:
+                        results.append(result)
+                    time.sleep(0.001)
+                self.assertEqual(len(results), 3)
+                for result in results:
+                    reconciler.observe(result)
+                self.assertNotIn(target, reconciler._pending)
+                resubmit = unittest.mock.Mock(return_value=True)
+                reconciler.reconcile((target,), target, data, resubmit, time.monotonic() + 1000)
+                self.assertEqual(resubmit.call_args.args[0].kind, "switch")
+                self.assertTrue(resubmit.call_args.args[0].automatic)
+        finally:
+            release.set()
+            runner.close()
+
+    def test_manual_switch_waits_for_background_remote_restore(self):
+        target = Target("ssh", "work", "dev")
+        prepare = Effect("ensure_created", target, automatic=True)
+        switch = Effect("switch", target)
+        gates = {kind: (threading.Event(), threading.Event()) for kind in ("ensure_created", "switch")}
+        performed = []
+        def perform(effect, favorites):
+            performed.append(effect.kind)
+            started, release = gates[effect.kind]
+            started.set()
+            release.wait(2)
+            return sidebar.EffectResult(effect, favorites)
+        def wait_result():
+            deadline = time.monotonic() + 2
+            result = None
+            while result is None and time.monotonic() < deadline:
+                result = runner.poll()
+                time.sleep(0.001)
+            return result
+        runner = sidebar.EffectRunner()
+        try:
+            with patch.object(sidebar.operations.config, "load_session_restore", return_value=True), \
+                 patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(prepare, ()))
+                self.assertTrue(gates["ensure_created"][0].wait(1))
+                self.assertTrue(runner.submit(switch, ()))
+                self.assertFalse(runner.submit(switch, ()))
+                gates["ensure_created"][1].set()
+                self.assertEqual(wait_result().effect, prepare)
+                self.assertTrue(gates["switch"][0].wait(1))
+                self.assertFalse(runner.submit(switch, ()))
+                gates["switch"][1].set()
+                result = wait_result()
+                self.assertEqual(result.effect, switch)
+                self.assertTrue(result.effect.navigation_current())
+                self.assertEqual(performed, ["ensure_created", "switch"])
+        finally:
+            for _, release in gates.values():
+                release.set()
+            runner.close()
+
+    def test_rejected_switch_does_not_invalidate_accepted_create(self):
+        release = threading.Event()
+        create = Effect("create", Target("local", "new"))
+        current = []
+        def perform(effect, favorites):
+            release.wait(2)
+            current.append(effect.navigation_current())
+            return sidebar.EffectResult(effect, favorites, stale_navigation=not current[-1])
+        runner = sidebar.EffectRunner()
+        try:
+            with patch("letee.sidebar._perform_effect", side_effect=perform):
+                self.assertTrue(runner.submit(create, ()))
+                self.assertFalse(runner.submit(Effect("switch", Target("local", "other")), ()))
+                release.set()
+                deadline = time.monotonic() + 2
+                while (result := runner.poll()) is None and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                self.assertEqual(result.effect.kind, "create")
+                self.assertFalse(result.stale_navigation)
+                self.assertEqual(current, [True])
+        finally:
+            release.set()
+            runner.close()
 
     def test_effect_runner_submit_does_not_wait_for_action(self):
         started = threading.Event()

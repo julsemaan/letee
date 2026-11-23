@@ -1,3 +1,4 @@
+import io
 import os
 import shlex
 import subprocess
@@ -9,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import patch
 
-from tests import use_bare_inner_tmux
+from tests import disable_session_restore, use_bare_inner_tmux
 from letee import config, cockpit, operations
 from letee.names import PaneTarget, Target
 
@@ -17,6 +18,7 @@ from letee.names import PaneTarget, Target
 
 def setUpModule():
     use_bare_inner_tmux()
+    disable_session_restore()
 
 class OperationsTest(unittest.TestCase):
     def setUp(self):
@@ -25,8 +27,381 @@ class OperationsTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.directory.cleanup)
         self.addCleanup(self.env.stop)
+        self.remote_state = operations.sessions.remote_state
+        readiness = patch.object(operations.sessions, "remote_state", return_value=operations.sessions.RemoteState())
+        self.ready = readiness.start()
+        self.addCleanup(readiness.stop)
         self.work = Target("local", "work")
         config.save_sessions([self.work])
+
+    def test_latest_remote_selection_supersedes_running_and_queued_navigation(self):
+        from letee import sidebar
+
+        entered, release = threading.Event(), threading.Event()
+        remote = Target("ssh", "remote", "dev")
+        queued = Target("local", "queued")
+        runner = sidebar.EffectRunner()
+        perform = sidebar._perform_effect
+
+        def blocked_perform(effect, favorites):
+            if effect.target == self.work:
+                entered.set()
+                self.assertTrue(release.wait(2))
+            return perform(effect, favorites)
+
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(sidebar, "_perform_effect", side_effect=blocked_perform), \
+             patch.object(operations.sessions, "restore_remote"), \
+             patch.object(operations.sessions, "ensure_created"), \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch") as switch:
+            try:
+                self.assertTrue(runner.submit(operations.Effect("switch", self.work), ()))
+                self.assertTrue(entered.wait(1))
+                self.assertTrue(runner.submit(operations.Effect("switch", queued), ()))
+                self.assertTrue(runner.submit(operations.Effect("switch", remote), ()))
+                runner._recoveries[remote].result(timeout=2)
+                self.assertEqual(runner.poll().effect.target, remote)
+                release.set()
+                runner._future.result(timeout=2)
+                self.assertTrue(runner.poll().stale_navigation)
+                self.assertFalse(runner.busy)
+                self.assertIsNone(runner._pending_navigation)
+                self.assertEqual([call.args[0] for call in switch.call_args_list], [remote])
+            finally:
+                release.set()
+                runner.close()
+
+    def test_explicit_remote_switch_does_not_wait_for_background_restores(self):
+        from letee import sidebar
+
+        release = threading.Event()
+        restoring = [Target("ssh", f"work{index}", "a") for index in range(8)]
+        ready = Target("ssh", "ready", "b")
+        runner = sidebar.EffectRunner()
+        perform = sidebar._perform_effect
+
+        def blocked_perform(effect, favorites):
+            if effect.target.host == "a":
+                self.assertTrue(release.wait(5))
+            return perform(effect, favorites)
+
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(sidebar, "_perform_effect", side_effect=blocked_perform), \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch") as switch:
+            try:
+                for target in restoring:
+                    self.assertTrue(runner.submit(operations.Effect("ensure_created", target, automatic=True), ()))
+                self.assertTrue(runner.submit(operations.Effect("switch", ready), ()))
+                runner._recoveries[ready].result(timeout=2)
+                self.assertFalse(release.is_set())
+                self.assertEqual([call.args[0] for call in switch.call_args_list], [ready])
+            finally:
+                release.set()
+                runner.close()
+
+    def test_explicit_remote_switch_has_no_preflight_commands(self):
+        target = Target("ssh", "work", "dev")
+        for kind in ("switch", "add_switch"):
+            with self.subTest(kind=kind), \
+                 patch.object(config, "load_session_restore", return_value=True), \
+                 patch.object(operations.sessions, "_run") as run, \
+                 patch.object(operations.sessions, "restore_remote") as restore, \
+                 patch.object(operations.sessions, "ensure_created") as ensure, \
+                 patch.object(operations.sessions, "attach_command", return_value="guarded-attach") as attach, \
+                 patch.object(cockpit, "switch_reconnecting") as progress, \
+                 patch.object(cockpit, "switch") as switch:
+                result = operations.perform(operations.Effect(kind, target))
+                self.assertFalse(result.error)
+                self.ready.assert_not_called()
+                run.assert_not_called()
+                restore.assert_not_called()
+                ensure.assert_not_called()
+                progress.assert_not_called()
+                attach.assert_called_once_with(target, attach_only=True, require_ready=True)
+                switch.assert_called_once()
+
+    def test_inline_attach_failure_runs_existing_automatic_recovery(self):
+        target = Target("ssh", "work", "dev")
+        config.save_sessions([target])
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "restore_remote", return_value=None) as restore, \
+             patch.object(operations.sessions, "attach_command", return_value="attach") as attach, \
+             patch.object(cockpit, "current_target", return_value=target), \
+             patch.object(cockpit, "startup_deadline", return_value=float("inf")), \
+             patch.object(cockpit, "attachment_failed", return_value=True), \
+             patch.object(cockpit, "show_reconnecting") as progress, \
+             patch.object(cockpit, "switch"):
+            launched = operations.perform(operations.Effect("switch", target))
+            self.assertFalse(launched.error)
+            self.ready.assert_not_called()
+            recovered = operations.perform(operations.Effect("switch", target, automatic=True))
+            self.assertFalse(recovered.error)
+            self.assertFalse(recovered.stale_navigation)
+            self.ready.assert_called_once_with(target)
+            restore.assert_called_once_with(target)
+            ensure.assert_called_once_with(target)
+            progress.assert_called_once_with(target, "restoring…")
+            self.assertEqual(attach.call_args.kwargs, {"attach_only": True})
+            self.assertNotEqual(launched.launch_id, recovered.launch_id)
+
+    def test_existing_ready_remote_attaches_without_creation(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.return_value = operations.sessions.RemoteState(ready=True, session_exists=True)
+        for kind in ("switch_pane", "create", "ensure_created"):
+            with self.subTest(kind=kind), \
+                 patch.object(config, "load_session_restore", return_value=True), \
+                 patch.object(operations.sessions, "ensure_created") as ensure, \
+                 patch.object(operations.sessions, "restore_remote") as restore, \
+                 patch.object(operations.sessions, "attach_command", return_value="attach") as attach, \
+                 patch.object(cockpit, "switch_reconnecting") as progress, \
+                 patch.object(cockpit, "switch") as switch:
+                result = operations.perform(operations.Effect(kind, target))
+                self.assertFalse(result.error)
+                ensure.assert_not_called()
+                restore.assert_not_called()
+                progress.assert_not_called()
+                if kind != "ensure_created":
+                    attach.assert_called_once_with(target, attach_only=True)
+                    switch.assert_called_once()
+
+    def test_existing_ready_remote_uses_inline_check_without_preflight_ssh(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.side_effect = self.remote_state
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "load_tmux_config_overlay", return_value=True), \
+             patch.object(operations.sessions, "_run", return_value="1\n1\n") as run, \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("switch", target))
+            self.assertFalse(result.error)
+            run.assert_not_called()
+            self.ready.assert_not_called()
+            command = switch.call_args.args[1]
+            self.assertIn("attach-session", command)
+            self.assertNotIn("new-session", command)
+            self.assertIn("@letee-resurrect-ready", command)
+            self.assertNotIn("resurrect restore", command)
+
+    def test_ready_remote_skips_restore_and_progress_without_caching(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.side_effect = [operations.sessions.RemoteState(True, True), operations.sessions.RemoteState()]
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote", return_value=None) as restore, \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch_reconnecting") as progress, \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("create", target))
+            self.assertFalse(result.error)
+            progress.assert_not_called()
+            restore.assert_not_called()
+            switch.assert_called_once()
+            ensure.assert_not_called()
+            operations.perform(operations.Effect("create", target))
+            progress.assert_called_once()
+            restore.assert_called_once_with(target)
+            ensure.assert_called_once_with(target)
+
+    def test_ready_remote_with_missing_session_still_prepares_creation(self):
+        target = Target("ssh", "work", "dev")
+        self.ready.return_value = operations.sessions.RemoteState(ready=True)
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "restore_remote") as restore, \
+             patch.object(operations.sessions, "attach_command", return_value="attach") as attach, \
+             patch.object(cockpit, "switch_reconnecting") as progress, \
+             patch.object(cockpit, "switch"):
+            result = operations.perform(operations.Effect("create", target))
+            self.assertFalse(result.error)
+            ensure.assert_called_once_with(target)
+            attach.assert_called_once_with(target, attach_only=True)
+            restore.assert_not_called()
+            progress.assert_not_called()
+
+    def test_ready_automatic_recovery_skips_progress_and_restore(self):
+        target = Target("ssh", "work", "dev")
+        config.save_sessions([target])
+        self.ready.return_value = operations.sessions.RemoteState(ready=True)
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote") as restore, \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "current_target", return_value=target), \
+             patch.object(cockpit, "startup_deadline", return_value=None), \
+             patch.object(cockpit, "show_reconnecting") as progress, \
+             patch.object(cockpit, "switch"):
+            result = operations.perform(operations.Effect("switch", target, automatic=True))
+            self.assertFalse(result.error)
+            self.assertFalse(result.stale_navigation)
+            progress.assert_not_called()
+            restore.assert_not_called()
+            ensure.assert_called_once_with(target)
+
+    def test_probe_runs_outside_lock_and_stale_probe_does_not_show_progress(self):
+        target = Target("ssh", "work", "dev")
+        def probe(_target):
+            with config.sessions_lock(blocking=False) as acquired:
+                self.assertTrue(acquired)
+                operations._advance(config.load_operations(), explicit=self.work)
+            return operations.sessions.RemoteState(ready=True, session_exists=True)
+        self.ready.side_effect = probe
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote") as restore, \
+             patch.object(cockpit, "switch_reconnecting") as progress, \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("create", target))
+            self.assertTrue(result.stale_navigation)
+            progress.assert_not_called()
+            restore.assert_not_called()
+            switch.assert_not_called()
+
+    def test_restore_failure_is_reported_after_fallback(self):
+        target = Target("ssh", "work", "dev")
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "_run", side_effect=RuntimeError("restore broke")), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("create", target))
+        ensure.assert_called_once_with(target)
+        switch.assert_called_once()
+        self.assertIn("restore broke", result.error)
+        self.assertTrue(result.partial_success)
+
+    def test_cli_recovery_warns_about_restore_failure_after_fallback(self):
+        target = Target("ssh", "work", "dev")
+        calls = {
+            "navigate": lambda: operations.navigate(PaneTarget(target, "@1", "%2", "/tmp/test.sock")),
+            "create_and_switch": lambda: operations.create_and_switch(target),
+        }
+        for name, call in calls.items():
+            with self.subTest(name), \
+                 patch.object(config, "load_session_restore", return_value=True), \
+                 patch.object(operations.sessions, "restore_remote",
+                              return_value=operations.sessions.RestoreOutcome("boom")), \
+                 patch.object(operations.sessions, "ensure_created"), \
+                 patch.object(operations.sessions, "attach_command", return_value="attach"), \
+                 patch.object(cockpit, "require_cockpit"), \
+                 patch.object(cockpit, "switch_reconnecting"), \
+                 patch.object(cockpit, "switch") as switch, \
+                 patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                call()
+                switch.assert_called_once()
+                self.assertIn("letee: Remote restore failed: boom", stderr.getvalue())
+
+    def test_pane_switch_requires_remote_recovery(self):
+        pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/test.sock")
+        with patch.object(config, "load_session_restore", return_value=True):
+            self.assertTrue(operations.needs_remote_recovery(operations.Effect("switch_pane", pane)))
+
+    def test_remote_restore_runs_outside_lock_and_stale_completion_does_not_switch(self):
+        target = Target("ssh", "work", "dev")
+        entered, finish = threading.Event(), threading.Event()
+        results = []
+        def restore(_target):
+            entered.set()
+            self.assertTrue(finish.wait(2))
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote", side_effect=restore), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch") as switch:
+            worker = threading.Thread(target=lambda: results.append(operations.perform(operations.Effect("create", target))))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                with config.sessions_lock(blocking=False) as acquired:
+                    self.assertTrue(acquired)
+                    operations._advance(config.load_operations(), explicit=self.work)
+            finally:
+                finish.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(results[0].stale_navigation)
+            switch.assert_not_called()
+
+    def test_automatic_remote_recovery_uses_restore_before_create(self):
+        target = Target("ssh", "work", "dev")
+        config.save_sessions([target])
+        for kind in ("switch", "ensure_created"):
+            order = []
+            with self.subTest(kind=kind), \
+                 patch.object(config, "load_session_restore", return_value=True), \
+                 patch.object(operations.sessions, "restore_remote", side_effect=lambda _: order.append("restore")), \
+                 patch.object(operations.sessions, "ensure_created", side_effect=lambda _: order.append("create")), \
+                 patch.object(cockpit, "current_target", return_value=target), \
+                 patch.object(cockpit, "startup_deadline", return_value=None), \
+                 patch.object(cockpit, "show_reconnecting") as progress, \
+                 patch.object(cockpit, "switch"):
+                result = operations.perform(operations.Effect(kind, target, automatic=True))
+                self.assertFalse(result.error)
+                self.assertFalse(result.stale_navigation)
+                self.assertEqual(order, ["restore", "create"])
+                progress.assert_called_once_with(target, "restoring…")
+
+    def test_same_host_requests_share_inflight_restore(self):
+        sessions = operations.sessions
+        target = Target("ssh", "one", "dev")
+        entered, release, waiting = threading.Event(), threading.Event(), threading.Event()
+        def restore(_target):
+            entered.set()
+            release.wait(2)
+            raise RuntimeError("shared restore failure")
+        with patch.object(sessions, "_restore_remote", side_effect=restore) as restore_mock:
+            owner = threading.Thread(target=sessions.restore_remote, args=(target,))
+            owner.start()
+            self.assertTrue(entered.wait(1))
+            with sessions._remote_restores_lock:
+                future = sessions._remote_restores["dev"]
+            original = future.result
+            def wait():
+                waiting.set()
+                return original()
+            with patch.object(future, "result", side_effect=wait):
+                follower = threading.Thread(target=sessions.restore_remote, args=(Target("ssh", "two", "dev"),))
+                follower.start()
+                try:
+                    self.assertTrue(waiting.wait(1))
+                    self.assertTrue(sessions.remote_restoring(target))
+                    self.assertFalse(sessions.remote_restoring(Target("ssh", "other", "prod")))
+                finally:
+                    release.set()
+                    owner.join(2)
+                    follower.join(2)
+            restore_mock.assert_called_once_with(target)
+            self.assertEqual(original().error, "shared restore failure")
+            self.assertFalse(owner.is_alive())
+            self.assertFalse(follower.is_alive())
+            self.assertFalse(sessions.remote_restoring(target))
+
+    def test_remote_restore_precedes_creation_and_attaches_only(self):
+        target = Target("ssh", "work", "dev")
+        order = []
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote", side_effect=lambda _: order.append("restore")), \
+             patch.object(operations.sessions, "ensure_created", side_effect=lambda _: order.append("create")), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("create", target))
+            self.assertFalse(result.error)
+            self.assertEqual(order, ["restore", "create"])
+            self.assertIn("attach-session", switch.call_args.args[1])
+            self.assertNotIn("new-session", switch.call_args.args[1])
+
+    def test_failed_remote_recovery_create_does_not_save_favorite(self):
+        target = Target("ssh", "work", "dev")
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote"), \
+             patch.object(operations.sessions, "ensure_created", side_effect=SystemExit("ssh failed")), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch") as switch:
+            result = operations.perform(operations.Effect("create", target))
+        self.assertTrue(result.error)
+        self.assertNotIn(target, config.load_sessions())
+        switch.assert_not_called()
 
     def test_existing_legacy_navigation_uses_attach_only(self):
         for kind in ("switch", "add_switch"):
@@ -480,4 +855,17 @@ with patch.object(cockpit, 'current_target', return_value=None), \\
     def test_cli_create_does_not_track(self):
         with patch.object(operations.sessions, "create"), patch.object(cockpit, "require_cockpit"), patch.object(cockpit, "switch"):
             operations.create_and_switch(Target("local", "new"))
+        self.assertEqual(config.load_sessions(), [self.work])
+
+    def test_cli_remote_create_does_not_track(self):
+        target = Target("ssh", "new", "dev")
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "restore_remote", return_value=operations.sessions.RestoreOutcome()), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "attach_command", return_value="attach"), \
+             patch.object(cockpit, "require_cockpit"), \
+             patch.object(cockpit, "switch_reconnecting"), \
+             patch.object(cockpit, "switch"):
+            operations.create_and_switch(target)
+        ensure.assert_called_once_with(target)
         self.assertEqual(config.load_sessions(), [self.work])

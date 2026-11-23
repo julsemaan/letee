@@ -6,6 +6,7 @@ The host-side functions run in-process for local targets and as
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import queue
@@ -89,7 +90,9 @@ def ensure_restored() -> str:
 def _ensure_restored() -> str:
     if _server_state()[1]:
         return "ready"
-    with _lock(blocking=True):
+    with ExitStack() as stack:
+        with diagnostics.operation("resurrect.restore.lock_wait"):
+            stack.enter_context(_lock(blocking=True))
         running, ready = _server_state()
         if ready:
             return "ready"
@@ -103,7 +106,9 @@ def _ensure_restored() -> str:
         elif not running:
             _tmux("new-session", "-d", "-s", _PLACEHOLDER_SESSION)
         try:
-            result = _tmux(*_script("restore.sh"), timeout=load_timing().session_restore_timeout)
+            with diagnostics.operation("resurrect.restore.script") as span:
+                result = _tmux(*_script("restore.sh"), timeout=load_timing().session_restore_timeout)
+                span.outcome = "restored" if result.returncode == 0 else "failed"
         finally:
             if protect:
                 _tmux("set", "-gu", _NEVER_OVERWRITE_OPTION)
@@ -165,7 +170,7 @@ def forget() -> str:
 
 def remote_command(action: str) -> str:
     """Run `letee resurrect <action>` in a login shell, like the tmux-path lookup."""
-    return f'"${{SHELL:-/bin/sh}}" -lc "letee resurrect {action}"'
+    return sessions.remote_letee_command("resurrect", action)
 
 
 def remote_guard(host: str) -> str:

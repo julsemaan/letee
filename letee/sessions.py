@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
+from dataclasses import dataclass
 import fcntl
 from functools import wraps
 import json
@@ -494,8 +495,18 @@ INSTALL_URL = "https://raw.githubusercontent.com/julsemaan/letee/main/install.sh
 INSTALL_COMMAND = f"curl -LsSf {INSTALL_URL} | sh"
 LETEE_MISSING = "letee missing"
 TMUX_PATH_MARKER = "LETEE_TMUX="
-# Non-interactive SSH often lacks ~/.local/bin on PATH; a login shell has it.
-_REMOTE_TMUX_PATH = 'exec "${SHELL:-/bin/sh}" -lc "letee tmux-path"'
+
+
+def remote_letee_command(*args: str) -> str:
+    """Resolve letee on the login PATH, then at the installer's default location."""
+    command = (
+        'letee=$(command -v letee) || letee="$HOME/.local/bin/letee"; '
+        f'exec "$letee" {shlex.join(args)}'
+    )
+    return f'"${{SHELL:-/bin/sh}}" -lc {shlex.quote(command)}'
+
+
+_REMOTE_TMUX_PATH = "exec " + remote_letee_command("tmux-path")
 # Serializes the cache's read-merge-write so parallel lookups don't drop each other's entries.
 _REMOTE_TMUX_CACHE_LOCK = threading.Lock()
 
@@ -669,7 +680,9 @@ def _remote_attach_command(target: Target, command: str, *, overlay: bool) -> st
 
 
 @_session_operation("sessions.attach_command")
-def attach_command(target: Target, *, overlay: bool | None = None, attach_only: bool = False) -> str:
+def attach_command(
+    target: Target, *, overlay: bool | None = None, attach_only: bool = False, require_ready: bool = False,
+) -> str:
     if not attach_only:
         validate_session_name(target.session)
     overlay = load_tmux_config_overlay() if overlay is None else overlay
@@ -683,6 +696,12 @@ def attach_command(target: Target, *, overlay: bool | None = None, attach_only: 
         command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
         return f"env -u TMUX {command}"
+    if require_ready:
+        probe = shell_join(inner_argv(target.host, "show", "-gqv", resurrect.READY_OPTION))
+        exists = shell_join(inner_argv(target.host, "has-session", "-t", "=" + target.session))
+        # A failed fast attach uses the normal launch-scoped pane-death recovery.
+        command = (f'if ready=$({probe} 2>/dev/null) && [ "$ready" = 1 ] && {exists} 2>/dev/null; '
+                   f'then {command}; else exit 75; fi')
     if restore:
         # An old remote letee fails the guard; attachment must still run.
         command = f"{{ {{ {resurrect.remote_guard(target.host or '')}; }} </dev/null >/dev/null 2>&1; {command}; }}"
@@ -839,13 +858,79 @@ def _run(
         return result.stdout or ""
 
 
-def _restore_remote(target: Target) -> None:
+remote_restore_prepared = ContextVar("remote_restore_prepared", default=False)
+_remote_restores: dict[str, Future] = {}
+_remote_restores_lock = threading.Lock()
+
+
+def remote_restoring(target: Target) -> bool:
+    with _remote_restores_lock:
+        return target.kind == "ssh" and target.host in _remote_restores
+
+
+@dataclass(frozen=True)
+class RestoreOutcome:
+    error: str = ""
+
+
+def restore_remote(target: Target) -> RestoreOutcome:
+    """Share an in-flight restore among requests for the same host."""
+    host = target.host or ""
+    with _remote_restores_lock:
+        future = _remote_restores.get(host)
+        owner = future is None
+        if owner:
+            future = Future()
+            _remote_restores[host] = future
+    if not owner:
+        return future.result()
+    try:
+        outcome = _restore_remote(target)
+    except (Exception, SystemExit) as error:
+        outcome = RestoreOutcome(str(error))
+    except BaseException as error:
+        future.set_exception(error)
+        raise
+    else:
+        outcome = outcome or RestoreOutcome()
+    finally:
+        with _remote_restores_lock:
+            if not future.done():
+                future.set_result(outcome)
+            del _remote_restores[host]
+    return outcome
+
+
+@dataclass(frozen=True)
+class RemoteState:
+    ready: bool = False
+    session_exists: bool = False
+
+
+def remote_state(target: Target) -> RemoteState:
+    """Probe readiness and exact session existence in one SSH call, without caching."""
+    try:
+        probe = shell_join(inner_argv(target.host, "show", "-gqv", resurrect.READY_OPTION))
+        exists = shell_join(inner_argv(target.host, "has-session", "-t", "=" + target.session))
+        command = f"{probe} && {{ if {exists} 2>/dev/null; then printf '1\\n'; else printf '0\\n'; fi; }}"
+        output = _run("restore_probe", target, ssh_command(target.host or "", command),
+                      timeout=load_timing().session_restore_timeout).splitlines()
+        if output in (["1", "1"], ["1", "0"]):
+            return RemoteState(ready=True, session_exists=output[1] == "1")
+    except (Exception, SystemExit) as error:
+        diagnostics.error(error, handling="fallback", stage="remote_restore_probe")
+    return RemoteState()
+
+
+def _restore_remote(target: Target) -> RestoreOutcome:
     """Best effort: an old remote letee or a slow restore must not block creation."""
     try:
         _run("restore", target, ssh_command(target.host or "", resurrect.remote_guard(target.host or "")),
              timeout=load_timing().session_restore_timeout)
-    except SystemExit as error:
-        diagnostics.error(error, handling="ignore", stage="remote_restore")
+    except (Exception, SystemExit) as error:
+        diagnostics.error(error, handling="status", stage="remote_restore")
+        return RestoreOutcome(str(error))
+    return RestoreOutcome()
 
 
 @_session_operation("sessions.create")
@@ -876,8 +961,8 @@ def create(target: Target, *, overlay: bool | None = None) -> None:
                     diagnostics.error(error, handling="ignore", stage="overlay_source", target_kind="local")
                     span.outcome = "ignored"
     else:
-        if restore:
-            _restore_remote(target)
+        if restore and not remote_restore_prepared.get():
+            restore_remote(target)
         if overlay:
             _install_overlay(target)
         shell = shell_join(command)

@@ -33,7 +33,7 @@ test-e2e-docker: fetch-tmux
 
 dev-install: fetch-tmux
 	uv sync
-	uv tool install --editable . --with-executables-from agent-status
+	uv tool install --editable . --with-executables-from agent-status --force
 
 bump-version:
 	uv run --no-project python tools/bump_version.py

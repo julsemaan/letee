@@ -597,6 +597,8 @@ def _sync_active_session(
             return interrupted if interrupted == target else None
     if target is None:
         return None
+    if sessions.remote_restoring(target):
+        return interrupted
 
     def run(effect: Effect) -> bool:
         diagnostics.log("restoration_requested", **_trace_effect(effect), status=_target_status(target, snapshot))
@@ -717,7 +719,7 @@ def _entries(snapshot: SessionSnapshot, favorites: list[Target] | None = None) -
     slots = {target: slot for slot, target in enumerate(favorites[:9], 1)}
     out: list[Entry] = []
     for target in favorites:
-        status = _target_status(target, snapshot)
+        status = "restoring…" if sessions.remote_restoring(target) else _target_status(target, snapshot)
         out.append(Entry(
             target.session,
             "session",
@@ -1245,6 +1247,11 @@ def _apply_effect(
     if effect.automatic and result.stale_navigation:
         _log_effect_applied(result, state)
         return False
+    if result.stale_navigation and effect.kind in ("add_switch", "create"):
+        # Manual additions only go stale when canceled before anything is saved.
+        state.favorites[:] = result.favorites
+        _log_effect_applied(result, state)
+        return False
     if result.error and not result.partial_success:
         if effect.kind == "save_favorites":
             state.favorites[:] = result.favorites
@@ -1378,6 +1385,16 @@ def _execute(
 class EffectRunner:
     def __init__(self) -> None:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="letee-action")
+        self._recovery_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="letee-recovery")
+        # Explicit navigation must not queue behind background restores waiting on one host.
+        self._navigation_recovery_executor = ThreadPoolExecutor(thread_name_prefix="letee-navigation-recovery")
+        self._recoveries: dict[Target, Future[EffectResult]] = {}
+        # Replaced recoveries still report back so the reconciler can clear their pending request.
+        self._superseded_recoveries: list[Future[EffectResult]] = []
+        self._recovery_revisions: dict[Target | PaneTarget, int] = {}
+        self._recovery_effects: dict[Target, Effect] = {}
+        self._recovery_followups: dict[Target, tuple[Effect, tuple[Target, ...], str | None, int]] = {}
+        self._navigation_revision = 0
         self._future: Future[EffectResult] | None = None
         self._effect: Effect | None = None
         self._action_id: str | None = None
@@ -1478,6 +1495,52 @@ class EffectRunner:
         input_id: str | None = None,
     ) -> bool:
         effect = operations.capture(effect)
+        remote_recovery = operations.needs_remote_recovery(effect)
+        running = self._recovery_effects.get(effect.target) if remote_recovery else None
+        # An explicit request that overlaps background preparation waits for it instead of being dropped.
+        follow_up = (
+            running is not None and not effect.automatic
+            and running.automatic and running.kind == "ensure_created"
+        )
+        if running is not None and (effect.automatic or (
+            self._recovery_revisions[effect.target] == self._navigation_revision
+            and (not follow_up or effect.target in self._recovery_followups)
+        )):
+            return False
+        # A request the busy runner rejects must not invalidate the work it already accepted.
+        rejected = not remote_recovery and self._future is not None and not (
+            self._effect is not None
+            and self._effect.kind in ("switch", "switch_pane", "show_reconnecting", "ensure_created")
+            and effect.kind in ("switch", "switch_pane", "show_reconnecting")
+        )
+        if not rejected and not effect.automatic and effect.kind in (
+            "switch", "switch_pane", "add_switch", "create", "show_reconnecting"
+        ):
+            self._navigation_revision += 1
+        if remote_recovery or (not effect.automatic and effect.kind in (
+            "switch", "switch_pane", "add_switch", "create", "show_reconnecting"
+        )):
+            revision = self._navigation_revision
+            effect = replace(effect, navigation_current=lambda: self._navigation_revision == revision)
+        if remote_recovery:
+            if not effect.automatic and self._pending_navigation is not None:
+                old_effect, _, old_action_id, old_input_id = self._pending_navigation
+                self._pending_navigation = None
+                diagnostics.get_diagnostics(server=cockpit.tmux.SERVER).emit(
+                    "effect_result",
+                    **_trace_effect(old_effect),
+                    action_id=old_action_id,
+                    input_id=old_input_id,
+                    status="superseded",
+                    stale_navigation=True,
+                    **self._state_trace(),
+                )
+            if follow_up:
+                self._recovery_revisions[effect.target] = revision
+                self._recovery_followups[effect.target] = (effect, favorites, input_id, revision)
+            else:
+                self._start_recovery(effect, favorites, input_id, revision)
+            return True
         debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
         action_id = debug.new_action_id()
         debug.emit(
@@ -1488,11 +1551,7 @@ class EffectRunner:
             **self._state_trace(),
         )
         if self._future is not None:
-            if (
-                self._effect is not None
-                and self._effect.kind in ("switch", "switch_pane", "show_reconnecting", "ensure_created")
-                and effect.kind in ("switch", "switch_pane", "show_reconnecting")
-            ):
+            if not rejected:
                 if self._pending_navigation is not None:
                     old_effect, _, old_action_id, old_input_id = self._pending_navigation
                     debug.emit(
@@ -1542,7 +1601,35 @@ class EffectRunner:
         self._start(effect, favorites, action_id, input_id)
         return True
 
+    def _start_recovery(
+        self,
+        effect: Effect,
+        favorites: tuple[Target, ...],
+        input_id: str | None,
+        revision: int,
+    ) -> None:
+        self._recovery_revisions[effect.target] = revision
+        self._recovery_effects[effect.target] = effect
+        if effect.target in self._recoveries:
+            self._superseded_recoveries.append(self._recoveries[effect.target])
+        executor = self._recovery_executor if effect.automatic else self._navigation_recovery_executor
+        self._recoveries[effect.target] = executor.submit(
+            copy_context().run, self._run_effect, effect, favorites, None, input_id)
+
     def poll(self) -> EffectResult | None:
+        for future in self._superseded_recoveries:
+            if future.done():
+                self._superseded_recoveries.remove(future)
+                return future.result()
+        for target, future in list(self._recoveries.items()):
+            if future.done():
+                del self._recoveries[target]
+                del self._recovery_revisions[target]
+                del self._recovery_effects[target]
+                follow_up = self._recovery_followups.pop(target, None)
+                if follow_up is not None and follow_up[0].navigation_current():
+                    self._start_recovery(*follow_up)
+                return future.result()
         if self._future is None or not self._future.done():
             return None
         debug = diagnostics.get_diagnostics(server=cockpit.tmux.SERVER)
@@ -1608,6 +1695,8 @@ class EffectRunner:
     def close(self) -> None:
         with diagnostics.operation("effect_shutdown"):
             self._executor.shutdown(wait=True, cancel_futures=True)
+            self._recovery_executor.shutdown(wait=True, cancel_futures=True)
+            self._navigation_recovery_executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _current_target() -> Target | None:

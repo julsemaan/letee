@@ -3,6 +3,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -21,6 +22,53 @@ def setUpModule():
         patcher = patch(target, return_value=Timing())
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
+
+
+class InlineReadyAttachmentTest(unittest.TestCase):
+    def test_inline_guard_attaches_or_requests_recovery_without_caching(self):
+        target = Target("ssh", "work", "dev")
+        def fake_inner(host, *args):
+            if args[0] == "show":
+                script = "import os; print(os.environ['READY']); raise SystemExit(int(os.environ['PROBE_RC']))"
+            elif args[0] == "has-session":
+                self.assertEqual(args, ("has-session", "-t", "=work"))
+                script = "import os; raise SystemExit(int(os.environ['EXISTS']) != 1)"
+            else:
+                script = "print('ATTACHED')"
+            return (sys.executable, "-c", script)
+        with patch.object(sessions, "inner_argv", side_effect=fake_inner), \
+             patch.object(sessions, "_remote_attach_command", side_effect=lambda target, command, **kwargs: command):
+            command = sessions.attach_command(target, overlay=False, attach_only=True, require_ready=True)
+        for ready, exists, probe_rc, expected in (("1", "1", "0", 0), ("1", "0", "0", 75),
+                                                  ("", "1", "0", 75), ("0", "1", "0", 75),
+                                                  ("1", "1", "1", 75), ("1", "1", "0", 0)):
+            with self.subTest(ready=ready, exists=exists, probe_rc=probe_rc):
+                result = subprocess.run(("sh", "-c", command), capture_output=True, text=True,
+                                        env={**os.environ, "READY": ready, "EXISTS": exists, "PROBE_RC": probe_rc})
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(result.stdout, "ATTACHED\n" if expected == 0 else "")
+
+
+class RemoteStateTest(unittest.TestCase):
+    def test_probe_command_and_results(self):
+        target = Target("ssh", "work", "dev")
+        for output, state in (("1\n1\n", sessions.RemoteState(True, True)),
+                              ("1\n0\n", sessions.RemoteState(True, False)),
+                              ("\n1\n", sessions.RemoteState()),
+                              ("0\n1\n", sessions.RemoteState()),
+                              ("", sessions.RemoteState()),
+                              ("1\n", sessions.RemoteState()),
+                              ("11\n1\n", sessions.RemoteState())):
+            with self.subTest(output=output), patch.object(sessions, "_run", return_value=output) as run:
+                self.assertEqual(sessions.remote_state(target), state)
+                probe = sessions.shell_join(sessions.inner_argv("dev", "show", "-gqv", resurrect.READY_OPTION))
+                exists = sessions.shell_join(sessions.inner_argv("dev", "has-session", "-t", "=work"))
+                command = f"{probe} && {{ if {exists} 2>/dev/null; then printf '1\\n'; else printf '0\\n'; fi; }}"
+                run.assert_called_once_with("restore_probe", target, sessions.ssh_command("dev", command),
+                                            timeout=Timing().session_restore_timeout)
+        for error in (RuntimeError("ssh failed"), SystemExit("failed")):
+            with patch.object(sessions, "_run", side_effect=error):
+                self.assertEqual(sessions.remote_state(target), sessions.RemoteState())
 
 
 class FakeTmux:
@@ -77,6 +125,15 @@ class ResurrectTestCase(unittest.TestCase):
 
 
 class EnsureRestoredTest(ResurrectTestCase):
+    def test_restore_diagnostics_separate_lock_wait_and_script(self):
+        self.save_exists()
+        fake = FakeTmux()
+        with patch("letee.resurrect.diagnostics.operation", wraps=resurrect.diagnostics.operation) as operation:
+            self.assertEqual(self.run_with(fake, resurrect.ensure_restored), "restored")
+        names = [call.args[0] for call in operation.call_args_list]
+        self.assertIn("resurrect.restore.lock_wait", names)
+        self.assertIn("resurrect.restore.script", names)
+
     def test_ready_server_needs_one_query(self):
         fake = FakeTmux(running=True, ready=True)
         self.assertEqual(self.run_with(fake, resurrect.ensure_restored), "ready")
@@ -258,13 +315,45 @@ class ForgetTest(ResurrectTestCase):
 
 class RemoteCommandTest(unittest.TestCase):
     def test_remote_command_uses_login_shell(self):
-        self.assertEqual(resurrect.remote_command("save"), '"${SHELL:-/bin/sh}" -lc "letee resurrect save"')
+        self.assertEqual(resurrect.remote_command("save"), sessions.remote_letee_command("resurrect", "save"))
+
+    def test_remote_actions_resolve_and_preserve_arguments(self):
+        with tempfile.TemporaryDirectory(prefix="remote home ' ") as directory:
+            home = Path(directory)
+            fallback = home / ".local/bin/letee"
+            fallback.parent.mkdir(parents=True)
+            path_bin = home / "path bin"
+            path_bin.mkdir()
+            shell = home / "login shell"
+            shell.write_text('#!/bin/sh\n[ "$1" = -lc ] || exit 99\nexec /bin/sh -c "$2"\n')
+            shell.chmod(0o755)
+            env = {"HOME": str(home), "PATH": str(path_bin), "SHELL": str(shell),
+                   "XDG_CONFIG_HOME": str(home / "config")}
+            fallback.write_text('#!/bin/sh\nprintf "fallback\\n"; printf "%s\\n" "$@"\n')
+            fallback.chmod(0o755)
+            for on_path in (False, True):
+                executable = path_bin / "letee"
+                if on_path:
+                    executable.write_text('#!/bin/sh\nprintf "path\\n"; printf "%s\\n" "$@"\n')
+                    executable.chmod(0o755)
+                for action in ("save", "restore", "forget", "space ' ; $HOME"):
+                    with self.subTest(on_path=on_path, action=action):
+                        result = subprocess.run(resurrect.remote_command(action), shell=True,
+                                                env=env, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        marker = "path" if on_path else "fallback"
+                        self.assertEqual(result.stdout, f"{marker}\nresurrect\n{action}\n")
+            executable.unlink()
+            fallback.unlink()
+            result = subprocess.run(resurrect.remote_command("save"), shell=True,
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 127)
 
     def test_guard_checks_marker_before_restoring(self):
         self.assertEqual(
             resurrect.remote_guard("dev"),
             '[ "$(tmux -L letee.inner show -gqv @letee-resurrect-ready 2>/dev/null)" = 1 ] || '
-            '"${SHELL:-/bin/sh}" -lc "letee resurrect restore"',
+            + resurrect.remote_command("restore"),
         )
 
     def test_vendored_scripts_are_executable(self):
