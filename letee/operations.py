@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -403,18 +404,24 @@ def navigate(
         if not needs_remote_recovery(effect):
             _perform_unlocked(effect, favorites, state, raise_errors=True)
             return
-    perform(effect, raise_errors=True)
+    _report(perform(effect, raise_errors=True))
 
 
 def create_and_switch(target: Target) -> None:
     if needs_remote_recovery(Effect("create", target)):
         cockpit.require_cockpit()
-        perform(Effect("create", target), raise_errors=True)
+        _report(perform(Effect("create", target), raise_errors=True))
         return
     with config.sessions_lock():
         sessions.create(target)
         cockpit.require_cockpit()
         _perform_unlocked(Effect("switch", target), tuple(config.load_sessions()), _state(), raise_errors=True)
+
+
+def _report(result: EffectResult) -> None:
+    # With raise_errors=True, only nonfatal errors (a failed restore before a successful fallback) get here.
+    if result.error:
+        print(f"letee: {result.error}", file=sys.stderr)
 
 
 def kill(target: Target) -> None:

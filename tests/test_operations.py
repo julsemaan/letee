@@ -1,3 +1,4 @@
+import io
 import os
 import shlex
 import subprocess
@@ -241,6 +242,27 @@ class OperationsTest(unittest.TestCase):
         switch.assert_called_once()
         self.assertIn("restore broke", result.error)
         self.assertTrue(result.partial_success)
+
+    def test_cli_recovery_warns_about_restore_failure_after_fallback(self):
+        target = Target("ssh", "work", "dev")
+        calls = {
+            "navigate": lambda: operations.navigate(PaneTarget(target, "@1", "%2", "/tmp/test.sock")),
+            "create_and_switch": lambda: operations.create_and_switch(target),
+        }
+        for name, call in calls.items():
+            with self.subTest(name), \
+                 patch.object(config, "load_session_restore", return_value=True), \
+                 patch.object(operations.sessions, "restore_remote",
+                              return_value=operations.sessions.RestoreOutcome("boom")), \
+                 patch.object(operations.sessions, "ensure_created"), \
+                 patch.object(operations.sessions, "attach_command", return_value="attach"), \
+                 patch.object(cockpit, "require_cockpit"), \
+                 patch.object(cockpit, "switch_reconnecting"), \
+                 patch.object(cockpit, "switch") as switch, \
+                 patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                call()
+                switch.assert_called_once()
+                self.assertIn("letee: Remote restore failed: boom", stderr.getvalue())
 
     def test_pane_switch_requires_remote_recovery(self):
         pane = PaneTarget(Target("ssh", "work", "dev"), "@1", "%2", "/tmp/test.sock")
