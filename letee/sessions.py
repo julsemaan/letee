@@ -680,7 +680,9 @@ def _remote_attach_command(target: Target, command: str, *, overlay: bool) -> st
 
 
 @_session_operation("sessions.attach_command")
-def attach_command(target: Target, *, overlay: bool | None = None, attach_only: bool = False) -> str:
+def attach_command(
+    target: Target, *, overlay: bool | None = None, attach_only: bool = False, require_ready: bool = False,
+) -> str:
     if not attach_only:
         validate_session_name(target.session)
     overlay = load_tmux_config_overlay() if overlay is None else overlay
@@ -694,6 +696,12 @@ def attach_command(target: Target, *, overlay: bool | None = None, attach_only: 
         command += f" \\; source-file {_overlay_source(target)}"
     if target.kind == "local":
         return f"env -u TMUX {command}"
+    if require_ready:
+        probe = shell_join(inner_argv(target.host, "show", "-gqv", resurrect.READY_OPTION))
+        exists = shell_join(inner_argv(target.host, "has-session", "-t", "=" + target.session))
+        # A failed fast attach uses the normal launch-scoped pane-death recovery.
+        command = (f'if ready=$({probe} 2>/dev/null) && [ "$ready" = 1 ] && {exists} 2>/dev/null; '
+                   f'then {command}; else exit 75; fi')
     if restore:
         # An old remote letee fails the guard; attachment must still run.
         command = f"{{ {{ {resurrect.remote_guard(target.host or '')}; }} </dev/null >/dev/null 2>&1; {command}; }}"

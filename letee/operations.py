@@ -156,7 +156,10 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
     fallback = effect.previous_favorites if effect.previous_favorites is not None else favorites
     remote_exists = False
     try:
-        if needs_remote_recovery(effect):
+        recovery = needs_remote_recovery(effect)
+        inline_remote = (recovery and not effect.automatic and isinstance(effect.target, Target)
+                         and effect.kind in ("switch", "add_switch"))
+        if recovery and not inline_remote:
             target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
             validate_session_name(target.session)
             with config.sessions_lock():
@@ -217,7 +220,8 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
                     return result
                 finally:
                     sessions.remote_restore_prepared.reset(token)
-            return _perform_unlocked(effect, favorites, state, raise_errors=raise_errors)
+            return _perform_unlocked(effect, favorites, state, raise_errors=raise_errors,
+                                     inline_remote=inline_remote)
     except (Exception, SystemExit) as error:
         if effect.recovery_launch is not None and cockpit.current_target() == target:
             cockpit.show_unavailable(target)
@@ -229,7 +233,7 @@ def perform(effect: Effect, favorites: tuple[Target, ...] = (), *, raise_errors:
 
 def _perform_unlocked(
     effect: Effect, favorites: tuple[Target, ...], state: dict, *,
-    raise_errors: bool = False, remote_exists: bool = False,
+    raise_errors: bool = False, remote_exists: bool = False, inline_remote: bool = False,
 ) -> EffectResult:
     target = effect.target.target if isinstance(effect.target, PaneTarget) else effect.target
     planned = favorites
@@ -276,6 +280,8 @@ def _perform_unlocked(
             command = effect.attach_command
             if legacy_attach:
                 command = sessions.attach_command(target, attach_only=True)
+            elif inline_remote:
+                command = sessions.attach_command(target, attach_only=True, require_ready=True)
             elif effect.automatic or effect.recovery_launch is not None:
                 if not remote_exists:
                     sessions.ensure_created(target)

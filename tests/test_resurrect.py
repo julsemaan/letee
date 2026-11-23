@@ -3,6 +3,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -21,6 +22,31 @@ def setUpModule():
         patcher = patch(target, return_value=Timing())
         patcher.start()
         unittest.addModuleCleanup(patcher.stop)
+
+
+class InlineReadyAttachmentTest(unittest.TestCase):
+    def test_inline_guard_attaches_or_requests_recovery_without_caching(self):
+        target = Target("ssh", "work", "dev")
+        def fake_inner(host, *args):
+            if args[0] == "show":
+                script = "import os; print(os.environ['READY']); raise SystemExit(int(os.environ['PROBE_RC']))"
+            elif args[0] == "has-session":
+                self.assertEqual(args, ("has-session", "-t", "=work"))
+                script = "import os; raise SystemExit(int(os.environ['EXISTS']) != 1)"
+            else:
+                script = "print('ATTACHED')"
+            return (sys.executable, "-c", script)
+        with patch.object(sessions, "inner_argv", side_effect=fake_inner), \
+             patch.object(sessions, "_remote_attach_command", side_effect=lambda target, command, **kwargs: command):
+            command = sessions.attach_command(target, overlay=False, attach_only=True, require_ready=True)
+        for ready, exists, probe_rc, expected in (("1", "1", "0", 0), ("1", "0", "0", 75),
+                                                  ("", "1", "0", 75), ("0", "1", "0", 75),
+                                                  ("1", "1", "1", 75), ("1", "1", "0", 0)):
+            with self.subTest(ready=ready, exists=exists, probe_rc=probe_rc):
+                result = subprocess.run(("sh", "-c", command), capture_output=True, text=True,
+                                        env={**os.environ, "READY": ready, "EXISTS": exists, "PROBE_RC": probe_rc})
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(result.stdout, "ATTACHED\n" if expected == 0 else "")
 
 
 class RemoteStateTest(unittest.TestCase):

@@ -72,10 +72,56 @@ class OperationsTest(unittest.TestCase):
                 release.set()
                 runner.close()
 
+    def test_explicit_remote_switch_has_no_preflight_commands(self):
+        target = Target("ssh", "work", "dev")
+        for kind in ("switch", "add_switch"):
+            with self.subTest(kind=kind), \
+                 patch.object(config, "load_session_restore", return_value=True), \
+                 patch.object(operations.sessions, "_run") as run, \
+                 patch.object(operations.sessions, "restore_remote") as restore, \
+                 patch.object(operations.sessions, "ensure_created") as ensure, \
+                 patch.object(operations.sessions, "attach_command", return_value="guarded-attach") as attach, \
+                 patch.object(cockpit, "switch_reconnecting") as progress, \
+                 patch.object(cockpit, "switch") as switch:
+                result = operations.perform(operations.Effect(kind, target))
+                self.assertFalse(result.error)
+                self.ready.assert_not_called()
+                run.assert_not_called()
+                restore.assert_not_called()
+                ensure.assert_not_called()
+                progress.assert_not_called()
+                attach.assert_called_once_with(target, attach_only=True, require_ready=True)
+                switch.assert_called_once()
+
+    def test_inline_attach_failure_runs_existing_automatic_recovery(self):
+        target = Target("ssh", "work", "dev")
+        config.save_sessions([target])
+        with patch.object(config, "load_session_restore", return_value=True), \
+             patch.object(operations.sessions, "ensure_created") as ensure, \
+             patch.object(operations.sessions, "restore_remote", return_value=None) as restore, \
+             patch.object(operations.sessions, "attach_command", return_value="attach") as attach, \
+             patch.object(cockpit, "current_target", return_value=target), \
+             patch.object(cockpit, "startup_deadline", return_value=float("inf")), \
+             patch.object(cockpit, "attachment_failed", return_value=True), \
+             patch.object(cockpit, "show_reconnecting") as progress, \
+             patch.object(cockpit, "switch"):
+            launched = operations.perform(operations.Effect("switch", target))
+            self.assertFalse(launched.error)
+            self.ready.assert_not_called()
+            recovered = operations.perform(operations.Effect("switch", target, automatic=True))
+            self.assertFalse(recovered.error)
+            self.assertFalse(recovered.stale_navigation)
+            self.ready.assert_called_once_with(target)
+            restore.assert_called_once_with(target)
+            ensure.assert_called_once_with(target)
+            progress.assert_called_once_with(target, "restoring…")
+            self.assertEqual(attach.call_args.kwargs, {"attach_only": True})
+            self.assertNotEqual(launched.launch_id, recovered.launch_id)
+
     def test_existing_ready_remote_attaches_without_creation(self):
         target = Target("ssh", "work", "dev")
         self.ready.return_value = operations.sessions.RemoteState(ready=True, session_exists=True)
-        for kind in ("switch", "add_switch", "switch_pane", "create", "ensure_created"):
+        for kind in ("switch_pane", "create", "ensure_created"):
             with self.subTest(kind=kind), \
                  patch.object(config, "load_session_restore", return_value=True), \
                  patch.object(operations.sessions, "ensure_created") as ensure, \
@@ -92,7 +138,7 @@ class OperationsTest(unittest.TestCase):
                     attach.assert_called_once_with(target, attach_only=True)
                     switch.assert_called_once()
 
-    def test_existing_ready_remote_uses_one_preflight_ssh_call(self):
+    def test_existing_ready_remote_uses_inline_check_without_preflight_ssh(self):
         target = Target("ssh", "work", "dev")
         self.ready.side_effect = self.remote_state
         with patch.object(config, "load_session_restore", return_value=True), \
@@ -101,12 +147,13 @@ class OperationsTest(unittest.TestCase):
              patch.object(cockpit, "switch") as switch:
             result = operations.perform(operations.Effect("switch", target))
             self.assertFalse(result.error)
-            self.assertEqual(run.call_count, 1)
-            self.assertEqual(run.call_args.args[0], "restore_probe")
+            run.assert_not_called()
+            self.ready.assert_not_called()
             command = switch.call_args.args[1]
             self.assertIn("attach-session", command)
             self.assertNotIn("new-session", command)
-            self.assertNotIn("resurrect", command)
+            self.assertIn("@letee-resurrect-ready", command)
+            self.assertNotIn("resurrect restore", command)
 
     def test_ready_remote_skips_restore_and_progress_without_caching(self):
         target = Target("ssh", "work", "dev")
@@ -117,13 +164,13 @@ class OperationsTest(unittest.TestCase):
              patch.object(operations.sessions, "attach_command", return_value="attach"), \
              patch.object(cockpit, "switch_reconnecting") as progress, \
              patch.object(cockpit, "switch") as switch:
-            result = operations.perform(operations.Effect("switch", target))
+            result = operations.perform(operations.Effect("create", target))
             self.assertFalse(result.error)
             progress.assert_not_called()
             restore.assert_not_called()
             switch.assert_called_once()
             ensure.assert_not_called()
-            operations.perform(operations.Effect("switch", target))
+            operations.perform(operations.Effect("create", target))
             progress.assert_called_once()
             restore.assert_called_once_with(target)
             ensure.assert_called_once_with(target)
@@ -137,7 +184,7 @@ class OperationsTest(unittest.TestCase):
              patch.object(operations.sessions, "attach_command", return_value="attach") as attach, \
              patch.object(cockpit, "switch_reconnecting") as progress, \
              patch.object(cockpit, "switch"):
-            result = operations.perform(operations.Effect("switch", target))
+            result = operations.perform(operations.Effect("create", target))
             self.assertFalse(result.error)
             ensure.assert_called_once_with(target)
             attach.assert_called_once_with(target, attach_only=True)
@@ -175,7 +222,7 @@ class OperationsTest(unittest.TestCase):
              patch.object(operations.sessions, "restore_remote") as restore, \
              patch.object(cockpit, "switch_reconnecting") as progress, \
              patch.object(cockpit, "switch") as switch:
-            result = operations.perform(operations.Effect("switch", target))
+            result = operations.perform(operations.Effect("create", target))
             self.assertTrue(result.stale_navigation)
             progress.assert_not_called()
             restore.assert_not_called()
@@ -211,7 +258,7 @@ class OperationsTest(unittest.TestCase):
              patch.object(operations.sessions, "restore_remote", side_effect=restore), \
              patch.object(cockpit, "switch_reconnecting"), \
              patch.object(cockpit, "switch") as switch:
-            worker = threading.Thread(target=lambda: results.append(operations.perform(operations.Effect("switch", target))))
+            worker = threading.Thread(target=lambda: results.append(operations.perform(operations.Effect("create", target))))
             worker.start()
             try:
                 self.assertTrue(entered.wait(2))
@@ -287,7 +334,7 @@ class OperationsTest(unittest.TestCase):
              patch.object(operations.sessions, "ensure_created", side_effect=lambda _: order.append("create")), \
              patch.object(cockpit, "switch_reconnecting"), \
              patch.object(cockpit, "switch") as switch:
-            result = operations.perform(operations.Effect("switch", target))
+            result = operations.perform(operations.Effect("create", target))
             self.assertFalse(result.error)
             self.assertEqual(order, ["restore", "create"])
             self.assertIn("attach-session", switch.call_args.args[1])
